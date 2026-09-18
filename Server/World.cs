@@ -2870,6 +2870,36 @@ public sealed partial class World
         catch (Exception e) { Log.Error($"isolated step '{what}' threw — skipped, the sweep continues", e); }
     }
 
+    /// <summary>The same isolation, for a step whose argument can be passed instead of captured — which is
+    /// every PER-PLAYER site in <see cref="FlushTick"/>.
+    ///
+    /// <para><b>Why it exists.</b> The overload above can only be reached with a delegate, and at a
+    /// per-player site there is no delegate the compiler can cache: <c>Try(s.TickSleep, …)</c> binds a fresh
+    /// one to <c>s</c> on every call, and <c>Try(() =&gt; p.RegenTick(TickMs), …)</c> allocates a display
+    /// class for <c>p</c> as well. Measured on this repo, Debug and Release alike, at 400 players: 64 B per
+    /// method group, 88 B per one-capture closure and 96 B per multi-capture closure, per player per beat —
+    /// 320 B a player a beat across the three sites that run every beat, 128 KB a beat, 385 KB a second.
+    /// Called with a STATIC lambda (<c>static s =&gt; s.TickSleep()</c>) this overload allocates nothing at
+    /// all: the lambda captures nothing, so the compiler caches one delegate per site for the life of the
+    /// process and the loop hands it a different argument each time. <c>Tests/TickStepIsolationTests.cs</c>
+    /// pins the zero.</para>
+    ///
+    /// <para>For a step that needs more than one value, <typeparamref name="T"/> is a tuple of them
+    /// (<c>Try((p, h, y), static t =&gt; t.Item1.SendTime(t.Item2, t.Item3), "SendTime")</c>) — a struct
+    /// passed by value, so it stays on the stack and nothing is captured. The isolation itself, the catch and
+    /// the log line are the overload above's, word for word; nothing about which throws are swallowed, which
+    /// are logged or what the line says changes with the shape.</para></summary>
+    private static void Try<T>(T arg, Action<T> step, string what)
+    {
+        try { step(arg); }
+        catch (Exception e) { Log.Error($"isolated step '{what}' threw — skipped, the sweep continues", e); }
+    }
+
+    /// <summary>The generic helper, reachable from the suite. <c>Tests/TickStepIsolationTests.cs</c> measures
+    /// its allocation across thousands of calls, which is a claim about the REAL helper and cannot be made
+    /// against a copy of it in the test project.</summary>
+    internal static void TryForTest<T>(T arg, Action<T> step, string what) => Try(arg, step, what);
+
     /// <summary>A mob's raw melee swing (RTK <c>swingDamage.lua</c> <c>_getMobSwingDamage</c>): three
     /// independent uniform draws over the range split into thirds, summed and floored, +1. This is NOT a
     /// flat roll across [MinDam,MaxDam] — three thirded draws concentrate the result near the midpoint
