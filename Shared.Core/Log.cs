@@ -89,6 +89,32 @@ public static class Log
     // tests can force refusal without racing the writer to fill a 65,536-line queue.
     internal static Func<LogLevel, int, bool>? AdmitOverrideForTest { get; set; }
 
+    /// <summary>TEST ONLY. Observes every formatted line in process, on the thread that wrote it: the exact
+    /// string that would be enqueued (stamp, marker and text), plus the level <see cref="LevelOf"/> gave it.
+    /// Null in production, and nothing production-side ever sets it — the whole production cost is the read
+    /// and null check in <see cref="Enqueue"/>, which allocates nothing when it is null.
+    ///
+    /// <para><b>Why this exists.</b> Without it, a test asserting on a log line has to attach the
+    /// process-global FILE sink, shut the logger down to flush it, read the file back and restart the
+    /// writer — so it has to live in collection <c>"log"</c> whatever it is really about, and therefore away
+    /// from the behaviour it pins. <c>GmOverridesTests</c> is the case that asked for this.</para>
+    ///
+    /// <para><b>Contract: every line handed to <see cref="Enqueue"/>, admitted or not.</b> The hook fires
+    /// before admission, so it answers "this line was logged" rather than "this line reached a sink" — which
+    /// is the question a test about behaviour is asking, and the answer that does not change when the drop
+    /// policy or the queue depth does. A test about the drop policy has <see cref="DroppedCountsForTest"/>
+    /// and <see cref="AdmitOverrideForTest"/> for the other question, and the file-sink tests still pin the
+    /// bytes on disk. Two lines it does NOT see: the <see cref="OpenMarker"/> control line, which is a file
+    /// path for the writer thread and not a log record, and anything written after <see cref="Shutdown"/>,
+    /// which <see cref="Enqueue"/> discards before it formats a level.</para>
+    ///
+    /// <para><b>Threading.</b> Lines come from every thread in the process, so the delegate is invoked
+    /// concurrently and synchronously on the CALLING thread — it must be cheap and thread-safe, and it must
+    /// not log. It is <c>volatile</c> so an install on one thread is seen by writers on others.
+    /// <c>Tests/Support/LogLineSink.cs</c> is the only intended caller: it takes a process-wide gate, collects
+    /// into a thread-safe list and uninstalls on Dispose, so no test touches this field directly.</para></summary>
+    internal static volatile Action<string, LogLevel>? LineSinkForTest;
+
     // Size-based rotation. With the wire dump on, this log grows by megabytes per player-hour — fine on a
     // dev box with a big disk, an availability bug on a small VPS where a full filesystem takes the SQLite
     // database down with it. At the limit the current file is renamed to <name>.1 (replacing any previous
@@ -273,6 +299,9 @@ public static class Log
         }
 
         LogLevel level = LevelOf(line, entryPoint);
+        // The whole production cost of the test hook: one read of a null static and the branch over it. It
+        // sits BEFORE admission on purpose — see LineSinkForTest for the contract and why.
+        LineSinkForTest?.Invoke(line, level);
         int queued = queue.Count;
         var admit = AdmitOverrideForTest;
         // Count then TryAdd is deliberately not atomic: an Info line may land on either side of the reserve
