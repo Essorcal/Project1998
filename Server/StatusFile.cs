@@ -25,7 +25,7 @@ namespace Server;
 ///   "elapsedMs": 13738589, "beatMs": 1508442,
 ///   "phaseMs": { "(0) warm": 811, "lock-wait": 12, "(1) respawns": 2104,
 ///                "(3) viewports": 903117, "(6) time": 41, "other": 1992 },
-///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedMb": 968,
+///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedAtLastGcMb": 968,
 ///   "gcAvailableMb": 15776, "gcHighLoadMb": 14198,
 ///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent"
 /// }
@@ -46,19 +46,48 @@ namespace Server;
 /// 159 MB at launch, on server code that differed by one database-timeout PR
 /// (<c>briefs/reports/hold-master-vs-245-opus.md</c>, "Answers" 5). The working set alone cannot say why: it
 /// is committed-and-touched pages, and it moves when the GC's BUDGET moves as readily as when the program
-/// retains more. <c>gcHeapMb</c> against <c>gcCommittedMb</c> separates those two — bytes the program is
-/// keeping alive against bytes the GC has taken from the OS and not given back — and <c>gcAvailableMb</c>
+/// retains more. <c>gcHeapMb</c> against <c>gcCommittedAtLastGcMb</c> separates those two — bytes the program
+/// is keeping alive against bytes the GC had taken from the OS and not given back — and <c>gcAvailableMb</c>
 /// with <c>gcHighLoadMb</c> record the machine state the GC sizes itself against, which is the variable that
 /// actually differed between those holds. <c>gen0</c>/<c>gen1</c>/<c>gen2</c> close the other gap: the
 /// <c>SLOW TICK</c> line prints a <c>gc</c> pause only on beats the watchdog already flagged, so a collection
 /// on a healthy beat is invisible today and the log cannot count collections at all.
 ///
+/// WHERE EACH FIELD COMES FROM, AND WHAT IT DATES TO:
+/// <list type="table">
+/// <item><term><c>workingSetMb</c></term><description><c>Process.WorkingSet64</c> — instantaneous</description></item>
+/// <item><term><c>gcHeapMb</c></term><description><c>GC.GetTotalMemory(false)</c> — instantaneous</description></item>
+/// <item><term><c>gcCommittedAtLastGcMb</c></term><description><c>GC.GetGCMemoryInfo().TotalCommittedBytes</c> — AS OF THE LAST COLLECTION</description></item>
+/// <item><term><c>gcAvailableMb</c></term><description><c>GC.GetGCMemoryInfo().TotalAvailableMemoryBytes</c> — as of the last collection; a machine constant</description></item>
+/// <item><term><c>gcHighLoadMb</c></term><description><c>GC.GetGCMemoryInfo().HighMemoryLoadThresholdBytes</c> — as of the last collection; a machine constant</description></item>
+/// <item><term><c>gen0</c>/<c>gen1</c>/<c>gen2</c></term><description><c>GC.CollectionCount(n)</c> — since-start counts</description></item>
+/// <item><term><c>gcMode</c></term><description>the GC configuration this process started with — constant</description></item>
+/// </list>
+///
 /// Read as deltas between two samples, exactly like the phase totals: <c>gen0</c>, <c>gen1</c> and
-/// <c>gen2</c> are since-start counts and only rise, while the four megabyte figures are INSTANTANEOUS
-/// readings and go both ways. <c>gcHeapMb</c> is <c>GC.GetTotalMemory(false)</c> — the GC's own estimate,
-/// without forcing a collection, so it is a floor that includes garbage not yet collected, not a
-/// live-set measurement. All of it is read on the STATUS thread, none of it touches the world or any lock,
-/// and nothing here runs on the tick path.
+/// <c>gen2</c> are since-start counts and only rise, while the megabyte figures go both ways.
+/// <c>gcHeapMb</c> is <c>GC.GetTotalMemory(false)</c> — the GC's own estimate, without forcing a collection,
+/// so it is a floor that includes garbage not yet collected, not a live-set measurement.
+///
+/// <c>gcCommittedAtLastGcMb</c> IS NOT AN INSTANTANEOUS READING, and its name says so because a load run read
+/// it as one and drew the wrong picture. <c>GC.GetGCMemoryInfo()</c> with no argument returns the record of
+/// the LATEST collection, so the committed figure is what the GC had committed when that collection ran: it
+/// reads <b>0</b> until the first collection of the process, and then holds one exact value until the next
+/// collection. The 2026-09-18 row A hold (<c>briefs/reports/hold-row-a-opus.md</c>) shows both halves — 0 on
+/// the first three samples, then exactly 188 MB for twelve consecutive samples while <c>workingSetMb</c> went
+/// 240 to 1,121 MB and <c>gcHeapMb</c> went 36 to 1,054 MB. It changed only at the three samples where a
+/// generation counter changed. So <c>gcHeapMb</c> can stand far ABOVE <c>gcCommittedAtLastGcMb</c> between
+/// collections, and that is not a contradiction. Read the field beside <c>gen0</c>/<c>gen1</c>/<c>gen2</c>:
+/// on a sample where a count stepped, the committed figure is fresh and can be set against that sample's
+/// <c>workingSetMb</c>; on every other sample it is the last collection's figure repeated.
+/// <c>gcAvailableMb</c> and <c>gcHighLoadMb</c> come from the same record and carry the same date, but they
+/// are the machine's physical memory and its 90% threshold — constants that the runtime populates before any
+/// collection has run, which is why they were already correct on the samples where the committed figure
+/// was 0. There is NO instantaneous committed figure in the GC API: nothing short of forcing a collection
+/// refreshes this record, and forcing one from a status timer would be worse than the imprecision.
+///
+/// All of it is read on the STATUS thread, none of it touches the world or any lock, and nothing here runs on
+/// the tick path.
 ///
 /// The cost is not symmetric, which is worth knowing before anyone moves these reads. Measured on this
 /// machine (median of 7 runs of 100 renders, Debug): the document WITHOUT them renders in <b>7.6us</b>, the
@@ -105,7 +134,7 @@ public static class StatusFile
         [property: JsonPropertyName("phaseMs")]    IReadOnlyDictionary<string, long> PhaseMs,
         [property: JsonPropertyName("workingSetMb")]  long WorkingSetMb,
         [property: JsonPropertyName("gcHeapMb")]      long GcHeapMb,
-        [property: JsonPropertyName("gcCommittedMb")] long GcCommittedMb,
+        [property: JsonPropertyName("gcCommittedAtLastGcMb")] long GcCommittedAtLastGcMb,
         [property: JsonPropertyName("gcAvailableMb")] long GcAvailableMb,
         [property: JsonPropertyName("gcHighLoadMb")]  long GcHighLoadMb,
         [property: JsonPropertyName("gen0")]          long Gen0,
@@ -160,6 +189,10 @@ public static class StatusFile
         // ONE call, like PhaseTotalsMs's `out`: GetGCMemoryInfo snapshots the last collection's numbers
         // together, so committed, available and the high-load threshold in one document are one reading
         // rather than three that could straddle a collection.
+        //
+        // "the last collection's numbers" is literal, and it is why the committed field is NAMED for it:
+        // TotalCommittedBytes is what the GC had committed when that collection ran, not now. It is 0 before
+        // the first collection and steps only at collections. See the class doc.
         var gc = GC.GetGCMemoryInfo();
 
         return JsonSerializer.Serialize(
