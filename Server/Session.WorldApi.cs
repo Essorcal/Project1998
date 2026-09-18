@@ -190,13 +190,13 @@ public sealed partial class Session
                         if (!core) continue;
                         _shownMobs.Add(id);
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
-                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, true);
+                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, false, true);
                     }
                     else if (!view.Contains(mx, my, HidePad))     // left the DRAWN 19x17 rect — now really gone
                     {
                         _shownMobs.Remove(id); _edgeMobs.Remove(id);
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
-                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, false, false);
+                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, false, true, false);
                     }
                     else if (core)
                     {
@@ -206,7 +206,7 @@ public sealed partial class Session
                         // old HidePad=0 sent on every boundary crossing.
                         if (!_edgeMobs.Remove(id)) continue;
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
-                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, true);
+                        pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, true, true);
                     }
                     else _edgeMobs.Add(id);                      // in the band: keep it drawn, flag it suspect
                 }
@@ -235,7 +235,7 @@ public sealed partial class Session
                     bool current;
                     using (EnterView())
                         current = SendStillCurrentUnderViewLock(_shownMobs, _edgeMobs, pend[i].Id, pend[i].Show,
-                                                                pend[i].ShownAfter, pend[i].Stamp,
+                                                                pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;                  // a newer reconcile decided otherwise while we waited
                     if (pend[i].Show) ShowMob(pend[i].Subject);
@@ -312,11 +312,11 @@ public sealed partial class Session
                     // on items).
                     Reanchor(ref view);
                     var draw = DecideItemUnderViewLock(subs[i].Id, subs[i].X, subs[i].Y,
-                                                       in view, out bool shownAfter, out uint stamp);
+                                                       in view, out bool drawnBefore, out bool shownAfter, out uint stamp);
                     if (draw == EntityDraw.Nothing) continue;
                     if (p == pend.Length) pend = Scratch<PendingSend<GroundItem>>.Grow(pend);
-                    pend[p++] = new PendingSend<GroundItem>(subs[i].Subject, subs[i].Id, stamp,
-                                                            subs[i].X, subs[i].Y, draw == EntityDraw.Show, shownAfter);
+                    pend[p++] = new PendingSend<GroundItem>(subs[i].Subject, subs[i].Id, stamp, subs[i].X, subs[i].Y,
+                                                            draw == EntityDraw.Show, drawnBefore, shownAfter);
                 }
             }
 
@@ -340,7 +340,7 @@ public sealed partial class Session
                     bool current;
                     using (EnterView())
                         current = SendStillCurrentUnderViewLock(_shownItems, null, pend[i].Id, pend[i].Show,
-                                                                pend[i].ShownAfter, pend[i].Stamp,
+                                                                pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;
                     if (pend[i].Show) ShowGroundItem(pend[i].Subject);
@@ -410,11 +410,11 @@ public sealed partial class Session
                 {
                     Reanchor(ref view);                      // no decision on a rect older than the step
                     var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, subs[i].Id, subs[i].X, subs[i].Y,
-                                                          in view, out bool shownAfter, out uint stamp);
+                                                          in view, out bool drawnBefore, out bool shownAfter, out uint stamp);
                     if (draw == EntityDraw.Nothing) continue;
                     if (p == pend.Length) pend = Scratch<PendingSend<Session>>.Grow(pend);
-                    pend[p++] = new PendingSend<Session>(subs[i].Subject, subs[i].Id, stamp,
-                                                        subs[i].X, subs[i].Y, draw == EntityDraw.Show, shownAfter);
+                    pend[p++] = new PendingSend<Session>(subs[i].Subject, subs[i].Id, stamp, subs[i].X, subs[i].Y,
+                                                        draw == EntityDraw.Show, drawnBefore, shownAfter);
                 }
 
             // THE SENDS, outside the lock, in sweep order — each one revalidated before it goes out.
@@ -452,7 +452,7 @@ public sealed partial class Session
                     bool current;
                     using (EnterView())
                         current = SendStillCurrentUnderViewLock(_shownPeers, _edgePeers, pend[i].Id, pend[i].Show,
-                                                                pend[i].ShownAfter, pend[i].Stamp,
+                                                                pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;                  // a newer reconcile decided otherwise while we waited
                     if (pend[i].Show) ShowPlayer(pend[i].Subject);
@@ -504,14 +504,21 @@ public sealed partial class Session
         internal ushort X, Y;
         /// <summary>A show when true, a despawn when false.</summary>
         internal bool Show;
+        /// <summary>What the drawn set said about <see cref="Id"/> BEFORE this decision wrote to it — the one
+        /// bit that tells a dropped show whether it was a first show (the client has nothing, so remove) or a
+        /// re-assert (the client really did draw it, so leave it drawn and put it back in the band).
+        /// PR #246's F2.</summary>
+        internal bool DrawnBefore;
         /// <summary>What the drawn set said about <see cref="Id"/> immediately AFTER this decision was taken.
         /// The send pass re-reads the set and drops the frame if it no longer says this — half of the
         /// still-current test; see <see cref="SendStillCurrentUnderViewLock"/>.</summary>
         internal bool ShownAfter;
 
-        internal PendingSend(T subject, uint id, uint stamp, ushort x, ushort y, bool show, bool shownAfter)
+        internal PendingSend(T subject, uint id, uint stamp, ushort x, ushort y,
+                             bool show, bool drawnBefore, bool shownAfter)
         {
-            Subject = subject; Id = id; Stamp = stamp; X = x; Y = y; Show = show; ShownAfter = shownAfter;
+            Subject = subject; Id = id; Stamp = stamp; X = x; Y = y;
+            Show = show; DrawnBefore = drawnBefore; ShownAfter = shownAfter;
         }
     }
 
@@ -616,11 +623,11 @@ public sealed partial class Session
         // taken. There is no longer a point between the two tests where a step can land unseen.
         EntityDraw draw;
         uint stamp;
-        bool shownAfter;
+        bool shownAfter, drawnBefore;
         using (EnterView())
         {
             Reanchor(ref view);                                    // no decision on a rect older than the step
-            draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, id, peer.X, peer.Y, in view, out shownAfter, out stamp);
+            draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, id, peer.X, peer.Y, in view, out drawnBefore, out shownAfter, out stamp);
         }
 
         if (draw == EntityDraw.Nothing) return;
@@ -630,7 +637,7 @@ public sealed partial class Session
         bool current;
         using (EnterView())
             current = SendStillCurrentUnderViewLock(_shownPeers, _edgePeers, id, draw == EntityDraw.Show,
-                                                    shownAfter, stamp, peer.X, peer.Y, ref view);
+                                                    drawnBefore, shownAfter, stamp, peer.X, peer.Y, ref view);
         if (!current) return;
 
         if (draw == EntityDraw.Show) ShowPlayer(other);
@@ -650,16 +657,19 @@ public sealed partial class Session
     /// is the caller's job, after the release.</para>
     ///
     /// <para><paramref name="shownAfter"/> is what <paramref name="shown"/> says about the id when this
-    /// returns, which is what the send pass revalidates against.</para></summary>
+    /// returns, which is what the send pass revalidates against. <paramref name="drawnBefore"/> is what it
+    /// said before — the one bit that tells a dropped show which of the two show shapes it was, and therefore
+    /// what to put back; see <see cref="SendStillCurrentUnderViewLock"/>.</para></summary>
     private EntityDraw DecidePeerUnderViewLock(HashSet<uint> shown, HashSet<uint> edge,
                                                   uint id, ushort px, ushort py, in ViewRect view,
-                                                  out bool shownAfter, out uint stamp)
+                                                  out bool drawnBefore, out bool shownAfter, out uint stamp)
     {
         bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 / 0x07 is accepted
         bool drawn = view.Contains(px, py, HidePad);      // the wider 19x17 the client renders
         stamp = 0;                                        // nothing to send, nothing to revalidate
+        drawnBefore = shown.Contains(id);                 // what the set said BEFORE this decision wrote to it
 
-        if (!shown.Contains(id))
+        if (!drawnBefore)
         {
             shownAfter = false;
             if (!core) return EntityDraw.Nothing;
@@ -702,10 +712,11 @@ public sealed partial class Session
     /// <paramref name="shownAfter"/> is <c>false</c>, and the send pass's test reads as "nobody else has drawn
     /// it while we waited".</para></summary>
     private EntityDraw DecideItemUnderViewLock(uint id, ushort px, ushort py, in ViewRect view,
-                                               out bool shownAfter, out uint stamp)
+                                               out bool drawnBefore, out bool shownAfter, out uint stamp)
     {
         stamp = 0;
-        shownAfter = _shownItems.Contains(id);
+        drawnBefore = _shownItems.Contains(id);           // an item show never writes to the set, so a dropped
+        shownAfter = drawnBefore;                         // one has nothing to put back — see the rollback
         if (!shownAfter)
         {
             if (!view.Contains(px, py, ShowPad)) return EntityDraw.Nothing;
@@ -737,7 +748,8 @@ public sealed partial class Session
     /// <para><b>The invariant, in one sentence: a deferred DESPAWN goes out only if the sets still say what
     /// they said when the decision was taken; a deferred SHOW goes out only if the sets still say that AND the
     /// entity is still inside the strict rect at the moment of sending — otherwise it is not sent and the
-    /// entity is marked undrawn again.</b></para>
+    /// sets are restored to what they said BEFORE that decision.</b> Restored to what they said before, not
+    /// to "undrawn": see the rollback below and PR #246's F2.</para>
     ///
     /// <para><b>Why the rect half exists</b> (PR #246's review, finding F1, HIGH). The set half alone is
     /// necessary and not sufficient for a show, because a reconcile can change what the viewer can see without
@@ -771,7 +783,7 @@ public sealed partial class Session
     /// items, which have no band. <paramref name="view"/> is the send pass's rect, re-anchored here under the
     /// same acquisition, so a viewer that has not moved pays one integer compare for the whole pass.</para></summary>
     private bool SendStillCurrentUnderViewLock(HashSet<uint> shown, HashSet<uint>? edge, uint id,
-                                               bool show, bool shownAfter, uint stamp,
+                                               bool show, bool drawnBefore, bool shownAfter, uint stamp,
                                                ushort px, ushort py, ref ViewRect view)
     {
         if (!_sendStamp.TryGetValue(id, out uint latest) || latest != stamp) return false;
@@ -783,10 +795,25 @@ public sealed partial class Session
         }
         Reanchor(ref view);                               // no send gated on a rect older than the viewer's tile
         if (view.Contains(px, py, ShowPad)) return true;  // still where the client will accept the draw
-        // The show can no longer go out. Undo the bookkeeping it was going to justify, so the next sweep
-        // re-decides this entity from "not drawn" instead of believing a draw the client never received.
-        shown.Remove(id);
-        edge?.Remove(id);
+
+        // THE SHOW CAN NO LONGER GO OUT, so put the sets back the way this decision found them. Which is not
+        // the same as "undrawn", and that distinction is PR #246's F2 (MEDIUM). A show has two shapes:
+        //
+        //   a FIRST show   — the entity was not drawn, the decision did shown.Add, and the client never
+        //                    received anything. Removing it from shown is exactly right.
+        //   a RE-ASSERT    — the entity WAS drawn, by a 0x07/0x33 that really went out, and loitered into the
+        //                    overdraw band; the decision's only set write was edge.Remove. Rolling THAT back
+        //                    to undrawn discards the server's record of a draw the client did receive, and
+        //                    with it the 0x0E that would later take it off the screen: an untracked entity
+        //                    outside the strict rect produces no decision at all, so nothing repairs it. That
+        //                    is the mirror of F1 — a ghost the server does not know it drew.
+        //
+        // `drawnBefore` is the one bit that separates them, and it is read off the set by the decide pass
+        // before it writes. A dropped re-assert therefore puts the id back in the band and leaves `shown`
+        // alone, restoring exactly the state the walk reconcile itself had set (drawn, suspect), so a later
+        // exit from the drawn rect still despawns and a later re-entry still re-asserts.
+        if (drawnBefore) edge?.Add(id);                   // re-assert: drawn and suspect, as the band left it
+        else { shown.Remove(id); edge?.Remove(id); }      // first show: nothing was ever drawn
         _sendStamp.Remove(id);
         return false;
     }

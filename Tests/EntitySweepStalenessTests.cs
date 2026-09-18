@@ -54,6 +54,8 @@ public class EntitySweepStalenessTests
     private const ushort StaleMobDespawnMap = 60120, StaleMobShowMap = 60121, StaleItemMap = 60122;
     // PR #246's F1: a parked show invalidated by the viewer walking, one map per fact.
     private const ushort BandMobMap = 60123, BandPeerMap = 60124, BandItemMap = 60125;
+    // PR #246's F2: a parked RE-ASSERT show, dropped, must not un-draw a draw the client really received.
+    private const ushort ReassertMobMap = 60126, ReassertPeerMap = 60127;
 
     /// <summary>An outbound that records every frame and, once armed, blocks the ARMED THREAD inside the first
     /// frame it hands over. That is the send pass's park: the world tick's sweep stops between its first
@@ -550,6 +552,150 @@ public class EntitySweepStalenessTests
             outbound.Release.Set();
             if (sweep is not null) sweep.Join(5000);
             _fx.World.LeaveMap(viewer, BandItemMap);
+        }
+    }
+
+    /// <summary>PR #246's finding F2, on mobs: dropping a parked RE-ASSERT show must not un-draw a mob the
+    /// client really did draw — the rollback restores the sets to what they said BEFORE that decision, which
+    /// is not the same as "undrawn".
+    ///
+    /// <para>A show has two shapes and only one of them added anything. A FIRST show found the mob untracked
+    /// and did <c>_shownMobs.Add</c>; dropping it and removing the mob is exactly right, because the client
+    /// never received anything. A RE-ASSERT found the mob already drawn — by a 0x07 that really went out —
+    /// loitering in the overdraw band, and its only set write was <c>_edgeMobs.Remove</c>. Rolling THAT back
+    /// to undrawn throws away the server's record of a draw the client received, and with it the 0x0E that
+    /// would later take the mob off the screen: an untracked mob outside the strict rect produces no decision
+    /// at all, so no sweep repairs it.</para>
+    ///
+    /// <para>The schedule is the round-2 reviewer's probe. The mob at x=30 is drawn for real at x=22 (one
+    /// 0x07). The viewer steps to x=21, where the mob is in the band, and that reconcile sends nothing and
+    /// stamps nothing. The viewer steps back to x=22 and a sweep runs whose FIRST entry is an untracked
+    /// blocker, so the send pass parks on the blocker's frame with the mob's re-assert show in the buffer.
+    /// While it is parked, a real walk takes the viewer back to x=21 and reconciles — the band again. The gate
+    /// is released and the re-assert is dropped by the rect test. The viewer then steps to x=20, past the
+    /// drawn rect [11,30), where a mob the server still knows it drew must be despawned.</para>
+    ///
+    /// <para>Expected frames for that mob over the whole schedule: the real 0x07, then the 0x0E at x=20, and
+    /// nothing else. Falsified by rolling a dropped re-assert back to undrawn — the shape this fact was
+    /// written for — which leaves 0x07 alone and no despawn ever.</para></summary>
+    [Fact]
+    public void ADroppedReassertLeavesTheMobDrawnSoItIsStillDespawnedLater()
+    {
+        var (viewer, outbound, character) = GatedPlayer("ReassertMobViewer", ReassertMobMap, 22, 20);
+        var blocker = MobAt("ReassertMobBlocker", 20, 19);
+        var edge = MobAt("ReassertMobEdge", 30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));
+
+            var alone = new[] { edge };                 // the blocker stays untracked for the parked sweep
+            var both = new[] { blocker, edge };
+
+            outbound.Clear();
+            viewer.SyncMobs(alone);                     // the real draw: x=30 is inside the strict rect [14,31)
+            Assert.True(FramesFor(outbound, edge.Id).SequenceEqual(new[] { "0x07" }),
+                "the mob must be drawn for real before the schedule starts");
+
+            // Into the band at x=21: no frame, no stamp, _edgeMobs gains the id.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncMobs(alone); });
+            // Back to x=22, where the next sweep's decision for the mob is a RE-ASSERT.
+            viewer.WithState(() => _fx.World.SetPlayerPosition(viewer, 22, 20));
+
+            sweep = new Thread(() =>
+            {
+                try { outbound.ArmForThisThread(); viewer.SyncMobs(both); }
+                catch (Exception ex) { failed = ex; }
+            }) { IsBackground = true };
+            sweep.Start();
+            Assert.True(outbound.Parked.Wait(5000), "the sweep never parked on the blocker's frame");
+
+            // Parked with the re-assert in the buffer; the viewer walks back into the band.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncMobs(alone); });
+
+            outbound.Release.Set();
+            Assert.True(sweep.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            // Past the drawn rect. The mob is still drawn on the client, so this must despawn it.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncMobs(alone); });
+
+            var seq = FramesFor(outbound, edge.Id);
+            _out.WriteLine("edge mob frames over the whole schedule: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x07", "0x0E" }),
+                $"a dropped re-assert must leave the mob drawn, because the client really did draw it, so " +
+                $"walking out of the drawn rect must still despawn it (#{edge.Id} at (30,20), viewer " +
+                $"22 -> 21 -> 22(parked) -> 21 -> 20); frames for that mob: {string.Join(",", seq)}");
+        }
+        finally
+        {
+            outbound.Release.Set();
+            if (sweep is not null) sweep.Join(5000);
+            _fx.World.LeaveMap(viewer, ReassertMobMap);
+        }
+    }
+
+    /// <summary>The same fact on the PEER sweep, which shares the rollback and the band branch. Same schedule,
+    /// same assertion, same falsification; the frames are 0x33 rather than 0x07.</summary>
+    [Fact]
+    public void ADroppedReassertLeavesThePeerDrawnSoItIsStillDespawnedLater()
+    {
+        var (blocker, _, _) = _fx.PlayerWith("ReassertPeerBlocker", Wide, ReassertPeerMap, 20, 19);
+        var (viewer, outbound, character) = GatedPlayer("ReassertPeerViewer", ReassertPeerMap, 22, 20);
+        var (edge, _, _) = _fx.PlayerWith("ReassertPeerEdge", Wide, ReassertPeerMap, 30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));
+            Assert.True(blocker.StateRank < viewer.StateRank, "the blocker must be seated before the viewer");
+
+            var edgeTile = new PeerTile(edge, 30, 20);
+            var alone = new[] { edgeTile };
+            var both = new[] { new PeerTile(blocker, 20, 19), edgeTile };
+
+            viewer.DespawnEntity(blocker.PlayerId);     // the blocker stays untracked for the parked sweep
+            viewer.DespawnEntity(edge.PlayerId);
+
+            outbound.Clear();
+            viewer.SyncPeers(alone);                    // the real draw
+            Assert.True(FramesFor(outbound, edge.PlayerId).SequenceEqual(new[] { "0x33" }),
+                "the peer must be drawn for real before the schedule starts");
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(alone); });
+            viewer.WithState(() => _fx.World.SetPlayerPosition(viewer, 22, 20));
+
+            sweep = new Thread(() =>
+            {
+                try { outbound.ArmForThisThread(); viewer.SyncPeers(both); }
+                catch (Exception ex) { failed = ex; }
+            }) { IsBackground = true };
+            sweep.Start();
+            Assert.True(outbound.Parked.Wait(5000), "the sweep never parked on the blocker's frame");
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(alone); });
+
+            outbound.Release.Set();
+            Assert.True(sweep.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncPeers(alone); });
+
+            var seq = FramesFor(outbound, edge.PlayerId);
+            _out.WriteLine("edge peer frames over the whole schedule: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x33", "0x0E" }),
+                $"a dropped re-assert must leave the peer drawn, because the client really did draw it, so " +
+                $"walking out of the drawn rect must still despawn it (#{edge.PlayerId} at (30,20), viewer " +
+                $"22 -> 21 -> 22(parked) -> 21 -> 20); frames for that peer: {string.Join(",", seq)}");
+        }
+        finally
+        {
+            outbound.Release.Set();
+            if (sweep is not null) sweep.Join(5000);
+            foreach (var s in new[] { viewer, blocker, edge }) _fx.World.LeaveMap(s, ReassertPeerMap);
         }
     }
 }
