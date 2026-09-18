@@ -1387,17 +1387,23 @@ public sealed partial class Session
     // _edgeMobs. Guarded by _viewLock alongside the mob/item sets.
     private readonly HashSet<uint> _shownPeers = new();
     private readonly HashSet<uint> _edgePeers = new();
-    // The companion of _shownPeers that makes a DEFERRED send safe: peer id -> the serial number of the most
-    // recent decision taken about that peer. The sweep decides for every peer under one acquisition and sends
-    // after releasing it, so a send can be parked (ShowPlayer -> the subject's Snapshot, which takes that
-    // session's monitor) while another thread's walk reconcile decides the opposite about the SAME peer. The
-    // send pass re-takes _viewLock immediately before each frame and drops a decision that is no longer the
-    // latest one for that id — PR #245's finding F1. Touched ONLY when a decision produces a frame, which in
-    // the steady state is never, so the sweep's hot path neither reads nor writes it. An entry lives exactly
-    // as long as the id is drawn or has a send in flight: the send pass drops it when it sends the despawn,
-    // DespawnEntity drops it, and the wholesale clears clear it with the sets. Guarded by _viewLock.
-    private readonly Dictionary<uint, uint> _peerSendStamp = new();
-    private uint _peerSendSeq;                    // last serial handed out; read and written under _viewLock only
+    // The companion of the drawn sets above that makes a DEFERRED send safe: entity id -> the serial number of
+    // the most recent decision taken about that entity. All three sweeps decide for every entity under one
+    // acquisition and send after releasing it, so a send can be parked (ShowPlayer -> the subject's Snapshot,
+    // which takes that session's monitor; or simply descheduled anywhere on the send pass) while another
+    // thread's walk reconcile decides the opposite about the SAME entity. The send pass re-takes _viewLock
+    // immediately before each frame and drops a decision that is no longer the latest one for that id —
+    // PR #245's finding F1. Touched ONLY when a decision produces a frame, which in the steady state is never,
+    // so the sweeps' hot path neither reads nor writes it. An entry lives exactly as long as the id is drawn
+    // or has a send in flight: the send pass drops it once the decision leaves the id undrawn, DespawnEntity
+    // drops it, and the wholesale clears clear it with the sets. Guarded by _viewLock.
+    //
+    // ONE MAP FOR EVERY ENTITY KIND, because there is one id space: World hands out player ids from 1, mob
+    // ids from 100,000 and ground-item ids from 500,000 (World._nextPlayerId/_nextMobId/_nextItemId), the
+    // client addresses all of them through the same entity id on the wire, and DespawnEntity below already
+    // removes one id from every set without knowing which kind it was.
+    private readonly Dictionary<uint, uint> _sendStamp = new();
+    private uint _sendSeq;                        // last serial handed out; read and written under _viewLock only
     private readonly object _viewLock = new();
     // SHOW at the strict 17x15 edge, HIDE at the drawn edge one tile further out.
     //
