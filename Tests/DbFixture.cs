@@ -3,26 +3,34 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The database collection does not run alongside any other collection, and that is load-bearing rather than
-/// tidiness: <c>PersistenceTests.SaveMany_LeavesNothingWritten_WhenTheWriteFails</c> deliberately takes
-/// SQLite's write lock (<c>BEGIN IMMEDIATE</c>) and holds it while a save is attempted against it, and there
-/// is ONE database file for the whole test process (<c>TestProcessState</c> points P1998_STATE at a single
-/// per-run temp directory). A database-wide write lock is therefore a database-wide write lock for every
-/// other collection running at that moment.
+/// The database collection: the classes that write to the ONE database file the test process has
+/// (<c>TestProcessState</c> points P1998_STATE at a single per-run temp directory, so <c>Db.Path</c> is the
+/// same file for every collection). Grouping them keeps their row cleanup and their account/handoff/board
+/// keys from interleaving with each other — <c>BoardWireTests</c> in particular asserts on the AUTOINCREMENT
+/// id of the first board post it writes.
 ///
-/// <para>The window is not the 5s of <c>Db.Open</c>'s <c>busy_timeout</c>, which is what makes this worth
-/// spelling out: Microsoft.Data.Sqlite retries a busy statement up to the COMMAND timeout — 30s by default —
-/// so a concurrent save waits half a minute before it fails. That is what fork CI run 35170089187 attempt 1
-/// hit: <c>[db] !! SaveMany(2) failed: SQLite Error 5: 'database is locked'</c> from the fact that holds the
-/// lock (30s on that runner), and then <c>AnnounceMonitorTests</c>' setup save failing the same way from the
-/// parallel <c>world</c> collection, which reported it as "@ban refuses a name with no character row".</para>
+/// <para>What this collection no longer has to guarantee is exclusivity. It ran with
+/// <c>DisableParallelization = true</c> because four facts in <c>PersistenceTests</c> take SQLite's write
+/// lock with <c>BEGIN IMMEDIATE</c> to prove what a contended save does, that lock is per FILE, and with one
+/// file in the process it was a lock on every other collection's writes too. Fork CI run 35170089187
+/// attempt 1 is the record of that: a held lock here, and <c>AnnounceMonitorTests</c> over in <c>world</c>
+/// reporting the resulting failed setup save as "@ban refuses a name with no character row". Those four
+/// facts now run against a database file of their own (<c>Tests/Support/IsolatedDatabase.cs</c>), so nothing
+/// outside them can feel the lock and the collection can run beside the others again.</para>
 ///
-/// <para>Giving that one fact its own database file would be the other answer, and it is not available from
-/// the test side: <c>CharacterStore</c> writes through <c>Db.Open()</c>, whose path is a process-wide static
-/// with no seam. Serializing this collection costs the suite the db collection's own runtime once and removes
-/// the overlap entirely.</para>
+/// <para>The bound on a write that IS locked out is about five seconds — <c>Db.BusyTimeoutMs</c>. Both
+/// halves of it come from that one constant: <c>Db.Open</c> sets the connection's <c>DefaultTimeout</c> as
+/// well as <c>PRAGMA busy_timeout</c>, because Microsoft.Data.Sqlite re-runs a statement that came back
+/// SQLITE_BUSY up to the COMMAND timeout and the pragma alone bounds nothing a caller can observe. The
+/// command timeout was still the provider's 30s default on the CI run above, which is why the lock-out
+/// there cost half a minute rather than five seconds.</para>
+///
+/// <para>So the rule for a new fact here: an ordinary write is fine, and a fact that deliberately holds a
+/// database-wide lock takes an <c>IsolatedDatabase</c>, never <c>Db.Open()</c>. Anything that cannot — a
+/// fact that has to lock the process database specifically — needs this attribute back, and the reason
+/// written down.</para>
 /// </summary>
-[CollectionDefinition("db", DisableParallelization = true)]
+[CollectionDefinition("db")]
 public sealed class DbCollection : ICollectionFixture<DbFixture> { }
 
 public sealed class DbFixture
