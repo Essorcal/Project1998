@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 using Server;
 using Tests.Support;
@@ -108,12 +107,8 @@ public class StatusFileTests
         const int SpinMs = 5, Beats = 3;
 
         var before = Sample();
-        try
-        {
-            World.PhaseProbeForTest = () => Spin(SpinMs);
+        using (PhaseProbe.CostingAtLeast(SpinMs))
             for (int i = 0; i < Beats; i++) _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
-        }
-        finally { World.PhaseProbeForTest = null; }
         var after = Sample();
 
         _out.WriteLine($"beatMs {before.BeatMs} -> {after.BeatMs}, (4.3) status " +
@@ -167,12 +162,8 @@ public class StatusFileTests
         const double SpinMs = 0.4;
 
         long before = Sample().Phase("(4.3) status");
-        try
-        {
-            World.PhaseProbeForTest = () => Spin(SpinMs);
+        using (PhaseProbe.CostingAtLeast(SpinMs))
             for (int i = 0; i < Beats; i++) _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
-        }
-        finally { World.PhaseProbeForTest = null; }
         long delta = Sample().Phase("(4.3) status") - before;
 
         _out.WriteLine($"{Beats} beats x {SpinMs}ms in `(4.3) status` totalled {delta}ms");
@@ -183,16 +174,6 @@ public class StatusFileTests
     }
 
     // =====================================================================================================
-
-    /// <summary>Busy-wait for <paramref name="ms"/> milliseconds. A spin and not <c>Thread.Sleep</c>: the
-    /// point is to spend the time INSIDE the phase, and a sleep hands the rest of its quantum to the
-    /// scheduler, which on a loaded machine overshoots a sub-millisecond request by an order of
-    /// magnitude.</summary>
-    internal static void Spin(double ms)
-    {
-        long until = Stopwatch.GetTimestamp() + (long)(ms * Stopwatch.Frequency / 1000.0);
-        while (Stopwatch.GetTimestamp() < until) Thread.SpinWait(50);
-    }
 
     /// <summary>One reading of the published document's phase instrument, parsed — so every fact above is a
     /// fact about what <c>run/status.json</c> actually carries, not about a world field.</summary>
