@@ -21,14 +21,17 @@ namespace Tests;
 /// at all — which is exactly the record you want when a world-wide knob like the mob swing pose has been
 /// moved by somebody.</para>
 ///
-/// <para><b>Collection "log"</b>, because facts (b) and (c) read the formatted line back off the file sink,
-/// which is process-global — the reason <see cref="LogWarnErrorLineTests"/> gives. The
-/// <see cref="SessionFixture"/> is taken as a CLASS fixture rather than the shared "world" collection one,
-/// so this class drives its own unstarted <c>World</c> and cannot race the collection that owns that one:
-/// the <c>@clock</c> and zone-weather lines in the readout are per-<c>World</c> state and would otherwise be
-/// whatever another test had just pinned.</para>
+/// <para><b>No collection.</b> Facts (b) and (c) used to read the formatted line back off the file sink,
+/// which is process-global, so this class had to sit in collection <c>"log"</c> — away from the world it
+/// pins, and paying a real <c>Log.Shutdown</c> and <c>RestartWriterForTest</c> per fact. They now observe the
+/// line in process through <see cref="LogLineSink"/>, which is exclusive on its own, so neither reason is
+/// left. It does NOT join <c>"world"</c> either: the <see cref="SessionFixture"/> is taken as a CLASS fixture
+/// so this class drives its own unstarted <c>World</c>, and the <c>@clock</c> and zone-weather lines in fact
+/// (a)'s readout are per-<c>World</c> state that would otherwise be whatever the shared world had last
+/// pinned. A class cannot take both the "world" collection fixture and its own, so the isolation and the
+/// collection are the same choice. Without a <c>[Collection]</c> xunit gives the class its own, which is
+/// exactly what it wants: its own World, and parallel with everything else.</para>
 /// </summary>
-[Collection("log")]
 public sealed class GmOverridesTests : IClassFixture<SessionFixture>
 {
     /// <summary>The same roster name and the same file content <see cref="CommandTableTests"/> writes, on
@@ -120,27 +123,18 @@ public sealed class GmOverridesTests : IClassFixture<SessionFixture>
     public void Clip_reads_back_on_and_logs_the_actor_with_both_values()
     {
         var (session, outbound) = Gm();
-        string path = LogPath("clip");
 
-        Log.AttachFile(path);
-        try
-        {
-            Run(session, "@clip 1");
-            Assert.Equal(new[] { "pane3|" + Session.PaneRule, "pane3|No-clip          :ON" },
-                         CommandTableTests.Transcript(outbound));
+        using var log = LogLineSink.Acquire();
+        Run(session, "@clip 1");
+        Assert.Equal(new[] { "pane3|" + Session.PaneRule, "pane3|No-clip          :ON" },
+                     CommandTableTests.Transcript(outbound));
 
-            outbound.Clear();
-            Run(session, "@toggles");
-            Assert.Contains("pane3|No-clip          :ON", CommandTableTests.Transcript(outbound));
+        outbound.Clear();
+        Run(session, "@toggles");
+        Assert.Contains("pane3|No-clip          :ON", CommandTableTests.Transcript(outbound));
 
-            Log.Shutdown();
-            Assert.Equal($"   -> OVERRIDE '{GmName}' no-clip: off -> on",
-                         LineContaining(path, "no-clip").Substring(Log.StampLength));
-        }
-        finally
-        {
-            Log.RestartWriterForTest();
-        }
+        Assert.Equal($"   -> OVERRIDE '{GmName}' no-clip: off -> on",
+                     log.LineContaining("no-clip").Substring(Log.StampLength));
     }
 
     /// <summary>"@mobact 2 20" moves the WORLD-WIDE mob swing pose — the pair World reads with no session in
@@ -161,9 +155,8 @@ public sealed class GmOverridesTests : IClassFixture<SessionFixture>
         var (session, _) = Gm();
         byte type = GmOverrides.MobSwingActionType;
         ushort time = GmOverrides.MobSwingActionTime;
-        string path = LogPath("mobact");
 
-        Log.AttachFile(path);
+        using var log = LogLineSink.Acquire();
         try
         {
             Run(session, "@mobact 2 20");
@@ -171,33 +164,13 @@ public sealed class GmOverridesTests : IClassFixture<SessionFixture>
             Assert.Equal(2, GmOverrides.MobSwingActionType);
             Assert.Equal(20, GmOverrides.MobSwingActionTime);
 
-            Log.Shutdown();
             Assert.Equal($"   -> OVERRIDE '{GmName}' mob swing action: type=1 time=20 -> type=2 time=20",
-                         LineContaining(path, "mob swing action").Substring(Log.StampLength));
+                         log.LineContaining("mob swing action").Substring(Log.StampLength));
         }
         finally
         {
             GmOverrides.MobSwingActionType = type;
             GmOverrides.MobSwingActionTime = time;
-            Log.RestartWriterForTest();
         }
-    }
-
-    private static string LogPath(string tag) =>
-        Path.Combine(Path.GetTempPath(), $"p1998-gmoverrides-{tag}-{Guid.NewGuid():N}", "server.log");
-
-    /// <summary>Read the log while the writer still holds it open (there is no detach — see
-    /// <see cref="SharedLoggerTests"/>) and return the one line carrying <paramref name="needle"/>.</summary>
-    private static string LineContaining(string path, string needle)
-    {
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(fs);
-        string text = reader.ReadToEnd();
-        foreach (string raw in text.Split('\n'))
-        {
-            string line = raw.TrimEnd('\r');
-            if (line.Contains(needle, StringComparison.Ordinal)) return line;
-        }
-        throw new Xunit.Sdk.XunitException($"no line containing '{needle}' in {path}:\n{text}");
     }
 }
