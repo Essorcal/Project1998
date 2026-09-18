@@ -7,8 +7,9 @@ using Xunit.Abstractions;
 namespace Tests;
 
 /// <summary>
-/// The two counters <c>run/status.json</c> publishes beside the player count: <c>ticks</c>, every beat the
-/// world has run, and <c>slowTicks</c>, every beat the watchdog reported.
+/// What <c>run/status.json</c> publishes beside the player count: the two tick counters (<c>ticks</c>, every
+/// beat the world has run, and <c>slowTicks</c>, every beat the watchdog reported), the per-phase totals, and
+/// the memory instrument.
 ///
 /// <para>Why they exist: both load reports state their headline — the share of beats that were slow — as a
 /// wall-clock span divided by the 333ms period, because the server published no total. That is a division,
@@ -171,6 +172,102 @@ public class StatusFileTests
             $"{Beats} beats costing {SpinMs}ms each should total about {Beats * SpinMs}ms in " +
             $"`(4.3) status`; the document says {delta}ms. A per-beat conversion to milliseconds would " +
             $"floor every one of them to 0.");
+    }
+
+    // ===== the memory instrument =========================================================================
+
+    /// <summary>The heap fields render, parse, and stand in the relation the runtime guarantees between
+    /// them; the collection counts only ever rise; the mode string says something.
+    ///
+    /// <para>The silent failure this guards is the reason the fields exist at all. The 2026-09-18 load run
+    /// recorded a 1,141 MB working set against 366-442 MB in the three holds before it
+    /// (<c>briefs/reports/hold-master-vs-245-opus.md</c>) and had nothing to say about WHY, because the
+    /// working set is the one memory number the server published. A heap field that is wired to the wrong
+    /// counter — committed where the heap belongs, a per-call snapshot where a since-start count belongs —
+    /// would publish a plausible megabyte figure that the next hold would build a conclusion on. So the
+    /// assertions are about the RELATIONS the runtime fixes, not about any particular size: the GC's own
+    /// estimate of managed bytes cannot exceed what it has committed to hold them, the committed heap
+    /// cannot exceed the memory the GC believes the machine has, and a count of collections that have
+    /// already happened cannot fall.</para></summary>
+    [Fact]
+    public void TheMemoryFieldsRenderInTheRelationsTheRuntimeGuarantees()
+    {
+        var first = Memory();
+        _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
+        var second = Memory();
+
+        _out.WriteLine($"workingSetMb {second.WorkingSetMb}, gcHeapMb {second.HeapMb}, " +
+                       $"gcCommittedMb {second.CommittedMb}, gcAvailableMb {second.AvailableMb}, " +
+                       $"gcHighLoadMb {second.HighLoadMb}, gen0/1/2 {second.Gen0}/{second.Gen1}/{second.Gen2}, " +
+                       $"gcMode {second.Mode}");
+
+        // Sane on their own: a process has a working set and the GC has committed something.
+        Assert.True(second.WorkingSetMb > 0, $"workingSetMb is {second.WorkingSetMb}");
+        Assert.True(second.CommittedMb > 0, $"gcCommittedMb is {second.CommittedMb}");
+
+        // The relation that catches a swapped pair. Megabytes are truncated, so the heap may read equal to
+        // committed on a tiny process; it can never read HIGHER.
+        Assert.True(second.HeapMb <= second.CommittedMb,
+            $"gcHeapMb {second.HeapMb} exceeds gcCommittedMb {second.CommittedMb} — the GC cannot hold more " +
+            $"managed bytes than it has committed pages for; the two fields are crossed");
+        Assert.True(second.CommittedMb <= second.AvailableMb,
+            $"gcCommittedMb {second.CommittedMb} exceeds gcAvailableMb {second.AvailableMb}");
+        Assert.True(second.HighLoadMb > 0 && second.HighLoadMb <= second.AvailableMb,
+            $"gcHighLoadMb {second.HighLoadMb} is not a threshold inside gcAvailableMb {second.AvailableMb}");
+
+        // Since-start counts, read as deltas by every consumer, so the one thing they must not do is fall.
+        Assert.True(second.Gen0 >= first.Gen0, $"gen0 fell {first.Gen0} -> {second.Gen0}");
+        Assert.True(second.Gen1 >= first.Gen1, $"gen1 fell {first.Gen1} -> {second.Gen1}");
+        Assert.True(second.Gen2 >= first.Gen2, $"gen2 fell {first.Gen2} -> {second.Gen2}");
+        // gen0 >= gen1 >= gen2 by construction: a gen1 collects gen0 with it, a gen2 collects both.
+        Assert.True(second.Gen0 >= second.Gen1 && second.Gen1 >= second.Gen2,
+            $"collection counts are not nested: {second.Gen0}/{second.Gen1}/{second.Gen2}");
+
+        Assert.False(string.IsNullOrWhiteSpace(second.Mode), "gcMode must name the mode this process got");
+
+        // The launcher's three fields are still first and still mean what they meant.
+        using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 3));
+        Assert.True(doc.RootElement.GetProperty("online").GetBoolean());
+        Assert.Equal(3, doc.RootElement.GetProperty("players").GetInt32());
+    }
+
+    /// <summary>A collection that really happened moves <c>gen2</c>.
+    ///
+    /// <para>Stated separately from the relations above because it fails for a different reason: counts
+    /// captured once and republished, or read off the wrong generation, satisfy every bound in that test and
+    /// still make the next hold read "no gen2 ran" through a collection it watched happen. This is the only
+    /// fact in the file that forces a collection, and it forces the one the instrument exists to date — the
+    /// 270 MB fall in both sides of the 2026-09-18 pair has no <c>SLOW TICK</c> line anywhere near it,
+    /// because the log prints a <c>gc</c> pause only on beats the watchdog already flagged.</para></summary>
+    [Fact]
+    public void AForcedGen2ShowsUpInTheDocumentsCollectionCounts()
+    {
+        long before = Memory().Gen2;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+        long after = Memory().Gen2;
+
+        _out.WriteLine($"gen2 {before} -> {after}");
+        Assert.True(after >= before + 1,
+            $"a forced blocking gen2 ran and the document still says gen2 {after} against {before} — the " +
+            $"count is not being re-read at render");
+    }
+
+    // =====================================================================================================
+
+    /// <summary>One reading of the published document's memory instrument, parsed — so these are facts about
+    /// <c>run/status.json</c> rather than about a call this test could have made itself.</summary>
+    private readonly record struct MemoryReading(long WorkingSetMb, long HeapMb, long CommittedMb,
+                                                 long AvailableMb, long HighLoadMb,
+                                                 long Gen0, long Gen1, long Gen2, string Mode);
+
+    private MemoryReading Memory()
+    {
+        using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 0));
+        var r = doc.RootElement;
+        long L(string n) => r.GetProperty(n).GetInt64();
+        return new MemoryReading(L("workingSetMb"), L("gcHeapMb"), L("gcCommittedMb"), L("gcAvailableMb"),
+                                 L("gcHighLoadMb"), L("gen0"), L("gen1"), L("gen2"),
+                                 r.GetProperty("gcMode").GetString() ?? "");
     }
 
     // =====================================================================================================

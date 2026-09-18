@@ -1,3 +1,4 @@
+using System.Runtime;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Shared;
@@ -23,7 +24,10 @@ namespace Server;
 ///   "ticks": 41233, "slowTicks": 66,
 ///   "elapsedMs": 13738589, "beatMs": 1508442,
 ///   "phaseMs": { "(0) warm": 811, "lock-wait": 12, "(1) respawns": 2104,
-///                "(3) viewports": 903117, "(6) time": 41, "other": 1992 }
+///                "(3) viewports": 903117, "(6) time": 41, "other": 1992 },
+///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedMb": 968,
+///   "gcAvailableMb": 15776, "gcHighLoadMb": 14198,
+///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent"
 /// }
 /// </code>
 /// Its poll runs every 30s, so a 10s cadence here means the number is never more than one poll stale.
@@ -35,6 +39,33 @@ namespace Server;
 /// <c>SLOW TICK PHASES</c> log line names them so the log and the document are one vocabulary; its parts
 /// sum to <c>beatMs</c>, <c>other</c> included. The tick thread writes those slots as the beat runs, so a
 /// document can straddle a beat by up to one tick period — see <c>World.PhaseTotalsMs</c>.</para>
+///
+/// <para>THE MEMORY FIELDS, and why they are here rather than in the load-run driver. Every hold in the
+/// 2026-09-16 to 2026-09-18 family recorded the game process's working set from <c>Get-Process</c>, and on
+/// 2026-09-18 that number peaked at 1,141 MB against 366-442 MB in the three holds before it, from the same
+/// 159 MB at launch, on server code that differed by one database-timeout PR
+/// (<c>briefs/reports/hold-master-vs-245-opus.md</c>, "Answers" 5). The working set alone cannot say why: it
+/// is committed-and-touched pages, and it moves when the GC's BUDGET moves as readily as when the program
+/// retains more. <c>gcHeapMb</c> against <c>gcCommittedMb</c> separates those two — bytes the program is
+/// keeping alive against bytes the GC has taken from the OS and not given back — and <c>gcAvailableMb</c>
+/// with <c>gcHighLoadMb</c> record the machine state the GC sizes itself against, which is the variable that
+/// actually differed between those holds. <c>gen0</c>/<c>gen1</c>/<c>gen2</c> close the other gap: the
+/// <c>SLOW TICK</c> line prints a <c>gc</c> pause only on beats the watchdog already flagged, so a collection
+/// on a healthy beat is invisible today and the log cannot count collections at all.
+///
+/// Read as deltas between two samples, exactly like the phase totals: <c>gen0</c>, <c>gen1</c> and
+/// <c>gen2</c> are since-start counts and only rise, while the four megabyte figures are INSTANTANEOUS
+/// readings and go both ways. <c>gcHeapMb</c> is <c>GC.GetTotalMemory(false)</c> — the GC's own estimate,
+/// without forcing a collection, so it is a floor that includes garbage not yet collected, not a
+/// live-set measurement. All of it is read on the STATUS thread, none of it touches the world or any lock,
+/// and nothing here runs on the tick path.
+///
+/// The cost is not symmetric, which is worth knowing before anyone moves these reads. Measured on this
+/// machine (median of 7 runs of 100 renders, Debug): the document WITHOUT them renders in <b>7.6us</b>, the
+/// five GC readings add <b>0.8us</b>, and <c>workingSetMb</c> alone adds <b>2.18ms</b> —
+/// <c>Process.WorkingSet64</c> on Windows snapshots the whole system process table to answer one question.
+/// At the 10s cadence that is 0.02% of the status thread and it is off the beat entirely, which is why it is
+/// accepted here; it would not be acceptable anywhere near the tick.</para>
 ///
 /// The launcher treats this as ENRICHMENT, not truth: it proves reachability by opening a socket to the login
 /// port, and a missing or unreachable status document never downgrades a server it just reached. The one
@@ -59,8 +90,8 @@ public static class StatusFile
 
     private static bool Disabled => Path == "-";
 
-    /// <summary>The launcher's three fields, then the tick counters, then the phase instrument. Order
-    /// matters only for readability — the launcher's DTO is case-insensitive and ignores what it does not
+    /// <summary>The launcher's three fields, then the tick counters, then the phase instrument, then the
+    /// memory instrument. Order matters only for readability — the launcher's DTO is case-insensitive and ignores what it does not
     /// know — so every addition goes on the end, where a reader of an old document and a reader of a new one
     /// see the same first three.</summary>
     private sealed record Doc(
@@ -71,9 +102,38 @@ public static class StatusFile
         [property: JsonPropertyName("slowTicks")]  long SlowTicks,
         [property: JsonPropertyName("elapsedMs")]  long ElapsedMs,
         [property: JsonPropertyName("beatMs")]     long BeatMs,
-        [property: JsonPropertyName("phaseMs")]    IReadOnlyDictionary<string, long> PhaseMs);
+        [property: JsonPropertyName("phaseMs")]    IReadOnlyDictionary<string, long> PhaseMs,
+        [property: JsonPropertyName("workingSetMb")]  long WorkingSetMb,
+        [property: JsonPropertyName("gcHeapMb")]      long GcHeapMb,
+        [property: JsonPropertyName("gcCommittedMb")] long GcCommittedMb,
+        [property: JsonPropertyName("gcAvailableMb")] long GcAvailableMb,
+        [property: JsonPropertyName("gcHighLoadMb")]  long GcHighLoadMb,
+        [property: JsonPropertyName("gen0")]          long Gen0,
+        [property: JsonPropertyName("gen1")]          long Gen1,
+        [property: JsonPropertyName("gen2")]          long Gen2,
+        [property: JsonPropertyName("gcMode")]        string GcMode);
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
+
+    /// <summary>The GC configuration this process was BUILT with, resolved once. It cannot change while the
+    /// process runs, and it is in the document because the alternative — reading it off
+    /// <c>Server.csproj</c> — says what the repository configures rather than what this process got: the
+    /// mode is overridable at launch without a rebuild (<c>DOTNET_gcServer=0</c>, <c>DOTNET_gcConcurrent=0</c>),
+    /// which is exactly the knob a hold that wants to test the GC's part in the working set would turn.
+    ///
+    /// <para>Concurrency comes from the <c>System.GC.Concurrent</c> AppContext switch rather than from
+    /// <c>GCSettings.LatencyMode</c>: the latency mode is a property the PROGRAM can set at any moment and
+    /// would report whatever was last assigned, while the switch is the configuration the runtime actually
+    /// started with, which is the thing a hold's matrix row varies.</para></summary>
+    private static readonly string Mode =
+        (GCSettings.IsServerGC ? "server" : "workstation") +
+        (AppContext.TryGetSwitch("System.GC.Concurrent", out bool concurrent) && !concurrent
+            ? "-blocking" : "-concurrent");
+
+    /// <summary>Bytes to whole megabytes. Truncating, not rounding: every consumer of these fields reads
+    /// them as a delta over minutes against figures in the hundreds, and a megabyte of truncation is far
+    /// below the sampling noise of a 10s cadence.</summary>
+    private static long Mb(long bytes) => bytes / (1024 * 1024);
 
     /// <summary>The document, as text, without touching the disk — the seam the counter test drives, and the
     /// one place the world's two counters are read, so a test of this method is a test of what the timer
@@ -87,8 +147,28 @@ public static class StatusFile
         var phases = new Dictionary<string, long>(totals.Length);
         foreach (var (name, ms) in totals) phases[name] = ms;
 
+        // Every line below reads THIS thread's view of the process and the GC. None of it touches `world`
+        // beyond the call above, none of it takes a lock, and none of it runs on the tick thread — which is
+        // the whole reason the memory instrument is here and not in the beat.
+        //
+        // `Process.GetCurrentProcess()` is a fresh, disposable handle each time on purpose: a cached Process
+        // memoises its counters and would republish the working set it read at startup forever, which is a
+        // silently wrong number of exactly the kind this document exists to avoid.
+        long workingSet;
+        using (var self = System.Diagnostics.Process.GetCurrentProcess()) workingSet = self.WorkingSet64;
+
+        // ONE call, like PhaseTotalsMs's `out`: GetGCMemoryInfo snapshots the last collection's numbers
+        // together, so committed, available and the high-load threshold in one document are one reading
+        // rather than three that could straddle a collection.
+        var gc = GC.GetGCMemoryInfo();
+
         return JsonSerializer.Serialize(
-            new Doc(online, players, Message, world.Ticks, world.SlowTicks, world.ElapsedMs, beatMs, phases),
+            new Doc(online, players, Message, world.Ticks, world.SlowTicks, world.ElapsedMs, beatMs, phases,
+                    Mb(workingSet),
+                    Mb(GC.GetTotalMemory(forceFullCollection: false)),
+                    Mb(gc.TotalCommittedBytes), Mb(gc.TotalAvailableMemoryBytes),
+                    Mb(gc.HighMemoryLoadThresholdBytes),
+                    GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), Mode),
             Json);
     }
 
