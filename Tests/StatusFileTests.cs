@@ -87,4 +87,107 @@ public class StatusFileTests
         Assert.Equal(1, doc.RootElement.GetProperty("ticks").GetInt64() - ticks0);
         Assert.Equal(0, doc.RootElement.GetProperty("slowTicks").GetInt64() - slow0);
     }
+
+    // ===== the phase totals ==============================================================================
+
+    /// <summary>Every phase's total only ever goes up, the beat total carries every beat — slow or healthy —
+    /// and the parts sum to the whole.
+    ///
+    /// <para>The silent failure this guards: a total that is reset, or that is only advanced on the beats
+    /// the watchdog logged, reads as a real number and makes the next load report state a phase's
+    /// milliseconds per second as a fraction of the truth. That fraction is exactly what the log line alone
+    /// could say, and it is the reason these fields exist.</para>
+    ///
+    /// <para>The beats are made to cost a KNOWN amount with <c>World.PhaseProbeForTest</c>, which runs
+    /// inside <c>(4.3) status</c>, so "the beat total moved by at least the beats' cost" is a fact rather
+    /// than a reading of how busy the machine was.</para></summary>
+    [Fact]
+    public void EveryPhaseTotalRisesWithTheBeatsAndThePartsSumToTheWhole()
+    {
+        const int SpinMs = 5, Beats = 3;
+
+        var before = Sample();
+        using (PhaseProbe.CostingAtLeast(SpinMs))
+            for (int i = 0; i < Beats; i++) _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
+        var after = Sample();
+
+        _out.WriteLine($"beatMs {before.BeatMs} -> {after.BeatMs}, (4.3) status " +
+                       $"{before.Phase("(4.3) status")} -> {after.Phase("(4.3) status")}");
+
+        // Monotonic, every NAMED phase: nothing here is ever cleared or recomputed.
+        //
+        // `other` is excluded on purpose, and it is the one figure in the document that can go DOWN. It is
+        // the derived remainder — beatMs minus everything named, the log line's own definition — so it also
+        // carries every named phase's truncation, and a phase crossing a millisecond boundary (0.9ms of
+        // total becoming 1.1ms) moves a millisecond out of the remainder and into that phase. The dip is
+        // bounded by one millisecond per phase, once, against totals that grow by thousands of milliseconds
+        // a sample; the alternative — a remainder summed in raw ticks — would be monotonic but would leave
+        // that residue unaccounted for, and the parts would then no longer sum to the whole.
+        foreach (var (name, ms) in after.Phases)
+        {
+            if (name == "other") continue;
+            Assert.True(ms >= before.Phase(name),
+                $"`{name}` fell from {before.Phase(name)}ms to {ms}ms — a named phase total is never reset");
+        }
+
+        // Three healthy beats of at least 5ms each are in the whole AND in the phase that cost them. The
+        // beats were healthy by construction, which is the point: the totals do not depend on the watchdog.
+        Assert.True(after.BeatMs - before.BeatMs >= Beats * SpinMs,
+            $"three beats of >= {SpinMs}ms moved beatMs by only {after.BeatMs - before.BeatMs}ms");
+        Assert.True(after.Phase("(4.3) status") - before.Phase("(4.3) status") >= Beats * SpinMs,
+            $"the cost was spent in `(4.3) status` and the phase total does not show it: " +
+            $"{after.Phase("(4.3) status") - before.Phase("(4.3) status")}ms");
+
+        // And the parts are the whole, exactly: `other` is defined as beatMs minus everything named, so
+        // every phase's truncation lands there rather than going missing.
+        Assert.Equal(after.BeatMs, after.Phases.Values.Sum());
+    }
+
+    /// <summary>A phase that costs a fraction of a millisecond on every beat shows its real total, not
+    /// zero.
+    ///
+    /// <para>The silent failure: totals summed in MILLISECONDS truncate every beat to zero for any phase
+    /// under the millisecond — which is most phases on a healthy beat — and the instrument would then
+    /// report 0ms forever for precisely the phases nobody has measured yet, while looking like it worked.
+    /// The totals are therefore summed in raw Stopwatch ticks and converted once, at render.</para>
+    ///
+    /// <para>Ten beats at 0.4ms is 4ms. The assertion is a floor of 3ms, not an equality: the probe spins
+    /// for at least 0.4ms and the phase also carries the real <c>TickSleep</c>/<c>TickPoison</c> sweep, so
+    /// the total can only come out higher. What it cannot do, if the arithmetic is right, is come out at
+    /// 0.</para></summary>
+    [Fact]
+    public void APhaseCostingAFractionOfAMillisecondEveryBeatTotalsUpRatherThanTruncatingToZero()
+    {
+        const int Beats = 10;
+        const double SpinMs = 0.4;
+
+        long before = Sample().Phase("(4.3) status");
+        using (PhaseProbe.CostingAtLeast(SpinMs))
+            for (int i = 0; i < Beats; i++) _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
+        long delta = Sample().Phase("(4.3) status") - before;
+
+        _out.WriteLine($"{Beats} beats x {SpinMs}ms in `(4.3) status` totalled {delta}ms");
+        Assert.True(delta >= 3,
+            $"{Beats} beats costing {SpinMs}ms each should total about {Beats * SpinMs}ms in " +
+            $"`(4.3) status`; the document says {delta}ms. A per-beat conversion to milliseconds would " +
+            $"floor every one of them to 0.");
+    }
+
+    // =====================================================================================================
+
+    /// <summary>One reading of the published document's phase instrument, parsed — so every fact above is a
+    /// fact about what <c>run/status.json</c> actually carries, not about a world field.</summary>
+    private readonly record struct Reading(long BeatMs, Dictionary<string, long> Phases)
+    {
+        public long Phase(string name) => Phases.TryGetValue(name, out long ms) ? ms : -1;
+    }
+
+    private Reading Sample()
+    {
+        using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 0));
+        var root = doc.RootElement;
+        var phases = new Dictionary<string, long>();
+        foreach (var p in root.GetProperty("phaseMs").EnumerateObject()) phases[p.Name] = p.Value.GetInt64();
+        return new Reading(root.GetProperty("beatMs").GetInt64(), phases);
+    }
 }

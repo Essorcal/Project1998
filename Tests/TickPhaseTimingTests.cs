@@ -43,18 +43,38 @@ public class TickPhaseTimingTests
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
     private const ushort PhaseMap = 60050, QuietMap = 60051, SnapshotMap = 60052;
 
-    /// <summary>Enough wandering creatures that one beat costs whole milliseconds on any machine, so the
-    /// phase line has something to name. They are spread over a 64-tile square with the watcher in the
-    /// middle: most are out of its viewport, which is the shape a real hunting map has (the load run's stall
-    /// was 305 mobs and 400 players on one map).</summary>
+    /// <summary>A real beat's worth of wandering creatures, spread over a 64-tile square with the watcher in
+    /// the middle: most are out of its viewport, which is the shape a real hunting map has (the load run's
+    /// stall was 305 mobs and 400 players on one map).
+    ///
+    /// <para>They are no longer what makes the phase line have something to name — <c>PhaseProbe</c> is —
+    /// and the fact below was run green with this set to 0 by hand. They are kept because a beat with
+    /// nothing in it is not the beat this instrument exists to attribute: with them the line names several
+    /// real phases, and the parts-sum-to-the-whole assertions are checked against a beat of tens of
+    /// milliseconds rather than one of three.</para></summary>
     private const int Creatures = 4000;
+
+    /// <summary>What <c>PhaseProbe</c> costs the beat inside <c>(4.3) status</c>. Comfortably above the 1ms
+    /// floor <c>PhaseBreakdown</c> folds into <c>other</c>, and small enough beside a 4,000-creature beat
+    /// that it does not distort what the line says the beat was spent on.</summary>
+    private const int ProbeMs = 3;
 
     private const string Head = "SLOW TICK PHASES:";
 
     // =====================================================================================================
 
     /// <summary>A beat the watchdog reports prints the counts line and then the phases, and the phases add
-    /// up to the work the counts line claims.</summary>
+    /// up to the work the counts line claims.
+    ///
+    /// <para><b>The named phase is one this fact pays for, not one it hopes the machine is slow enough to
+    /// produce.</b> This assertion — that the line names a labelled bucket at all — went red once on a
+    /// shared CI runner (PR #245) and was green on rerun and green locally. The cause is the 1ms floor
+    /// <c>PhaseBreakdown</c> folds into <c>other</c>: the fact's premise was "4,000 wandering creatures cost
+    /// whole milliseconds on any machine", which is a claim about the machine, and on a fast enough one
+    /// every bucket truncates to zero and the line carries only <c>other</c>. A wider tolerance cannot fix
+    /// that, because the claim under test IS the threshold behaviour. So <c>PhaseProbe</c> spends a known
+    /// <c>ProbeMs</c> inside <c>(4.3) status</c> and the fact asserts that bucket by name: the outcome no
+    /// longer depends on how fast the runner is.</para></summary>
     [Fact]
     public void ASlowBeatNamesItsPhasesAndThePartsSumToTheWhole()
     {
@@ -64,7 +84,9 @@ public class TickPhaseTimingTests
             Seed(PhaseMap, Creatures);
             outbound.Clear();
 
-            string log = Captured(() => _fx.World.TickOnceWatchedForTest(slowMs: 1), Head);
+            string log;
+            using (PhaseProbe.CostingAtLeast(ProbeMs))
+                log = Captured(() => _fx.World.TickOnceWatchedForTest(slowMs: 1), Head);
             string[] lines = Lines(log);
 
             int counts = Array.FindIndex(lines, l => l.Contains("SLOW TICK: work "));
@@ -78,6 +100,14 @@ public class TickPhaseTimingTests
             // It names phases, not just a remainder: at least one labelled bucket, and `other` is a bucket
             // and not a phase name.
             Assert.Matches(@"\(\d[\d.]*\) [a-z/]+ \d+ms", lines[phases]);
+
+            // And the bucket it names is the one this fact paid for, carrying what it paid. This is the
+            // assertion that makes the one above independent of the runner: `(4.3) status` cannot come in
+            // under ProbeMs, so it cannot truncate into `other`, on any machine.
+            long probed = Phase(lines[phases], @"\(4\.3\) status");
+            Assert.True(probed >= ProbeMs,
+                $"the probe spent {ProbeMs}ms inside `(4.3) status` and the line says {probed}ms — either " +
+                $"the hook is not inside that bucket or the bucket is not measuring it:\n{lines[phases]}");
 
             // And the parts are the whole. That is two separate claims, and they are worth asserting
             // separately because they fail for different reasons.
@@ -167,7 +197,16 @@ public class TickPhaseTimingTests
     /// <c>FlushTickWatchedForTest</c> rather than the whole tick, because <c>Tick</c> releases <c>_lock</c> a
     /// few instructions before <c>ReconcileViews</c> re-takes it and a thread re-entering a monitor it just
     /// released beats a blocked waiter essentially every time — through the whole beat the hold would land in
-    /// <c>lock-wait</c> and never in the bucket under test.</para></summary>
+    /// <c>lock-wait</c> and never in the bucket under test.</para>
+    ///
+    /// <para><b>Not exposed to the 1ms floor the fact above had to be rescued from</b>, and deliberately
+    /// not given the probe. It also asserts on two named buckets at <c>slowMs: 1</c>, but what it pays for
+    /// them with is a 200ms hold this test takes itself, not work it hopes the machine is slow enough to
+    /// make expensive: <c>(3.0) view snapshot</c> cannot come in under the floor while another thread is
+    /// holding <c>_lock</c> across it, on a runner of any speed. The other direction — <c>(3) viewports</c>
+    /// staying under 100ms — is the only machine-dependent claim here, and it is a claim that the sweep of
+    /// 200 mobs for one viewer is not itself a tenth of a second, which is two orders of magnitude of
+    /// headroom and would be a finding rather than a flake if it failed.</para></summary>
     [Fact]
     public void TheViewSnapshotBucketCarriesTheWorldLockAndTheSweepDoesNot()
     {
