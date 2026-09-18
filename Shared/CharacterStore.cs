@@ -36,6 +36,11 @@ public sealed class CharacterStore
 {
     private readonly string _jsonDir;   // legacy per-file store: migration source + on-disk backup
 
+    /// <summary>The database file this store writes to, or null for the process database (<see cref="Db.Path"/>).
+    /// Only <see cref="ForDatabase"/> ever sets it; every production store leaves it null and behaves exactly
+    /// as it did before the field existed.</summary>
+    private readonly string? _dbPath;
+
     /// <summary>Warning sink supplied by each process so persistence failures reach its durable log. The
     /// fallback stays noisy for tests and consumers that have not wired a logger.</summary>
     public static Action<string> Warn { get; set; } =
@@ -56,8 +61,39 @@ public sealed class CharacterStore
         MigrateFromJsonIfNeeded();
     }
 
+    private CharacterStore(string dir, string databasePath)
+    {
+        _jsonDir = dir;
+        _dbPath = databasePath;
+        Db.InitializeDatabase(databasePath);
+        MigrateFromJsonIfNeeded();
+    }
+
+    /// <summary>
+    /// A store bound to <paramref name="databasePath"/> instead of the process database. Internal, with no
+    /// configuration reaching it: the server has exactly one database and the only caller is a test that
+    /// needs a write lock nothing else can feel — see <see cref="Db.Open(string)"/> for why the alternative
+    /// (moving <see cref="Db.Path"/> for the whole process) is worse than the problem.
+    ///
+    /// <para>It initializes that file's schema itself rather than going through
+    /// <see cref="Db.EnsureInitialized"/>, whose once-per-process latch and pre-rename guard belong to the
+    /// production file alone. The process database is not touched, opened or initialized by this
+    /// call.</para></summary>
+    internal static CharacterStore ForDatabase(string jsonDir, string databasePath) =>
+        new(jsonDir, databasePath);
+
     /// <summary>The backing database file path (logged at startup so records are findable).</summary>
-    public string Directory => Db.Path;
+    public string Directory => _dbPath ?? Db.Path;
+
+    /// <summary>Every statement this store issues goes through here, so a store bound to its own file
+    /// (<see cref="ForDatabase"/>) cannot leak a write back onto the process database. With
+    /// <see cref="_dbPath"/> null — every production store — this is <see cref="Db.Open()"/> verbatim,
+    /// including its <see cref="Db.EnsureInitialized"/> call.
+    ///
+    /// <para><see cref="CharacterExists"/> is the one reader that does NOT come through here: it is static,
+    /// the shared login rule calls it without a store, and it therefore always asks the process
+    /// database.</para></summary>
+    private SqliteConnection Open() => _dbPath is null ? Db.Open() : Db.Open(_dbPath);
 
     // Normalize to a safe, case-insensitive key so "Snuggle" and "snuggle" are one account. Public so
     // World's online-session registry (duplicate-login guard) can key on the same identity.
@@ -93,7 +129,7 @@ public sealed class CharacterStore
         long? unreadableSince;
         try
         {
-            using var cn = Db.Open();
+            using var cn = Open();
             using var cmd = cn.CreateCommand();
             cmd.CommandText = "SELECT json, unreadable_since FROM characters WHERE username=$u LIMIT 1;";
             cmd.Parameters.AddWithValue("$u", user);
@@ -184,7 +220,7 @@ public sealed class CharacterStore
     {
         try
         {
-            using var cn = Db.Open();
+            using var cn = Open();
             using var tx = cn.BeginTransaction(deferred: false);
             if (!CanOverwrite(cn, tx, user, out string? reason))
             {
@@ -240,7 +276,7 @@ public sealed class CharacterStore
         if (rows.Count == 0) return true;
         try
         {
-            using var cn = Db.Open();
+            using var cn = Open();
             using var tx = cn.BeginTransaction(deferred: false);
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             foreach (var (user, json) in rows)
@@ -285,7 +321,7 @@ public sealed class CharacterStore
     {
         try
         {
-            using var cn = Db.Open();
+            using var cn = Open();
             using var tx = cn.BeginTransaction(deferred: false);
 
             string user = Key(c.Name);
@@ -340,7 +376,7 @@ public sealed class CharacterStore
                 }
                 if (c is null || string.IsNullOrEmpty(c.Name)) continue;
 
-                using var cn = Db.Open();
+                using var cn = Open();
                 using var cmd = cn.CreateCommand();
                 cmd.CommandText = @"INSERT OR IGNORE INTO characters(username, json, updated_utc)
                                     VALUES($u, $j, $t);";
@@ -351,7 +387,7 @@ public sealed class CharacterStore
             }
             if (migrated > 0)
                 Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [db] migrated {migrated} character(s) " +
-                                  $"from {_jsonDir} into {Db.Path} (JSON files kept as backup)");
+                                  $"from {_jsonDir} into {Directory} (JSON files kept as backup)");
         }
         catch { /* migration is best-effort; a fresh DB still works */ }
     }
@@ -383,9 +419,9 @@ public sealed class CharacterStore
         return false;
     }
 
-    private static bool MarkUnreadable(string user, string json)
+    private bool MarkUnreadable(string user, string json)
     {
-        using var cn = Db.Open();
+        using var cn = Open();
         using var mark = cn.CreateCommand();
         mark.CommandText = @"UPDATE characters SET unreadable_since=$t
                              WHERE username=$u AND json=$j AND unreadable_since IS NULL;";
@@ -395,9 +431,9 @@ public sealed class CharacterStore
         return mark.ExecuteNonQuery() == 1;
     }
 
-    private static bool ClearUnreadableMarker(string user, string json, long unreadableSince)
+    private bool ClearUnreadableMarker(string user, string json, long unreadableSince)
     {
-        using var cn = Db.Open();
+        using var cn = Open();
         using var clear = cn.CreateCommand();
         clear.CommandText = @"UPDATE characters SET unreadable_since=NULL
                               WHERE username=$u AND json=$j AND unreadable_since=$t;";
