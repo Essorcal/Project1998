@@ -2727,7 +2727,7 @@ public sealed partial class World
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in Online.All()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
+        foreach (var s in Online.All()) { Try(s, static x => x.TickSleep(), "TickSleep"); Try(s, static x => x.TickPoison(), "TickPoison"); }
         PhaseProbeForTest?.Invoke();   // null except under test — see World.PhaseProbeForTest
         MarkPhase(PhStatus);
 
@@ -2735,7 +2735,7 @@ public sealed partial class World
         // players who left the option on. RTK runs this per-player from login; we fire it server-wide on the
         // same cadence as the weather roll. SendAdvice is a no-op for anyone with the option off.
         if (_tick % AdviceTicks == 0)
-            foreach (var s in Online.All()) Try(s.SendAdvice, "SendAdvice");
+            foreach (var s in Online.All()) Try(s, static x => x.SendAdvice(), "SendAdvice");
 
         // Newly-foraged ground items (chestnuts &c.): draw them for everyone on that map (0x16).
         if (q.Forage is not null)
@@ -2799,7 +2799,7 @@ public sealed partial class World
         // real change — see Session.RegenTick. Snapshot the player list under the lock, tick outside it.
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
-        foreach (var p in players2) Try(() => p.RegenTick(TickMs), "RegenTick");
+        foreach (var p in players2) Try(p, static x => x.RegenTick(TickMs), "RegenTick");
         MarkPhase(PhRegen);
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
@@ -2807,7 +2807,7 @@ public sealed partial class World
         if (q.TimeChanged)
         {
             var (h, y) = Clock.Time;
-            foreach (var p in players2) Try(() => p.SendTime(h, y), "SendTime");
+            foreach (var p in players2) Try((p, h, y), static t => t.p.SendTime(t.h, t.y), "SendTime");
             // Nothing to persist: the calendar is derived from the epoch, so a restart resumes it exactly.
         }
         if (q.WeatherChanges is not null)
@@ -2849,8 +2849,15 @@ public sealed partial class World
         // `Tick`'s own acquisition, taken and released before FlushTick starts. The mark is AFTER the block
         // because MarkPhase CLOSES the bucket it names.
         MarkPhase(PhViewSnapshot);
+        // The three arrays are passed, not captured: a lambda that closed over them would be a display class
+        // plus a delegate per player per beat (104 B measured, PR #245's follow-up 3), where a tuple of three
+        // references is a struct that stays on the stack and lets the compiler cache one delegate for this
+        // site. Same three calls, same order, same isolation, same log line.
         foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players) Try(() => { p.Session.SyncPeers(players); p.Session.SyncMobs(mobs); p.Session.SyncGroundItems(items); }, "ReconcileViews");
+            foreach (var p in players)
+                Try((p.Session, players, mobs, items),
+                    static t => { t.Session.SyncPeers(t.players); t.Session.SyncMobs(t.mobs); t.Session.SyncGroundItems(t.items); },
+                    "ReconcileViews");
     }
 
     /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one
