@@ -185,10 +185,20 @@ public class StatusFileTests
     /// working set is the one memory number the server published. A heap field that is wired to the wrong
     /// counter — committed where the heap belongs, a per-call snapshot where a since-start count belongs —
     /// would publish a plausible megabyte figure that the next hold would build a conclusion on. So the
-    /// assertions are about the RELATIONS the runtime fixes, not about any particular size: the GC's own
-    /// estimate of managed bytes cannot exceed what it has committed to hold them, the committed heap
-    /// cannot exceed the memory the GC believes the machine has, and a count of collections that have
-    /// already happened cannot fall.</para></summary>
+    /// assertions are about the RELATIONS the runtime fixes, not about any particular size: the committed
+    /// figure cannot exceed the memory the GC believes the machine has, the high-load threshold is inside
+    /// that figure, and a count of collections that have already happened cannot fall.</para>
+    ///
+    /// <para>WHAT THIS FACT DELIBERATELY NO LONGER ASSERTS, because neither is guaranteed and the row A hold
+    /// (<c>briefs/reports/hold-row-a-opus.md</c>) shows both failing in the real document:
+    /// <c>gcHeapMb ≤ gcCommittedAtLastGcMb</c> — the heap is instantaneous and the committed figure dates to
+    /// the last collection, so the heap read 1,054 MB against a committed 188 MB on that run — and
+    /// <c>gcCommittedAtLastGcMb &gt; 0</c>, which is false until the first collection of the process and read
+    /// 0 on that run's first three samples. Both passed here only because the test host collects often; they
+    /// were a latent flake asserting a relation the runtime does not fix. What IS guaranteed about the
+    /// committed figure is asserted in
+    /// <c>TheCommittedFigureIsTheLastCollectionsAndCoversThatCollectionsHeap</c>, which forces the collection
+    /// the field dates itself to first.</para></summary>
     [Fact]
     public void TheMemoryFieldsRenderInTheRelationsTheRuntimeGuarantees()
     {
@@ -197,21 +207,19 @@ public class StatusFileTests
         var second = Memory();
 
         _out.WriteLine($"workingSetMb {second.WorkingSetMb}, gcHeapMb {second.HeapMb}, " +
-                       $"gcCommittedMb {second.CommittedMb}, gcAvailableMb {second.AvailableMb}, " +
+                       $"gcCommittedAtLastGcMb {second.CommittedAtLastGcMb}, gcAvailableMb {second.AvailableMb}, " +
                        $"gcHighLoadMb {second.HighLoadMb}, gen0/1/2 {second.Gen0}/{second.Gen1}/{second.Gen2}, " +
                        $"gcMode {second.Mode}");
 
-        // Sane on their own: a process has a working set and the GC has committed something.
+        // Sane on its own: a running process has a working set. `gcCommittedAtLastGcMb` gets no floor here —
+        // it is legitimately 0 until this process's first collection.
         Assert.True(second.WorkingSetMb > 0, $"workingSetMb is {second.WorkingSetMb}");
-        Assert.True(second.CommittedMb > 0, $"gcCommittedMb is {second.CommittedMb}");
 
-        // The relation that catches a swapped pair. Megabytes are truncated, so the heap may read equal to
-        // committed on a tiny process; it can never read HIGHER.
-        Assert.True(second.HeapMb <= second.CommittedMb,
-            $"gcHeapMb {second.HeapMb} exceeds gcCommittedMb {second.CommittedMb} — the GC cannot hold more " +
-            $"managed bytes than it has committed pages for; the two fields are crossed");
-        Assert.True(second.CommittedMb <= second.AvailableMb,
-            $"gcCommittedMb {second.CommittedMb} exceeds gcAvailableMb {second.AvailableMb}");
+        // Both of these come out of the same last-collection record, so the bound between them holds on any
+        // render, including one taken before any collection has run (all three read 0 / the machine
+        // constants).
+        Assert.True(second.CommittedAtLastGcMb <= second.AvailableMb,
+            $"gcCommittedAtLastGcMb {second.CommittedAtLastGcMb} exceeds gcAvailableMb {second.AvailableMb}");
         Assert.True(second.HighLoadMb > 0 && second.HighLoadMb <= second.AvailableMb,
             $"gcHighLoadMb {second.HighLoadMb} is not a threshold inside gcAvailableMb {second.AvailableMb}");
 
@@ -230,6 +238,59 @@ public class StatusFileTests
         Assert.True(doc.RootElement.GetProperty("online").GetBoolean());
         Assert.Equal(3, doc.RootElement.GetProperty("players").GetInt32());
     }
+
+    /// <summary>Right after a forced gen2, the published committed figure is that collection's committed
+    /// bytes, and it covers the heap as that collection left it.
+    ///
+    /// <para>This is what remains true of the two assertions the relations fact used to make, once the field
+    /// is read as what it is. <c>GC.GetGCMemoryInfo()</c> reports the LATEST collection, so both halves have
+    /// to be pinned to a collection this test forces rather than to an arbitrary render: after a gen2 there
+    /// has certainly been a collection (so the figure is above zero), and the heap read immediately after
+    /// that collection is what that collection's committed pages were holding (so the heap does not exceed
+    /// it). Between collections neither half holds — see the relations fact.</para>
+    ///
+    /// <para>The silent failure it guards is the one the old assertion was reaching for: a committed field
+    /// wired to the wrong counter. The first assertion below is an equality against
+    /// <c>TotalCommittedBytes</c> read directly, either side of the render, which is exact — the figure
+    /// cannot move except at a collection, so "before or after" only allows for a collection landing inside
+    /// the render, and any other value means the field is not this counter.</para></summary>
+    [Fact]
+    public void TheCommittedFigureIsTheLastCollectionsAndCoversThatCollectionsHeap()
+    {
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true);
+
+        // Immediately after the collection, before anything else allocates: this is the heap as that
+        // collection left it, and the committed record the document is about to publish.
+        long heapBytes = GC.GetTotalMemory(forceFullCollection: false);
+        long committedBefore = GC.GetGCMemoryInfo().TotalCommittedBytes;
+        var reading = Memory();
+        long committedAfter = GC.GetGCMemoryInfo().TotalCommittedBytes;
+
+        _out.WriteLine($"forced gen2: heap {Mb(heapBytes)}MB, TotalCommittedBytes {Mb(committedBefore)}MB " +
+                       $"-> {Mb(committedAfter)}MB, document gcCommittedAtLastGcMb " +
+                       $"{reading.CommittedAtLastGcMb}MB");
+
+        Assert.True(reading.CommittedAtLastGcMb == Mb(committedBefore) ||
+                    reading.CommittedAtLastGcMb == Mb(committedAfter),
+            $"the document says gcCommittedAtLastGcMb {reading.CommittedAtLastGcMb} while " +
+            $"GC.GetGCMemoryInfo().TotalCommittedBytes read {Mb(committedBefore)}MB just before the render " +
+            $"and {Mb(committedAfter)}MB just after — the field is not that counter");
+
+        Assert.True(reading.CommittedAtLastGcMb > 0,
+            $"a blocking gen2 has just run and the document still says gcCommittedAtLastGcMb " +
+            $"{reading.CommittedAtLastGcMb} — the record is not being re-read at render");
+
+        // Megabytes are truncated, so the two may read equal on a small process; the heap as the collection
+        // left it can never be HIGHER than what that collection had committed to hold it.
+        Assert.True(Mb(heapBytes) <= reading.CommittedAtLastGcMb,
+            $"the heap read {Mb(heapBytes)}MB immediately after a blocking gen2 and that collection's " +
+            $"committed figure is {reading.CommittedAtLastGcMb}MB — the GC cannot have held more managed " +
+            $"bytes at that collection than it had committed pages for; the two fields are crossed");
+    }
+
+    /// <summary>Bytes to whole megabytes, the document's own truncation, so a comparison against a directly
+    /// read counter is a comparison of the same arithmetic.</summary>
+    private static long Mb(long bytes) => bytes / (1024 * 1024);
 
     /// <summary>A collection that really happened moves <c>gen2</c>.
     ///
@@ -256,7 +317,7 @@ public class StatusFileTests
 
     /// <summary>One reading of the published document's memory instrument, parsed — so these are facts about
     /// <c>run/status.json</c> rather than about a call this test could have made itself.</summary>
-    private readonly record struct MemoryReading(long WorkingSetMb, long HeapMb, long CommittedMb,
+    private readonly record struct MemoryReading(long WorkingSetMb, long HeapMb, long CommittedAtLastGcMb,
                                                  long AvailableMb, long HighLoadMb,
                                                  long Gen0, long Gen1, long Gen2, string Mode);
 
@@ -265,7 +326,7 @@ public class StatusFileTests
         using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 0));
         var r = doc.RootElement;
         long L(string n) => r.GetProperty(n).GetInt64();
-        return new MemoryReading(L("workingSetMb"), L("gcHeapMb"), L("gcCommittedMb"), L("gcAvailableMb"),
+        return new MemoryReading(L("workingSetMb"), L("gcHeapMb"), L("gcCommittedAtLastGcMb"), L("gcAvailableMb"),
                                  L("gcHighLoadMb"), L("gen0"), L("gen1"), L("gen2"),
                                  r.GetProperty("gcMode").GetString() ?? "");
     }
