@@ -10,11 +10,14 @@ namespace Tests;
 /// per-run temp directory). A database-wide write lock is therefore a database-wide write lock for every
 /// other collection running at that moment.
 ///
-/// <para>The window is not the 5s of <c>Db.Open</c>'s <c>busy_timeout</c>, which is what makes this worth
-/// spelling out: Microsoft.Data.Sqlite retries a busy statement up to the COMMAND timeout — 30s by default —
-/// so a concurrent save waits half a minute before it fails. That is what fork CI run 35170089187 attempt 1
-/// hit: <c>[db] !! SaveMany(2) failed: SQLite Error 5: 'database is locked'</c> from the fact that holds the
-/// lock (30s on that runner), and then <c>AnnounceMonitorTests</c>' setup save failing the same way from the
+/// <para>A writer locked out of that file waits about five seconds — <c>Db.BusyTimeoutMs</c> — and then
+/// fails. Both halves of that bound come from the one constant: <c>Db.Open</c> sets the connection's
+/// <c>DefaultTimeout</c> as well as <c>PRAGMA busy_timeout</c>, because Microsoft.Data.Sqlite re-runs a
+/// statement that came back SQLITE_BUSY up to the COMMAND timeout and the pragma alone bounds nothing a
+/// caller can observe. The command timeout was the provider's 30s default when fork CI run 35170089187
+/// attempt 1 failed, which is why the lock-out there took half a minute rather than five seconds. What that
+/// run hit was <c>[db] !! SaveMany(2) failed: SQLite Error 5: 'database is locked'</c> from the fact that
+/// holds the lock (30s on that runner), and then <c>AnnounceMonitorTests</c>' setup save failing from the
 /// parallel <c>world</c> collection, which reported it as "@ban refuses a name with no character row".</para>
 ///
 /// <para>Giving that one fact its own database file would be the other answer, and it is not available from

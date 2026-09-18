@@ -225,8 +225,12 @@ public sealed partial class Session
     /// character row" means and exactly one sequence deciding which row wins.</summary>
     /// <param name="dirtyGated">The throttled/dirty-flag path (<see cref="FlushNow"/>): skip when nothing is
     /// pending, clear the flag, and reset the AutoSaveMs throttle on success. False is <c>StoreSave</c>'s
-    /// unconditional write, which historically touched NEITHER — it wrote and left the flag and the throttle
-    /// exactly as it found them, and #29 is not the ticket to change that.</param>
+    /// unconditional write: it writes whether or not the flag is set, does not clear the flag, and leaves the
+    /// AutoSaveMs throttle exactly where it found it, so a spellbook or profile edit never postpones the next
+    /// autosave. On FAILURE the two paths behave the same — a write that returned false re-dirties the
+    /// session either way (the line below the write gate), so the next flush retries the edit rather than
+    /// losing it. <c>StoreSave</c>'s own paragraph in Session.TimedEffects.cs says why the unconditional path
+    /// needs that.</param>
     /// <returns>False only when the database write itself failed.</returns>
     private bool CaptureAndWrite(bool dirtyGated)
     {
