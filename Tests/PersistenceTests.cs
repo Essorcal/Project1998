@@ -39,9 +39,11 @@ public class PersistenceTests : IDisposable
         return c;
     }
 
-    private Character LoadOk(string name)
+    private Character LoadOk(string name) => LoadOk(_store, name);
+
+    private static Character LoadOk(CharacterStore store, string name)
     {
-        var result = _store.Load(name);
+        var result = store.Load(name);
         Assert.Equal(CharacterLoadStatus.Ok, result.Status);
         return Assert.IsType<Character>(result.Character);
     }
@@ -117,14 +119,20 @@ public class PersistenceTests : IDisposable
     /// the busy_timeout pragma bounded nothing a caller could observe. <c>Db.Open</c> now sets both from one
     /// constant, and <see cref="SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld"/> is the fact that
     /// holds that true — this one is about the ROLLBACK, not about the clock.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>): the lock below is database-wide, and
+    /// on the process database it would be a database-wide lock for every collection running beside this
+    /// one.</para>
     /// </summary>
     [Fact]
     public void SaveMany_LeavesNothingWritten_WhenTheWriteFails()
     {
+        using var db = new IsolatedDatabase();
+
         // Seed both at a known state: `a` holds 10 of item 1 and 100 coin, `b` holds nothing.
         var a = Make(_a, 100, (1, 10));
         var b = Make(_b, 100);
-        Assert.True(_store.SaveMany(new[] { a, b }));
+        Assert.True(db.Store.SaveMany(new[] { a, b }));
 
         // Stage the trade in memory: 5 of item 1 and 50 coin move from a to b.
         a.Inventory[0].Amount = 5;
@@ -132,14 +140,14 @@ public class PersistenceTests : IDisposable
         b.Inventory.Add(new InvItem(0, 1, 5));
         b.Coins = 150;
 
-        // Block all writes for the duration of the attempt.
-        using (var blocker = Db.Open())
+        // Block all writes to THIS file for the duration of the attempt.
+        using (var blocker = db.Open())
         {
             using var begin = blocker.CreateCommand();
             begin.CommandText = "BEGIN IMMEDIATE;";   // takes the write lock and holds it
             begin.ExecuteNonQuery();
 
-            Assert.False(_store.SaveMany(new[] { a, b }));
+            Assert.False(db.Store.SaveMany(new[] { a, b }));
 
             using var rollback = blocker.CreateCommand();
             rollback.CommandText = "ROLLBACK;";
@@ -148,8 +156,8 @@ public class PersistenceTests : IDisposable
 
         // Neither side moved. `a` in particular must NOT have been debited — that is the half which, had it
         // committed alone, would have destroyed the goods outright.
-        var reloadedA = LoadOk(_a);
-        var reloadedB = LoadOk(_b);
+        var reloadedA = LoadOk(db.Store, _a);
+        var reloadedB = LoadOk(db.Store, _b);
         Assert.Equal(100u, reloadedA.Coins);
         Assert.Equal(10, reloadedA.Inventory.Single().Amount);
         Assert.Equal(100u, reloadedB.Coins);
@@ -171,24 +179,30 @@ public class PersistenceTests : IDisposable
     ///
     /// <para>Bounds are derived from the constant rather than written as literals, so changing the timeout
     /// moves this fact with it instead of breaking it.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>): this one holds the write lock for the
+    /// entire five-second window, which is the longest any fact in the suite holds it, and on the process
+    /// database that is five seconds every other collection spends locked out.</para>
     /// </summary>
     [Fact]
     public void SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld()
     {
+        using var db = new IsolatedDatabase();
+
         var a = Make(_a, 100);
-        Assert.True(_store.SaveMany(new[] { a }));
+        Assert.True(db.Store.SaveMany(new[] { a }));
         a.Coins = 200;
 
         var elapsed = TimeSpan.Zero;
         bool saved;
-        using (var blocker = Db.Open())
+        using (var blocker = db.Open())
         {
             using var begin = blocker.CreateCommand();
             begin.CommandText = "BEGIN IMMEDIATE;";   // held for the whole attempt: this never clears
             begin.ExecuteNonQuery();
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            saved = _store.SaveMany(new[] { a });
+            saved = db.Store.SaveMany(new[] { a });
             clock.Stop();
             elapsed = clock.Elapsed;
 
@@ -212,8 +226,8 @@ public class PersistenceTests : IDisposable
             "is retrying the statement for its own default of 30s and the pragma bounds nothing.");
 
         // The failed save changed nothing, and the row is still writable afterwards.
-        Assert.Equal(100u, LoadOk(_a).Coins);
-        Assert.True(_store.SaveMany(new[] { a }));
+        Assert.Equal(100u, LoadOk(db.Store, _a).Coins);
+        Assert.True(db.Store.SaveMany(new[] { a }));
     }
 
     /// <summary>
@@ -224,12 +238,17 @@ public class PersistenceTests : IDisposable
     ///
     /// <para>The lock is held for a second, well inside <see cref="Db.BusyTimeoutMs"/>, on another thread;
     /// the save must block and then succeed once the lock goes.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>): a second of database-wide lock is
+    /// still a second every other collection would spend waiting.</para>
     /// </summary>
     [Fact]
     public void SaveMany_StillSucceeds_WhenTheContentionClearsInsideTheWindow()
     {
+        using var db = new IsolatedDatabase();
+
         var a = Make(_a, 100);
-        Assert.True(_store.SaveMany(new[] { a }));
+        Assert.True(db.Store.SaveMany(new[] { a }));
         a.Coins = 777;
 
         const int holdMs = 1000;
@@ -240,7 +259,7 @@ public class PersistenceTests : IDisposable
         // save itself, which is what is being measured.
         var holder = new Thread(() =>
         {
-            using var blocker = Db.Open();
+            using var blocker = db.Open();
             using var begin = blocker.CreateCommand();
             begin.CommandText = "BEGIN IMMEDIATE;";
             begin.ExecuteNonQuery();
@@ -255,14 +274,14 @@ public class PersistenceTests : IDisposable
         Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        bool saved = _store.SaveMany(new[] { a });
+        bool saved = db.Store.SaveMany(new[] { a });
         clock.Stop();
         Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never released the write lock");
 
         Assert.True(saved,
             $"a save contended for {holdMs}ms — well inside the {Db.BusyTimeoutMs}ms window — failed after " +
             $"{clock.Elapsed.TotalSeconds:F1}s instead of waiting the lock out");
-        Assert.Equal(777u, LoadOk(_a).Coins);
+        Assert.Equal(777u, LoadOk(db.Store, _a).Coins);
         // It really did wait rather than slipping in before the lock was taken, which would make the pass
         // meaningless.
         Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.5),
@@ -285,14 +304,21 @@ public class PersistenceTests : IDisposable
     ///
     /// <para>Red without the re-dirty in <c>CaptureAndWrite</c>: the session reports dirty False and
     /// <c>FlushNow</c> finds nothing pending, so the profile never reaches the database.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>), and the session is handed that
+    /// store: the lock is held across the whole 0x4F round trip, which is the five-second window plus the
+    /// assertions after it, and on the process database every other collection would be locked out for all
+    /// of it.</para>
     /// </summary>
     [Fact]
     public void FailedUnconditionalSave_IsRetriedByTheNextFlush_AndNotReportedAsSaved()
     {
         const string blurb = "written while the database was locked";
 
+        using var db = new IsolatedDatabase();
+
         TestProcessState.LoadContent();      // World's constructor reads the spawn roster out of Content
-        Assert.True(_store.SaveMany(new[] { Make(_a, 100) }));
+        Assert.True(db.Store.SaveMany(new[] { Make(_a, 100) }));
 
         var character = new Character
         {
@@ -302,7 +328,7 @@ public class PersistenceTests : IDisposable
         var outbound = new RecordingOutbound($"recorder:{_a}");
         // The five-argument constructor is the one that hands the session a loaded character, which is what
         // sets _enteredWorld — and _enteredWorld is what gates StoreSave at the 0x4F handler.
-        var session = new Session(outbound, 2005, _store, new World(), character);
+        var session = new Session(outbound, 2005, db.Store, new World(), character);
         outbound.Clear();
 
         // A second thread holds the write lock until this one says it may let go, so the save below fails
@@ -311,7 +337,7 @@ public class PersistenceTests : IDisposable
         using var release = new ManualResetEventSlim(false);
         var holder = new Thread(() =>
         {
-            using var blocker = Db.Open();
+            using var blocker = db.Open();
             using var begin = blocker.CreateCommand();
             begin.CommandText = "BEGIN IMMEDIATE;";
             begin.ExecuteNonQuery();
@@ -332,7 +358,7 @@ public class PersistenceTests : IDisposable
         Assert.Contains("saved again shortly", reply);
 
         // Nothing reached the database, and the session knows it still owes a write.
-        Assert.NotEqual(blurb, LoadOk(_a).ProfileText);
+        Assert.NotEqual(blurb, LoadOk(db.Store, _a).ProfileText);
         Assert.Contains("dirty True", session.DiagState());
 
         release.Set();
@@ -340,7 +366,7 @@ public class PersistenceTests : IDisposable
 
         // The retry the dirty flag buys: the same call World.AutoSaveLoop makes on an idle dirty session.
         session.FlushNow();
-        Assert.Equal(blurb, LoadOk(_a).ProfileText);
+        Assert.Equal(blurb, LoadOk(db.Store, _a).ProfileText);
     }
 
     /// <summary>The 0x4F body the profile editor sends: picSize(u16 BE) pic[] blurbLen(u8) blurb[] 00. No

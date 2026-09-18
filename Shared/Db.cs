@@ -14,7 +14,7 @@ namespace Shared;
 /// <c>PRAGMA busy_timeout</c> is how long SQLite itself retries inside one step, and
 /// <c>SqliteConnection.DefaultTimeout</c> (30 seconds if nothing sets it) is how long
 /// Microsoft.Data.Sqlite keeps re-running a statement that came back SQLITE_BUSY. They compound, so a
-/// connection with only the pragma set waits the full thirty seconds. <see cref="Open"/> therefore sets
+/// connection with only the pragma set waits the full thirty seconds. <see cref="Open()"/> therefore sets
 /// both from the same constant.
 ///
 /// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
@@ -96,7 +96,29 @@ public static class Db
     public static SqliteConnection Open()
     {
         EnsureInitialized();
-        var cn = new SqliteConnection($"Data Source={Path}");
+        return Open(Path);
+    }
+
+    /// <summary>
+    /// The same connection against an EXPLICIT file. Internal and not reachable from any configuration: the
+    /// server has one database and <see cref="Path"/> names it, so the only caller is a test that needs a
+    /// database-wide lock of its own.
+    ///
+    /// <para>Why that needs a seam at all: <c>BEGIN IMMEDIATE</c> locks the whole FILE, and the test process
+    /// has a single one (<c>TestProcessState</c> points P1998_STATE at one temp directory). A fact that holds
+    /// the write lock to prove a failed save rolls back therefore locks out every other test running beside
+    /// it. Pointing such a fact at its own file is the fix; swapping <see cref="Path"/> for the process would
+    /// be the opposite of one, because it would move other collections' writes to the wrong file
+    /// mid-run.</para>
+    ///
+    /// <para>Unlike <see cref="Open()"/> this does NOT initialize anything — there is no per-file
+    /// <c>_initialized</c> latch and a lock-holding caller must not pay a schema build inside its window. The
+    /// caller runs <see cref="InitializeDatabase"/> on the path once first; a path that has never been
+    /// initialized opens as an empty database rather than failing, which is SQLite's behaviour, not
+    /// ours.</para></summary>
+    internal static SqliteConnection Open(string path)
+    {
+        var cn = new SqliteConnection($"Data Source={path}");
         // The provider's retry window, which bounds the whole statement. Without this it is 30s and the
         // busy_timeout below bounds nothing that a caller can observe.
         cn.DefaultTimeout = BusyTimeoutSeconds;
@@ -131,7 +153,7 @@ public static class Db
     /// <para>This connection CAN contend: <see cref="ApplyMigrations"/> takes the write reservation
     /// (<c>BEGIN IMMEDIATE</c>) deliberately, and login and game initialize the same shared file
     /// independently, so one of them can be holding it while the other starts. It therefore gets the same
-    /// paired timeouts as <see cref="Open"/>. The consequence of losing the race is different here — a
+    /// paired timeouts as <see cref="Open()"/>. The consequence of losing the race is different here — a
     /// startup that cannot take the reservation within the window throws out of
     /// <see cref="EnsureInitialized"/> rather than returning false — and that is the intended shape: a
     /// process that cannot confirm the schema should fail loudly at startup, not serve a world.</para></summary>
