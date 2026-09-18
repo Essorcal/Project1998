@@ -2213,6 +2213,35 @@ public sealed partial class World
     private long _phaseStart;                                  // when this beat started
     private long _phaseTotal;                                  // the whole beat — what the parts are measured against
 
+    // The same buckets again, but never cleared: every beat's cost added on, so a phase's cost is a RATE
+    // rather than a floor. The per-beat array above only becomes text on a beat the watchdog already
+    // decided to log, so every "milliseconds per second" figure in a load report so far is a sum over the
+    // slow beats divided by the whole span — which understates a phase that is expensive on every beat and
+    // says nothing at all about a phase on a server that logged nothing. Two samples of run/status.json give
+    // delta(phase ms) / delta(elapsedMs) exactly, for every phase, slow beats and healthy ones alike.
+    //
+    // Raw Stopwatch ticks, converted to milliseconds ONCE at render. Summing milliseconds instead would
+    // truncate every beat to zero for any phase under a millisecond — which is most of them on a healthy
+    // beat — and the totals would report 0ms forever for exactly the phases nobody has measured yet.
+    //
+    // What is accumulated is the NAMED phases plus the unmarked TAIL of each beat, never the beat total
+    // itself — so the whole is the sum of its parts by construction rather than by two clocks agreeing.
+    // A beat's marks chain (`_phaseT0 - _phaseStart` IS everything named on it), so the tail is the only
+    // piece left over, and `beatMs` is computed from both at render. The alternative — accumulating the
+    // beat total on one side and the phases on the other — makes the parts exceed the whole the moment
+    // anything runs a beat without closing it, which the `…ForTest` seams in World.MobAiTick.cs do.
+    private readonly long[] _phaseTotals = new long[PhCount];  // since start, per phase, raw Stopwatch ticks
+    private long _phaseTailTicks;                              // since start, each beat after its last mark
+
+    /// <summary>When this world's phase clock came up, as a raw Stopwatch timestamp. The origin for
+    /// <see cref="ElapsedMs"/>, so a reader of two status samples can divide by a span the server measured
+    /// rather than by its own wall clock, which a poll's jitter and a clock adjustment both spoil.
+    ///
+    /// <para>Construction, not the first beat: <c>Program</c> starts <see cref="TickLoop"/> immediately
+    /// after building the world, so the difference is milliseconds, and taking it here costs one
+    /// <c>QueryPerformanceCounter</c> for the life of the process instead of a branch on every beat.</para></summary>
+    private readonly long _phaseEpoch = Stopwatch.GetTimestamp();
+
     /// <summary>Open this beat's phase clock. The first statement of <see cref="Tick"/>, so every caller of
     /// it leaves the buckets consistent; <see cref="EndPhases"/> is the caller's, because only the caller
     /// knows that a beat which threw still has to be reported.</summary>
@@ -2224,8 +2253,14 @@ public sealed partial class World
 
     /// <summary>Close the beat: the total the parts are measured against. Called OUTSIDE the tick's
     /// try/catch, so a beat that threw part-way through still reports the part it ran and carries the rest
-    /// in <c>other</c>.</summary>
-    private void EndPhases() => _phaseTotal = Stopwatch.GetTimestamp() - _phaseStart;
+    /// in <c>other</c>. Also where the running totals take this beat's unmarked tail — the same remainder,
+    /// for the same reason: a beat that threw still cost what it cost, and the part it did not reach has to
+    /// show somewhere rather than vanish out of the rate.</summary>
+    private void EndPhases()
+    {
+        _phaseTotal = Stopwatch.GetTimestamp() - _phaseStart;
+        _phaseTailTicks += _phaseTotal - (_phaseT0 - _phaseStart);   // the beat minus everything it marked
+    }
 
     /// <summary>Close phase <paramref name="phase"/> and open the next one.</summary>
     private void MarkPhase(int phase) => MarkPhaseAt(phase, Stopwatch.GetTimestamp());
@@ -2234,9 +2269,87 @@ public sealed partial class World
     /// <c>_lockWaitMs</c> are one measurement rather than two reads of the clock that could disagree.</summary>
     private void MarkPhaseAt(int phase, long now)
     {
-        _phaseTicks[phase] = now - _phaseT0;
+        long d = now - _phaseT0;
+        _phaseTicks[phase] = d;
+        _phaseTotals[phase] += d;   // one add per phase per beat: the whole cost of the running totals
         _phaseT0 = now;
     }
+
+    /// <summary>Milliseconds since this world's phase clock came up — the denominator for a rate computed
+    /// from two <c>run/status.json</c> samples. Read on the status writer's thread; nothing but the
+    /// constructor ever writes <c>_phaseEpoch</c>.</summary>
+    internal long ElapsedMs => (Stopwatch.GetTimestamp() - _phaseEpoch) * 1000 / Stopwatch.Frequency;
+
+    /// <summary>Every phase's total since the world came up, in milliseconds, in <see cref="PhaseNames"/>
+    /// order with <c>other</c> last, plus the total of every beat — the whole the parts are measured
+    /// against, exactly as the <c>SLOW TICK PHASES</c> line measures one beat.
+    ///
+    /// <para><paramref name="beatMs"/> is the sum of the named phases and the accumulated tail, and
+    /// <c>other</c> is then that whole minus every named phase's PRINTED figure — the same definition, and
+    /// the same arithmetic, <see cref="PhaseBreakdown"/> uses for one beat, so the document and the log line
+    /// cannot drift. Two things follow, and both are deliberate. The parts sum to the whole EXACTLY: every
+    /// phase truncates toward zero independently and the remainder carries that residue the way it carries
+    /// the unmarked tail, instead of leaving up to a millisecond per phase unaccounted for. And the whole
+    /// can never be smaller than its named parts, whatever seam drove the beat — which an independently
+    /// accumulated beat total could not promise.</para>
+    ///
+    /// <para>The price, stated because a reader will otherwise trip over it: <c>other</c> is the one figure
+    /// here that can go DOWN between two samples, by up to a millisecond per phase, when a phase's total
+    /// crosses a millisecond boundary and takes its truncation residue out of the remainder with it. Every
+    /// NAMED phase only ever rises.</para>
+    ///
+    /// <para><b>A sample may straddle a beat, and that is said out loud rather than hidden.</b> The tick
+    /// thread writes these slots one at a time as the beat runs, and the status thread reads them without a
+    /// lock, so a document can carry an early phase from the beat now running and a late phase from the
+    /// previous one — up to one beat of skew per phase, 333ms, against samples ten seconds apart. For a
+    /// rate over a span of minutes that is noise; for anyone who wants an exact beat-aligned reading, this
+    /// is the wrong instrument.</para>
+    ///
+    /// <para><c>Volatile.Read</c> per slot for the reason <see cref="Ticks"/> gives: a 64-bit read is atomic
+    /// on every runtime this targets, so nothing can tear, but a plain read leaves the JIT free to hoist it
+    /// out of the status loop and publish the same number forever. No lock and no <c>Interlocked</c> — one
+    /// writer, and the status writer must never queue behind the world. Allocates one small array per
+    /// call; it is called once every <c>P1998_STATUS_MS</c> (10s by default) on another thread.</para></summary>
+    /// <param name="beatMs">Every beat this world has run, added up — the whole the parts belong to. An
+    /// <c>out</c> rather than a second property so that the whole and its parts come from ONE read of the
+    /// instrument: two calls could land either side of a beat and publish a document whose parts and whole
+    /// disagree by a beat for no reason the reader could see.</param>
+    internal (string Name, long Ms)[] PhaseTotalsMs(out long beatMs)
+    {
+        long freq = Stopwatch.Frequency;
+        var result = new (string, long)[PhCount + 1];
+        long wholeTicks = Volatile.Read(ref _phaseTailTicks);
+        long namedMs = 0;
+        for (int i = 0; i < PhCount; i++)
+        {
+            long ticks = Volatile.Read(ref _phaseTotals[i]);
+            wholeTicks += ticks;
+            long ms = ticks * 1000 / freq;
+            namedMs += ms;
+            result[i] = (PhaseNames[i], ms);
+        }
+        // floor(a) + floor(b) <= floor(a + b), and every named phase is inside the whole, so the remainder
+        // cannot go negative from the truncation above and needs no clamp to be honest.
+        beatMs = wholeTicks * 1000 / freq;
+        result[PhOther] = (PhaseNames[PhOther], beatMs - namedMs);
+        return result;
+    }
+
+    /// <summary>A test seam, null in every process that is not the test host: an action run INSIDE one named
+    /// phase of the beat — <c>(4.3) status</c>, immediately before that bucket closes.
+    ///
+    /// <para>Why the production path carries it: <c>Tests/TickPhaseTimingTests.cs</c> has to assert that the
+    /// phase line NAMES a phase, and <see cref="PhaseBreakdown"/> folds anything under a millisecond into
+    /// <c>other</c>. Its old premise was "4,000 wandering creatures cost whole milliseconds on any machine",
+    /// which is a statement about the machine, and it failed once on a shared CI runner (PR #245) — the beat
+    /// came in fast enough that every bucket truncated to zero and the line carried only <c>other</c>. A
+    /// tolerance cannot fix a threshold; a phase whose cost the test SETS can. With this the fact is green
+    /// on a machine of any speed, with no creatures seeded at all.</para>
+    ///
+    /// <para>Its cost on the healthy path is one static null check per beat — not per player, not per mob —
+    /// and it is deliberately placed where a null check is already lost in the noise of a per-session
+    /// loop.</para></summary>
+    internal static Action? PhaseProbeForTest;
 
     /// <summary>This beat's phases, most expensive first, as the line that follows <c>SLOW TICK</c>.
     ///
@@ -2615,6 +2728,7 @@ public sealed partial class World
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
         // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
         foreach (var s in Online.All()) { Try(s.TickSleep, "TickSleep"); Try(s.TickPoison, "TickPoison"); }
+        PhaseProbeForTest?.Invoke();   // null except under test — see World.PhaseProbeForTest
         MarkPhase(PhStatus);
 
         // Wisdom / "Listen to advice" (0x1b sub-4): a gameplay hint into the chat channel every ~15 minutes for
