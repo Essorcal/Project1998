@@ -52,6 +52,8 @@ public class EntitySweepStalenessTests
 
     // Content-free maps, one per fact so nothing is shared. The character is widened to 100x100.
     private const ushort StaleMobDespawnMap = 60120, StaleMobShowMap = 60121, StaleItemMap = 60122;
+    // PR #246's F1: a parked show invalidated by the viewer walking, one map per fact.
+    private const ushort BandMobMap = 60123, BandPeerMap = 60124, BandItemMap = 60125;
 
     /// <summary>An outbound that records every frame and, once armed, blocks the ARMED THREAD inside the first
     /// frame it hands over. That is the send pass's park: the world tick's sweep stops between its first
@@ -114,16 +116,17 @@ public class EntitySweepStalenessTests
         return (session, outbound, character);
     }
 
-    /// <summary>The recorded frames for ONE entity, in order, as "0x07"/"0x0E". A <c>0x07</c> creature list
-    /// carries <c>count(u16BE)</c> then 12-byte entries whose id is at entry offset 4; a 4.95 <c>0x0E</c>
-    /// despawn carries a count byte and then its ids.</summary>
+    /// <summary>The recorded frames for ONE entity, in order, as "0x07"/"0x33"/"0x0E". A <c>0x07</c> creature
+    /// list carries <c>count(u16BE)</c> then 12-byte entries whose id is at entry offset 4; a <c>0x33</c> look
+    /// carries its id at body offset 5 (x u16, y u16, dir u8, then the id u32BE); a 4.95 <c>0x0E</c> despawn
+    /// carries a count byte and then its ids.</summary>
     private static string[] FramesFor(GatedRecorder outbound, uint id)
     {
         var seq = new List<string>();
         foreach (var frame in outbound.Snapshot())
         {
             byte op = frame[3];
-            if (op != 0x07 && op != 0x0E) continue;
+            if (op != 0x07 && op != 0x0E && op != 0x33) continue;
             byte[] body = TkCrypt.Crypt(frame[5..], frame[4], TkCrypt.LoginKey);
             if (op == 0x07)
             {
@@ -131,12 +134,20 @@ public class EntitySweepStalenessTests
                 for (int i = 0; i < count; i++)
                     if (BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(2 + i * 12 + 4)) == id) seq.Add("0x07");
             }
+            else if (op == 0x33)
+            {
+                if (BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(5)) == id) seq.Add("0x33");
+            }
             else
                 for (int i = 0; i < body[0]; i++)
                     if (BinaryPrimitives.ReadUInt32BigEndian(body.AsSpan(1 + i * 4)) == id) seq.Add("0x0E");
         }
         return seq.ToArray();
     }
+
+    /// <summary>The character hook that widens a content-free map to 100x100, for the peers this file seats
+    /// through the fixture rather than through <see cref="GatedPlayer"/>.</summary>
+    private static void Wide(Character c) { c.MapXs = 100; c.MapYs = 100; }
 
     private Mob MobAt(string name, ushort x, ushort y) => new(_fx.World.AllocateMobId(), 1, x, y, name, 100);
 
@@ -332,6 +343,213 @@ public class EntitySweepStalenessTests
             outbound.Release.Set();
             if (sweep is not null) sweep.Join(5000);
             _fx.World.LeaveMap(viewer, StaleItemMap);
+        }
+    }
+
+    /// <summary>PR #246's finding F1, on mobs: a parked SHOW must not go out after the viewer has walked so
+    /// that the mob is no longer inside the strict rect — and, because it does not go out, the mob must not be
+    /// left marked drawn.
+    ///
+    /// <para>This is the hole the set test alone cannot see. A completed walk that moves a mob from the strict
+    /// rect into the overdraw band takes the <c>_edgeMobs.Add</c> branch: it produces no frame, so it takes no
+    /// stamp, so a show parked behind it still finds its own stamp latest and the mob still in
+    /// <c>_shownMobs</c>. The old test passed it and a 0x07 went out for a tile the client's viewport gate
+    /// discards, leaving <c>_shownMobs</c> saying drawn over a client that had nothing.</para>
+    ///
+    /// <para>The schedule: viewer at x=22, both mobs untracked, so the sweep decides a SHOW for each and the
+    /// send pass parks inside the gate on the blocker's frame with the edge mob's show still in the buffer.
+    /// The viewer then walks 22 -&gt; 21 and reconciles; at x=21 the edge mob at x=30 is outside the strict
+    /// rect [13,30) and inside the drawn rect [12,31), so that reconcile adds it to the band and sends
+    /// nothing. The gate is released, and the parked show is re-tested against the CURRENT rect, dropped, and
+    /// the mob marked undrawn.</para>
+    ///
+    /// <para>What the assertion is, and why it has to be the whole sequence: after the drop, the viewer walks
+    /// on to x=20, where the mob is past the drawn rect. A mob correctly marked undrawn produces nothing
+    /// there. A mob still marked drawn produces a <b>0x0E for a mob the client never drew</b> — that is the
+    /// mismatch, made visible. Walking back to x=22 must then draw it exactly once, either way.</para>
+    ///
+    /// <para>Falsified two ways: revert the rollback and the 0x0E appears (red on the set half); revert the
+    /// rect test and the late 0x07 appears (red on the frame half).</para></summary>
+    [Fact]
+    public void AParkedMobShowIsDroppedAndUndrawnWhenAWalkTakesItOutOfTheStrictRect()
+    {
+        var (viewer, outbound, character) = GatedPlayer("BandMobViewer", BandMobMap, 22, 20);
+        var blocker = MobAt("BandMobBlocker", 20, 19);
+        var edge = MobAt("BandMobEdge", 30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));   // the geometry this is read off
+
+            var mobs = new[] { blocker, edge };   // both untracked: the sweep decides a show for each
+
+            outbound.Clear();
+            sweep = new Thread(() =>
+            {
+                try { outbound.ArmForThisThread(); viewer.SyncMobs(mobs); }
+                catch (Exception ex) { failed = ex; }
+            }) { IsBackground = true };
+            sweep.Start();
+            Assert.True(outbound.Parked.Wait(5000), "the sweep never parked on the first mob's frame");
+
+            // x=21: strict [13,30) no longer holds x=30, drawn [12,31) still does — the overdraw band, which
+            // the reconcile records without a frame and without a stamp.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncMobs(mobs); });
+            Assert.Empty(FramesFor(outbound, edge.Id));   // the band transition really did send nothing
+
+            outbound.Release.Set();
+            Assert.True(sweep.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            // x=20: past the drawn rect [11,30). A mob correctly marked undrawn sends nothing here; a mob
+            // still marked drawn sends a despawn for something the client never drew.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncMobs(mobs); });
+            // And back into view, where it must be drawn exactly once.
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncMobs(mobs); });
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 22, 20); viewer.SyncMobs(mobs); });
+
+            var seq = FramesFor(outbound, edge.Id);
+            _out.WriteLine("edge mob frames over the whole schedule: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x07" }),
+                $"a parked show the viewer has walked out of range of must be dropped AND must leave the mob " +
+                $"undrawn, so the only frame for it is the one draw when it comes back into the strict rect " +
+                $"(#{edge.Id} at (30,20), viewer 22 -> 21 -> 20 -> 21 -> 22); frames for that mob: " +
+                $"{string.Join(",", seq)}");
+        }
+        finally
+        {
+            outbound.Release.Set();
+            if (sweep is not null) sweep.Join(5000);
+            _fx.World.LeaveMap(viewer, BandMobMap);
+        }
+    }
+
+    /// <summary>The same fact on the PEER sweep, because the hole is the same one and it has been on master
+    /// since PR #245: <c>DecidePeerUnderViewLock</c>'s <c>_edgePeers.Add</c> branch changes the sets without a
+    /// stamp in exactly the same way, and <c>ShowPlayer</c>'s 0x33 is gated by the client's viewport with the
+    /// very same rect test as the 0x07.
+    ///
+    /// <para>Same schedule, same assertion, same two falsifications.</para></summary>
+    [Fact]
+    public void AParkedPeerShowIsDroppedAndUndrawnWhenAWalkTakesItOutOfTheStrictRect()
+    {
+        var (blocker, _, _) = _fx.PlayerWith("BandPeerBlocker", Wide, BandPeerMap, 20, 19);
+        var (viewer, outbound, character) = GatedPlayer("BandPeerViewer", BandPeerMap, 22, 20);
+        var (edge, _, _) = _fx.PlayerWith("BandPeerEdge", Wide, BandPeerMap, 30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));
+            // Ascending StateRank: the send pass enters the blocker's monitor through ShowPlayer -> Snapshot
+            // while nothing else holds it, so this is stated rather than relied on for the schedule.
+            Assert.True(blocker.StateRank < viewer.StateRank, "the blocker must be seated before the viewer");
+
+            var peers = new[] { new PeerTile(blocker, 20, 19), new PeerTile(edge, 30, 20) };
+            viewer.DespawnEntity(blocker.PlayerId);      // both untracked: the sweep decides a show for each
+            viewer.DespawnEntity(edge.PlayerId);
+
+            outbound.Clear();
+            sweep = new Thread(() =>
+            {
+                try { outbound.ArmForThisThread(); viewer.SyncPeers(peers); }
+                catch (Exception ex) { failed = ex; }
+            }) { IsBackground = true };
+            sweep.Start();
+            Assert.True(outbound.Parked.Wait(5000), "the sweep never parked on the first peer's frame");
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(peers); });
+            Assert.Empty(FramesFor(outbound, edge.PlayerId));
+
+            outbound.Release.Set();
+            Assert.True(sweep.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncPeers(peers); });
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncPeers(peers); });
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 22, 20); viewer.SyncPeers(peers); });
+
+            var seq = FramesFor(outbound, edge.PlayerId);
+            _out.WriteLine("edge peer frames over the whole schedule: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x33" }),
+                $"a parked peer show the viewer has walked out of range of must be dropped AND must leave the " +
+                $"peer undrawn, so the only frame for it is the one draw when it comes back into the strict " +
+                $"rect (#{edge.PlayerId} at (30,20), viewer 22 -> 21 -> 20 -> 21 -> 22); frames for that " +
+                $"peer: {string.Join(",", seq)}");
+        }
+        finally
+        {
+            outbound.Release.Set();
+            if (sweep is not null) sweep.Join(5000);
+            foreach (var s in new[] { viewer, blocker, edge }) _fx.World.LeaveMap(s, BandPeerMap);
+        }
+    }
+
+    /// <summary>And the same schedule on ground items — which is a regression guard rather than a fix, and
+    /// this comment says so rather than implying a red it does not produce.
+    ///
+    /// <para>Items cannot reach F1's mismatch today, because <c>ShowGroundItem</c> owns <c>_shownItems</c>: it
+    /// re-tests the viewport itself and records the item as drawn only if the draw was accepted, so a late
+    /// item show is discarded by the server before it reaches the wire and nothing is left saying drawn. The
+    /// rect test in the send pass makes that same decision one step earlier — saving the packet build — and
+    /// gives the three sweeps one shape.</para>
+    ///
+    /// <para>What this fact therefore guards is the pair of properties that make items safe, and it goes red
+    /// if either is taken away. Reverting the rect test alone leaves it green, which is the honest result and
+    /// is recorded as such; making the decide pass add to <c>_shownItems</c> — the obvious "make items uniform
+    /// with mobs" change — takes it red, because the dropped draw then does leave the item marked drawn with
+    /// nothing on the client. That perturbation is the recorded falsification.</para></summary>
+    [Fact]
+    public void AParkedItemShowIsDroppedAndUndrawnWhenAWalkTakesItOutOfTheStrictRect()
+    {
+        var (viewer, outbound, character) = GatedPlayer("BandItemViewer", BandItemMap, 22, 20);
+        var blocker = ItemAt(20, 19);
+        var edge = ItemAt(30, 20);
+        Exception? failed = null;
+        Thread? sweep = null;
+        try
+        {
+            Assert.Equal((100, 100), (character.MapXs, character.MapYs));
+
+            var items = new[] { blocker, edge };   // both untracked: the sweep decides a show for each
+
+            outbound.Clear();
+            sweep = new Thread(() =>
+            {
+                try { outbound.ArmForThisThread(); viewer.SyncGroundItems(items); }
+                catch (Exception ex) { failed = ex; }
+            }) { IsBackground = true };
+            sweep.Start();
+            Assert.True(outbound.Parked.Wait(5000), "the sweep never parked on the first item's frame");
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncGroundItems(items); });
+            Assert.Empty(FramesFor(outbound, edge.Id));
+
+            outbound.Release.Set();
+            Assert.True(sweep.Join(5000), "the sweep thread never finished");
+            Assert.Null(failed);
+
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 20, 20); viewer.SyncGroundItems(items); });
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 21, 20); viewer.SyncGroundItems(items); });
+            viewer.WithState(() => { _fx.World.SetPlayerPosition(viewer, 22, 20); viewer.SyncGroundItems(items); });
+
+            var seq = FramesFor(outbound, edge.Id);
+            _out.WriteLine("edge item frames over the whole schedule: " + string.Join(",", seq));
+
+            Assert.True(seq.SequenceEqual(new[] { "0x07" }),
+                $"a parked item show the viewer has walked out of range of must be dropped AND must leave the " +
+                $"item undrawn, so the only frame for it is the one draw when it comes back into the strict " +
+                $"rect (#{edge.Id} at (30,20), viewer 22 -> 21 -> 20 -> 21 -> 22); frames for that item: " +
+                $"{string.Join(",", seq)}");
+        }
+        finally
+        {
+            outbound.Release.Set();
+            if (sweep is not null) sweep.Join(5000);
+            _fx.World.LeaveMap(viewer, BandItemMap);
         }
     }
 }
