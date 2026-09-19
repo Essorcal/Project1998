@@ -91,22 +91,23 @@ public class BroadcastIsolationTests
         finally { Leave(a, b, c, d); }
     }
 
-    /// <summary><c>World.Broadcast</c> allocates nothing PER PEER: what one call costs is the peers snapshot
-    /// and nothing else, so its cost per peer is the array's eight bytes and the snapshot's fixed overhead
-    /// rather than the 96 B a captured <c>(send, p)</c> closure used to add on top of them. The caller's own
-    /// <c>send</c> delegate is the only other share, and this fact hands it a cached static one so that
-    /// share is zero.
+    /// <summary><c>World.Broadcast</c> allocates NOTHING of its own — no closure per peer, and since the
+    /// peers snapshot became a pooled rent, no snapshot array either. The only bytes a broadcast costs are
+    /// the caller's own <c>send</c> delegate, and this fact hands it a cached static one so that share is
+    /// zero too and the measurement is the helper alone.
     ///
     /// <para>Two passes over the SAME call site, as <see cref="TickStepIsolationTests"/> does: each lambda
     /// expression in the source has its own cache slot, so the first pass pays the one cached delegate for
-    /// this site and the second pass is the claim. <c>Calls</c> is large enough that a single stray
-    /// allocation per call is tens of thousands of bytes rather than something a tolerance could hide.</para>
+    /// this site and the second pass is the claim. A crowd, not four peers: at four the closure shape's 96 B
+    /// apiece is small enough that a bound loose enough to cover a snapshot would swallow it, and the
+    /// falsification would come back green and pin nothing.</para>
     ///
-    /// <para>The bound is <c>40 B a peer + 512 B</c> a call: generous against the snapshot, which the
-    /// profile measured at 17.4 B a peer at 400 peers and 25.8 B a peer at 40, and far under the
-    /// <c>113 B a peer</c> the closure shape cost. Falsification: put the capture back —
-    /// <c>Try(() =&gt; send(p), "Broadcast")</c> in <c>World.Broadcast</c> — run it, confirm red, restore.
-    /// The red is recorded in <c>briefs/reports/broadcast-alloc-opus.md</c>.</para></summary>
+    /// <para>Falsification, twice, and both were run. (a) Put the capture back —
+    /// <c>Try(() =&gt; send(p), "Broadcast")</c> — and this went red at <b>4,880 B a call over 40 peers</b> (against the bound this fact carried before the snapshot was pooled).
+    /// (b) Put the LINQ snapshot back — <c>peers = m.Players.Where(p =&gt; p != except).ToArray()</c> with the
+    /// <c>foreach</c> over it — and it went red at <b>1,032 B a call over the same 40 peers</b> (2,064,000 B over 2,000 calls). Run each,
+    /// confirm red, restore. Both reds are recorded in
+    /// <c>briefs/reports/broadcast-alloc-opus.md</c>.</para></summary>
     [Fact]
     public void BroadcastAllocatesNothingPerPeer()
     {
@@ -126,12 +127,32 @@ public class BroadcastIsolationTests
 
             Assert.True(_peers >= Crowd * Calls,
                         $"only {_peers} peer deliveries over {Calls} calls — the arrangement is wrong, not the code");
-            double peersPerCall = _peers / (double)Calls;
-            double perCall = bytes / (double)Calls;
-            Assert.True(perCall <= 40 * peersPerCall + 512,
-                        $"{perCall:N1} B per call at {peersPerCall:N1} peers — a per-peer allocation is back");
+            Assert.Equal(0, bytes);
         }
         finally { Leave(crowd); }
+    }
+
+    /// <summary>A broadcast to a map whose player list is EMPTY does nothing and, in particular, does not
+    /// throw. The case is worth its own fact because the pooled snapshot made it a boundary it was not
+    /// before: <c>ArrayPool&lt;T&gt;.Rent(0)</c> answers with the shared empty array rather than a pooled
+    /// buffer, and that value still has to survive the clear and the return in the <c>finally</c>. The map
+    /// entry outlives its last player — <c>World.LeaveMap</c> removes the session, not the
+    /// <c>MapState</c> — so this is a real runtime state, not a contrived one.
+    ///
+    /// <para>On a map of its own, not the fixture's home map: the world is shared across the collection and
+    /// other classes leave sessions standing on <c>HomeMap</c>, so "everyone has left" is only arrangeable
+    /// somewhere nobody else goes.</para></summary>
+    [Fact]
+    public void BroadcastOnAMapWithNoPlayersLeftIsAQuietNoOp()
+    {
+        const ushort Lonely = 60900;   // outside the map registry, so nothing else in the suite enters it
+        var (only, _) = _fx.Player("EmptyMapA", Lonely, x: 5, y: 10);
+        _fx.World.LeaveMap(only, Lonely);
+
+        int hits = 0;
+        _fx.World.Broadcast(Lonely, _ => hits++);
+        _fx.World.BroadcastArea(Lonely, 5, 10, World.SoundHalfW, World.SoundHalfH, _ => hits++);
+        Assert.Equal(0, hits);
     }
 
     /// <summary>The peers a broadcast reaches are the map's players in the map's own order, and
