@@ -1158,7 +1158,10 @@ public sealed partial class World
             // client, so it is their coordinates the peers' viewport gates read.
             newcomer = new PeerTile(s, s.PlayerX, s.PlayerY);
         }
-        foreach (var p in peers) Try(() => p.Session.SyncPeer(newcomer), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
+        // Static lambda over a (p, newcomer) tuple, not Try(() => …) — the per-peer shape Broadcast uses, for
+        // the same reason: this loop is once per peer per map entry, and a capture here is a display class
+        // plus a delegate on each of them.
+        foreach (var p in peers) Try((p, newcomer), static t => t.p.Session.SyncPeer(t.newcomer), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
         return (peers, mobs);
     }
 
@@ -1186,7 +1189,7 @@ public sealed partial class World
             m.Players.Remove(s);
             peers = m.Players.ToArray();
         }
-        foreach (var p in peers) Try(() => p.DespawnEntity(id), "DespawnEntity (LeaveMap)");
+        foreach (var p in peers) Try((p, id), static t => t.p.DespawnEntity(t.id), "DespawnEntity (LeaveMap)");
     }
 
     // ---- broadcasts ---------------------------------------------------------------------------
