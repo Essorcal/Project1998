@@ -1191,7 +1191,18 @@ public sealed partial class World
     // ---- broadcasts ---------------------------------------------------------------------------
 
     /// <summary>Run <paramref name="send"/> for every player on <paramref name="mapId"/> (except
-    /// <paramref name="except"/>), outside the lock and exception-guarded.</summary>
+    /// <paramref name="except"/>), outside the lock and exception-guarded.
+    ///
+    /// <para>The per-peer step goes through <see cref="Try{T}(T, Action{T}, string)"/> with a STATIC lambda
+    /// over a <c>(p, send)</c> tuple rather than <c>Try(() =&gt; send(p), …)</c>, for the reason that overload
+    /// exists: a capturing lambda here is a display class plus a delegate PER PEER PER CALL — measured on this
+    /// repo, Debug and Release alike, at 96 B a peer, which is 38,408 B of the 45,361 B one call costs at 400
+    /// players. This is the helper the tick uses once per queued mob move and once per turn, and that every
+    /// player action reaches from its own session thread. The static lambda captures nothing, so one delegate
+    /// is cached per call site for the life of the process and the loop hands it a different tuple each time
+    /// — the tuple is a struct and stays on the stack. The isolation, the catch, the log line, the peer order
+    /// and the <paramref name="except"/> filter are all unchanged. <c>Tests/BroadcastIsolationTests.cs</c>
+    /// pins the per-peer zero and the isolation.</para></summary>
     public void Broadcast(ushort mapId, Action<Session> send, Session? except = null)
     {
         Session[] peers;
@@ -1200,7 +1211,7 @@ public sealed partial class World
             if (!_maps.TryGetValue(mapId, out var m)) return;
             peers = m.Players.Where(p => p != except).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p), "Broadcast");
+        foreach (var p in peers) Try((p, send), static t => t.send(t.p), "Broadcast");
     }
 
     /// <summary>Like <see cref="Broadcast"/>, but only to players inside a box of ±<paramref name="halfW"/> ×
@@ -1224,7 +1235,8 @@ public sealed partial class World
                 && p.PlayerX >= x0 && p.PlayerX <= x1
                 && p.PlayerY >= y0 && p.PlayerY <= y1).ToArray();
         }
-        foreach (var p in peers) Try(() => send(p), "BroadcastArea");
+        // Static lambda over a (p, send) tuple, not Try(() => send(p), …) — see Broadcast above for why.
+        foreach (var p in peers) Try((p, send), static t => t.send(t.p), "BroadcastArea");
     }
 
     /// <summary>The SAMEAREA box for a map id — <see cref="ShiftBox"/> against that map's dims. A map the
