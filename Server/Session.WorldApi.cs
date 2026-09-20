@@ -1,4 +1,4 @@
-using System.Net.Sockets;
+﻿using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using Protocol.Tk495;
@@ -377,8 +377,9 @@ public sealed partial class Session
         // Release, per viewer per beat (briefs/reports/viewport-sweep-opus.md).
         //
         // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session.
-        // The copy pass below takes the peer's id and tile OUTSIDE the lock, so the decide pass touches only
-        // this session's own sets, its own rect and its own _viewGen; it acquires nothing. The lock order
+        // The copy pass below takes the peer's id and tile OUTSIDE the lock — both straight out of the
+        // snapshot, so it reads no peer at all — and the decide pass then touches only this session's own
+        // sets, its own rect and its own _viewGen; it acquires nothing. The lock order
         // (session monitor OUTSIDE _viewLock, Session.State.cs) is therefore unchanged, and so is the #29 rule
         // that a send never happens under _viewLock — the sends are still after the release, exactly as
         // ReconcilePeer did them.
@@ -397,12 +398,20 @@ public sealed partial class Session
         int n = 0, p = 0;
         try
         {
+            // NOTHING IS DEREFERENCED HERE. The id, like the tile, comes out of the snapshot the world lock
+            // took (see World.PeerTile), so this pass is three values copied out of an array the viewer is
+            // already streaming — no read of any other session's fields at all. It used to read
+            // other.PlayerId, which is a peer's Session and then its Character: 399 cache lines that are not
+            // the viewer's, 159,600 of them a beat across 400 viewers, which the viewport profile measures
+            // at 10.2 us per viewer per beat in Debug (29.5% of the whole `(3) viewports` phase) and 3.1 us
+            // in Release. The reference itself is still copied into the subject, because ShowPlayer needs it
+            // after the release; the self test stays a reference compare for the same reason — the reference
+            // is loaded either way, so comparing it touches nothing that load did not already bring in.
             foreach (var peer in peers)                      // outside _viewLock — see above
             {
-                var other = peer.Session;
-                if (ReferenceEquals(other, this)) continue;
+                if (ReferenceEquals(peer.Session, this)) continue;
                 if (n == subs.Length) subs = Scratch<ViewSubject<Session>>.Grow(subs);
-                subs[n++] = new ViewSubject<Session>(other, other.PlayerId, peer.X, peer.Y);
+                subs[n++] = new ViewSubject<Session>(peer.Session, peer.Id, peer.X, peer.Y);
             }
 
             using (EnterView())
@@ -610,7 +619,7 @@ public sealed partial class Session
     {
         var other = peer.Session;
         if (ReferenceEquals(other, this)) return;
-        uint id = other.PlayerId;
+        uint id = peer.Id;                                         // out of the snapshot, like the tile
         // The tile comes from the caller's snapshot, taken under World._lock with the peer list itself
         // (see World.PeerTile). Reading other.PlayerX/PlayerY here instead — which is what this did — is two
         // unsynchronised ushort reads of a character every writer of which holds that lock, so the pair could
