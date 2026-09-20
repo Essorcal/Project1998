@@ -413,12 +413,12 @@ public sealed partial class Session
         // already passed a PeerTile[] — World.EnterMap and World.View return arrays, ReconcileViews passes
         // the snapshot's — so the copy pass existed only to defend against a caller that did not. The type
         // is the guarantee now, there is no IReadOnlyList overload left for a later caller to reintroduce one
-        // through, and the decide loop reads the snapshot array directly. Measured as an in-process A/B of
-        // the two shapes on the viewport profile's 400-viewer fixture, removing the pass is worth about
-        // 4.1 us per viewer per beat in Debug and 3.2 us in Release on a compact heap (2.0 us and 3.0 us on a
-        // scattered one) — 1.6 ms of a beat at 400 players in Debug — plus the 32 B per viewer per beat
-        // the interface enumerator allocated. The interleaving the harness needed is PeerSweepProbeForTest,
-        // declared above.
+        // through, and the decide loop reads the snapshot array directly. Measured on the viewport profile's
+        // 400-viewer / 305-mob fixture: this method went 21.4us -> 14.4us per viewer per beat in Debug and
+        // 7.2us -> 4.3us in Release, which at 400 players is 2.8ms and 1.2ms off a beat, and an in-process
+        // A/B of the two shapes agrees (about 7us Debug, 2.9us Release, over three runs). The enumerator the
+        // interface form allocated goes too: the sweep is 0 B per viewer per beat now, and ReconcileViews
+        // 55.3 B instead of 87.3 B. The interleaving the harness needed is PeerSweepProbeForTest, above.
         //
         // The decisions themselves are not made any staler by this: Reanchor still runs per peer, inside the
         // acquisition, against the same _viewGen handshake, so no decision uses a rect older than the viewer's
