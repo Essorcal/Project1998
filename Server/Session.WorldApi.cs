@@ -357,6 +357,23 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>The peer sweep's interleaving point, for tests only: null in production, and invoked exactly
+    /// once per <see cref="SyncPeers"/> call, <b>after the sweep has taken its rect and before anything is
+    /// reconciled</b> — the moment a walk that lands there can make the sweep's rect stale.
+    ///
+    /// <para>Why the production path carries it, which is the same argument <see cref="World.PhaseProbeForTest"/>
+    /// makes. The two staleness facts in <c>Tests/ViewportRectStalenessTests.cs</c> are PR #240's reviewer's
+    /// probes for finding F1 and F2, and they got that moment for free: <c>SyncPeers</c> took an
+    /// <c>IReadOnlyList</c>, so a test could hand it a list whose <c>GetEnumerator</c> ran a real world-lock
+    /// position write. That is exactly the "arbitrary code from an interface" this sweep no longer admits —
+    /// the parameter is a concrete <c>PeerTile[]</c> — so the interleaving point has to be a named seam
+    /// instead of a side effect of the enumeration. It is the regression guard for a HIGH; it does not get
+    /// dropped because the shape that hosted it went away.</para>
+    ///
+    /// <para>Its cost on the healthy path is one static null check per sweep — not per peer — next to a loop
+    /// over every player on the map.</para></summary>
+    internal static Action? PeerSweepProbeForTest;
+
     /// <summary>Reconcile the PEER players drawn on this client against what's in view — the player twin of
     /// <see cref="SyncMobs"/>, and needed for the same reason: <see cref="ShowPlayer"/> draws through the
     /// viewport-gated 0x33 look path, so a draw for an off-screen peer is dropped by the client. Peers only
@@ -367,6 +384,7 @@ public sealed partial class Session
     public void SyncPeers(IReadOnlyList<PeerTile> peers)
     {
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
+        PeerSweepProbeForTest?.Invoke();                     // null except under test — see the field
 
         // ONE ACQUISITION FOR THE SWEEP, not one per peer. ReconcilePeer took EnterView() per peer, which at
         // 400 players on one map is 400 viewers x 400 peers = 160,000 acquire/release pairs a beat for, in the
