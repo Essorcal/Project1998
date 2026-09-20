@@ -1,4 +1,4 @@
-﻿using System.Net.Sockets;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading.Channels;
 using Protocol.Tk495;
@@ -402,9 +402,12 @@ public sealed partial class Session
             // took (see World.PeerTile), so this pass is three values copied out of an array the viewer is
             // already streaming — no read of any other session's fields at all. It used to read
             // other.PlayerId, which is a peer's Session and then its Character: 399 cache lines that are not
-            // the viewer's, 159,600 of them a beat across 400 viewers, which the viewport profile measures
-            // at 10.2 us per viewer per beat in Debug (29.5% of the whole `(3) viewports` phase) and 3.1 us
-            // in Release. The reference itself is still copied into the subject, because ShowPlayer needs it
+            // the viewer's, 159,600 of them a beat across 400 viewers. Measured as an in-process A/B of the
+            // two capture passes, that read is worth 0 ns per viewer per beat on a compact heap and about
+            // 450 ns in Debug (90 ns Release) on a scattered one. It is NOT the viewport profile's 10.2 us /
+            // 29.5% of `(3) viewports`: that ablation arm deletes this WHOLE pass, which the pass below
+            // still pays (briefs/reports/peertile-id-opus.md).
+            // The reference itself is still copied into the subject, because ShowPlayer needs it
             // after the release; the self test stays a reference compare for the same reason — the reference
             // is loaded either way, so comparing it touches nothing that load did not already bring in.
             foreach (var peer in peers)                      // outside _viewLock — see above

@@ -1,4 +1,4 @@
-﻿using System.Buffers;
+using System.Buffers;
 using System.Diagnostics;
 using Shared;
 
@@ -103,14 +103,15 @@ public enum ArrivalPolicy
 ///
 /// <para><c>Id</c> rides along for the same reason the tile does, plus one of its own. The reason: it is
 /// another session's field, and the snapshot under <c>_lock</c> is where this struct reads another session's
-/// fields — nowhere else. The one of its own is cost. <c>SyncPeers</c>' capture pass used to read
-/// <c>peer.Session.PlayerId</c> for every peer, which at 400 players on one map is 399 dereferences of a
-/// cache line belonging to somebody else's <c>Session</c> (and then its <c>Character</c>), 159,600 times a
-/// beat across the 400 viewers; the viewport profile attributes 10.2 µs per viewer per beat in Debug to that
-/// pass, 29.5% of the whole <c>(3) viewports</c> phase. Carried here it is three values copied out of an
-/// array the viewer is already streaming. <c>Session.PlayerId</c> is <c>_char.Id</c>, assigned once in
-/// <c>Session.HandleArrival</c> before the session joins any map and never written again, so the id this
-/// snapshot takes is the id the sweep would have read.</para>
+/// fields — nowhere else. The one of its own is cost, and the cost is small: reading
+/// <c>peer.Session.PlayerId</c> dereferenced somebody else's <c>Session</c> and then its <c>Character</c>,
+/// and an in-process A/B of the two capture passes put that at <b>0 ns per viewer per beat on a compact
+/// heap and about 450 ns in Debug (90 ns in Release) on a scattered one</b>. It is NOT the 10.2 µs / 29.5%
+/// of <c>(3) viewports</c> the viewport profile's ablation arm reports: that arm deletes the whole capture
+/// pass — the interface enumeration, the struct build and the array store — of which this read is a few
+/// percent (<c>briefs/reports/peertile-id-opus.md</c>). <c>Session.PlayerId</c> is <c>_char.Id</c>, assigned
+/// once in <c>Session.HandleArrival</c> before the session joins any map and never written again, so the id
+/// this snapshot takes is the id the sweep would have read.</para>
 ///
 /// <para>The three-argument form is the cold-path and test shape: it fills <c>Id</c> from the session it is
 /// given. Every hot construction site — the two in <c>EnterMap</c>, the one in <c>View</c>, the one in
