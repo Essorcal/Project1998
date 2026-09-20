@@ -80,6 +80,61 @@ public sealed partial class World
                 return world._maps.Values.SelectMany(m => m.Players).ToList();
         }
 
+        /// <summary>One map's live positions, copied out of the world under <c>World._lock</c> so that
+        /// everything a reader wants to DO with them — rect tests, fractions, JSON — happens outside it.
+        /// Plain arrays and value tuples, no sessions and no mobs: a reference here would let a reader touch
+        /// live state off the lock, which is exactly what this type exists to prevent.</summary>
+        internal sealed record MapPositions(ushort Map,
+                                            (uint Id, ushort X, ushort Y)[] Players,
+                                            (ushort X, ushort Y)[] Mobs);
+
+        /// <summary>Every map with at least one player on it, with that map's players' (id, tile) and its
+        /// ALIVE mobs' tiles copied into plain arrays. The survey document's one read of the world
+        /// (<see cref="ViewportSurvey"/>).
+        ///
+        /// <para><b>Copies and nothing else.</b> Under <c>_lock</c> this does two array fills per map and
+        /// returns; every rect test and every byte of JSON is computed by the caller outside the lock. That
+        /// is the same shape <see cref="All"/> and <see cref="Count"/> already use for the status thread, and
+        /// it is the reason this is safe to run beside the tick: the hold is proportional to the number of
+        /// entities, not to the work the survey does with them.</para>
+        ///
+        /// <para><b>No session monitor is taken</b>, deliberately. <c>PlayerX</c>/<c>PlayerY</c> are read the
+        /// way <c>World.EntityPos</c> and <c>World.EnterMap</c> read them — bare, under <c>_lock</c>, which is
+        /// the lock their only writer (<c>Session.SetPositionUnderWorldLock</c>) holds. Taking a session's
+        /// state monitor from here would be the wrong order anyway (#29 is session state THEN <c>_lock</c>,
+        /// and we are inside <c>_lock</c>), so it is not an option. The residual risk is a torn (x, y) pair
+        /// on a player mid-step, which in a positional survey is one player one tile off.</para></summary>
+        internal MapPositions[] PositionSurvey()
+        {
+            lock (world._lock)
+            {
+                var maps = new List<MapPositions>();
+                foreach (var (id, m) in world._maps)
+                {
+                    int pc = m.Players.Count;
+                    if (pc == 0) continue;                       // maps with no viewer have no fraction to take
+
+                    var players = new (uint, ushort, ushort)[pc];
+                    for (int i = 0; i < pc; i++)
+                    {
+                        var p = m.Players[i];
+                        players[i] = (p.PlayerId, p.PlayerX, p.PlayerY);
+                    }
+
+                    // Two passes so the array is exactly sized: the alive count is stable under this lock,
+                    // which is the same lock every writer of Mob.Hp takes.
+                    int alive = 0;
+                    foreach (var mo in m.Mobs) if (mo.Alive) alive++;
+                    var mobs = new (ushort, ushort)[alive];
+                    int k = 0;
+                    foreach (var mo in m.Mobs) if (mo.Alive) mobs[k++] = (mo.X, mo.Y);
+
+                    maps.Add(new MapPositions(id, players, mobs));
+                }
+                return maps.ToArray();
+            }
+        }
+
         /// <summary>How many players are in the world right now. Separate from <see cref="All"/> because
         /// the status publisher wants only the number, and materialising every session into a list on a timer to
         /// read <c>.Count</c> off it is pure garbage.</summary>
