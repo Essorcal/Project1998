@@ -501,8 +501,11 @@ public sealed partial class Session
 
     /// <summary>One entity's identity and tile, captured outside <c>_viewLock</c> so the decide pass under it
     /// touches nothing but this session's own state. A struct in a reused array: the sweep must not allocate
-    /// per beat. <typeparamref name="T"/> is the <see cref="Session"/>, <see cref="Mob"/> or
-    /// <see cref="GroundItem"/> the frame would be built from.</summary>
+    /// per beat. <typeparamref name="T"/> is the <see cref="GroundItem"/> the frame would be built from, and
+    /// that is now the only closed type: <see cref="SyncPeers"/> decides straight off its <c>PeerTile[]</c>
+    /// since PR #256 and <see cref="SyncMobs"/> never captured at all, so the item sweep is the one caller
+    /// left — it still captures, because its own trap and warp markers are appended to the same array under
+    /// the lock.</summary>
     private struct ViewSubject<T> where T : class
     {
         internal T Subject;
@@ -561,9 +564,9 @@ public sealed partial class Session
     /// safety argument: two threads sweep the SAME viewer concurrently all the time — the world tick's
     /// reconcile and the viewer's own read loop reconciling a walk step — so a buffer hanging off the session
     /// would be two sweeps writing one array. It is a property of the sweep in flight, which is a property of
-    /// the thread. (A static field of a generic type gets its own storage per closed type, so the six buffers
-    /// in play here — a subject and a pending array for each of peers, mobs and items — are six separate
-    /// arrays.)
+    /// the thread. (A static field of a generic type gets its own storage per closed type, so the four buffers
+    /// in play here — a pending array for each of peers, mobs and items, plus the item sweep's subject array,
+    /// which is the only capture left — are four separate arrays.)
     ///
     /// <para>Rented by nulling the slot, so a sweep that somehow re-entered on this thread would get a fresh
     /// array instead of the one being iterated. Nothing on the send path reaches a sweep today
