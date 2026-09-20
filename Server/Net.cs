@@ -98,6 +98,9 @@ public sealed class TkListener
 
         _ = Task.Run(_world.Restarts.Loop);      // restart-warning ladder + the deploy's file trigger (1s cadence, not latency-critical)
         _ = Task.Run(() => StatusFile.Loop(_world));   // run/status.json for the launcher's "N online" pill
+        // run/viewport.json — where players and mobs stand, and the in-view fraction a spatial index would
+        // save. Its OWN task, not a second call inside the status loop: see ViewportSurvey.Loop.
+        _ = Task.Run(() => ViewportSurvey.Loop(_world));
     }
 
     private int _shutdownOnce;   // Interlocked guard: Environment.Exit(0) below re-raises ProcessExit, so
