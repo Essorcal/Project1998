@@ -381,7 +381,7 @@ public sealed partial class Session
     /// off-screen, is invisible forever until a room change or Ctrl+R re-draws them in view — the reported
     /// "can't see users I walk up to". Called on world entry, after each of our walk steps, and every world
     /// tick — the same three sites as SyncMobs. Self is skipped.</summary>
-    public void SyncPeers(IReadOnlyList<PeerTile> peers)
+    public void SyncPeers(PeerTile[] peers)
     {
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
         PeerSweepProbeForTest?.Invoke();                     // null except under test — see the field
@@ -394,56 +394,58 @@ public sealed partial class Session
         // the per-peer acquisition at ~38us of a ~51us modelled peer sweep in Debug and ~3.3us of ~7.5us in
         // Release, per viewer per beat (briefs/reports/viewport-sweep-opus.md).
         //
-        // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session.
-        // The copy pass below takes the peer's id and tile OUTSIDE the lock — both straight out of the
-        // snapshot, so it reads no peer at all — and the decide pass then touches only this session's own
-        // sets, its own rect and its own _viewGen; it acquires nothing. The lock order
-        // (session monitor OUTSIDE _viewLock, Session.State.cs) is therefore unchanged, and so is the #29 rule
-        // that a send never happens under _viewLock — the sends are still after the release, exactly as
-        // ReconcilePeer did them.
+        // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session,
+        // or into anything else at all. `peers` is the snapshot array World._lock filled, and a PeerTile
+        // carries the peer's id and tile as well as its reference, so every line under the acquisition is an
+        // array index and a struct field read. The peer's Session reference is copied into the pending frame
+        // and never followed there — ShowPlayer follows it after the release. The decide pass therefore
+        // touches only this session's own sets, its own rect and its own _viewGen, and acquires nothing. The
+        // lock order (session monitor OUTSIDE _viewLock, Session.State.cs) is unchanged, and so is the #29
+        // rule that a send never happens under _viewLock — the sends are still after the release, exactly
+        // as ReconcilePeer did them.
         //
-        // WHY THE COPY PASS EXISTS AT ALL. `peers` is an interface, so enumerating it is arbitrary code — the
-        // reviewer's interleaving harness (Tests/ViewportRectStalenessTests.cs) runs a real world-lock position
-        // write from inside GetEnumerator. Arbitrary code must not run under a view lock: Session.EnterState
-        // asserts !HoldsAnyViewLock and World._lock would be taken second. So the enumeration stays where it
-        // already was, outside the lock, and only the decisions move inside one acquisition.
+        // WHY THE PARAMETER IS A CONCRETE ARRAY, AND WHY THERE IS NO COPY PASS ANY MORE. This sweep used to
+        // take an IReadOnlyList, so enumerating it was arbitrary code: the interleaving harness in
+        // Tests/ViewportRectStalenessTests.cs ran a real world-lock position write from inside GetEnumerator.
+        // Arbitrary code must not run under a view lock (Session.EnterState asserts !HoldsAnyViewLock and
+        // World._lock would be taken second), so the enumeration had to stay outside the acquisition and copy
+        // each peer into a rented ViewSubject array for the decide pass to read. Every production caller
+        // already passed a PeerTile[] — World.EnterMap and World.View return arrays, ReconcileViews passes
+        // the snapshot's — so the copy pass existed only to defend against a caller that did not. The type
+        // is the guarantee now, there is no IReadOnlyList overload left for a later caller to reintroduce one
+        // through, and the decide loop reads the snapshot array directly. Measured as an in-process A/B of
+        // the two shapes on the viewport profile's 400-viewer fixture, removing the pass is worth about
+        // 4.1 us per viewer per beat in Debug and 3.2 us in Release on a compact heap (2.0 us and 3.0 us on a
+        // scattered one) — 1.6 ms of a beat at 400 players in Debug — plus the 32 B per viewer per beat
+        // the interface enumerator allocated. The interleaving the harness needed is PeerSweepProbeForTest,
+        // declared above.
         //
         // The decisions themselves are not made any staler by this: Reanchor still runs per peer, inside the
         // acquisition, against the same _viewGen handshake, so no decision uses a rect older than the viewer's
         // tile at the moment it is made (F1/F2, PR #240's review).
-        var subs = Scratch<ViewSubject<Session>>.Rent(peers.Count);
         var pend = Scratch<PendingSend<Session>>.Rent(PendingSeed);
-        int n = 0, p = 0;
+        int p = 0;
         try
         {
-            // NOTHING IS DEREFERENCED HERE. The id, like the tile, comes out of the snapshot the world lock
-            // took (see World.PeerTile), so this pass is three values copied out of an array the viewer is
-            // already streaming — no read of any other session's fields at all. It used to read
-            // other.PlayerId, which is a peer's Session and then its Character: 399 cache lines that are not
-            // the viewer's, 159,600 of them a beat across 400 viewers. Measured as an in-process A/B of the
-            // two capture passes, that read is worth 0 ns per viewer per beat on a compact heap and about
-            // 450 ns in Debug (90 ns Release) on a scattered one. It is NOT the viewport profile's 10.2 us /
-            // 29.5% of `(3) viewports`: that ablation arm deletes this WHOLE pass, which the pass below
-            // still pays (briefs/reports/peertile-id-opus.md).
-            // The reference itself is still copied into the subject, because ShowPlayer needs it
-            // after the release; the self test stays a reference compare for the same reason — the reference
-            // is loaded either way, so comparing it touches nothing that load did not already bring in.
-            foreach (var peer in peers)                      // outside _viewLock — see above
-            {
-                if (ReferenceEquals(peer.Session, this)) continue;
-                if (n == subs.Length) subs = Scratch<ViewSubject<Session>>.Grow(subs);
-                subs[n++] = new ViewSubject<Session>(peer.Session, peer.Id, peer.X, peer.Y);
-            }
-
+            // NOTHING IS DEREFERENCED IN HERE. `peer` is a read-only reference into the snapshot array, and
+            // its id, like its tile, came out of the world lock (see World.PeerTile) — so the whole loop is
+            // an array index, four struct field reads and this session's own decision. peer.Session is copied
+            // into the pending frame as a reference and never followed: ShowPlayer follows it after the
+            // release. The self test stays a reference compare rather than an id compare for the same reason
+            // — the reference is loaded either way, so comparing it touches nothing that load did not
+            // already bring in. Array order is the snapshot's order, which the interface enumeration walked
+            // too, so the peers are decided in exactly the order they were before.
             using (EnterView())
-                for (int i = 0; i < n; i++)
+                for (int i = 0; i < peers.Length; i++)
                 {
+                    ref readonly var peer = ref peers[i];
+                    if (ReferenceEquals(peer.Session, this)) continue;
                     Reanchor(ref view);                      // no decision on a rect older than the step
-                    var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, subs[i].Id, subs[i].X, subs[i].Y,
+                    var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, peer.Id, peer.X, peer.Y,
                                                           in view, out bool drawnBefore, out bool shownAfter, out uint stamp);
                     if (draw == EntityDraw.Nothing) continue;
                     if (p == pend.Length) pend = Scratch<PendingSend<Session>>.Grow(pend);
-                    pend[p++] = new PendingSend<Session>(subs[i].Subject, subs[i].Id, stamp, subs[i].X, subs[i].Y,
+                    pend[p++] = new PendingSend<Session>(peer.Session, peer.Id, stamp, peer.X, peer.Y,
                                                         draw == EntityDraw.Show, drawnBefore, shownAfter);
                 }
 
@@ -492,9 +494,7 @@ public sealed partial class Session
         }
         finally
         {
-            Array.Clear(subs, 0, n);                         // do not let scratch pin a disconnected Session
-            Scratch<ViewSubject<Session>>.Return(subs);
-            Array.Clear(pend, 0, p);
+            Array.Clear(pend, 0, p);                         // do not let scratch pin a disconnected Session
             Scratch<PendingSend<Session>>.Return(pend);
         }
     }

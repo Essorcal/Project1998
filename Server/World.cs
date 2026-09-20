@@ -109,7 +109,10 @@ public enum ArrivalPolicy
 /// heap and about 450 ns in Debug (90 ns in Release) on a scattered one</b>. It is NOT the 10.2 µs / 29.5%
 /// of <c>(3) viewports</c> the viewport profile's ablation arm reports: that arm deletes the whole capture
 /// pass — the interface enumeration, the struct build and the array store — of which this read is a few
-/// percent (<c>briefs/reports/peertile-id-opus.md</c>). <c>Session.PlayerId</c> is <c>_char.Id</c>, assigned
+/// percent (<c>briefs/reports/peertile-id-opus.md</c>). That pass is gone now, and this struct is why:
+/// because a <c>PeerTile</c> carries everything the decision needs, <c>SyncPeers</c> takes the snapshot
+/// array itself and decides straight off it under its one acquisition, with nothing copied out first.
+/// <c>Session.PlayerId</c> is <c>_char.Id</c>, assigned
 /// once in <c>Session.HandleArrival</c> before the session joins any map and never written again, so the id
 /// this snapshot takes is the id the sweep would have read.</para>
 ///
