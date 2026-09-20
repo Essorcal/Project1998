@@ -169,10 +169,17 @@ public sealed partial class Session
     /// (<c>World.EnterMap</c>, <c>World.View</c>, <c>ReconcileViews</c>' snapshot, <c>World.AddMob</c>'s
     /// one-mob array), so no caller changed and no overload is left.</para>
     ///
-    /// <para>The saving is small and it is the enumerator alone — there was no copy pass here to delete. An
-    /// in-process A/B of the two loop shapes on 400 viewers x 305 mobs measured about 0.85 µs per viewer per
-    /// beat in Debug and 0.65 µs in Release, plus the 32 B the interface enumerator over an array allocates
-    /// per sweep, which goes to zero. See briefs/reports/mob-sweep-array-opus.md.</para>
+    /// <para>The saving is small and it is the enumerator alone — there was no copy pass here to delete, so
+    /// this is not the 7 µs PR #256 took off the peer sweep. An in-process A/B of the two loop shapes on 400
+    /// viewers x 305 mobs, interleaved and repeated three times in each of four runs, measured <b>0.50-0.86 µs
+    /// per viewer per beat in Debug and 0.65-0.72 µs in Release</b>. The real method before and after, in the
+    /// same machine window, went 11,412 -&gt; 9,246 ns Debug and 2,987 -&gt; 2,296 ns Release — but the
+    /// untouched <c>SyncPeers</c> control moved -10.3% Debug and +2.0% Release between those two runs, so the
+    /// figures this change can claim are about 1.0 µs Debug and 0.75 µs Release, which is roughly 0.4 ms and
+    /// 0.3 ms off a beat at 400 players. The cleaner half of the answer is allocation: the interface
+    /// enumerator over an array is a 32 B heap object per sweep, and this sweep and the item sweep now
+    /// allocate nothing, which is 12.8 KB a beat at 400 players.
+    /// See briefs/reports/mob-sweep-array-opus.md.</para>
     ///
     /// <para>The mob decision also stays written out here rather than going through the peer half's helper —
     /// that helper is an eight-argument call neither build inlines, once per mob.</para></summary>
