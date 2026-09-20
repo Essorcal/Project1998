@@ -305,7 +305,7 @@ public sealed partial class Session
     // one takes a bare Monster.tbl look id and needs no registry row, so it can show anything in Monster.epf.
     //
     // It used to be a SESSION-LOCAL dummy (drawn straight to the caller over 0x16, never registered), which
-    // meant nobody else could see what a GM spawned — and, more quietly, that it sat outside the _shownMobs
+    // meant nobody else could see what a GM spawned — and, more quietly, that it sat outside the _drawnMobs
     // bookkeeping every other entity is tracked by. The raw-sprite 0x16 probe that behaviour existed for is
     // still available, under @mobraw.
     //

@@ -1341,7 +1341,7 @@ public sealed partial class Session
     // (proven smooth on a horse); P1998_V495_FASTMOVE_TRUST_TOGGLE=0 forces the old always-0x26 behavior.
     private static readonly bool FastMoveTrustToggle = ServerConfig.Current.FastMoveTrustToggle;
 
-    // Viewport-streamed world mobs: the set of shared-mob ids currently drawn on THIS client. The client's
+    // Viewport-streamed world mobs: the shared-mob ids currently drawn on THIS client. The client's
     // 0x07 spawn silently drops entities outside the camera rect, so a 400-mob map can't be blanket-sent —
     // instead SyncMobs spawns mobs as they enter view and despawns them as they leave, keeping the client to
     // a screenful. Guarded by _viewLock (touched by both this read-loop and the World tick thread).
@@ -1351,17 +1351,18 @@ public sealed partial class Session
     // process and it has a rule: session monitors are OUTSIDE it. Take it only through EnterView(), which
     // counts the depth so entering a session monitor underneath it trips an assert — see Session.State.cs
     // and the cycle ReconcilePeer used to close.
-    private readonly HashSet<uint> _shownMobs = new();
-    // Shown mobs currently sitting in the overdraw band (outside the strict 17x15, inside the drawn 19x17).
-    // The client MAY have culled these; if one steps back into the strict rect we re-assert its 0x07 rather
-    // than assume it's still there. This is what makes HidePad > ShowPad safe — see SyncMobs.
-    private readonly HashSet<uint> _edgeMobs = new();
+    // ONE ENTRY PER DRAWN MOB, and the value is which of the two drawn states it is in: DrawnInside, or
+    // DrawnBand for one sitting in the overdraw band (outside the strict 17x15, inside the drawn 19x17).
+    // The client MAY have culled a banded entity; if one steps back into the strict rect we re-assert its
+    // 0x07 rather than assume it's still there. That is what makes HidePad > ShowPad safe — see SyncMobs.
+    // The full semantics, and what this replaced, are on DrawnInside below.
+    private readonly Dictionary<uint, byte> _drawnMobs = new();
     // Same story for GROUND ITEMS, and for the same reason: ShowGroundItem draws through the very same
     // viewport-gated 0x07 path (see Session.ShowGroundItem's RE note), so a floor item spawned or replayed
     // for an off-screen tile is silently dropped by the client and — because items never move — would never
     // be re-sent. That is why forage drops (chestnuts) were invisible: the world spawns them across a whole
     // farm-sized box while the player only ever has a screenful of it in view. SyncGroundItems reconciles
-    // this set exactly like SyncMobs does for mobs. Guarded by _viewLock alongside the mob sets.
+    // this set exactly like SyncMobs does for mobs. Guarded by _viewLock alongside the mob store.
     private readonly HashSet<uint> _shownItems = new();
     // Spot Traps / Watchful Eye markers: trap id -> the synthetic floor item drawn on that trap's tile for
     // THIS client only (RTK's item-99 drop plus its addTrapSpotters visibility tag). Kept as real GroundItems,
@@ -1383,11 +1384,67 @@ public sealed partial class Session
     // walks toward us from off-screen — has its draw silently dropped and, because nothing re-sends it as we
     // move, stays invisible until a room change re-draws them in view (or a Ctrl+R, if they're in view then).
     // That is the "can't see users I walk up to, but gating in next to them shows them" report. SyncPeers
-    // reconciles this set exactly like SyncMobs does for mobs; _edgePeers is its overdraw-band twin of
-    // _edgeMobs. Guarded by _viewLock alongside the mob/item sets.
-    private readonly HashSet<uint> _shownPeers = new();
-    private readonly HashSet<uint> _edgePeers = new();
-    // The companion of the drawn sets above that makes a DEFERRED send safe: entity id -> the serial number of
+    // reconciles this store exactly like SyncMobs does for mobs, in the same two states.
+    // Guarded by _viewLock alongside the mob store and the item set.
+    private readonly Dictionary<uint, byte> _drawnPeers = new();
+
+    /// <summary>THE DRAWN-STATE STORE, and the whole of its semantics. <c>_drawnPeers</c> and
+    /// <c>_drawnMobs</c> hold one entry per entity this client has been told to draw; the value is that
+    /// entity's state, and ABSENCE is "not drawn". Two states, because that is the state machine the sweep's
+    /// hysteresis rule is: <see cref="DrawnInside"/> — drawn, and inside the strict 17x15 rect where the
+    /// client accepts a 0x07/0x33; <see cref="DrawnBand"/> — drawn, but loitering in the overdraw band
+    /// (outside the strict rect, inside the drawn 19x17), so the client MAY have culled it and a step back
+    /// into the strict rect must re-assert the draw.
+    ///
+    /// <para><b>It replaces a pair of <c>HashSet&lt;uint&gt;</c> per entity kind</b> (<c>_shownMobs</c> /
+    /// <c>_edgeMobs</c>, <c>_shownPeers</c> / <c>_edgePeers</c>) and is exactly equivalent to them, term for
+    /// term:</para>
+    /// <list type="bullet">
+    /// <item><c>shown.Contains(id)</c> is "the id is present".</item>
+    /// <item><c>edge.Contains(id)</c> is "present with value <c>DrawnBand</c>".</item>
+    /// <item><c>shown.Add(id)</c> is "set <c>DrawnInside</c>" (every <c>shown.Add</c> in the base was a first
+    /// show, which is inside the strict rect by definition and never in the band).</item>
+    /// <item><c>edge.Add(id)</c> is "set <c>DrawnBand</c>", a no-op when it is already <c>DrawnBand</c>.</item>
+    /// <item><c>edge.Remove(id)</c> returning true is "the value was <c>DrawnBand</c>; set
+    /// <c>DrawnInside</c>"; returning false is "the value was <c>DrawnInside</c>", and writes nothing.</item>
+    /// <item><c>shown.Remove(id); edge.Remove(id)</c> is "remove the entry".</item>
+    /// </list>
+    ///
+    /// <para><b>Why the pair collapses at all</b>, which is the invariant the base kept without stating it:
+    /// the band set was always a SUBSET of the shown set. Every <c>edge.Add</c> in the base sat on a branch
+    /// that had already found the id in <c>shown</c> (the sweeps' last <c>else</c>, and the dropped-show
+    /// rollback, which only runs when the membership test it is behind has just confirmed the id is drawn);
+    /// every removal from <c>shown</c> — the despawn branch, <see cref="DespawnEntity"/>, the wholesale
+    /// clears — removed from the band set in the same breath. So no id could be in the band set and not in
+    /// the shown set, and one entry with a state carries both facts.</para>
+    ///
+    /// <para><b>What it buys</b>: one hash lookup per entity per beat instead of two. The base probed
+    /// <c>shown.Contains(id)</c> and then, for the common case of a drawn entity inside the strict rect,
+    /// <c>edge.Remove(id)</c>, which almost always returned false. Now the sweep does one
+    /// <c>TryGetValue</c>, decides off the value, and writes only on a state transition — which in the
+    /// steady state is never.</para>
+    ///
+    /// <para><b>What that is worth, measured</b> on the viewport profile's 400-viewer / 305-mob fixture, per
+    /// viewer per beat, as the median of three interleaved base/head runs on an idle machine. <b>In
+    /// Release</b> the peer sweep 4,310 ns -&gt; 3,487 ns and the mob sweep 2,942 ns -&gt; 2,426 ns, the
+    /// whole sweep 7,382 ns -&gt; 6,094 ns and <c>ReconcileViews</c> 7,483 ns -&gt; 6,189 ns, which at 400
+    /// players is 0.52 ms off a beat. <b>In Debug</b> nothing outside the run-to-run spread, on either
+    /// sweep. An in-process A/B of the two representations on one fixture agrees with both halves
+    /// (Release -836 ns on peers and -512 ns on mobs; Debug of either sign, within a microsecond), and the
+    /// reason is the ordinary one: in Debug nothing is inlined, so one hash probe is a small share of a
+    /// per-entity cost that is mostly call overhead, and the second probe the base made was against a band
+    /// set that is EMPTY on that fixture — an empty HashSet's Remove returns without hashing anything.
+    /// Allocation is unchanged at 0 B per viewer per beat. See briefs/reports/drawn-set-state-opus.md.</para>
+    ///
+    /// <para>Ground items keep a plain <c>HashSet</c> (<see cref="_shownItems"/>): they have no overdraw band
+    /// — see <see cref="SyncGroundItems"/> — so there is no second state for them to be in.</para>
+    ///
+    /// <para><b>Locking is unchanged</b>: the store is this session's own state, guarded by <c>_viewLock</c>
+    /// exactly as the four sets were, read and written only under it.</para></summary>
+    private const byte DrawnInside = 0;
+    /// <summary>See <see cref="DrawnInside"/>: drawn, and in the overdraw band.</summary>
+    private const byte DrawnBand = 1;
+    // The companion of the drawn state above that makes a DEFERRED send safe: entity id -> the serial number of
     // the most recent decision taken about that entity. All three sweeps decide for every entity under one
     // acquisition and send after releasing it, so a send can be parked (ShowPlayer -> the subject's Snapshot,
     // which takes that session's monitor; or simply descheduled anywhere on the send pass) while another
@@ -1415,7 +1472,7 @@ public sealed partial class Session
     // 0x44c950 clamps to originX-1 .. originX+ViewW+1 (see Session.Entity.cs), i.e. a 19x17 drawn rect
     // around a 17x15 viewport. Despawning at 17x15 therefore yanks mobs off a tile that is still on screen
     // — the reported "mobs pop out one tile too soon". The dead zone this note used to warn about (we think
-    // it's drawn, the client already culled it, we never re-send) is closed by _edgeMobs: anything that
+    // it's drawn, the client already culled it, we never re-send) is closed by the DrawnBand state: anything that
     // spends time in the band gets a fresh 0x07 when it re-enters the strict rect.
     private const int ShowPad = 0;
     private const int HidePad = 1;
