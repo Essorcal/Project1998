@@ -1863,19 +1863,22 @@ public sealed partial class Session
         _poisonNextTick = Environment.TickCount64 + NextPoisonGap();
 
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
-        if (_poisonFxAnim > 0)
-        {
-            int a = _poisonFxAnim;
-            _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, a));
-        }
+        if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
         SendMiniText(PoisonTickText);               // only on a tick that TOOK health — see the const
+        BroadcastPoisonBar();
+        if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
+    }
+
+    /// <summary>The venom's health bar over this player's head, exactly the frame the tick used to send from
+    /// <see cref="TickPoison"/>'s own body. See <see cref="BroadcastStatusFx"/> for why it is a method.</summary>
+    private void BroadcastPoisonBar()
+    {
         byte pct = PlayerHpPercent();
         _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.DamageOver(_char.Id, pct, HitCritByte));
-        if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
     }
 
     /// <summary>"@doze [secs]" — put YOURSELF to sleep, to audition the hold without a second character.
@@ -1958,9 +1961,23 @@ public sealed partial class Session
         if (!Asleep) { WakeUp(byDamage: false); return; }
         if (_sleepFxAnim <= 0 || Environment.TickCount64 < _sleepFxNext) return;
         _sleepFxNext = Environment.TickCount64 + _sleepFxEvery;
-        int a = _sleepFxAnim;
-        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, a));
+        BroadcastStatusFx(_sleepFxAnim);
     }
+
+    /// <summary>The drowse redraw and the venom's flash: one frame, <c>EffectOver(id, anim)</c>, to the wide
+    /// area around this player. It is a METHOD rather than the two lines it replaced for one measured reason.
+    ///
+    /// <para>The lambda captures a local, and the compiler builds the display class that holds it at the top
+    /// of the scope that declares it — so while these lines lived in <see cref="TickSleep"/> and
+    /// <see cref="TickPoison"/>, all 400 calls a beat built one on the way IN, before either pre-check could
+    /// return: 32 B a call each, 25,600 B a beat at 400 players. A bare block inside the method is NOT a
+    /// reliable fix: with a single closure scope left in the method Roslyn merges the environment back to
+    /// method entry and the allocation comes straight back, which was measured here at 12,800 B a beat with
+    /// <c>TickSleep</c> written that way. A separate method is a scope it cannot merge away, so both sites
+    /// use one. Same frame, same arguments, same order, still under the caller's monitor — the callers hold
+    /// <see cref="EnterState"/> across the call exactly as they held it across the lines.</para></summary>
+    private void BroadcastStatusFx(int anim) =>
+        _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, anim));
 
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
     // Unlike ReceiveTimedBuff this keeps a zero-amount entry (a curse's category slot matters even with no stat
