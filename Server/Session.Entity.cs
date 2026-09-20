@@ -198,14 +198,56 @@ public sealed partial class Session
     /// <para><paramref name="regenDue"/> defaults to false only so the pre-#29 acceptance fact
     /// <c>Tests/SessionActorTests.ConcurrentRegenTickAndBuffApplyLosesNoEntry</c>, which drives this method
     /// for its buff-expiry pass alone, keeps compiling unedited. The tick — the one production caller —
-    /// always passes it.</para></summary>
+    /// always passes it.</para>
+    ///
+    /// <para><b>The method decides whether it has anything to do BEFORE taking the monitor.</b> The tick
+    /// thread calls this on every online player every beat — 400 monitor entries a beat on the load the
+    /// holds run — and on all but a handful of those beats all four jobs are idle. Entering the monitor to
+    /// find that out is not work, it is waiting: the tick queues behind whichever session thread is
+    /// mid-send or inside a Lua call, which is what PR #254's review measured directly (the whole flush
+    /// stalled on this method with one session's monitor held from a second thread,
+    /// <c>reviews/PR254-by-fable.md</c> F3). So each of the four jobs is decided from a field the tick
+    /// thread can read without the monitor, and the monitor is taken only when one of them says yes:
+    /// <list type="bullet">
+    /// <item><c>regenDue</c> is the world's clock, passed in — not this session's state at all.</item>
+    /// <item><c>_mailAccum</c> is written HERE and nowhere else, on the tick thread, so the accumulate moves
+    /// above the monitor with it and it is not shared state.</item>
+    /// <item><c>_nextBuffExpiry</c> is the exact minimum expiry, maintained by the four <c>_buffs</c>
+    /// writers under the monitor they already hold (see <c>Session.Items.cs</c>).</item>
+    /// <item><c>_crRageTier</c> is an <c>int</c> written only under the monitor; a fury is either up or it
+    /// is not.</item>
+    /// </list>
+    /// Everything the method actually DOES still happens under the monitor, including a second, guarded
+    /// look at each condition — the pre-check only decides whether to bother acquiring.</para>
+    ///
+    /// <para><b>The one race, and why it is benign.</b> A buff cast, a fury armed or a mail poke that lands
+    /// between the pre-check's read and its return makes the tick skip this player for ONE beat, 333 ms;
+    /// nothing is lost, because the next beat reads the new value. A buff still fades on the first beat at
+    /// or after its expiry (the hint is exact, not approximate), the fury wear-off still fires on the first
+    /// beat at or after <c>_rageUntil</c>, and the 30 s mail backstop is a backstop. This is the same shape
+    /// as the sleep/poison pre-check one slice earlier (PR #254). <c>Volatile.Read</c> rather than a plain
+    /// read so the JIT cannot hoist either load out of the beat; a 64-bit read is already atomic on every
+    /// runtime this server targets.</para>
+    ///
+    /// <para>The early return happens before <c>EnterState()</c>'s lock-order asserts, which removes no
+    /// check that could have fired: the <c>(5) regen</c> loop runs in the part of <c>FlushTick</c> that is
+    /// outside <c>World._lock</c> (the snapshot above it takes and releases the lock), and it holds no view
+    /// lock, so the thread on this path holds nothing to assert about.</para></summary>
     public void RegenTick(int ms, bool regenDue = false)
     {
-        using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        // Mail-flag backstop: runs BEFORE the dead/topped-off early-returns so a resting or ghosted player
-        // still notices mail that arrived via a path we forgot to poke. Event-driven refresh is the norm; this
-        // is one cheap DB re-check every 30s, vs the old two-queries-per-stats-packet.
+        // Tick-thread-owned, so it is accumulated here, above the monitor, and only the reset below needs
+        // the monitor. Mail-flag backstop: a resting or ghosted player still notices mail that arrived via
+        // a path we forgot to poke. Event-driven refresh is the norm; this is one cheap DB re-check every
+        // 30s, vs the old two-queries-per-stats-packet.
         _mailAccum += ms;
+
+        bool due = regenDue
+                || _mailAccum >= MailBackstopMs
+                || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
+                || Volatile.Read(ref _crRageTier) > 0;
+        if (!due) return;   // the common case: no monitor entered at all
+
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
         ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
