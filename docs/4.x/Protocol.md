@@ -2150,8 +2150,10 @@ separate `World.Tick` pass, *not* gated on mobs or viewport like the steps above
 `Player.regen` (`rtklua/Accepted/player.lua`, fired every 25 s from `pc_timer.lua`): while alive, restore
 **2 % of max HP** and **2 % of max MP**, then push a `0x08` stats packet. RTK scales the vita portion by its
 derived `healing` stat; we don't carry that, so **HP regen scales with Grace and MP regen with Will**
-(`ceil(max * 0.02 * (1 + stat/100))`), keeping RTK's 2 % base and 25 s cadence. Each session owns a
-`_regenAccum` that counts *real* elapsed ms, so the 25 s interval is independent of the 600 ms tick; the dead
+(`ceil(max * 0.02 * (1 + stat/100))`), keeping RTK's 2 % base and 25 s cadence. The 25 s clock is the
+**world's**, not each player's (`World._regenClockMs`, advanced by one 333 ms beat immediately before the regen
+pass): everyone below full heals on the *same* beat — the first beat at or after each 25,000 ms boundary — and
+taking damage restarts nothing, which is RTK's one global `timerTick%50` rather than a per-player timer. The dead
 (HP 0) and the already-full are skipped, and a packet is emitted only on an actual change. Effective max is
 base + gear (`Totals()`). (Threading: this writes `_char.Hp/Mp` from the tick thread while the session's
 read-loop also writes them on damage/heal — lock-free, consistent with the codebase's `_char` posture; a

@@ -1026,6 +1026,35 @@ public sealed partial class Session
     private sealed class ActiveBuff { public string Stat = ""; public int Amount; public long Expires; public string Key = ""; public string Name = ""; public string Category = ""; }
     private readonly List<ActiveBuff> _buffs = new();
 
+    /// <summary>The earliest <c>Expires</c> in <see cref="_buffs"/>, or <c>long.MaxValue</c> when the list is
+    /// empty. The ONE question <see cref="RegenTick"/> has to answer before it takes this session's monitor:
+    /// is there a buff for <c>ExpireBuffs</c> to fade this beat?
+    ///
+    /// <para><b>Exact, not approximate.</b> It is recomputed from the list itself inside each of the four
+    /// writers below, under the monitor they already hold, so it always equals the real minimum — a buff
+    /// still fades on the first beat at or after its expiry, exactly as before. No reader ever advances it
+    /// and nothing estimates it.</para>
+    ///
+    /// <para><b>Why a volatile write.</b> The tick thread reads it with <c>Volatile.Read</c> and no monitor,
+    /// so the write must not sit behind the list mutation that caused it; a 64-bit read is atomic on every
+    /// runtime this server targets. The one race is benign and is the sleep/poison pre-check's shape: a buff
+    /// added between the tick's read and its return is seen on the NEXT beat, 333 ms later, and a buff whose
+    /// expiry is still in the future could not have been due on this one.</para></summary>
+    private long _nextBuffExpiry = long.MaxValue;
+
+    /// <summary>Test-only view of <see cref="_nextBuffExpiry"/>. The hint is invisible from outside the
+    /// class, and a fact that cannot read it cannot pin that it is the real minimum.</summary>
+    internal long NextBuffExpiryForTest => Volatile.Read(ref _nextBuffExpiry);
+
+    /// <summary>Recompute the hint from the list. Called at the end of every <c>_buffs</c> writer, on a list
+    /// that is a handful of entries in practice, under the monitor the writer already holds.</summary>
+    private void RecomputeNextBuffExpiry()
+    {
+        long min = long.MaxValue;
+        foreach (var b in _buffs) if (b.Expires < min) min = b.Expires;
+        Volatile.Write(ref _nextBuffExpiry, min);
+    }
+
     // ---- the only writers of _buffs (#29) ------------------------------------------------------------
     // This list is the worked example in the ticket: the tick thread removes from it (ExpireBuffs), the read
     // loop adds to it (eighteen sites in Session.Spells.cs), and the autosave thread enumerates it
@@ -1033,28 +1062,37 @@ public sealed partial class Session
     // path that reaches them without the state monitor, instead of losing an entry in silence. READS are
     // deliberately not funnelled — a torn read of a list of value-ish records shows a stale total for one
     // frame, where a torn write loses a buff for good.
+    //
+    // Each of the four also refreshes _nextBuffExpiry, and that is the funnel earning its keep a second
+    // time: because every write goes through here, an exact hint costs four call sites and no new writer
+    // can forget it without also skipping the guard.
     private void BuffAdd(ActiveBuff b)
     {
         AssertStateHeld("_buffs");
         _buffs.Add(b);
+        RecomputeNextBuffExpiry();
     }
 
     private int BuffRemoveAll(Predicate<ActiveBuff> match)
     {
         AssertStateHeld("_buffs");
-        return _buffs.RemoveAll(match);
+        int n = _buffs.RemoveAll(match);
+        RecomputeNextBuffExpiry();
+        return n;
     }
 
     private void BuffRemoveAt(int index)
     {
         AssertStateHeld("_buffs");
         _buffs.RemoveAt(index);
+        RecomputeNextBuffExpiry();
     }
 
     private void BuffClear()
     {
         AssertStateHeld("_buffs");
         _buffs.Clear();
+        RecomputeNextBuffExpiry();
     }
 
     // ---- the only writers of the worn-gear list (#29) ------------------------------------------------
