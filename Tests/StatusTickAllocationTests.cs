@@ -32,6 +32,16 @@ public class StatusTickAllocationTests
     /// <summary>Beats swept per pass. 400 x 20 = 8,000 calls of each method.</summary>
     private const int Beats = 20;
 
+    /// <summary>A map of this roster's own, NOT <see cref="SessionFixture.HomeMap"/>. 400 sessions entering
+    /// and leaving the map every other fact in the "world" collection stands on is not a neutral act: each
+    /// entry broadcasts to everyone already there, and those peer snapshots rent from
+    /// <c>ArrayPool&lt;Session&gt;.Shared</c>, which is process-wide — so the roster can perturb a
+    /// NEIGHBOURING allocation fact (<c>BroadcastIsolationTests.BroadcastAllocatesNothingPerPeer</c>, which
+    /// broadcasts to a crowd on HomeMap) without anything here being wrong. The world builds a
+    /// <c>MapState</c> for whatever id it is asked for, so an id no content file uses costs nothing and
+    /// touches nobody: the same trick the profile harness uses.</summary>
+    private const ushort RosterMap = 60998;
+
     private readonly SessionFixture _fx;
 
     public StatusTickAllocationTests(SessionFixture fx) => _fx = fx;
@@ -76,7 +86,7 @@ public class StatusTickAllocationTests
         }
         finally
         {
-            foreach (var s in sessions) _fx.World.LeaveMap(s, SessionFixture.HomeMap);
+            foreach (var s in sessions) _fx.World.LeaveMap(s, RosterMap);
         }
     }
 
@@ -175,7 +185,7 @@ public class StatusTickAllocationTests
         var outbounds = new RecordingOutbound[count];
         for (int i = 0; i < count; i++)
         {
-            var (s, o) = _fx.Player($"{prefix}{i:0000}", SessionFixture.HomeMap, x: 5, y: 10);
+            var (s, o) = _fx.Player($"{prefix}{i:0000}", RosterMap, x: 5, y: 10);
             sessions[i] = s;
             outbounds[i] = o;
         }
