@@ -153,16 +153,30 @@ public sealed partial class Session
     /// true of this method the rule <c>SyncPeers</c> and <c>ReconcilePeer</c> already state — a send never
     /// happens under <c>_viewLock</c> (#29).</para>
     ///
-    /// <para><b>What this sweep does NOT copy from <c>SyncPeers</c>, and it is a measurement rather than an
-    /// oversight.</b> The peer sweep copies each peer's id and tile OUTSIDE the lock, because it must: its
-    /// decide pass would otherwise read another session under the viewer's view lock. Nothing here does —
-    /// a <c>Mob</c> is a plain object with plain fields — so the enumeration stays under the acquisition,
-    /// exactly where the base had it. Moving it out was tried and measured on 400 viewers and 305 mobs that
-    /// produce no frames: +38% on the sweep, with no acquisition saving to pay for it. The mob decision also
-    /// stays written out here rather than going through the peer half's helper, for the same reason — that
-    /// helper is an eight-argument call neither build inlines, once per mob. See
-    /// briefs/reports/sweep-deferred-sends-opus.md.</para></summary>
-    public void SyncMobs(IReadOnlyList<Mob> mobs)
+    /// <para><b>Why the walk stays under the acquisition, and why the parameter is a concrete array.</b> The
+    /// peer sweep once copied each peer's id and tile OUTSIDE the lock, because it had to: its decide pass
+    /// would otherwise read another session under the viewer's view lock. Nothing here does — a <c>Mob</c> is
+    /// a plain object with plain fields — so the walk stays under the acquisition, exactly where the base had
+    /// it. Moving it out was tried and measured on 400 viewers and 305 mobs that produce no frames: +38% on
+    /// the sweep, with no acquisition saving to pay for it (briefs/reports/sweep-deferred-sends-opus.md).</para>
+    ///
+    /// <para>What that argument never covered is the walk ITSELF. While the parameter was an
+    /// <c>IReadOnlyList&lt;Mob&gt;</c>, <c>foreach</c> called <c>GetEnumerator</c>, <c>MoveNext</c> and
+    /// <c>Current</c> through an interface under <c>_viewLock</c> — arbitrary code by type, kept harmless
+    /// only by the convention that every caller passed an array. A <c>Mob[]</c> parameter makes it a
+    /// guarantee instead of a convention, the same move <c>SyncPeers</c> made in PR #256, and the index loop
+    /// below runs no code that is not this session's own. Every caller already passed an array
+    /// (<c>World.EnterMap</c>, <c>World.View</c>, <c>ReconcileViews</c>' snapshot, <c>World.AddMob</c>'s
+    /// one-mob array), so no caller changed and no overload is left.</para>
+    ///
+    /// <para>The saving is small and it is the enumerator alone — there was no copy pass here to delete. An
+    /// in-process A/B of the two loop shapes on 400 viewers x 305 mobs measured about 0.85 µs per viewer per
+    /// beat in Debug and 0.65 µs in Release, plus the 32 B the interface enumerator over an array allocates
+    /// per sweep, which goes to zero. See briefs/reports/mob-sweep-array-opus.md.</para>
+    ///
+    /// <para>The mob decision also stays written out here rather than going through the peer half's helper —
+    /// that helper is an eight-argument call neither build inlines, once per mob.</para></summary>
+    public void SyncMobs(Mob[] mobs)
     {
         var pend = Scratch<PendingSend<Mob>>.Rent(PendingSeed);
         int p = 0;
@@ -174,8 +188,9 @@ public sealed partial class Session
                 // that queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the
                 // one the viewer stood on when the tick reached this line (PR #240's F1).
                 var view = CurrentView();                    // once for the sweep, not once per mob per pad
-                foreach (var m in mobs)                      // under the lock, as the base had it — see above
+                for (int i = 0; i < mobs.Length; i++)        // under the lock, as the base had it — see above
                 {
+                    var m = mobs[i];                         // a reference copy: Mob is a class
                     if (!m.Alive) continue;                  // a dead mob's despawn is the world's broadcast
                     Reanchor(ref view);                      // the viewer walks on its own thread; it takes
                                                              // World._lock and its own monitor, not this one
@@ -260,6 +275,13 @@ public sealed partial class Session
     /// <para>No <c>_edgeMobs</c> equivalent: a stationary item can only leave or enter the band by US moving,
     /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para>
     ///
+    /// <para>The parameter is a concrete <c>GroundItem[]</c> for the reason <c>SyncMobs</c> and
+    /// <c>SyncPeers</c> have one: an interface parameter makes the walk arbitrary code by type. The capture
+    /// pass stays, though, and this is the one sweep of the three that still has one — not because of the
+    /// parameter, but because this session's own trap and warp markers are appended to the same array INSIDE
+    /// the acquisition, so the world items have to be in it before the lock is taken. The walk over
+    /// <paramref name="items"/> is an index loop and it still runs outside the lock.</para>
+    ///
     /// <para>Same shape as the other two sweeps since this PR, and here the acquisition count IS the cut: this
     /// method took <b>one <c>EnterView</c> per item</b> (plus a second on every despawn, plus one for the
     /// markers) to read one set and, on most beats, find nothing to do — the per-entity shape
@@ -267,17 +289,19 @@ public sealed partial class Session
     /// floor items at all, and 109ns per item per viewer per beat in Debug on a map that has some (measured,
     /// 50 items: 5,470ns of sweep for 50 decisions). It is now one acquisition for the whole sweep, and the
     /// sends — which were already outside the lock — are revalidated, which they were not.</para></summary>
-    public void SyncGroundItems(IReadOnlyList<GroundItem> items)
+    public void SyncGroundItems(GroundItem[] items)
     {
-        // CAPTURE, OUTSIDE THE LOCK — `items` is an interface, so enumerating it is arbitrary code; see the
-        // note in SyncMobs. Items never move, so the captured tile is the item's tile for good.
-        var subs = Scratch<ViewSubject<GroundItem>>.Rent(items.Count + 8);
+        // CAPTURE, OUTSIDE THE LOCK — not because the walk needs to be out here (the parameter is a concrete
+        // array), but because the markers below are appended to this same array under the lock. Items never
+        // move, so the captured tile is the item's tile for good.
+        var subs = Scratch<ViewSubject<GroundItem>>.Rent(items.Length + 8);
         var pend = Scratch<PendingSend<GroundItem>>.Rent(PendingSeed);
         int n = 0, p = 0;
         try
         {
-            foreach (var gi in items)
+            for (int i = 0; i < items.Length; i++)
             {
+                var gi = items[i];                           // a reference copy: GroundItem is a class
                 if (n == subs.Length) subs = Scratch<ViewSubject<GroundItem>>.Grow(subs);
                 subs[n++] = new ViewSubject<GroundItem>(gi, gi.Id, gi.X, gi.Y);
             }
