@@ -99,8 +99,33 @@ public enum ArrivalPolicy
 /// itself: those are two separate <c>ushort</c> reads of another session's character, and every writer of
 /// them holds <c>_lock</c>, so a reader outside it can see one tile's X against the previous tile's Y. The
 /// player list was already snapshotted under the lock and used outside it; this carries the coordinates in
-/// the same snapshot, so the gate now sees the map exactly as the lock saw it rather than a mixture.</summary>
-public readonly record struct PeerTile(Session Session, ushort X, ushort Y);
+/// the same snapshot, so the gate now sees the map exactly as the lock saw it rather than a mixture.
+///
+/// <para><c>Id</c> rides along for the same reason the tile does, plus one of its own. The reason: it is
+/// another session's field, and the snapshot under <c>_lock</c> is where this struct reads another session's
+/// fields — nowhere else. The one of its own is cost, and the cost is small: reading
+/// <c>peer.Session.PlayerId</c> dereferenced somebody else's <c>Session</c> and then its <c>Character</c>,
+/// and an in-process A/B of the two capture passes put that at <b>0 ns per viewer per beat on a compact
+/// heap and about 450 ns in Debug (90 ns in Release) on a scattered one</b>. It is NOT the 10.2 µs / 29.5%
+/// of <c>(3) viewports</c> the viewport profile's ablation arm reports: that arm deletes the whole capture
+/// pass — the interface enumeration, the struct build and the array store — of which this read is a few
+/// percent (<c>briefs/reports/peertile-id-opus.md</c>). That pass is gone now, and this struct is why:
+/// because a <c>PeerTile</c> carries everything the decision needs, <c>SyncPeers</c> takes the snapshot
+/// array itself and decides straight off it under its one acquisition, with nothing copied out first.
+/// <c>Session.PlayerId</c> is <c>_char.Id</c>, assigned
+/// once in <c>Session.HandleArrival</c> before the session joins any map and never written again, so the id
+/// this snapshot takes is the id the sweep would have read.</para>
+///
+/// <para>The three-argument form is the cold-path and test shape: it fills <c>Id</c> from the session it is
+/// given. Every hot construction site — the two in <c>EnterMap</c>, the one in <c>View</c>, the one in
+/// <c>ReconcileViews</c> — names the id explicitly, under the same <c>_lock</c> acquisition that reads
+/// <c>PlayerX</c>/<c>PlayerY</c>.</para></summary>
+public readonly record struct PeerTile(Session Session, uint Id, ushort X, ushort Y)
+{
+    /// <summary>The peer's own id, read off the session. Cold paths and tests only: a caller inside
+    /// <c>World._lock</c> should pass the id it already has.</summary>
+    public PeerTile(Session session, ushort x, ushort y) : this(session, session.PlayerId, x, y) { }
+}
 
 /// <summary>Why <see cref="World.TryMovePlayer"/> refused a step. Flags, not a single value, because the
 /// walk log prints " mob" and " player" INDEPENDENTLY and always has: a mob and a player can share a tile
@@ -1183,11 +1208,11 @@ public sealed partial class World
             // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
             // stale weather when the period rolls to a value that happens to match the default-0 cache.
             m.Weather = Weather.For(mapId);
-            peers = m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray();
+            peers = m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray();
             mobs = m.Mobs.ToArray();
             // The newcomer's own tile is snapshotted here too: the loop below draws THEM on every peer's
             // client, so it is their coordinates the peers' viewport gates read.
-            newcomer = new PeerTile(s, s.PlayerX, s.PlayerY);
+            newcomer = new PeerTile(s, s.PlayerId, s.PlayerX, s.PlayerY);
         }
         // Static lambda over a (p, newcomer) tuple, not Try(() => …) — the per-peer shape Broadcast uses, for
         // the same reason: this loop is once per peer per map entry, and a capture here is a display class
@@ -1204,7 +1229,7 @@ public sealed partial class World
         lock (_lock)
         {
             if (!_maps.TryGetValue(mapId, out var m)) return (Array.Empty<PeerTile>(), Array.Empty<Mob>());
-            return (m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray(),
+            return (m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
                     m.Mobs.ToArray());
         }
     }
@@ -2921,13 +2946,15 @@ public sealed partial class World
         // The coordinates come out WITH the player list, in the same acquisition. They used to be read back
         // off each Session inside ReconcilePeer, out here with no lock held — two ushort reads of a character
         // whose owner writes both under _lock, so the gate could test one tile's X against the previous
-        // tile's Y (and its two InView calls could each see a different pair). See PeerTile.
+        // tile's Y (and its two InView calls could each see a different pair). See PeerTile. The peer's ID
+        // comes out here too, in the same acquisition and for the same reason — it is another session's
+        // field — which is what lets SyncPeers' capture pass decide without dereferencing any peer at all.
         (PeerTile[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
         lock (_lock)
         {
             snapshot = _maps.Values
                 .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))
-                .Select(m => (m.Players.Select(p => new PeerTile(p, p.PlayerX, p.PlayerY)).ToArray(),
+                .Select(m => (m.Players.Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
                               m.Mobs.ToArray(), m.Items.ToArray()))
                 .ToArray();
         }
