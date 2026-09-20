@@ -185,16 +185,19 @@ public sealed partial class Session
                     uint id = m.Id;
                     ushort mx = m.X, my = m.Y;
                     bool core = view.Contains(mx, my, ShowPad);   // strict 17x15 — where a 0x07 is accepted
-                    if (!_shownMobs.Contains(id))
+                    // ONE lookup of the drawn-state store per mob, where the base probed the shown set and
+                    // then the band set (see DrawnInside): `state` carries both answers, and a state that
+                    // has not changed is not written back.
+                    if (!_drawnMobs.TryGetValue(id, out byte state))
                     {
                         if (!core) continue;
-                        _shownMobs.Add(id);
+                        _drawnMobs[id] = DrawnInside;            // was _shownMobs.Add(id)
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
                         pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, false, true);
                     }
                     else if (!view.Contains(mx, my, HidePad))     // left the DRAWN 19x17 rect — now really gone
                     {
-                        _shownMobs.Remove(id); _edgeMobs.Remove(id);
+                        _drawnMobs.Remove(id);                   // was _shownMobs.Remove; _edgeMobs.Remove
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
                         pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, false, true, false);
                     }
@@ -203,17 +206,19 @@ public sealed partial class Session
                         // Back inside the strict rect after loitering in the overdraw band. We don't know
                         // whether the client culled it out there, so re-send the spawn: 0x07 on a live id is
                         // an in-place update, and this is strictly cheaper than the despawn+respawn pair the
-                        // old HidePad=0 sent on every boundary crossing.
-                        if (!_edgeMobs.Remove(id)) continue;
+                        // old HidePad=0 sent on every boundary crossing. The state test is the base's
+                        // `!_edgeMobs.Remove(id)`: not banded means nothing to re-assert and nothing to write.
+                        if (state != DrawnBand) continue;
+                        _drawnMobs[id] = DrawnInside;
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
                         pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, true, true);
                     }
-                    else _edgeMobs.Add(id);                      // in the band: keep it drawn, flag it suspect
+                    else if (state != DrawnBand) _drawnMobs[id] = DrawnBand;  // in the band: drawn, suspect
                 }
             }
 
             // THE SENDS, outside the lock, in sweep order, each revalidated immediately before it goes out.
-            // THE INVARIANT: a deferred despawn goes out only if the sets still say what they said when the
+            // THE INVARIANT: a deferred despawn goes out only if the drawn state still says what it said when the
             // decision was taken; a deferred SHOW goes out only if that holds AND the mob is still inside the
             // strict rect, because that is the only place the client accepts the 0x07 — otherwise the show is
             // dropped and the mob is marked undrawn again (PR #246's F1). Nothing on this path blocks on
@@ -234,7 +239,7 @@ public sealed partial class Session
                 {
                     bool current;
                     using (EnterView())
-                        current = SendStillCurrentUnderViewLock(_shownMobs, _edgeMobs, pend[i].Id, pend[i].Show,
+                        current = SendStillCurrentUnderViewLock(new DrawnRef(_drawnMobs), pend[i].Id, pend[i].Show,
                                                                 pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;                  // a newer reconcile decided otherwise while we waited
@@ -257,7 +262,7 @@ public sealed partial class Session
     /// (chestnuts, scattered across a box far bigger than a screen) and loot dropped across the map read as
     /// "not spawning". Called on world entry, after each of our walk steps, and every world tick.
     ///
-    /// <para>No <c>_edgeMobs</c> equivalent: a stationary item can only leave or enter the band by US moving,
+    /// <para>No overdraw-band state: a stationary item can only leave or enter the band by US moving,
     /// and re-showing it is a single idempotent 0x07, so the plain show/hide pair is enough.</para>
     ///
     /// <para>Same shape as the other two sweeps since this PR, and here the acquisition count IS the cut: this
@@ -339,7 +344,7 @@ public sealed partial class Session
                 {
                     bool current;
                     using (EnterView())
-                        current = SendStillCurrentUnderViewLock(_shownItems, null, pend[i].Id, pend[i].Show,
+                        current = SendStillCurrentUnderViewLock(new DrawnRef(_shownItems), pend[i].Id, pend[i].Show,
                                                                 pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;
@@ -441,7 +446,7 @@ public sealed partial class Session
                     ref readonly var peer = ref peers[i];
                     if (ReferenceEquals(peer.Session, this)) continue;
                     Reanchor(ref view);                      // no decision on a rect older than the step
-                    var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, peer.Id, peer.X, peer.Y,
+                    var draw = DecidePeerUnderViewLock(_drawnPeers, peer.Id, peer.X, peer.Y,
                                                           in view, out bool drawnBefore, out bool shownAfter, out uint stamp);
                     if (draw == EntityDraw.Nothing) continue;
                     if (p == pend.Length) pend = Scratch<PendingSend<Session>>.Grow(pend);
@@ -451,21 +456,21 @@ public sealed partial class Session
 
             // THE SENDS, outside the lock, in sweep order — each one revalidated before it goes out.
             //
-            // THE INVARIANT: a deferred despawn goes out only if the sets still say what they said when the
+            // THE INVARIANT: a deferred despawn goes out only if the drawn state still says what it said when the
             // decision was taken; a deferred SHOW goes out only if that holds AND the peer is still inside the
             // strict rect, because that is the only place the client accepts the 0x33 — otherwise the show is
             // dropped and the peer is marked undrawn again. The rect half is PR #246's F1, found on the mob
             // sweep and fixed here too: the hole is #245's, because a completed walk that moves a peer into
-            // the overdraw band takes the _edgePeers.Add branch, which produces no frame and so takes no
-            // stamp, and a parked show behind it passed the set test and drew nothing on a client that
-            // _shownPeers said was drawn.
+            // the overdraw band takes the band-state branch, which produces no frame and so takes no
+            // stamp, and a parked show behind it passed the membership test and drew nothing on a client that
+            // the drawn store said was drawn.
             //
             // Deciding for every peer under one acquisition put an interval on the board that the per-peer
             // shape did not have: peer B's decision is made, and then this pass can BLOCK on peer A's
             // ShowPlayer -> Snapshot (the subject's state monitor, held by any thread doing its own work)
             // while B's decision waits its turn. A walk reconcile on the viewer's own thread can complete in
             // that interval and decide the opposite about B — and on the first cut of this change the parked
-            // pass then sent its older frame anyway, leaving a peer despawned on the client while _shownPeers
+            // pass then sent its older frame anyway, leaving a peer despawned on the client while _drawnPeers
             // still said drawn, which no later sweep repairs (PR #245's review, finding F1, and its mirror:
             // a stale show after a completed despawn is a ghost the server does not know it drew). So every
             // frame is revalidated under _viewLock immediately before it goes out, and dropped if a newer
@@ -474,7 +479,7 @@ public sealed partial class Session
             //
             // Cost: an entry with nothing to send takes no acquisition at all, which in the steady state is
             // every entry — 399 peers a beat that produce no frames pay nothing for this. An entry WITH a
-            // send pays one acquisition around two set reads, a re-anchor, one rect test and, on a current
+            // send pays one acquisition around one drawn-state read, a re-anchor, one rect test and, on a current
             // despawn or a dropped show, one dictionary removal — next to a packet build and a socket write.
             if (p > 0)
             {
@@ -483,7 +488,7 @@ public sealed partial class Session
                 {
                     bool current;
                     using (EnterView())
-                        current = SendStillCurrentUnderViewLock(_shownPeers, _edgePeers, pend[i].Id, pend[i].Show,
+                        current = SendStillCurrentUnderViewLock(new DrawnRef(_drawnPeers), pend[i].Id, pend[i].Show,
                                                                 pend[i].DrawnBefore, pend[i].ShownAfter, pend[i].Stamp,
                                                                 pend[i].X, pend[i].Y, ref sendView);
                     if (!current) continue;                  // a newer reconcile decided otherwise while we waited
@@ -601,13 +606,13 @@ public sealed partial class Session
     /// Map changes get this for free via EnterMap; this covers an in-place death/revive that stays on the map.</summary>
     public void ResyncPeers()
     {
-        using (EnterView()) { _shownPeers.Clear(); _edgePeers.Clear(); _sendStamp.Clear(); }
+        using (EnterView()) { _drawnPeers.Clear(); _sendStamp.Clear(); }
         SyncPeers(_world.View(this, _char.Map).peers);
     }
 
     /// <summary>Reconcile a SINGLE peer into our view (view-gated + tracked). Used when the world tells one
     /// client about one newcomer (World.EnterMap) so the newcomer is drawn only if in view AND recorded in
-    /// _shownPeers — so a later step out of view despawns cleanly, like every other tracked entity.</summary>
+    /// _drawnPeers — so a later step out of view despawns cleanly, like every other tracked entity.</summary>
     public void SyncPeer(PeerTile other)
     {
         var view = CurrentView();
@@ -626,9 +631,9 @@ public sealed partial class Session
     // that never come back. Both are constant traffic: the tick reconciles viewports every beat.
     //
     // Mirrors SyncMobs' per-entity logic exactly (show inside the strict rect, despawn past the drawn rect with
-    // _edgePeers hysteresis, re-assert on re-entry from the overdraw band). ShowPlayer itself decides
+    // the band state's hysteresis, re-assert on re-entry from the overdraw band). ShowPlayer itself decides
     // draw-vs-despawn for stealth/morph; we only gate on geometry here. The set updates happen at the same
-    // points they always did — _shownPeers gains the id on a show, which ShowPlayer cannot fail — so the only
+    // points they always did — _drawnPeers gains the id on a show, which ShowPlayer cannot fail — so the only
     // thing that moved is WHERE the packet is built.
     //
     // ONE PEER ONLY. The sweep no longer comes through here: SyncPeers decides for every peer under a single
@@ -657,7 +662,7 @@ public sealed partial class Session
         using (EnterView())
         {
             Reanchor(ref view);                                    // no decision on a rect older than the step
-            draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, id, peer.X, peer.Y, in view, out drawnBefore, out shownAfter, out stamp);
+            draw = DecidePeerUnderViewLock(_drawnPeers, id, peer.X, peer.Y, in view, out drawnBefore, out shownAfter, out stamp);
         }
 
         if (draw == EntityDraw.Nothing) return;
@@ -666,7 +671,7 @@ public sealed partial class Session
         // frame. One acquisition, and only on the path that actually sends.
         bool current;
         using (EnterView())
-            current = SendStillCurrentUnderViewLock(_shownPeers, _edgePeers, id, draw == EntityDraw.Show,
+            current = SendStillCurrentUnderViewLock(new DrawnRef(_drawnPeers), id, draw == EntityDraw.Show,
                                                     drawnBefore, shownAfter, stamp, peer.X, peer.Y, ref view);
         if (!current) return;
 
@@ -676,41 +681,47 @@ public sealed partial class Session
 
     /// <summary>The reconcile's decision for a TRACKED-WITH-HYSTERESIS entity — peers and mobs, which have the
     /// identical rule (show inside the strict rect, despawn past the drawn rect, re-assert on re-entry from
-    /// the overdraw band) and differ only in which pair of sets they keep it in. It is the ONLY place that
+    /// the overdraw band) and differ only in which drawn-state store they keep it in. It is the ONLY place that
     /// rule is written: the peer sweep, the single-peer path <see cref="ReconcilePeer"/> and the mob sweep all
     /// call it, so none of the three can drift from the others.
     ///
     /// <para><b>The caller holds this session's <c>_viewLock</c> and has just re-anchored
     /// <paramref name="view"/>.</b> Nothing in here acquires anything or touches another session: the id and
-    /// the tile were captured by the caller, and the sets are ours. That is what lets a sweep hold the lock
+    /// the tile were captured by the caller, and the store is ours. That is what lets a sweep hold the lock
     /// across every entity without any risk of the #29 cycle (ShowPlayer -> the subject's monitor) — the send
     /// is the caller's job, after the release.</para>
     ///
-    /// <para><paramref name="shownAfter"/> is what <paramref name="shown"/> says about the id when this
-    /// returns, which is what the send pass revalidates against. <paramref name="drawnBefore"/> is what it
-    /// said before — the one bit that tells a dropped show which of the two show shapes it was, and therefore
-    /// what to put back; see <see cref="SendStillCurrentUnderViewLock"/>.</para></summary>
-    private EntityDraw DecidePeerUnderViewLock(HashSet<uint> shown, HashSet<uint> edge,
+    /// <para><b>ONE LOOKUP PER ENTITY.</b> <paramref name="drawn"/> is the drawn-state store
+    /// (<see cref="DrawnInside"/>), which answers "is it drawn" and "is it in the band" in a single
+    /// <c>TryGetValue</c> where the two sets it replaced took one probe each; and a state that has not
+    /// changed is not written back, so the steady state — a drawn entity that is still inside the strict
+    /// rect — costs exactly one hash lookup and no write.</para>
+    ///
+    /// <para><paramref name="shownAfter"/> is what the store says about the id when this returns, which is
+    /// what the send pass revalidates against. <paramref name="drawnBefore"/> is what it said before — the
+    /// one bit that tells a dropped show which of the two show shapes it was, and therefore what to put
+    /// back; see <see cref="SendStillCurrentUnderViewLock"/>.</para></summary>
+    private EntityDraw DecidePeerUnderViewLock(Dictionary<uint, byte> drawn,
                                                   uint id, ushort px, ushort py, in ViewRect view,
                                                   out bool drawnBefore, out bool shownAfter, out uint stamp)
     {
         bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 / 0x07 is accepted
-        bool drawn = view.Contains(px, py, HidePad);      // the wider 19x17 the client renders
+        bool inDrawnRect = view.Contains(px, py, HidePad);// the wider 19x17 the client renders
         stamp = 0;                                        // nothing to send, nothing to revalidate
-        drawnBefore = shown.Contains(id);                 // what the set said BEFORE this decision wrote to it
+        drawnBefore = drawn.TryGetValue(id, out byte state);   // what the store said BEFORE this decision
 
         if (!drawnBefore)
         {
             shownAfter = false;
             if (!core) return EntityDraw.Nothing;
-            shown.Add(id);
+            drawn[id] = DrawnInside;                      // was shown.Add(id): a first show is never banded
             shownAfter = true;
             stamp = StampUnderViewLock(id);
             return EntityDraw.Show;
         }
-        if (!drawn)                                       // left the drawn rect — really gone
+        if (!inDrawnRect)                                 // left the drawn rect — really gone
         {
-            shown.Remove(id); edge.Remove(id);
+            drawn.Remove(id);                             // was shown.Remove(id); edge.Remove(id)
             shownAfter = false;
             stamp = StampUnderViewLock(id);
             return EntityDraw.Despawn;
@@ -721,12 +732,14 @@ public sealed partial class Session
             // Back inside the strict rect after loitering in the overdraw band. We don't know whether the
             // client culled it out there, so re-send the spawn: a 0x07/0x33 on a live id is an in-place
             // update, and this is strictly cheaper than the despawn+respawn pair HidePad=0 sent on every
-            // boundary crossing.
-            if (!edge.Remove(id)) return EntityDraw.Nothing;
+            // boundary crossing. `state != DrawnBand` is the base's `!edge.Remove(id)`: it was not in the
+            // band, so there is nothing to re-assert and nothing to write.
+            if (state != DrawnBand) return EntityDraw.Nothing;
+            drawn[id] = DrawnInside;
             stamp = StampUnderViewLock(id);
             return EntityDraw.Show;
         }
-        edge.Add(id);                                     // in the band: keep drawn, flag suspect
+        if (state != DrawnBand) drawn[id] = DrawnBand;    // in the band: keep drawn, flag suspect
         return EntityDraw.Nothing;
     }
 
@@ -771,34 +784,63 @@ public sealed partial class Session
         return _sendSeq;
     }
 
+    /// <summary>Whichever drawn state the send pass's entity kind is tracked in, so the revalidation below
+    /// can be written ONCE for all three sweeps: the two-state store for peers and mobs
+    /// (<see cref="DrawnInside"/>), the plain <c>HashSet</c> for ground items, which have no overdraw band
+    /// and therefore no second state to be in.
+    ///
+    /// <para>It is a discriminated pair rather than an interface because it is read on the SEND path only —
+    /// an entry that produces no frame never constructs one — so the branch it costs is paid once per
+    /// deferred frame, next to a packet build and a socket write, and the decide loop that runs 705 times a
+    /// beat goes straight at the dictionary.</para></summary>
+    private readonly struct DrawnRef
+    {
+        private readonly Dictionary<uint, byte>? _drawn;
+        private readonly HashSet<uint>? _set;
+
+        internal DrawnRef(Dictionary<uint, byte> drawn) { _drawn = drawn; _set = null; }
+        internal DrawnRef(HashSet<uint> set) { _drawn = null; _set = set; }
+
+        /// <summary>Was <c>shown.Contains(id)</c>.</summary>
+        internal bool IsDrawn(uint id) => _drawn is not null ? _drawn.ContainsKey(id) : _set!.Contains(id);
+
+        /// <summary>Was <c>edge?.Add(id)</c>: put a DRAWN entity back into the overdraw band. Only ever
+        /// reached for an id the caller's membership test has just found drawn, so it cannot invent an entry;
+        /// for items it is the no-op the null band set made it.</summary>
+        internal void MarkBand(uint id) { if (_drawn is not null) _drawn[id] = DrawnBand; }
+
+        /// <summary>Was <c>shown.Remove(id); edge?.Remove(id)</c>: nothing was ever drawn.</summary>
+        internal void Forget(uint id) { if (_drawn is not null) _drawn.Remove(id); else _set!.Remove(id); }
+    }
+
     /// <summary>May the frame a send pass is holding still go out? Called under <c>_viewLock</c>, immediately
     /// before the frame goes out, for every deferred send of every kind — and, for a show that may no longer
     /// go out, this is also where the bookkeeping that show was going to justify is rolled back.
     ///
-    /// <para><b>The invariant, in one sentence: a deferred DESPAWN goes out only if the sets still say what
-    /// they said when the decision was taken; a deferred SHOW goes out only if the sets still say that AND the
+    /// <para><b>The invariant, in one sentence: a deferred DESPAWN goes out only if the drawn state still says
+    /// what it said when the decision was taken; a deferred SHOW goes out only if it still says that AND the
     /// entity is still inside the strict rect at the moment of sending — otherwise it is not sent and the
-    /// sets are restored to what they said BEFORE that decision.</b> Restored to what they said before, not
+    /// state is restored to what it said BEFORE that decision.</b> Restored to what it said before, not
     /// to "undrawn": see the rollback below and PR #246's F2.</para>
     ///
     /// <para><b>Why the rect half exists</b> (PR #246's review, finding F1, HIGH). The set half alone is
     /// necessary and not sufficient for a show, because a reconcile can change what the viewer can see without
-    /// changing the drawn sets in any way the stamp records: a completed walk that moves an entity from the
+    /// changing the drawn state in any way the stamp records: a completed walk that moves an entity from the
     /// strict rect into the overdraw band takes the <c>edge.Add(id)</c> branch, which produces no frame and so
     /// takes no stamp. A show parked behind it then passed both halves of the old test and put a 0x07/0x33 on
     /// the wire for a tile outside the strict rect, which is exactly the tile the client's viewport gate
-    /// discards (<c>0x424310</c>) — so the client drew nothing while <c>_shownMobs</c> said drawn, and no
+    /// discards (<c>0x424310</c>) — so the client drew nothing while <c>_drawnMobs</c> said drawn, and no
     /// later sweep repaired it until the entity re-entered the strict rect or left the drawn rect. The frame
     /// was the symptom; the drawn-set mismatch was the defect.</para>
     ///
     /// <para><b>Why stamping the band transition is not the fix, and is not done.</b> It makes the frame go
-    /// away and leaves the mismatch exactly as it was: the sets still say drawn and the client still has
+    /// away and leaves the mismatch exactly as it was: the store still says drawn and the client still has
     /// nothing. The rollback is what closes it, and once a show is revalidated against the rect the band
     /// transition needs no stamp — the rect test catches that case and every other way the viewer's rect can
     /// have moved, at one <see cref="Reanchor"/> and one <c>Contains</c> per deferred frame, inside an
     /// acquisition the send pass already takes, and nothing at all in the steady state.</para>
     ///
-    /// <para>The two set halves, unchanged: the stamp separates "nobody touched this entity" from "somebody
+    /// <para>The two membership halves, unchanged: the stamp separates "nobody touched this entity" from "somebody
     /// despawned it and drew it again while we were parked"; the membership test catches the reconciles that
     /// changed the set without stamping — a wholesale clear, a <see cref="DespawnEntity"/> broadcast. It is
     /// stated as "the set still says what it said when this decision was taken" rather than as a per-kind
@@ -809,15 +851,16 @@ public sealed partial class Session
     /// nobody has a send in flight for needs no entry. An entry therefore lives exactly as long as the id is
     /// drawn or has a send in flight.</para>
     ///
-    /// <para><paramref name="edge"/> is the overdraw-band set for peers and mobs and <c>null</c> for ground
-    /// items, which have no band. <paramref name="view"/> is the send pass's rect, re-anchored here under the
+    /// <para><paramref name="tracked"/> is whichever drawn state this frame's entity kind is tracked in: the
+    /// two-state store for peers and mobs (<see cref="DrawnInside"/>), the plain set for ground items, which
+    /// have no overdraw band. <paramref name="view"/> is the send pass's rect, re-anchored here under the
     /// same acquisition, so a viewer that has not moved pays one integer compare for the whole pass.</para></summary>
-    private bool SendStillCurrentUnderViewLock(HashSet<uint> shown, HashSet<uint>? edge, uint id,
+    private bool SendStillCurrentUnderViewLock(in DrawnRef tracked, uint id,
                                                bool show, bool drawnBefore, bool shownAfter, uint stamp,
                                                ushort px, ushort py, ref ViewRect view)
     {
         if (!_sendStamp.TryGetValue(id, out uint latest) || latest != stamp) return false;
-        if (shown.Contains(id) != shownAfter) return false;
+        if (tracked.IsDrawn(id) != shownAfter) return false;
         if (!show)                                        // a despawn: nothing to re-gate, the client always takes it
         {
             _sendStamp.Remove(id);
@@ -826,24 +869,24 @@ public sealed partial class Session
         Reanchor(ref view);                               // no send gated on a rect older than the viewer's tile
         if (view.Contains(px, py, ShowPad)) return true;  // still where the client will accept the draw
 
-        // THE SHOW CAN NO LONGER GO OUT, so put the sets back the way this decision found them. Which is not
+        // THE SHOW CAN NO LONGER GO OUT, so put the state back the way this decision found it. Which is not
         // the same as "undrawn", and that distinction is PR #246's F2 (MEDIUM). A show has two shapes:
         //
-        //   a FIRST show   — the entity was not drawn, the decision did shown.Add, and the client never
-        //                    received anything. Removing it from shown is exactly right.
+        //   a FIRST show   — the entity was not drawn, the decision recorded it as drawn, and the client
+        //                    never received anything. Removing the entry is exactly right.
         //   a RE-ASSERT    — the entity WAS drawn, by a 0x07/0x33 that really went out, and loitered into the
-        //                    overdraw band; the decision's only set write was edge.Remove. Rolling THAT back
-        //                    to undrawn discards the server's record of a draw the client did receive, and
-        //                    with it the 0x0E that would later take it off the screen: an untracked entity
-        //                    outside the strict rect produces no decision at all, so nothing repairs it. That
-        //                    is the mirror of F1 — a ghost the server does not know it drew.
+        //                    overdraw band; the decision's only write was to move it out of the band state.
+        //                    Rolling THAT back to undrawn discards the server's record of a draw the client
+        //                    did receive, and with it the 0x0E that would later take it off the screen: an
+        //                    untracked entity outside the strict rect produces no decision at all, so nothing
+        //                    repairs it. That is the mirror of F1 — a ghost the server does not know it drew.
         //
-        // `drawnBefore` is the one bit that separates them, and it is read off the set by the decide pass
-        // before it writes. A dropped re-assert therefore puts the id back in the band and leaves `shown`
-        // alone, restoring exactly the state the walk reconcile itself had set (drawn, suspect), so a later
-        // exit from the drawn rect still despawns and a later re-entry still re-asserts.
-        if (drawnBefore) edge?.Add(id);                   // re-assert: drawn and suspect, as the band left it
-        else { shown.Remove(id); edge?.Remove(id); }      // first show: nothing was ever drawn
+        // `drawnBefore` is the one bit that separates them, and it is read off the store by the decide pass
+        // before it writes. A dropped re-assert therefore puts the id back in the band, leaving it drawn,
+        // restoring exactly the state the walk reconcile itself had set (drawn, suspect), so a later exit
+        // from the drawn rect still despawns and a later re-entry still re-asserts.
+        if (drawnBefore) tracked.MarkBand(id);            // re-assert: drawn and suspect, as the band left it
+        else tracked.Forget(id);                          // first show: nothing was ever drawn
         _sendStamp.Remove(id);
         return false;
     }
@@ -857,7 +900,7 @@ public sealed partial class Session
     // _warpMarkers goes with them too — but unlike trap markers, the @showwarps overlay SURVIVES as a toggle:
     // EnterMap and RedrawWorld re-stamp it for whatever map the client rebuilds, so only the stale marker set
     // dies here, not the feature.
-    private void ForgetShownMobs() { using (EnterView()) { _shownMobs.Clear(); _edgeMobs.Clear(); _shownItems.Clear(); _shownPeers.Clear(); _edgePeers.Clear(); _sendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
+    private void ForgetShownMobs() { using (EnterView()) { _drawnMobs.Clear(); _shownItems.Clear(); _drawnPeers.Clear(); _sendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
 
     /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
     /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
@@ -905,13 +948,13 @@ public sealed partial class Session
     // so this just spares the wire on a big map); SyncMobs draws it once it enters view.
     public void MoveMob(uint id, ushort x, ushort y, byte dir)
     {
-        using (EnterView()) { if (!_shownMobs.Contains(id)) return; }
+        using (EnterView()) { if (!_drawnMobs.ContainsKey(id)) return; }
         SendMove(id, x, y, dir);
     }
     // Turn a world MOB in place (0x11 side) — same shown-only guard as MoveMob.
     public void SideMob(uint id, byte side)
     {
-        using (EnterView()) { if (!_shownMobs.Contains(id)) return; }
+        using (EnterView()) { if (!_drawnMobs.ContainsKey(id)) return; }
         SendSide(id, side);
     }
     public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
@@ -922,7 +965,7 @@ public sealed partial class Session
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, (ActionType)type, time, param);  // 0x1A
     public void ActionOver(uint id, ActionType type, ushort time, byte param) => SendAction(id, type, time, param);        // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { using (EnterView()) { _shownMobs.Remove(id); _edgeMobs.Remove(id); _shownItems.Remove(id); _shownPeers.Remove(id); _edgePeers.Remove(id); _sendStamp.Remove(id); } SendDespawn(id); }  // 0x0E
+    public void DespawnEntity(uint id) { using (EnterView()) { _drawnMobs.Remove(id); _shownItems.Remove(id); _drawnPeers.Remove(id); _sendStamp.Remove(id); } SendDespawn(id); }  // 0x0E
 
     // The one funnel every outbound packet in the server goes through, and the top half of the test seam:
     // it hands the frame to _out and does nothing transport-specific itself. TcpOutbound is a non-blocking
