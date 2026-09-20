@@ -133,8 +133,10 @@ public class ViewportRectStalenessTests
     /// walks 20 -> 21 -> 22 and reconciles, drawing the peer at x=30 (0x33), and releases the sweep. With the
     /// rect the sweep is holding, that peer is outside the drawn rect and would be despawned.</para>
     ///
-    /// <para>Falsified by dropping <c>view = Current(view)</c> from <c>ReconcilePeer</c>: red with "a
-    /// completed walk's visible peer must not be despawned by an older sweep".</para></summary>
+    /// <para>Falsified by dropping <c>Reanchor(ref view)</c> from <c>SyncPeers</c>' decide loop: red with "a
+    /// completed walk's visible peer must not be despawned by an older sweep". (The sweep has not gone
+    /// through <c>ReconcilePeer</c> since PR #245, so the falsification this sentence used to name is no
+    /// longer one.)</para></summary>
     [Fact]
     public void ADelayedPeerSweepDoesNotUndoACompletedWalkReconcile()
     {
@@ -197,8 +199,10 @@ public class ViewportRectStalenessTests
     /// 20 -> 21 makes the strict rect [13,30), and the peer standing at x=29 enters it. On the reviewed head
     /// this sweep drew nothing and the peer appeared on the following sweep.</para>
     ///
-    /// <para>Falsified by dropping <c>view = Current(view)</c> from <c>ReconcilePeer</c>: red with "a peer
-    /// the viewer stepped into view of must be drawn by the sweep that saw the step".</para></summary>
+    /// <para>Falsified by dropping <c>Reanchor(ref view)</c> from <c>SyncPeers</c>' decide loop: red with "a
+    /// peer the viewer stepped into view of must be drawn by the sweep that saw the step". (The sweep has not
+    /// gone through <c>ReconcilePeer</c> since PR #245, so the falsification this sentence used to name is no
+    /// longer one.)</para></summary>
     [Fact]
     public void APeerSteppedIntoViewMidSweepIsDrawnOnThatSweep()
     {
