@@ -1422,9 +1422,19 @@ public sealed partial class Session
     /// <c>shown.Contains(id)</c> and then, for the common case of a drawn entity inside the strict rect,
     /// <c>edge.Remove(id)</c>, which almost always returned false. Now the sweep does one
     /// <c>TryGetValue</c>, decides off the value, and writes only on a state transition — which in the
-    /// steady state is never. Measured on the viewport profile's 400-viewer / 305-mob fixture, per viewer
-    /// per beat: the peer sweep 15.0us -&gt; 14.6us and the mob sweep 9.3us -&gt; 8.3us in Debug, 4.2us -&gt;
-    /// 4.0us and 2.9us -&gt; 2.6us in Release (briefs/reports/drawn-set-state-opus.md).</para>
+    /// steady state is never.</para>
+    ///
+    /// <para><b>What that is worth, measured</b> on the viewport profile's 400-viewer / 305-mob fixture, per
+    /// viewer per beat, as the median of three interleaved base/head runs on an idle machine. <b>In
+    /// Release</b> the peer sweep 4,310 ns -&gt; 3,487 ns and the mob sweep 2,942 ns -&gt; 2,426 ns, the
+    /// whole sweep 7,382 ns -&gt; 6,094 ns and <c>ReconcileViews</c> 7,483 ns -&gt; 6,189 ns, which at 400
+    /// players is 0.52 ms off a beat. <b>In Debug</b> nothing outside the run-to-run spread, on either
+    /// sweep. An in-process A/B of the two representations on one fixture agrees with both halves
+    /// (Release -836 ns on peers and -512 ns on mobs; Debug of either sign, within a microsecond), and the
+    /// reason is the ordinary one: in Debug nothing is inlined, so one hash probe is a small share of a
+    /// per-entity cost that is mostly call overhead, and the second probe the base made was against a band
+    /// set that is EMPTY on that fixture — an empty HashSet's Remove returns without hashing anything.
+    /// Allocation is unchanged at 0 B per viewer per beat. See briefs/reports/drawn-set-state-opus.md.</para>
     ///
     /// <para>Ground items keep a plain <c>HashSet</c> (<see cref="_shownItems"/>): they have no overdraw band
     /// — see <see cref="SyncGroundItems"/> — so there is no second state for them to be in.</para>
