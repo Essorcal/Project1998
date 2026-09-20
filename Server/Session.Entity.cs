@@ -172,21 +172,34 @@ public sealed partial class Session
     // (the timer runs at 0.5s/tick), restoring ceil(maxHP * 0.02 * (1 + healing/100)) vita and
     // ceil(maxMP * 0.02) mana, then pushing a status update. We don't carry RTK's derived `healing`
     // stat, so HP regen scales with Grace and MP regen with Will (so vitals come back "based on your
-    // stats", as expected), keeping RTK's 2% base and 25s cadence. The world heartbeat (World.Tick)
-    // calls this once per 600ms tick for every player; we accumulate real elapsed ms so the 25s
-    // cadence is independent of the tick period.
+    // stats", as expected), keeping RTK's 2% base and 25s cadence.
+    //
+    // THE 25s CLOCK IS THE WORLD'S, NOT THIS PLAYER'S (World._regenClockMs, passed in as regenDue).
+    // RTK's timerTick%50 is one global timer: everyone below full heals in the same moment every 25s,
+    // taking damage does not restart anything, and two players in a fight always tick together. This
+    // server had drifted to a per-player accumulator that was reset at the topped-off check, so the
+    // first tick after damage was always exactly 25s later and a player chipped every 20s never
+    // regenerated at all. Caleb decided on 2026-09-19 to go back to the original game's global clock,
+    // and that is the ONLY player-visible change in this pass: the amount, the caps, the dead check,
+    // the topped-off skip and the stats packet are all untouched.
     //
     // Threading: runs on the world-tick thread and writes _char.Hp/Mp, which the session's own
     // read-loop also writes (damage/heal). Both are plain field writes with no lock — consistent with
     // the codebase's lock-free _char posture (see PlayerSnapshot) — so a regen tick landing in the
     // same instant as a hit could at worst drop one small increment. The 25s cadence makes that
     // vanishingly rare and self-correcting on the next tick.
-    private long _regenAccum;
-    private const int RegenIntervalMs = 25_000;   // RTK regen period (timerTick%50 @ 0.5s/tick)
     private long _mailAccum;
     private const int MailBackstopMs = 30_000;   // defensive re-check of the mail/parcel HUD flag (event-driven otherwise)
 
-    public void RegenTick(int ms)
+    /// <summary>One beat of this player's regen step: the mail backstop, the buff expiry pass, the Chung
+    /// Ryong fury wear-off, and — on a beat where <paramref name="regenDue"/> — the natural regeneration.
+    /// <paramref name="regenDue"/> is the world's 25 s clock (<c>World._regenClockMs</c>), so every player
+    /// below full regenerates on the same beat.
+    /// <para><paramref name="regenDue"/> defaults to false only so the pre-#29 acceptance fact
+    /// <c>Tests/SessionActorTests.ConcurrentRegenTickAndBuffApplyLosesNoEntry</c>, which drives this method
+    /// for its buff-expiry pass alone, keeps compiling unedited. The tick — the one production caller —
+    /// always passes it.</para></summary>
+    public void RegenTick(int ms, bool regenDue = false)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Mail-flag backstop: runs BEFORE the dead/topped-off early-returns so a resting or ghosted player
@@ -200,16 +213,13 @@ public sealed partial class Session
         // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
         if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
 
+        if (!regenDue) return;       // not a regen beat: the three jobs above are all this beat owed
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
         var eq = Totals();
         uint maxHp = (uint)Math.Max(1, (int)_char.MaxHp + eq.hp);
         uint maxMp = (uint)Math.Max(0, (int)_char.MaxMp + eq.mp);
-        if (_char.Hp >= maxHp && _char.Mp >= maxMp) { _regenAccum = 0; return; }   // already topped off
-
-        _regenAccum += ms;
-        if (_regenAccum < RegenIntervalMs) return;
-        _regenAccum -= RegenIntervalMs;
+        if (_char.Hp >= maxHp && _char.Mp >= maxMp) return;   // already topped off
 
         // 2% of max per tick, scaled by the governing attribute (Grace->vita, Will->mana). Ceil keeps a
         // low-level character (small max) ticking up by at least 1 instead of rounding to nothing.

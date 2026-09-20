@@ -174,6 +174,37 @@ public sealed partial class World
     private long _tick;                                                  // heartbeat counter (TickMs each)
     private long _slowTicks;                                             // beats the watchdog reported (see SlowTicks)
 
+    /// <summary>The world's ONE natural-regeneration clock, in accumulated tick milliseconds since start.
+    /// Advanced by <see cref="TickMs"/> once a beat in <see cref="FlushTick"/> and wound back by
+    /// <see cref="RegenIntervalMs"/> on the beat it crosses it, so the regen beat lands on the first beat at
+    /// or after each 25,000 ms boundary — the 76th beat of 333 ms, then every 75th beat after that.
+    ///
+    /// <para><b>Why it is the world's and not each player's.</b> The original game ran one global clock:
+    /// RTK's <c>Player.regen</c> fires on <c>timerTick%50</c> at 0.5 s a tick, i.e. every 25 s, for
+    /// everyone at less than full at once. Damage does not restart it and two players in a fight always tick
+    /// together. Ours had drifted to a per-player accumulator that restarted whenever the player dropped
+    /// below full, which made the first tick after damage always exactly 25 s later and meant a player
+    /// chipped every 20 s never regenerated at all. This is the return to the original behaviour, decided by
+    /// Caleb on 2026-09-19, and it is the reason <c>RegenTick</c> can decide from thread-local state whether
+    /// it has anything to do this beat.</para>
+    ///
+    /// <para>Tick-thread-owned: written and read only inside <see cref="FlushTick"/>.</para></summary>
+    private long _regenClockMs;
+
+    /// <summary>RTK's regen period (<c>timerTick%50</c> at 0.5 s a tick). It lived on <c>Session</c> while
+    /// every player carried their own accumulator; the clock is the world's now, so this is too, and there
+    /// is one definition of it.</summary>
+    private const int RegenIntervalMs = 25_000;
+
+    /// <summary>Test-only view of <see cref="_regenClockMs"/>, so a fact can start the clock from a known
+    /// position rather than from wherever an earlier test in the collection left it. Nothing in the server
+    /// writes it outside <see cref="FlushTick"/>.</summary>
+    internal long RegenClockMsForTest
+    {
+        get => _regenClockMs;
+        set => _regenClockMs = value;
+    }
+
     /// <summary>Beats run since start, and beats the slow-tick watchdog reported, for <c>run/status.json</c>.
     ///
     /// <para>Both load reports state their headline — the share of beats that were slow — as a wall-clock
@@ -2847,11 +2878,19 @@ public sealed partial class World
         MarkPhase(PhExpiries);
 
         // (5) natural HP/MP regen for EVERY connected player (not gated on mobs/viewport, unlike the
-        // steps above). Each session tracks its own 25s accumulator and only emits a status packet on a
-        // real change — see Session.RegenTick. Snapshot the player list under the lock, tick outside it.
+        // steps above), plus the per-player buff expiry, fury wear-off and mail backstop that ride the same
+        // call — see Session.RegenTick, which only emits a status packet on a real change.
+        //
+        // The 25s regen beat is the WORLD's, not each player's (_regenClockMs): everyone below full
+        // regenerates in the same moment, as the original game did. Advanced here, immediately before the
+        // loop that reads it, so the clock moves exactly once a beat whatever else the flush does.
+        // Snapshot the player list under the lock, tick outside it.
+        _regenClockMs += TickMs;
+        bool regenDue = _regenClockMs >= RegenIntervalMs;
+        if (regenDue) _regenClockMs -= RegenIntervalMs;
         Session[] players2;
         lock (_lock) players2 = _maps.Values.SelectMany(m => m.Players).ToArray();
-        foreach (var p in players2) Try(p, static x => x.RegenTick(TickMs), "RegenTick");
+        foreach (var p in players2) Try((p, regenDue), static t => t.p.RegenTick(TickMs, t.regenDue), "RegenTick");
         MarkPhase(PhRegen);
 
         // (6) day/night + weather broadcasts queued above — every connected session hears the new hour
