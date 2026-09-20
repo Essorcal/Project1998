@@ -172,27 +172,82 @@ public sealed partial class Session
     // (the timer runs at 0.5s/tick), restoring ceil(maxHP * 0.02 * (1 + healing/100)) vita and
     // ceil(maxMP * 0.02) mana, then pushing a status update. We don't carry RTK's derived `healing`
     // stat, so HP regen scales with Grace and MP regen with Will (so vitals come back "based on your
-    // stats", as expected), keeping RTK's 2% base and 25s cadence. The world heartbeat (World.Tick)
-    // calls this once per 600ms tick for every player; we accumulate real elapsed ms so the 25s
-    // cadence is independent of the tick period.
+    // stats", as expected), keeping RTK's 2% base and 25s cadence.
+    //
+    // THE 25s CLOCK IS THE WORLD'S, NOT THIS PLAYER'S (World._regenClockMs, passed in as regenDue).
+    // RTK's timerTick%50 is one global timer: everyone below full heals in the same moment every 25s,
+    // taking damage does not restart anything, and two players in a fight always tick together. This
+    // server had drifted to a per-player accumulator that was reset at the topped-off check, so the
+    // first tick after damage was always exactly 25s later and a player chipped every 20s never
+    // regenerated at all. Caleb decided on 2026-09-19 to go back to the original game's global clock,
+    // and that is the ONLY player-visible change in this pass: the amount, the caps, the dead check,
+    // the topped-off skip and the stats packet are all untouched.
     //
     // Threading: runs on the world-tick thread and writes _char.Hp/Mp, which the session's own
     // read-loop also writes (damage/heal). Both are plain field writes with no lock — consistent with
     // the codebase's lock-free _char posture (see PlayerSnapshot) — so a regen tick landing in the
     // same instant as a hit could at worst drop one small increment. The 25s cadence makes that
     // vanishingly rare and self-correcting on the next tick.
-    private long _regenAccum;
-    private const int RegenIntervalMs = 25_000;   // RTK regen period (timerTick%50 @ 0.5s/tick)
     private long _mailAccum;
     private const int MailBackstopMs = 30_000;   // defensive re-check of the mail/parcel HUD flag (event-driven otherwise)
 
-    public void RegenTick(int ms)
+    /// <summary>One beat of this player's regen step: the mail backstop, the buff expiry pass, the Chung
+    /// Ryong fury wear-off, and — on a beat where <paramref name="regenDue"/> — the natural regeneration.
+    /// <paramref name="regenDue"/> is the world's 25 s clock (<c>World._regenClockMs</c>), so every player
+    /// below full regenerates on the same beat.
+    /// <para><paramref name="regenDue"/> defaults to false only so the pre-#29 acceptance fact
+    /// <c>Tests/SessionActorTests.ConcurrentRegenTickAndBuffApplyLosesNoEntry</c>, which drives this method
+    /// for its buff-expiry pass alone, keeps compiling unedited. The tick — the one production caller —
+    /// always passes it.</para>
+    ///
+    /// <para><b>The method decides whether it has anything to do BEFORE taking the monitor.</b> The tick
+    /// thread calls this on every online player every beat — 400 monitor entries a beat on the load the
+    /// holds run — and on all but a handful of those beats all four jobs are idle. Entering the monitor to
+    /// find that out is not work, it is waiting: the tick queues behind whichever session thread is
+    /// mid-send or inside a Lua call, which is what PR #254's review measured directly (the whole flush
+    /// stalled on this method with one session's monitor held from a second thread,
+    /// <c>reviews/PR254-by-fable.md</c> F3). So each of the four jobs is decided from a field the tick
+    /// thread can read without the monitor, and the monitor is taken only when one of them says yes:
+    /// <list type="bullet">
+    /// <item><c>regenDue</c> is the world's clock, passed in — not this session's state at all.</item>
+    /// <item><c>_mailAccum</c> is written HERE and nowhere else, on the tick thread, so the accumulate moves
+    /// above the monitor with it and it is not shared state.</item>
+    /// <item><c>_nextBuffExpiry</c> is the exact minimum expiry, maintained by the four <c>_buffs</c>
+    /// writers under the monitor they already hold (see <c>Session.Items.cs</c>).</item>
+    /// <item><c>_crRageTier</c> is an <c>int</c> written only under the monitor; a fury is either up or it
+    /// is not.</item>
+    /// </list>
+    /// Everything the method actually DOES still happens under the monitor, including a second, guarded
+    /// look at each condition — the pre-check only decides whether to bother acquiring.</para>
+    ///
+    /// <para><b>The one race, and why it is benign.</b> A buff cast, a fury armed or a mail poke that lands
+    /// between the pre-check's read and its return makes the tick skip this player for ONE beat, 333 ms;
+    /// nothing is lost, because the next beat reads the new value. A buff still fades on the first beat at
+    /// or after its expiry (the hint is exact, not approximate), the fury wear-off still fires on the first
+    /// beat at or after <c>_rageUntil</c>, and the 30 s mail backstop is a backstop. This is the same shape
+    /// as the sleep/poison pre-check one slice earlier (PR #254). <c>Volatile.Read</c> rather than a plain
+    /// read so the JIT cannot hoist either load out of the beat; a 64-bit read is already atomic on every
+    /// runtime this server targets.</para>
+    ///
+    /// <para>The early return happens before <c>EnterState()</c>'s lock-order asserts, which removes no
+    /// check that could have fired: the <c>(5) regen</c> loop runs in the part of <c>FlushTick</c> that is
+    /// outside <c>World._lock</c> (the snapshot above it takes and releases the lock), and it holds no view
+    /// lock, so the thread on this path holds nothing to assert about.</para></summary>
+    public void RegenTick(int ms, bool regenDue = false)
     {
-        using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        // Mail-flag backstop: runs BEFORE the dead/topped-off early-returns so a resting or ghosted player
-        // still notices mail that arrived via a path we forgot to poke. Event-driven refresh is the norm; this
-        // is one cheap DB re-check every 30s, vs the old two-queries-per-stats-packet.
+        // Tick-thread-owned, so it is accumulated here, above the monitor, and only the reset below needs
+        // the monitor. Mail-flag backstop: a resting or ghosted player still notices mail that arrived via
+        // a path we forgot to poke. Event-driven refresh is the norm; this is one cheap DB re-check every
+        // 30s, vs the old two-queries-per-stats-packet.
         _mailAccum += ms;
+
+        bool due = regenDue
+                || _mailAccum >= MailBackstopMs
+                || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
+                || Volatile.Read(ref _crRageTier) > 0;
+        if (!due) return;   // the common case: no monitor entered at all
+
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
         ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
@@ -200,16 +255,13 @@ public sealed partial class Session
         // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
         if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
 
+        if (!regenDue) return;       // not a regen beat: the three jobs above are all this beat owed
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
         var eq = Totals();
         uint maxHp = (uint)Math.Max(1, (int)_char.MaxHp + eq.hp);
         uint maxMp = (uint)Math.Max(0, (int)_char.MaxMp + eq.mp);
-        if (_char.Hp >= maxHp && _char.Mp >= maxMp) { _regenAccum = 0; return; }   // already topped off
-
-        _regenAccum += ms;
-        if (_regenAccum < RegenIntervalMs) return;
-        _regenAccum -= RegenIntervalMs;
+        if (_char.Hp >= maxHp && _char.Mp >= maxMp) return;   // already topped off
 
         // 2% of max per tick, scaled by the governing attribute (Grace->vita, Will->mana). Ceil keeps a
         // low-level character (small max) ticking up by at least 1 instead of rounding to nothing.
