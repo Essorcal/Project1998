@@ -11,7 +11,8 @@ namespace Server;
 /// on Environment.TickCount64 in the session — a monotonic clock, which is the right choice for a running
 /// process because an NTP step can't drag a duration around mid-fight — but TickCount64 is meaningless
 /// across a restart, so the persisted form (Shared/TimedEffects) is ABSOLUTE unix milliseconds. Capture
-/// converts one way, restore the other, and anything already past its deadline is simply not restored.
+/// converts one way, restore the other, and anything already past its deadline is simply not restored — with
+/// one exception, a Chung Ryong fury that still owes its wear-out drain (see CaptureTimedEffects).
 ///
 /// Wall-clock, not remaining-duration, is deliberate: a buff keeps ticking while you're logged off. That
 /// makes a quick relog lossless (the thing the player actually notices) without turning logout into a way
@@ -49,7 +50,14 @@ public sealed partial class Session
         foreach (var (key, until) in _statusFlags)
             if (until > now) e.StatusFlags[key] = TickToUnix(until);
 
-        if (now < _rageUntil)          { e.RageUntil = TickToUnix(_rageUntil); e.RageAmount = _rageAmount; e.RageName = _rageName; e.CrRageTier = _crRageTier; }
+        // A Chung Ryong fury is captured while its TIER is still set, not only while its deadline is ahead: the
+        // tier is what prices the wear-out drain, and between the deadline passing and the RegenTick beat that
+        // fires ChungRyongRageWearOff there is a window in which the fury is over but unpaid. Dropping it there
+        // (the old `now < _rageUntil` alone) let a player log out inside that window — or log out running and
+        // stay out past the deadline — and come back owing nothing. A tier of 0 with a past deadline is a fury
+        // that already paid, or was STRIPPED by FlushDurations/ClearAllTimedEffects (death, @dispel, Cleanse),
+        // which owes no vita: those zero both fields, so neither term holds and nothing is written.
+        if (_crRageTier > 0 || now < _rageUntil) { e.RageUntil = TickToUnix(_rageUntil); e.RageAmount = _rageAmount; e.RageName = _rageName; e.CrRageTier = _crRageTier; }
         if (now < _sancDeductUntil)    { e.SancUntil = TickToUnix(_sancDeductUntil); e.SancMult = _sancDeduct; e.SancName = _sancDeductName; }
         if (now < _cunningDeductUntil) { e.CunningUntil = TickToUnix(_cunningDeductUntil); e.CunningMult = _cunningDeduct; }
         if (now < _backstabUntil)      e.BackstabUntil = TickToUnix(_backstabUntil);
@@ -87,6 +95,13 @@ public sealed partial class Session
             if (until > nowUnix) SetStatusFlagUntil(key, UnixToTick(until));
 
         if (e.RageUntil > nowUnix)     { _rageUntil = UnixToTick(e.RageUntil); _rageAmount = e.RageAmount; _rageName = e.RageName ?? ""; _crRageTier = e.CrRageTier; }
+        // A Chung Ryong fury whose deadline went by while we were logged off: re-arm the TIER and the (past)
+        // deadline and nothing else — no multiplier, no name, and no AC buff, because the fury is over and its
+        // buff was captured expired. That pair is exactly what RegenTick's `_crRageTier > 0` pre-check reads, so
+        // the drain fires from the line it always fired from, on the first regen beat after the entry sequence
+        // has drawn us. Calling ChungRyongRageWearOff here instead would push a mini-text and a stats packet
+        // before the character exists on screen, on the arrival thread rather than the tick thread.
+        else if (e.CrRageTier > 0)     { _rageUntil = UnixToTick(e.RageUntil); _crRageTier = e.CrRageTier; }
         if (e.SancUntil > nowUnix)     { _sancDeductUntil = UnixToTick(e.SancUntil); _sancDeduct = e.SancMult; _sancDeductName = e.SancName ?? ""; }
         if (e.CunningUntil > nowUnix)  { _cunningDeductUntil = UnixToTick(e.CunningUntil); _cunningDeduct = e.CunningMult; }
         if (e.BackstabUntil > nowUnix) _backstabUntil = UnixToTick(e.BackstabUntil);
@@ -107,9 +122,9 @@ public sealed partial class Session
         }
 
         int restored = _buffs.Count + _statusFlags.Count;
-        if (restored > 0 || _rageUntil > 0 || _stealthUntil > 0 || _morphLook != 0 || _sancDeductUntil > 0)
+        if (restored > 0 || _rageUntil > 0 || _crRageTier > 0 || _stealthUntil > 0 || _morphLook != 0 || _sancDeductUntil > 0)
             Log.Info($"   -> restored timed effects: {_buffs.Count} buff(s), {_statusFlags.Count} ward flag(s)" +
-                     $"{(_rageUntil > 0 ? ", fury" : "")}{(_sancDeductUntil > 0 || _cunningDeductUntil > 0 ? ", deduction" : "")}" +
+                     $"{(_rageUntil > 0 || _crRageTier > 0 ? ", fury" : "")}{(_sancDeductUntil > 0 || _cunningDeductUntil > 0 ? ", deduction" : "")}" +
                      $"{(_backstabUntil > 0 || _flankUntil > 0 ? ", stance" : "")}" +
                      $"{(_stealthUntil > 0 ? ", stealth" : "")}{(_morphLook != 0 ? $", morph({_morphLook})" : "")}");
     }

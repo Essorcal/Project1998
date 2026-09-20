@@ -2873,8 +2873,10 @@ public sealed partial class Session
     // The recast interval is the generic aether gate (spell_effects aether=120000). The RUN is a fixed 938s
     // armed by the first cast and never re-armed (RTK sets setDuration in its first-cast branch only), so the
     // 120s gate buys seven casts inside one run — tier 6 at t=600s, held to t=938s, then the wear-out fires
-    // and takes its vita. Both survive a relog (Session.TimedEffects persists RageUntil AND CrRageTier, so the
-    // drain can't be dodged by logging out). _crRageTier==0 means not up. Mirror of CR_RAGE_DURATION_MS in
+    // and takes its vita. Session.TimedEffects persists RageUntil AND CrRageTier, and keeps persisting them once
+    // the deadline is past while the tier is unpaid, so a fury that lapses while you are logged off is restored
+    // owing its drain and charges it on your first RegenTick beat back. _crRageTier==0 means not up (paid, or
+    // stripped by death/@dispel/Cleanse, which owe nothing). Mirror of CR_RAGE_DURATION_MS in
     // spell_verbs.lua, which is what actually feeds a cast.
     private const int CrRageDurationMs = 938_000;
     private const string CrRageAcKey = "chung_ryongs_rage_ac";
