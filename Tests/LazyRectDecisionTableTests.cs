@@ -51,7 +51,8 @@ namespace Tests;
 /// <para>Falsification (run, confirmed red, restored by hand — recorded in
 /// <c>briefs/reports/lazy-rect-test-opus.md</c>): swap the two pads in ONE branch of the head — in
 /// <c>DecidePeerUnderViewLock</c>'s despawn branch, test <c>ShowPad</c> where it now tests
-/// <c>HidePad</c>.</para>
+/// <c>HidePad</c> (8 of the 18 peer runs red, the mob runs untouched); and the same swap in
+/// <c>SyncMobs</c>' own despawn branch (8 of the 18 mob runs red, the peer runs untouched).</para>
 /// </summary>
 [Collection("world")]
 public class LazyRectDecisionTableTests
@@ -60,8 +61,8 @@ public class LazyRectDecisionTableTests
 
     public LazyRectDecisionTableTests(SessionFixture fx) => _fx = fx;
 
-    // A content-free map: no registry row, no terrain, no warps, no spawns.
-    private const ushort PeerMap = 60151;
+    // Content-free maps (no registry row, no terrain, no warps, no spawns), one per fact so nothing is shared.
+    private const ushort MobMap = 60150, PeerMap = 60151;
 
     private const ushort ViewerX = 5, ViewerY = 10;
     private const ushort InStrict = 5;      // x in [-2,15)   — inside the strict rect
@@ -180,7 +181,7 @@ public class LazyRectDecisionTableTests
         _ => new List<(byte, uint)>(),
     };
 
-    /// <summary>PEERS: the head's <c>SyncPeers</c> (through <c>DecidePeerUnderViewLock</c>, the lazy
+    /// <summary>(a) PEERS: the head's <c>SyncPeers</c> (through <c>DecidePeerUnderViewLock</c>, the lazy
     /// shape) and the eager reference decide the same thing in all nine (state, position) cases, and leave
     /// the store in the same state.</summary>
     [Theory]
@@ -221,6 +222,60 @@ public class LazyRectDecisionTableTests
             viewer.DespawnEntity(peer.PlayerId);
             _fx.World.LeaveMap(viewer, PeerMap);
             _fx.World.LeaveMap(peer, PeerMap);
+        }
+    }
+
+    /// <summary>(b) MOBS: the same nine cases through the head's <c>SyncMobs</c>, whose decision is written
+    /// out in the loop rather than going through the helper, and whose <c>core</c> now runs only on the two
+    /// branches that read it.</summary>
+    [Theory]
+    [MemberData(nameof(Table))]
+    public void TheMobDecisionIsWhatTheEagerShapeDecided(string state, ushort position, ushort probe)
+    {
+        var (viewer, outbound, character) = _fx.PlayerWith($"LazyRectMobViewer{state}{position}{probe}", _ => { }, MobMap, ViewerX, ViewerY);
+        var mob = new Mob(_fx.World.AllocateMobId(), 1, PastDrawn, ViewerY, $"LazyRectMob{state}{position}{probe}", 100);
+        var mobs = new[] { mob };
+        var model = new EagerModel();
+        try
+        {
+            Assert.Equal((12, 12), (character.MapXs, character.MapYs));
+
+            var beats = Prelude(state)
+                .Append(At($"decide: {Name(position)} with the store {state}", position))
+                .Append(At($"probe: {Name(probe)}", probe))
+                .ToArray();
+
+            for (int i = 0; i < beats.Length; i++)
+            {
+                var beat = beats[i];
+                var (draw, _, shownAfter) = model.Decide(mob.Id, beat.Core, beat.InDrawnRect);
+
+                mob.X = beat.X;
+                outbound.Clear();
+                viewer.SyncMobs(mobs);
+
+                var seq = Wire(outbound);
+                var expected = Expected(draw, 0x07, mob.Id);
+                Assert.True(seq.SequenceEqual(expected),
+                    $"case (state={state}, {Name(position)}), probe {Name(probe)}, beat {i} ({beat.What}, "
+                  + $"x={beat.X}): the eager shape decided {draw}, so the wire must carry {Render(expected)} "
+                  + $"— it carried {Render(seq)}");
+
+                // "Is it drawn now", asked of the server: MoveMob sends a 0x0C only for a drawn mob. This is
+                // the store's membership, read from outside, at every beat rather than only at the end.
+                outbound.Clear();
+                viewer.MoveMob(mob.Id, beat.X, ViewerY, 0);
+                bool serverSaysDrawn = Wire(outbound).Any(fr => fr.op == 0x0C && fr.id == mob.Id);
+                Assert.True(serverSaysDrawn == shownAfter,
+                    $"case (state={state}, {Name(position)}), probe {Name(probe)}, beat {i} ({beat.What}, "
+                  + $"x={beat.X}): the eager shape says drawn={shownAfter} after this beat; the server says "
+                  + $"drawn={serverSaysDrawn}");
+            }
+        }
+        finally
+        {
+            viewer.DespawnEntity(mob.Id);
+            _fx.World.LeaveMap(viewer, MobMap);
         }
     }
 }
