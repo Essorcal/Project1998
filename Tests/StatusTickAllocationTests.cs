@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Server;
 using Shared;
 using Tests.Support;
@@ -6,13 +7,16 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The no-op path of <see cref="Session.TickSleep"/> and <see cref="Session.TickPoison"/> allocates nothing.
+/// The no-op path of <see cref="Session.TickSleep"/> and <see cref="Session.TickPoison"/> allocates nothing,
+/// and the paths that DO broadcast still send the same frames with the same arguments.
 ///
 /// <para><b>Why this needs tests by the "would this fail loudly?" rule.</b> Both failure modes are silent.
 /// Move either captured local back up to method scope and the compiler builds its display class at method
 /// entry again — 32 B on every one of the 400 calls a beat, 25,600 B a beat at 400 players — and nothing
 /// throws, nothing logs, and every behavioural test stays green; the only symptom is a GC that runs more
-/// often under load.</para>
+/// often under load. And a rewrite of a broadcast that changed one argument (the wrong id, the wrong
+/// percent, the crit byte dropped) would draw a wrong bar over a poisoned player's head, which is precisely
+/// the "plausible-but-wrong" class this repository's tests exist for.</para>
 ///
 /// <para>Measured in <c>briefs/reports/status-tick-scope-opus.md</c>; evidence in
 /// <c>reviews/status-tick-scope-evidence/</c>.</para>
@@ -76,6 +80,92 @@ public class StatusTickAllocationTests
         }
     }
 
+    /// <summary>(b) A sleeping player's redrawing beat broadcasts <c>EffectOver(id, anim)</c> to a PEER in
+    /// the wide area — the frame the sleeper's own recorder cannot prove, because the point of the drowse is
+    /// that everyone watching sees it.
+    ///
+    /// <para><b>Falsification.</b> Change <c>BroadcastStatusFx</c>'s argument — pass <c>anim + 1</c>, or
+    /// <c>p.EffectOver(p.PlayerId, a)</c> instead of <c>_char.Id</c>. Run, confirm red, restore by hand.
+    /// Recorded in the report: red on the anim assertion, and red on the id assertion (zero 0x29 frames over
+    /// the sleeper).</para></summary>
+    [Fact]
+    public void ASleepingPlayersBeatDrawsTheDrowseForAPeer()
+    {
+        const int Anim = 2;
+        var (sleeper, _) = _fx.Player("TickScopeSleeper", SessionFixture.HomeMap, x: 5, y: 10);
+        var (peer, peerOut) = _fx.Player("TickScopeSleepWatcher", SessionFixture.HomeMap, x: 6, y: 10);
+        try
+        {
+            sleeper.ReceiveSleep("sleeps", durMs: 60_000, key: "scope_doze", name: "Doze", anim: Anim, repeatFxMs: 1);
+            Assert.True(sleeper.Asleep);
+            peerOut.Clear();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => { sleeper.TickSleep(); return EffectAnimsOver(peerOut, sleeper.PlayerId).Count > 0; }, 2000),
+                "the peer was never told to draw the drowse over the sleeping player");
+            Assert.Contains(Anim, EffectAnimsOver(peerOut, sleeper.PlayerId));
+        }
+        finally
+        {
+            using (var _ = sleeper.EnterState()) sleeper.WakeUp(byDamage: false);   // WakeUp writes _buffs
+            _fx.World.LeaveMap(sleeper, SessionFixture.HomeMap);
+            _fx.World.LeaveMap(peer, SessionFixture.HomeMap);
+        }
+    }
+
+    /// <summary>(c) A venomed player's DAMAGING beat broadcasts, to a peer and in this order,
+    /// <c>EffectOver(id, anim)</c> then <c>DamageOver(id, pct, HitCritByte)</c> — the two frames and the
+    /// order <c>TickPoison</c> has always sent them in, with the percent read after the health came off.
+    ///
+    /// <para>500 max HP and a 100-point tick, so the first damaging beat leaves 400 and the bar reads
+    /// <b>80</b>. That number is the arithmetic being pinned: a percent computed BEFORE the subtraction
+    /// would read 100 and nothing else in the suite would notice.</para>
+    ///
+    /// <para><b>Falsification.</b> In <c>BroadcastPoisonBar</c>, send <c>0</c> or <c>HealBarCritByte</c> in
+    /// place of <c>HitCritByte</c>, or move the <c>PlayerHpPercent()</c> read above the <c>_char.Hp -=</c>
+    /// line. Run, confirm red, restore by hand. Recorded in the report: red on the crit byte, and red on
+    /// percent 100 against the expected 80.</para></summary>
+    [Fact]
+    public void AVenomedPlayersDamagingBeatDrawsTheFlashThenTheBarForAPeer()
+    {
+        const int Anim = 3;
+        var (victim, _, hurt) = _fx.PlayerWith(
+            "TickScopeVictim", c => { c.Hp = 500; c.MaxHp = 500; }, SessionFixture.HomeMap, x: 7, y: 10);
+        var (peer, peerOut) = _fx.Player("TickScopeVenomWatcher", SessionFixture.HomeMap, x: 8, y: 10);
+        try
+        {
+            victim.ReceivePoison(
+                dps: 1, durMs: 60_000, by: 0, anim: Anim, key: "scope_venom", name: "venom",
+                perTick: 100, tickMinMs: 1, tickMaxMs: 1);
+            Assert.True(victim.Poisoned);
+            peerOut.Clear();
+
+            Assert.True(
+                SpinWait.SpinUntil(() => { victim.TickPoison(); return hurt.Hp < 500; }, 2000),
+                "the first venom tick never landed");
+            Assert.Equal(400u, hurt.Hp);
+
+            // The flash first, the bar second — the order TickPoison sends them in.
+            var ops = OpsOf(peerOut, ServerOp.Effect, ServerOp.Damage);
+            Assert.Equal(ServerOp.Effect, ops[0]);
+            Assert.Equal(ServerOp.Damage, ops[1]);
+
+            Assert.Contains(Anim, EffectAnimsOver(peerOut, victim.PlayerId));
+
+            var bars = DamageBarsOver(peerOut, victim.PlayerId);
+            Assert.NotEmpty(bars);
+            var (percent, critical) = bars[0];
+            Assert.Equal(80, percent);                      // 400 of 500, read AFTER the health came off
+            Assert.Equal(Content.HitCritByte, critical);
+        }
+        finally
+        {
+            using (var _ = victim.EnterState()) victim.CurePoison();   // CurePoison writes _buffs
+            _fx.World.LeaveMap(victim, SessionFixture.HomeMap);
+            _fx.World.LeaveMap(peer, SessionFixture.HomeMap);
+        }
+    }
+
     // ---- arrangement and readers ---------------------------------------------------------------------
 
     /// <summary><paramref name="count"/> plain sessions on the fixture's world, with neither status.</summary>
@@ -90,5 +180,35 @@ public class StatusTickAllocationTests
             outbounds[i] = o;
         }
         return (sessions, outbounds);
+    }
+
+    /// <summary>The effect ids this recorder was told to draw over <paramref name="id"/>. The 0x29 body is
+    /// <c>id(u32 BE) | efx(u8) | A(u16) | B(u16) | C(u16)</c> — see <c>Session.SendEffect</c> — and the wire
+    /// byte carries <c>Session.EfxWireOffset</c>, which is subtracted back off here.</summary>
+    private static List<int> EffectAnimsOver(RecordingOutbound outbound, uint id) =>
+        outbound.BodiesOf(ServerOp.Effect)
+                .Where(b => b.Length >= 5 && BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(0)) == id)
+                .Select(b => b[4] - ServerConfig.Current.EfxWireOffset)
+                .ToList();
+
+    /// <summary>The over-head HP bars this recorder was told to draw over <paramref name="id"/>. The 0x13
+    /// body is <c>id(u32 BE) | critical(u8) | percent(u8) | hitSound(u8)</c> — see
+    /// <c>Session.SendDamage</c>.</summary>
+    private static List<(int percent, byte critical)> DamageBarsOver(RecordingOutbound outbound, uint id) =>
+        outbound.BodiesOf(ServerOp.Damage)
+                .Where(b => b.Length >= 7 && BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(0)) == id)
+                .Select(b => ((int)b[5], b[4]))
+                .ToList();
+
+    /// <summary>The opcodes this recorder saw, in order, keeping only <paramref name="wanted"/>.</summary>
+    private static List<byte> OpsOf(RecordingOutbound outbound, params byte[] wanted)
+    {
+        var ops = new List<byte>();
+        foreach (var frame in outbound.Frames)
+        {
+            if (!Protocol.Tk495.TkPacket.TryParse(frame, out var pkt, out _)) continue;
+            if (Array.IndexOf(wanted, pkt.Opcode) >= 0) ops.Add(pkt.Opcode);
+        }
+        return ops;
     }
 }
