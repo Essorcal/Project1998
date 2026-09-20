@@ -357,6 +357,23 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>The peer sweep's interleaving point, for tests only: null in production, and invoked exactly
+    /// once per <see cref="SyncPeers"/> call, <b>after the sweep has taken its rect and before anything is
+    /// reconciled</b> — the moment a walk that lands there can make the sweep's rect stale.
+    ///
+    /// <para>Why the production path carries it, which is the same argument <see cref="World.PhaseProbeForTest"/>
+    /// makes. The two staleness facts in <c>Tests/ViewportRectStalenessTests.cs</c> are PR #240's reviewer's
+    /// probes for finding F1 and F2, and they got that moment for free: <c>SyncPeers</c> took an
+    /// <c>IReadOnlyList</c>, so a test could hand it a list whose <c>GetEnumerator</c> ran a real world-lock
+    /// position write. That is exactly the "arbitrary code from an interface" this sweep no longer admits —
+    /// the parameter is a concrete <c>PeerTile[]</c> — so the interleaving point has to be a named seam
+    /// instead of a side effect of the enumeration. It is the regression guard for a HIGH; it does not get
+    /// dropped because the shape that hosted it went away.</para>
+    ///
+    /// <para>Its cost on the healthy path is one static null check per sweep — not per peer — next to a loop
+    /// over every player on the map.</para></summary>
+    internal static Action? PeerSweepProbeForTest;
+
     /// <summary>Reconcile the PEER players drawn on this client against what's in view — the player twin of
     /// <see cref="SyncMobs"/>, and needed for the same reason: <see cref="ShowPlayer"/> draws through the
     /// viewport-gated 0x33 look path, so a draw for an off-screen peer is dropped by the client. Peers only
@@ -364,9 +381,10 @@ public sealed partial class Session
     /// off-screen, is invisible forever until a room change or Ctrl+R re-draws them in view — the reported
     /// "can't see users I walk up to". Called on world entry, after each of our walk steps, and every world
     /// tick — the same three sites as SyncMobs. Self is skipped.</summary>
-    public void SyncPeers(IReadOnlyList<PeerTile> peers)
+    public void SyncPeers(PeerTile[] peers)
     {
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
+        PeerSweepProbeForTest?.Invoke();                     // null except under test — see the field
 
         // ONE ACQUISITION FOR THE SWEEP, not one per peer. ReconcilePeer took EnterView() per peer, which at
         // 400 players on one map is 400 viewers x 400 peers = 160,000 acquire/release pairs a beat for, in the
@@ -376,44 +394,58 @@ public sealed partial class Session
         // the per-peer acquisition at ~38us of a ~51us modelled peer sweep in Debug and ~3.3us of ~7.5us in
         // Release, per viewer per beat (briefs/reports/viewport-sweep-opus.md).
         //
-        // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session.
-        // The copy pass below takes the peer's id and tile OUTSIDE the lock, so the decide pass touches only
-        // this session's own sets, its own rect and its own _viewGen; it acquires nothing. The lock order
-        // (session monitor OUTSIDE _viewLock, Session.State.cs) is therefore unchanged, and so is the #29 rule
-        // that a send never happens under _viewLock — the sends are still after the release, exactly as
-        // ReconcilePeer did them.
+        // THE INVARIANT, and it is what makes this legal: nothing under the lock calls into another session,
+        // or into anything else at all. `peers` is the snapshot array World._lock filled, and a PeerTile
+        // carries the peer's id and tile as well as its reference, so every line under the acquisition is an
+        // array index and a struct field read. The peer's Session reference is copied into the pending frame
+        // and never followed there — ShowPlayer follows it after the release. The decide pass therefore
+        // touches only this session's own sets, its own rect and its own _viewGen, and acquires nothing. The
+        // lock order (session monitor OUTSIDE _viewLock, Session.State.cs) is unchanged, and so is the #29
+        // rule that a send never happens under _viewLock — the sends are still after the release, exactly
+        // as ReconcilePeer did them.
         //
-        // WHY THE COPY PASS EXISTS AT ALL. `peers` is an interface, so enumerating it is arbitrary code — the
-        // reviewer's interleaving harness (Tests/ViewportRectStalenessTests.cs) runs a real world-lock position
-        // write from inside GetEnumerator. Arbitrary code must not run under a view lock: Session.EnterState
-        // asserts !HoldsAnyViewLock and World._lock would be taken second. So the enumeration stays where it
-        // already was, outside the lock, and only the decisions move inside one acquisition.
+        // WHY THE PARAMETER IS A CONCRETE ARRAY, AND WHY THERE IS NO COPY PASS ANY MORE. This sweep used to
+        // take an IReadOnlyList, so enumerating it was arbitrary code: the interleaving harness in
+        // Tests/ViewportRectStalenessTests.cs ran a real world-lock position write from inside GetEnumerator.
+        // Arbitrary code must not run under a view lock (Session.EnterState asserts !HoldsAnyViewLock and
+        // World._lock would be taken second), so the enumeration had to stay outside the acquisition and copy
+        // each peer into a rented ViewSubject array for the decide pass to read. Every production caller
+        // already passed a PeerTile[] — World.EnterMap and World.View return arrays, ReconcileViews passes
+        // the snapshot's — so the copy pass existed only to defend against a caller that did not. The type
+        // is the guarantee now, there is no IReadOnlyList overload left for a later caller to reintroduce one
+        // through, and the decide loop reads the snapshot array directly. Measured on the viewport profile's
+        // 400-viewer / 305-mob fixture: this method went 21.4us -> 14.4us per viewer per beat in Debug and
+        // 7.2us -> 4.3us in Release, which at 400 players is 2.8ms and 1.2ms off a beat, and an in-process
+        // A/B of the two shapes agrees (about 7us Debug, 2.9us Release, over three runs). The enumerator the
+        // interface form allocated goes too: the sweep is 0 B per viewer per beat now, and ReconcileViews
+        // 55.3 B instead of 87.3 B. The interleaving the harness needed is PeerSweepProbeForTest, above.
         //
         // The decisions themselves are not made any staler by this: Reanchor still runs per peer, inside the
         // acquisition, against the same _viewGen handshake, so no decision uses a rect older than the viewer's
         // tile at the moment it is made (F1/F2, PR #240's review).
-        var subs = Scratch<ViewSubject<Session>>.Rent(peers.Count);
         var pend = Scratch<PendingSend<Session>>.Rent(PendingSeed);
-        int n = 0, p = 0;
+        int p = 0;
         try
         {
-            foreach (var peer in peers)                      // outside _viewLock — see above
-            {
-                var other = peer.Session;
-                if (ReferenceEquals(other, this)) continue;
-                if (n == subs.Length) subs = Scratch<ViewSubject<Session>>.Grow(subs);
-                subs[n++] = new ViewSubject<Session>(other, other.PlayerId, peer.X, peer.Y);
-            }
-
+            // NOTHING IS DEREFERENCED IN HERE. `peer` is a read-only reference into the snapshot array, and
+            // its id, like its tile, came out of the world lock (see World.PeerTile) — so the whole loop is
+            // an array index, four struct field reads and this session's own decision. peer.Session is copied
+            // into the pending frame as a reference and never followed: ShowPlayer follows it after the
+            // release. The self test stays a reference compare rather than an id compare for the same reason
+            // — the reference is loaded either way, so comparing it touches nothing that load did not
+            // already bring in. Array order is the snapshot's order, which the interface enumeration walked
+            // too, so the peers are decided in exactly the order they were before.
             using (EnterView())
-                for (int i = 0; i < n; i++)
+                for (int i = 0; i < peers.Length; i++)
                 {
+                    ref readonly var peer = ref peers[i];
+                    if (ReferenceEquals(peer.Session, this)) continue;
                     Reanchor(ref view);                      // no decision on a rect older than the step
-                    var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, subs[i].Id, subs[i].X, subs[i].Y,
+                    var draw = DecidePeerUnderViewLock(_shownPeers, _edgePeers, peer.Id, peer.X, peer.Y,
                                                           in view, out bool drawnBefore, out bool shownAfter, out uint stamp);
                     if (draw == EntityDraw.Nothing) continue;
                     if (p == pend.Length) pend = Scratch<PendingSend<Session>>.Grow(pend);
-                    pend[p++] = new PendingSend<Session>(subs[i].Subject, subs[i].Id, stamp, subs[i].X, subs[i].Y,
+                    pend[p++] = new PendingSend<Session>(peer.Session, peer.Id, stamp, peer.X, peer.Y,
                                                         draw == EntityDraw.Show, drawnBefore, shownAfter);
                 }
 
@@ -462,9 +494,7 @@ public sealed partial class Session
         }
         finally
         {
-            Array.Clear(subs, 0, n);                         // do not let scratch pin a disconnected Session
-            Scratch<ViewSubject<Session>>.Return(subs);
-            Array.Clear(pend, 0, p);
+            Array.Clear(pend, 0, p);                         // do not let scratch pin a disconnected Session
             Scratch<PendingSend<Session>>.Return(pend);
         }
     }
@@ -610,7 +640,7 @@ public sealed partial class Session
     {
         var other = peer.Session;
         if (ReferenceEquals(other, this)) return;
-        uint id = other.PlayerId;
+        uint id = peer.Id;                                         // out of the snapshot, like the tile
         // The tile comes from the caller's snapshot, taken under World._lock with the peer list itself
         // (see World.PeerTile). Reading other.PlayerX/PlayerY here instead — which is what this did — is two
         // unsynchronised ushort reads of a character every writer of which holds that lock, so the pair could

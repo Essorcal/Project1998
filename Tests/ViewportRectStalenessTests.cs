@@ -1,4 +1,3 @@
-using System.Collections;
 using Server;
 using Shared;
 using Tests.Support;
@@ -49,15 +48,23 @@ public class ViewportRectStalenessTests
     /// <summary>The ids inside one 4.95 despawn body: a count byte then that many u32BE ids.</summary>
     private static int DespawnCount(RecordingOutbound outbound) => outbound.BodiesOf(0x0E).Count;
 
-    /// <summary>A one-element peer list that runs <paramref name="before"/> at the moment the sweep starts
-    /// enumerating — after it has taken its rect, before it reconciles anything. The reviewer's interleaving
-    /// harness: it needs no production seam and no scheduling luck, because the sweep itself calls it.</summary>
-    private sealed class Interleaved<T>(T item, Action before) : IReadOnlyList<T>
+    /// <summary>Runs <paramref name="body"/> on the FIRST peer sweep to reach
+    /// <c>Session.PeerSweepProbeForTest</c> and on no later one, so the static can be armed once and the
+    /// test's own foreground sweeps — the ones that complete the walk while a background sweep is parked
+    /// inside the probe — run straight through instead of parking too.
+    ///
+    /// <para>This interleaving used to need no seam: <c>SyncPeers</c> took an <c>IReadOnlyList</c>, so the
+    /// probe was a one-element list whose <c>GetEnumerator</c> ran <paramref name="body"/> — after the sweep
+    /// had taken its rect, before it reconciled anything. The sweep now takes a concrete <c>PeerTile[]</c>
+    /// precisely so that no caller-supplied code can run inside it, which leaves the named seam as the only
+    /// way to park at that same moment. The facts are unchanged; only how they reach the moment is.</para>
+    ///
+    /// <para>The static is safe here because <c>[Collection("world")]</c> is serial — no other test runs
+    /// while one of these does — and each arming is cleared in a <c>finally</c> regardless.</para></summary>
+    private static Action OneShotProbe(Action body)
     {
-        public int Count => 1;
-        public T this[int i] => item;
-        public IEnumerator<T> GetEnumerator() { before(); yield return item; }
-        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        int fired = 0;
+        return () => { if (Interlocked.Exchange(ref fired, 1) == 0) body(); };
     }
 
     /// <summary>A delayed MOB sweep must not undo a completed walk reconcile — finding F1, the reviewer's
@@ -121,8 +128,8 @@ public class ViewportRectStalenessTests
     /// one loop inside it: a peer sweep parked before its peer must not despawn a peer that a completed walk
     /// reconcile drew while it waited.
     ///
-    /// <para>The sweep is parked by its own peer list, which blocks on first enumeration — after
-    /// <c>SyncPeers</c> has taken the sweep's rect at x=20 and before any peer is reconciled. The owner then
+    /// <para>The sweep is parked by <c>Session.PeerSweepProbeForTest</c>, which the sweep invokes after it
+    /// has taken its rect at x=20 and before any peer is reconciled. The owner then
     /// walks 20 -> 21 -> 22 and reconciles, drawing the peer at x=30 (0x33), and releases the sweep. With the
     /// rect the sweep is holding, that peer is outside the drawn rect and would be despawned.</para>
     ///
@@ -142,7 +149,8 @@ public class ViewportRectStalenessTests
             Assert.Equal((100, 100), (character.MapXs, character.MapYs));
             outbound.Clear();
 
-            var gated = new Interleaved<PeerTile>(new PeerTile(peer, 30, 20), () =>
+            var gated = new[] { new PeerTile(peer, 30, 20) };
+            Session.PeerSweepProbeForTest = OneShotProbe(() =>
             {
                 parked.Set();
                 Assert.True(release.Wait(5000), "the test never released the parked sweep");
@@ -175,6 +183,7 @@ public class ViewportRectStalenessTests
         finally
         {
             release.Set();
+            Session.PeerSweepProbeForTest = null;
             _fx.World.LeaveMap(viewer, PeerMap);
             _fx.World.LeaveMap(peer, PeerMap);
         }
@@ -183,8 +192,8 @@ public class ViewportRectStalenessTests
     /// <summary>The other half of the same root, the reviewer's F2: a peer that comes into view because WE
     /// stepped, after the sweep began, is drawn on THAT sweep and not one sweep later.
     ///
-    /// <para>The viewer's step lands between <c>SyncPeers</c> taking its rect and the peer being yielded to
-    /// it — the interleaving the per-entity shape handled because it re-read the anchor at the test. Viewer
+    /// <para>The viewer's step lands between <c>SyncPeers</c> taking its rect and the first peer being
+    /// decided — the interleaving the per-entity shape handled because it re-read the anchor at the test. Viewer
     /// 20 -> 21 makes the strict rect [13,30), and the peer standing at x=29 enters it. On the reviewed head
     /// this sweep drew nothing and the peer appeared on the following sweep.</para>
     ///
@@ -200,9 +209,10 @@ public class ViewportRectStalenessTests
             Assert.Equal((100, 100), (character.MapXs, character.MapYs));
             outbound.Clear();
 
-            viewer.SyncPeers(new Interleaved<PeerTile>(
-                new PeerTile(peer, 29, 20),
-                () => viewer.WithState(() => _fx.World.SetPlayerPosition(viewer, 21, 20))));
+            Session.PeerSweepProbeForTest = OneShotProbe(
+                () => viewer.WithState(() => _fx.World.SetPlayerPosition(viewer, 21, 20)));
+            try { viewer.SyncPeers(new[] { new PeerTile(peer, 29, 20) }); }
+            finally { Session.PeerSweepProbeForTest = null; }
 
             Assert.True(outbound.BodiesOf(0x33).Count == 1,
                 $"a peer the viewer stepped into view of must be drawn by the sweep that saw the step " +
