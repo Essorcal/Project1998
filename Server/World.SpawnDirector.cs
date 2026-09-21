@@ -585,7 +585,9 @@ public sealed partial class World
             _groups.Remove(mapId);
             _materialized.Remove(mapId);
             foreach (var stamp in _lastDeath.Keys.Where(k => k.Map == mapId).ToList()) _lastDeath.Remove(stamp);
-            world.Map(mapId).Mobs.RemoveAll(m => m.WorldSpawned);
+            var fm = world.Map(mapId);
+            fm.Mobs.RemoveAll(m => m.WorldSpawned);
+            fm.ViewGen++;                   // a mob roster change — a test seam, bumped for the same reason
         }
     }
 

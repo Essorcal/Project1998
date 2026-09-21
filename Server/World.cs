@@ -226,12 +226,72 @@ public sealed partial class World
         /// <see cref="OnlineRegistry.PositionSurvey"/> under the same lock. Nothing on the tick path reads or
         /// writes it and no player can see it.</para></summary>
         public long Steps;
+
+        /// <summary>How many times something a viewport sweep of this map READS has changed — the map's
+        /// change generation, and the whole of what lets <see cref="ReconcileViews"/> skip a viewer.
+        ///
+        /// <para><b>What the sweeps read, which is what this counts.</b> <c>SyncPeers</c> reads the
+        /// <see cref="Players"/> roster and each player's id and tile; <c>SyncMobs</c> reads the
+        /// <see cref="Mobs"/> roster and each mob's tile; <c>SyncGroundItems</c> reads the
+        /// <see cref="Items"/> roster and each item's tile. Every write of any of those bumps this, under the
+        /// <c>_lock</c> acquisition that write already holds — the roster edits here in <c>World</c>, the
+        /// mob step in <c>MobAiTick.StepMobTo</c>, and every player tile write through the one seam
+        /// they all go through, <c>Session.SetPositionUnderWorldLock</c>. There is no new lock, no new
+        /// acquisition and no lock-order change: the full inventory is in
+        /// <c>briefs/reports/tick-sweep-skip-opus.md</c>.</para>
+        ///
+        /// <para><b>What it deliberately does NOT count</b> is anything PER-VIEWER: a viewer's own drawn-state
+        /// store, its trap and warp markers, and a draw another session made on it directly. Those cannot be
+        /// a property of the map, and they un-skip their own viewer through <c>Session.MarkSweepPending</c>
+        /// instead.</para>
+        ///
+        /// <para><b>Which of these bumps is load-bearing, measured rather than assumed.</b> Every ADDITION
+        /// and every MOVE is: nothing else tells a standing viewer that a mob spawned, an item dropped or
+        /// anything moved, and deleting any one of those bumps turns a fact red. Every REMOVAL is a second
+        /// guard: a player leaving, a mob dying and an item being picked up all broadcast
+        /// <c>Session.DespawnEntity</c>, which flags each recipient by itself, so those bumps can be deleted
+        /// with the suite still green. They stay because the roster is what moved, and a reader of this
+        /// counter should not have to know which callers happen to broadcast afterwards. The falsification
+        /// table in <c>briefs/reports/tick-sweep-skip-opus.md</c> has the case-by-case result.</para>
+        ///
+        /// <para>A <c>long</c>, read and written only under <c>_lock</c>, and compared, never interpreted:
+        /// one beat's captured value against what the viewer recorded last beat. It cannot wrap in any
+        /// lifetime this process has.</para></summary>
+        public long ViewGen;
         // The weather state (0 clear / 1 rain / 2 snow) last BROADCAST to players on this map. Not the source
         // of truth — that is the deterministic WeatherModel (+ any zone override) — this is the cached
         // last-sent value the tick compares against on a period rollover to decide whether to re-broadcast.
         public byte Weather;
     }
     private readonly Dictionary<ushort, MapState> _maps = new();
+
+    /// <summary>Bump <see cref="MapState.ViewGen"/> for <paramref name="mapId"/> — "something a viewport
+    /// sweep of this map reads has changed". For the change sites that do NOT already have the
+    /// <see cref="MapState"/> in hand; the ones that do increment the field directly.
+    ///
+    /// <para><b>The caller already holds <c>_lock</c>, and that is the point.</b> Every change source this
+    /// counts is a write the world lock already serialises, so the bump rides in an acquisition that exists —
+    /// no new lock, no wider hold, no order change. The assert pins it, the same way
+    /// <c>Session.SetPositionUnderWorldLock</c>'s does for the write it sits next to.</para>
+    ///
+    /// <para>A map with no <see cref="MapState"/> has no roster, so no sweep reads it and there is nothing to
+    /// bump — the same "an unknown map blocks nothing" case <see cref="TryMovePlayer"/> has.</para></summary>
+    /// <summary>A map's current <see cref="MapState.ViewGen"/>, for the facts that have to arrange two maps
+    /// at the SAME generation so that only the map id can tell them apart. No production caller.</summary>
+    internal long ViewGenForTest(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.ViewGen : 0; }
+
+    /// <inheritdoc cref="BumpViewGenUnderWorldLock(ushort)"/>
+    /// <summary>The same bump with its own acquisition, for the facts that arrange a generation. No
+    /// production caller: production always has the lock already.</summary>
+    internal void BumpViewGenForTest(ushort mapId) { lock (_lock) BumpViewGenUnderWorldLock(mapId); }
+
+    internal void BumpViewGenUnderWorldLock(ushort mapId)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock),
+            "map view generation bumped outside World._lock — it is read with the roster in one acquisition " +
+            "by ReconcileViews, so a bump outside the lock is a viewer skipping a change it never saw.");
+        if (_maps.TryGetValue(mapId, out var m)) m.ViewGen++;
+    }
 
     // The two spawn systems — the POINT roster (Spawn) and the GROUP roster (SpawnGroup) — and everything
     // that builds, materialises and refills them live in World.SpawnDirector.cs (#37). Constructed before
@@ -610,7 +670,9 @@ public sealed partial class World
             IsNpc = true, NpcDefId = n.Id, Color = n.Color, Dir = n.Dir,
             Wander = paces, MoveTime = paces ? n.MoveTime : 2500, Leash = n.ReturnDistance,
         };
-        Map(n.Map).Mobs.Add(npc);
+        var nm = Map(n.Map);
+        nm.Mobs.Add(npc);
+        nm.ViewGen++;                       // a mob roster change — the mob sweep reads this list
     }
 
     /// <summary>Remove every placed instance of NPC def <paramref name="npcId"/> from the world and despawn
@@ -626,6 +688,7 @@ public sealed partial class World
             {
                 var gone = m.Mobs.Where(x => x.IsNpc && x.NpcDefId == npcId).ToList();
                 foreach (var g in gone) { m.Mobs.Remove(g); removed.Add((mapId, g.Id)); }
+                if (gone.Count > 0) m.ViewGen++;   // a mob roster change
             }
             _npcPlaced.Remove(npcId);
         }
@@ -712,7 +775,9 @@ public sealed partial class World
                 mob.Hp = mob.MaxHp;
             }
         }
-        Map(mapId).Mobs.Add(mob);
+        var bm = Map(mapId);
+        bm.Mobs.Add(mob);
+        bm.ViewGen++;                       // a mob roster change
         QueueHook(MobScript.OnSpawn, mapId, mob, null);
         return mob;
     }
@@ -803,6 +868,7 @@ public sealed partial class World
                     Amount = Random.Shared.Next(area.MinQty, area.MaxQty + 1), Graphic = def.Icon,
                 };
                 m.Items.Add(gi);
+                m.ViewGen++;                // a floor-item roster change — the item sweep reads this list
                 (drops ??= new()).Add((area.Map, gi));
             }
         }
@@ -1244,6 +1310,7 @@ public sealed partial class World
             _spawnDirector.EnsureMaterialized(mapId);                 // instantiate this map's spawns on first entry
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
+            m.ViewGen++;                    // a player roster change — the peer sweep reads this list
             // Seed the weather cache to what the newcomer is about to be shown (Session sends it on entry via
             // Weather.Get), so the tick's period-rollover diff compares against the on-screen state and never
             // skips a real change as a no-op — otherwise a player who entered mid-period could stay stuck on
@@ -1333,6 +1400,12 @@ public sealed partial class World
         {
             if (!_maps.TryGetValue(mapId, out var m)) return;
             m.Players.Remove(s);
+            // A player roster change. Redundant today — the despawn broadcast below flags every remaining
+            // viewer by itself, and deleting this line breaks no fact (the falsification table in
+            // briefs/reports/tick-sweep-skip-opus.md, case 2) — and kept because the roster is what moved: a
+            // reader of ViewGen is entitled to hear that without also having to know that this particular
+            // caller happens to broadcast a despawn afterwards.
+            m.ViewGen++;
             peers = m.Players.ToArray();
         }
         foreach (var p in peers) Try((p, id), static t => t.p.DespawnEntity(t.id), "DespawnEntity (LeaveMap)");
@@ -1529,6 +1602,7 @@ public sealed partial class World
                 if (m.Players.Count > 0) populated.Add(mapId);
                 foreach (var g in m.Mobs) despawn.Add((mapId, g.Id));
                 m.Mobs.Clear();
+                m.ViewGen++;                // a mob roster change
             }
             // 2. rebuild the spawn roster + NPC placement from the just-reloaded Content (fresh defs, positions,
             //    and any added/removed rows). NPCs are placed on every map (cheap, ~340); mobs stay lazy.
@@ -1556,7 +1630,7 @@ public sealed partial class World
     /// out of range receive it later, as they approach, via <see cref="Tick"/>'s per-player sync).</summary>
     public void AddMob(ushort mapId, Mob mob)
     {
-        lock (_lock) Map(mapId).Mobs.Add(mob);
+        lock (_lock) { var m = Map(mapId); m.Mobs.Add(mob); m.ViewGen++; }   // a mob roster change
         var one = new[] { mob };
         Broadcast(mapId, p => p.SyncMobs(one));
     }
@@ -2037,6 +2111,7 @@ public sealed partial class World
             if (!mob.Alive || mob.IsNpc) return false;
             if (!_maps.TryGetValue(mapId, out var m)) return false;
             m.Mobs.Remove(mob);
+            m.ViewGen++;                    // a mob roster change
             _spawnDirector.ReleasePoint(mob);
         }
         Broadcast(mapId, p => p.DespawnEntity(mob.Id));
@@ -2248,6 +2323,11 @@ public sealed partial class World
             if (died && _maps.TryGetValue(mapId, out var m))
             {
                 m.Mobs.Remove(mob);
+                // One bump for this whole acquisition: the mob leaving the roster, the drops RollDropsLocked
+                // adds to m.Items below, and the handed items after it are all one change as far as a viewer
+                // is concerned — the generation counts CHANGES, and any increment makes every viewer of this
+                // map re-sweep the beat that follows.
+                m.ViewGen++;
                 _spawnDirector.RecordDeath(mapId, mob);   // the boss death registry, and its spawn point freed
                 // Loot is a property of the CREATURE, not of which system placed it. Rolling it inside the
                 // spawn-point branch above meant a mob without a point dropped nothing at all — which, once
@@ -2310,7 +2390,7 @@ public sealed partial class World
     /// <summary>Drop <paramref name="gi"/> onto <paramref name="mapId"/> and draw it for everyone there.</summary>
     public void DropItem(ushort mapId, GroundItem gi)
     {
-        lock (_lock) Map(mapId).Items.Add(gi);
+        lock (_lock) { var m = Map(mapId); m.Items.Add(gi); m.ViewGen++; }   // a floor-item roster change
         Broadcast(mapId, p => p.ShowGroundItem(gi));
     }
 
@@ -2347,7 +2427,7 @@ public sealed partial class World
                     if (it.X != x || it.Y != y) continue;
                     if (ownOnly) { if (!it.BelongsTo(pickerId)) continue; }
                     else if (pickerId != 0 && it.LockedAgainst(pickerId)) { blocked = true; continue; }
-                    gi = it; m.Items.RemoveAt(i); break;
+                    gi = it; m.Items.RemoveAt(i); m.ViewGen++; break;   // a floor-item roster change
                 }
             }
         }
@@ -2364,6 +2444,7 @@ public sealed partial class World
             if (!_maps.TryGetValue(mapId, out var m) || m.Mobs.Count == 0) return 0;
             ids = m.Mobs.Select(mo => mo.Id).ToArray();
             m.Mobs.Clear();
+            m.ViewGen++;                    // a mob roster change
         }
         foreach (var id in ids) Broadcast(mapId, p => p.DespawnEntity(id));
         return ids.Length;
@@ -3026,9 +3107,9 @@ public sealed partial class World
         MarkPhase(PhTime);
     }
 
-    // Snapshot each populated map's (players, mobs) under the lock, then reconcile every player's viewport
-    // outside it. Cheap: a few hundred in-view checks per player per tick, no allocation on the hot path
-    // beyond the snapshot arrays.
+    // Snapshot each populated map's (players, mobs, items) and its change generation under the lock, then
+    // reconcile outside it the viewport of every player whose map or own view state has changed since that
+    // player last swept. No allocation on the hot path beyond the snapshot arrays.
     private void ReconcileViews()
     {
         // Floor items ride along with the mobs: a forage top-up or another player's drop lands on the map
@@ -3043,13 +3124,21 @@ public sealed partial class World
         // tile's Y (and its two InView calls could each see a different pair). See PeerTile. The peer's ID
         // comes out here too, in the same acquisition and for the same reason — it is another session's
         // field — which is what lets SyncPeers' capture pass decide without dereferencing any peer at all.
-        (PeerTile[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
+        //
+        // THE MAP ID AND ITS CHANGE GENERATION COME OUT IN THE SAME ACQUISITION, for the reason the tiles do.
+        // MapState.ViewGen counts every write of anything the three sweeps read on this map, and every one of
+        // those writes happens under this same lock; captured here, WITH the roster, the pair is consistent —
+        // this roster is what the map looked like at this generation. Compared outside the lock against the
+        // CAPTURED value, never a live read, so a change that lands while the sweeps run shows up as a
+        // difference on the next beat instead of being silently recorded as already swept.
+        (ushort mapId, long gen, PeerTile[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
         lock (_lock)
         {
-            snapshot = _maps.Values
-                .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))
-                .Select(m => (m.Players.Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
-                              m.Mobs.ToArray(), m.Items.ToArray()))
+            snapshot = _maps
+                .Where(kv => kv.Value.Players.Count > 0 && (kv.Value.Mobs.Count > 0 || kv.Value.Items.Count > 0 || kv.Value.Players.Count > 1))
+                .Select(kv => (kv.Key, kv.Value.ViewGen,
+                               kv.Value.Players.Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
+                               kv.Value.Mobs.ToArray(), kv.Value.Items.ToArray()))
                 .ToArray();
         }
         // (3.0) The snapshot closes here, and the sweep below is then `(3) viewports` on its own. Load-run-2
@@ -3065,10 +3154,24 @@ public sealed partial class World
         // plus a delegate per player per beat (104 B measured, PR #245's follow-up 3), where a tuple of three
         // references is a struct that stays on the stack and lets the compiler cache one delegate for this
         // site. Same three calls, same order, same isolation, same log line.
-        foreach (var (players, mobs, items) in snapshot)
+        //
+        // THE SKIP (P1998_TICK_SWEEP_SKIP, default on). BeginTickSweep answers "has anything this viewer's
+        // three sweeps read changed since this viewer last swept this map" — the map's captured generation
+        // against the one it recorded, plus its own per-viewer pending flag — and false means the three calls
+        // are not made at all this beat. It is sound because a sweep is idempotent over unchanged inputs:
+        // the argument is written out at Session.BeginTickSweep, and the frames are pinned against the
+        // switched-off shape by Tests/TickSweepSkipTests.cs. Nothing else about this loop changes: the same
+        // three calls in the same order, inside the same Try with the same log line, and the generation is
+        // recorded only AFTER they return, so a throw a Try swallows leaves the viewer un-skipped next beat.
+        foreach (var (mapId, gen, players, mobs, items) in snapshot)
             foreach (var p in players)
-                Try((p.Session, players, mobs, items),
-                    static t => { t.Session.SyncPeers(t.players); t.Session.SyncMobs(t.mobs); t.Session.SyncGroundItems(t.items); },
+                Try((p.Session, mapId, gen, players, mobs, items),
+                    static t =>
+                    {
+                        if (!t.Session.BeginTickSweep(t.mapId, t.gen)) return;
+                        t.Session.SyncPeers(t.players); t.Session.SyncMobs(t.mobs); t.Session.SyncGroundItems(t.items);
+                        t.Session.EndTickSweep(t.mapId, t.gen);
+                    },
                     "ReconcileViews");
     }
 

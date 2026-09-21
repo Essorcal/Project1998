@@ -551,6 +551,10 @@ public sealed partial class Session
         if (map == 1002) Door(19, 91, "Forever Tree crevasse");
 
         using (EnterView()) _warpMarkers.AddRange(marks);
+        // The markers are this session's own sweep subjects and the map itself did not change, so the tick's
+        // sweep skip has nothing to notice. The sweep on the next line draws the in-view ones now; the flag
+        // is for the beat after it. See Session.MarkSweepPending.
+        MarkSweepPending();
         SyncGroundItems(_world.ItemsOn(map));   // draw the in-view markers now; the rest appear as you walk
 
         var counts = (warps: warpCount, doors: marks.Count - warpCount);

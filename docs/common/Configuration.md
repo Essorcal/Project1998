@@ -123,6 +123,7 @@ ignored with one startup warning.
 
 | Variable | Type | Default | What it does |
 |---|---|---|---|
+| `P1998_TICK_SWEEP_SKIP` | `0` / `1` | `1` (on) | Let the tick's viewport reconcile skip a viewer whose map has not changed since that viewer last swept it and that has no per-viewer draw pending. 0 restores the unconditional sweep, in which every player of every populated map walks every peer, every mob and every floor item on it every beat — at 400 players and 305 mobs that is 400 viewers against 704 entities a beat to decide, in the steady state, to send nothing. |
 | `P1998_TICK_MS` | integer ≥ 50 | `333` | The world heartbeat in milliseconds — the smallest action interval the world can express at all. Mob timers are carried, not reset, so a 2000ms creature moves every 2000ms whatever this is; what changes is GRANULARITY. 333 divides Sute's observed 333/333/rest rhythm exactly. The tick body runs proportionally more often, so raising this back is the lever if the slow-tick watchdog starts firing. |
 | `P1998_SLOW_TICK_MS` | integer ≥ 0 | a quarter of the heartbeat (83 at the default 333) | A tick this slow — work OR scheduling delay, in milliseconds — gets a diagnostic line. 0 disables the watchdog. Unset derives a quarter of the heartbeat, which is well clear of normal jitter and low enough to catch a stall long before a player would call it lag, and which is why it is derived rather than a fixed number: retuning the heartbeat retunes this with it. |
 

@@ -56,12 +56,22 @@ public class ViewportRectTests
     }
 
     /// <summary>Put a parked creature on a tile without giving it a reason to leave it: home moves with it,
-    /// so the walk-home block has nothing to do and the beat is a pure reconcile.</summary>
-    private static void Move(Mob mob, ushort x, ushort y)
-    {
-        mob.X = x; mob.Y = y;
-        mob.HomeX = x; mob.HomeY = y;
-    }
+    /// so the walk-home block has nothing to do and the beat is a pure reconcile.
+    ///
+    /// <para>UNDER THE WORLD LOCK, WITH THE MAP'S VIEW GENERATION BUMPED, because that is what a real mob
+    /// step does: <c>MobAiTick.StepMobTo</c> is the world's only mob commit and it bumps
+    /// <c>World.MapState.ViewGen</c> under <c>_lock</c> beside the two stores, which is how the tick's sweep
+    /// skip knows the map changed. A helper that writes the tile directly bypasses both, and the tick then
+    /// correctly decides nothing on this map moved and skips the sweep the fact is asserting on. Teleporting
+    /// a creature by assignment was never a thing the world does; this makes the helper do what the world
+    /// does instead of making the production path defend against it.</para></summary>
+    private void Move(ushort map, Mob mob, ushort x, ushort y) =>
+        _fx.World.UnderWorldLockForTest(() =>
+        {
+            mob.X = x; mob.Y = y;
+            mob.HomeX = x; mob.HomeY = y;
+            _fx.World.BumpViewGenUnderWorldLock(map);
+        });
 
     /// <summary>Entity ids carried by the <c>0x07</c> creature-list frames in <paramref name="outbound"/>.
     /// Body is <c>count(u16)</c> then 12 bytes per entity with the id at +4, so a one-entity spawn (what
@@ -111,10 +121,10 @@ public class ViewportRectTests
             var lastRowIn      = Parked(RectMap, 7, 40, "RowIn");
             var firstRowOut    = Parked(RectMap, 8, 40, "RowOut");
 
-            Move(lastColumnIn,   14, 10);   // x in [-2,15): 14 is the last column inside
-            Move(firstColumnOut, 15, 10);   // 15 is out of the strict rect, still inside the drawn 19x17
-            Move(lastRowIn,       5, 13);   // y in [-1,14): 13 is the last row inside
-            Move(firstRowOut,     5, 14);   // 14 is out of the strict rect, still inside the drawn 19x17
+            Move(RectMap, lastColumnIn,   14, 10);   // x in [-2,15): 14 is the last column inside
+            Move(RectMap, firstColumnOut, 15, 10);   // 15 is out of the strict rect, still inside the drawn 19x17
+            Move(RectMap, lastRowIn,       5, 13);   // y in [-1,14): 13 is the last row inside
+            Move(RectMap, firstRowOut,     5, 14);   // 14 is out of the strict rect, still inside the drawn 19x17
 
             outbound.Clear();
             _fx.World.TickOnceForTest();
@@ -147,18 +157,18 @@ public class ViewportRectTests
             Assert.Equal((12, 12), (character.MapXs, character.MapYs));
 
             var loiterer = Parked(BandMap, 5, 40, "Loiterer");
-            Move(loiterer, 5, 13);                       // inside the strict rect
+            Move(BandMap, loiterer, 5, 13);                       // inside the strict rect
             outbound.Clear();
             _fx.World.TickOnceForTest();
             Assert.Contains(loiterer.Id, SpawnedIds(outbound));   // drawn, and now tracked
 
-            Move(loiterer, 5, 14);                       // y in [-2,15) with the hide pad: the overdraw band
+            Move(BandMap, loiterer, 5, 14);                       // y in [-2,15) with the hide pad: the overdraw band
             outbound.Clear();
             _fx.World.TickOnceForTest();
             Assert.False(DespawnedIds(outbound).Contains(loiterer.Id),
                 $"a creature in the overdraw band must not be despawned (#{loiterer.Id} at (5,14))");
 
-            Move(loiterer, 5, 15);                       // past the drawn rect: really gone
+            Move(BandMap, loiterer, 5, 15);                       // past the drawn rect: really gone
             outbound.Clear();
             _fx.World.TickOnceForTest();
             Assert.True(DespawnedIds(outbound).Contains(loiterer.Id),
