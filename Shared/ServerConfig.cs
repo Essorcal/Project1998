@@ -289,6 +289,11 @@ public sealed class ServerConfig
             "P1998_PASS", ConfigArea.Session, true,
             "Server-side passability (collision). 0 lets players walk through anything — an escape hatch for a " +
             "map whose 4.x top-2-bits polarity turns out wrong.");
+        public static readonly BoolKnob GatePeerMoves = new(
+            "P1998_GATE_PEER_MOVES", ConfigArea.Session, true,
+            "Send a peer's 0x0C move and 0x11 turn only to clients that have been drawn that peer, the same " +
+            "gate the mob moves have always had. 0 restores the ungated broadcast, which queued a frame for " +
+            "every session on the map — about 397 of 399 of them for clients that cannot see the walker.");
 
         // --- world heartbeat ---
         public static readonly IntKnob TickMs = new(
@@ -459,7 +464,7 @@ public sealed class ServerConfig
             GameMaxConn, GamePerIp, GameRate, GameRateWindowMs, GameExemptLoopback,
             LoginFails, LoginFailWindowMs,
             GameHost, LoginHost, LoginPort, EnforceHandoff, AllowTofu,
-            AutoSaveMs, CastQueue, PassEnforce,
+            AutoSaveMs, CastQueue, PassEnforce, GatePeerMoves,
             TickMs, SlowTickMs,
             PoolLagMs, SilentMs,
             StatusFile, StatusMs, StatusMessage,
@@ -635,6 +640,8 @@ public sealed class ServerConfig
     public bool CastQueue => Get<bool>(Knobs.CastQueue);
     /// <summary>Enforce server-side collision.</summary>
     public bool PassEnforce => Get<bool>(Knobs.PassEnforce);
+    /// <summary>Gate a peer's 0x0C move and 0x11 turn on the recipient's drawn set.</summary>
+    public bool GatePeerMoves => Get<bool>(Knobs.GatePeerMoves);
 
     /// <summary>The world heartbeat in milliseconds.</summary>
     public int TickMs => Get<int>(Knobs.TickMs);
