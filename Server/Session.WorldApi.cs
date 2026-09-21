@@ -206,13 +206,15 @@ public sealed partial class Session
                     // see different tiles. Now they cannot.
                     uint id = m.Id;
                     ushort mx = m.X, my = m.Y;
-                    bool core = view.Contains(mx, my, ShowPad);   // strict 17x15 — where a 0x07 is accepted
                     // ONE lookup of the drawn-state store per mob, where the base probed the shown set and
                     // then the band set (see DrawnInside): `state` carries both answers, and a state that
-                    // has not changed is not written back.
+                    // has not changed is not written back. It answers FIRST, and then each branch runs the
+                    // one rect test it reads: the drawn 19x17 was already tested lazily here, and `core` is
+                    // now computed on the two branches that read it rather than on every mob. The tile was
+                    // read once, above, so this cannot reintroduce the two-tile hazard that comment names.
                     if (!_drawnMobs.TryGetValue(id, out byte state))
                     {
-                        if (!core) continue;
+                        if (!view.Contains(mx, my, ShowPad)) continue;   // strict 17x15 — where a 0x07 is accepted
                         _drawnMobs[id] = DrawnInside;            // was _shownMobs.Add(id)
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
                         pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, true, false, true);
@@ -223,7 +225,7 @@ public sealed partial class Session
                         if (p == pend.Length) pend = Scratch<PendingSend<Mob>>.Grow(pend);
                         pend[p++] = new PendingSend<Mob>(m, id, StampUnderViewLock(id), mx, my, false, true, false);
                     }
-                    else if (core)
+                    else if (view.Contains(mx, my, ShowPad))      // inside the drawn rect: now ask the strict one
                     {
                         // Back inside the strict rect after loitering in the overdraw band. We don't know
                         // whether the client culled it out there, so re-send the spawn: 0x07 on a live id is
@@ -739,21 +741,27 @@ public sealed partial class Session
                                                   uint id, ushort px, ushort py, in ViewRect view,
                                                   out bool drawnBefore, out bool shownAfter, out uint stamp)
     {
-        bool core = view.Contains(px, py, ShowPad);       // strict 17x15 — where a 0x33 / 0x07 is accepted
-        bool inDrawnRect = view.Contains(px, py, HidePad);// the wider 19x17 the client renders
         stamp = 0;                                        // nothing to send, nothing to revalidate
         drawnBefore = drawn.TryGetValue(id, out byte state);   // what the store said BEFORE this decision
 
+        // EACH RECT TEST RUNS ONLY WHERE ITS ANSWER IS READ. The store answers first, and then the branch
+        // it selects asks the one question it needs: an entity that is not drawn is decided by the strict
+        // rect alone, and a drawn entity is decided by the drawn rect first and only reaches the strict one
+        // if it is still inside. Every branch takes exactly the path the eager pair took for the same
+        // (state, tile) — the two tests are pure functions of `view`, `px` and `py`, all three of which the
+        // caller captured before the call and none of which anything in here writes.
         if (!drawnBefore)
         {
             shownAfter = false;
-            if (!core) return EntityDraw.Nothing;
+            // strict 17x15 — where a 0x33 / 0x07 is accepted. The drawn rect is not consulted: an entity
+            // nothing has drawn yet has nothing to keep drawn.
+            if (!view.Contains(px, py, ShowPad)) return EntityDraw.Nothing;
             drawn[id] = DrawnInside;                      // was shown.Add(id): a first show is never banded
             shownAfter = true;
             stamp = StampUnderViewLock(id);
             return EntityDraw.Show;
         }
-        if (!inDrawnRect)                                 // left the drawn rect — really gone
+        if (!view.Contains(px, py, HidePad))               // left the wider 19x17 the client renders
         {
             drawn.Remove(id);                             // was shown.Remove(id); edge.Remove(id)
             shownAfter = false;
@@ -761,7 +769,7 @@ public sealed partial class Session
             return EntityDraw.Despawn;
         }
         shownAfter = true;
-        if (core)
+        if (view.Contains(px, py, ShowPad))               // inside the drawn rect: now ask the strict one
         {
             // Back inside the strict rect after loitering in the overdraw band. We don't know whether the
             // client culled it out there, so re-send the spawn: a 0x07/0x33 on a live id is an in-place
