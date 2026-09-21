@@ -61,6 +61,7 @@ Scripts\Serve.ps1 -Status                                                    # w
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998-b -PortBase 3000             # a second pair, from a second clone
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Configuration Release       # Release, the build the deployment publishes
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -WireDump                    # frame hex-dump ON; the launcher says P1998_LOG_WIRE=0 by default
 ```
 
 It needs `git` on PATH: the commit and branch are what it stamps on the consoles and records, and it

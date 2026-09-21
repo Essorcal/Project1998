@@ -21,6 +21,10 @@ This script performs the same launch as the bat, and answers those questions:
     commit to stamp, the script refuses to start rather than launch a pair labelled "@ unknown".
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
+    The same environment carries P1998_LOG_WIRE=0 unless the launching shell already sets it or
+    -WireDump asks for the dump: the game process defaults the frame hex-dump ON, and one pair started
+    from a clean shell wrote 479,110 dump lines and 141 log queue overflows in five minutes and had to
+    be voided (briefs/reports/hold-release-pair-opus.md, Status).
   * The pair binds 127.0.0.1 unless -Bind says otherwise (P1998_BIND in the launched processes only;
     Shared/NetBind.cs). A loopback listener is not filtered by Windows Defender Firewall, so a pair
     started this way never raises the allow-or-cancel prompt, which otherwise fires once per
@@ -28,7 +32,7 @@ This script performs the same launch as the bat, and answers those questions:
     redirected real client all dial 127.0.0.1, so a dev pair loses nothing. -Bind 0.0.0.0 (every
     interface, run-server.bat's behaviour) or a LAN address is for a pair other machines must reach.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
-    testers, gms, bind, configuration, started }, plus exe_login/exe_game, created_login/created_game and
+    testers, gms, bind, configuration, wire_dump, started }, plus exe_login/exe_game, created_login/created_game and
     host_login/host_game: the executable path, creation time and console PID of each slot. -Status reads
     it back; -Stop closes exactly those two processes, waits for the ports to free, and removes it. A
     session file only counts for the checkout it was written in:
@@ -110,6 +114,18 @@ not the default it is named on the two console titles after the commit, on the "
 in run/session.json. Applies only to a start: -Status and -Stop compare recorded PIDs against port owners
 and never look at the configuration.
 
+.PARAMETER WireDump
+Turn the frame hex-dump ON for this run (P1998_LOG_WIRE=1 in the launched processes only). Off by
+default: the launcher writes P1998_LOG_WIRE=0 into both batch files unless the launching shell already
+says otherwise or this switch is given, because the game process defaults the dump ON
+(Server/Program.cs, ConfigureLogging wireDefault: true) and one pair started from a clean shell wrote
+479,110 dump lines and 141 log queue overflows in five minutes, rotating away its own start banner
+(briefs/reports/hold-release-pair-opus.md, Status). Shared.Core/Log.cs calls P1998_LOG_WIRE=0 the right
+setting for a live server. Precedence: this switch wins, then the launching shell's own
+P1998_LOG_WIRE (written as-is, the same union rule -Testers/-Gms follow), then 0. The effective value is
+recorded in run/session.json as wire_dump and named on the "Started from" line only when the dump is on.
+Applies only to a start.
+
 .PARAMETER PortBase
 First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
 start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
@@ -147,6 +163,7 @@ param(
     [int]$PortBase = 2000,
     [string]$Bind = '127.0.0.1',
     [ValidateSet('Debug','Release')][string]$Configuration = 'Debug',
+    [switch]$WireDump,
     [switch]$Status,
     [switch]$Stop
 )
@@ -522,9 +539,22 @@ function Remove-RuntimeConfigCaches([string]$Root, [string]$BuildConfiguration) 
 # Launch pieces
 # ---------------------------------------------------------------------------------------------------
 
+# What P1998_LOG_WIRE will say in the launched processes. The game process defaults the frame hex-dump ON
+# (Server/Program.cs, ConfigureLogging wireDefault: true), which is wrong for anything but protocol work:
+# a pair started from a clean shell wrote 479,110 dump lines and 141 log queue overflows in five minutes
+# (briefs/reports/hold-release-pair-opus.md, Status), so the launcher says 0 unless told otherwise.
+# Precedence: -WireDump (the explicit request for this run) beats the launching shell's own value, which
+# beats the default; the shell's value is written as-is, exactly as its P1998_TESTERS/P1998_GMS are unioned
+# in rather than reinterpreted. A blank value is not a value and counts as unset.
+function Get-WireDumpValue([switch]$WireDump) {
+    if ($WireDump) { return '1' }
+    if (-not [string]::IsNullOrWhiteSpace($env:P1998_LOG_WIRE)) { return [string]$env:P1998_LOG_WIRE }
+    return '0'
+}
+
 function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [string]$Project, [int[]]$Ports,
                            [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress,
-                           [string]$BuildConfiguration = 'Debug') {
+                           [string]$BuildConfiguration = 'Debug', [switch]$WireDump) {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $lines = @(
@@ -538,6 +568,7 @@ function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [stri
     if (@($TesterNames).Count -gt 0) { $lines += "set `"P1998_TESTERS=$($TesterNames -join ',')`"" }
     if (@($GmNames).Count -gt 0)     { $lines += "set `"P1998_GMS=$($GmNames -join ',')`"" }
     $lines += "set `"P1998_BIND=$BindAddress`""
+    $lines += "set `"P1998_LOG_WIRE=$(Get-WireDumpValue -WireDump:$WireDump)`""
     # "dotnet run --no-build -c Release" runs the binary in bin\Release\net8.0 and builds nothing. The
     # argument is added only for a non-default configuration, so a Debug batch file is byte for byte the
     # file this script has always generated.
@@ -816,7 +847,7 @@ function Invoke-Stop([string]$Root, $Plan) {
 # ---------------------------------------------------------------------------------------------------
 
 function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress,
-                      [string]$BuildConfiguration) {
+                      [string]$BuildConfiguration, [switch]$WireDump) {
     $allPorts = @($Plan.Login + $Plan.Game)
 
     # 0. Identify the build first. Without git there is no commit to stamp on the consoles or record in
@@ -915,16 +946,19 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     #    environment, as they would under run-server.bat, so union them in and record the result.
     $effTesters = Split-Names (@($env:P1998_TESTERS) + $TesterNames)
     $effGms     = Split-Names (@($env:P1998_GMS) + $GmNames)
+    # The same rule the batch files will be written with, resolved once so the session file and the
+    # "Started from" line report exactly what the launched processes were told.
+    $effWire    = Get-WireDumpValue -WireDump:$WireDump
 
     # 6. Launch: login first, then game, each in its own visible console.
     $loginBat = Join-Path $Root $LoginBatRel
     $gameBat  = Join-Path $Root $GameBatRel
     Write-LaunchBatch -Path $loginBat -Title $loginTitle -Dotnet $dotnet -Project (Join-Path $Root 'LoginServer') `
                       -Ports $Plan.Login -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress `
-                      -BuildConfiguration $BuildConfiguration
+                      -BuildConfiguration $BuildConfiguration -WireDump:$WireDump
     Write-LaunchBatch -Path $gameBat  -Title $gameTitle  -Dotnet $dotnet -Project (Join-Path $Root 'Server') `
                       -Ports $Plan.Game  -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress `
-                      -BuildConfiguration $BuildConfiguration
+                      -BuildConfiguration $BuildConfiguration -WireDump:$WireDump
 
     Write-Host "Starting $loginTitle ..."
     $loginConsole = Start-Console -BatchPath $loginBat -WorkingDirectory $Root
@@ -967,6 +1001,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         gms       = @($effGms)
         bind      = $BindAddress
         configuration = $BuildConfiguration
+        wire_dump = $effWire
         started   = (Get-Date).ToString('o')
         exe_login     = [string]$loginProc.ExecutablePath
         exe_game      = [string]$gameProc.ExecutablePath
@@ -976,7 +1011,10 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         host_game     = [int]$gameConsole.Id
     }
     $file = Write-Session $Root $doc
-    Write-Host "Started from $Root ($($git.Branch) @ $stamp$configSuffix):"
+    # Silent when the dump is off, the way Debug is left unsaid above: a default start says nothing new.
+    $wireNote = ''
+    if ($effWire -ne '0') { $wireNote = ", wire dump P1998_LOG_WIRE=$effWire" }
+    Write-Host "Started from $Root ($($git.Branch) @ $stamp$configSuffix$wireNote):"
     Write-Host "  LOGIN $($Plan.Login -join '/')  PID $($login.ProcessId)"
     Write-Host "  GAME  $($Plan.Game -join '/')  PID $($game.ProcessId)"
     Write-Host "  testers: [$($effTesters -join ', ')]  gms: [$($effGms -join ', ')]"
@@ -1006,6 +1044,9 @@ if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('Bind')) {
 if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('Configuration')) {
     Write-Host "-Configuration only applies when starting."; exit 1
 }
+if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('WireDump')) {
+    Write-Host "-WireDump only applies when starting."; exit 1
+}
 $bindAddress = $null
 if (-not [System.Net.IPAddress]::TryParse($Bind.Trim(), [ref]$bindAddress) -or
     $bindAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
@@ -1024,4 +1065,4 @@ $portBaseExplicit = $PSBoundParameters.ContainsKey('PortBase')
 
 if ($Status) { Show-Status $root $plan $portBaseExplicit; exit 0 }
 if ($Stop)   { exit (Invoke-Stop $root $plan) }
-exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString() $Configuration)
+exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString() $Configuration -WireDump:$WireDump)
