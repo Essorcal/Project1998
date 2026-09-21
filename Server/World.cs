@@ -3026,9 +3026,9 @@ public sealed partial class World
         MarkPhase(PhTime);
     }
 
-    // Snapshot each populated map's (players, mobs) under the lock, then reconcile every player's viewport
-    // outside it. Cheap: a few hundred in-view checks per player per tick, no allocation on the hot path
-    // beyond the snapshot arrays.
+    // Snapshot each populated map's (players, mobs, items) under the lock, then reconcile every player's
+    // viewport outside it. Cheap: a few hundred in-view checks per player per tick, and since the snapshot
+    // buffers are rented rather than built, no allocation on the hot path at all.
     private void ReconcileViews()
     {
         // Floor items ride along with the mobs: a forage top-up or another player's drop lands on the map
@@ -3043,33 +3043,125 @@ public sealed partial class World
         // tile's Y (and its two InView calls could each see a different pair). See PeerTile. The peer's ID
         // comes out here too, in the same acquisition and for the same reason — it is another session's
         // field — which is what lets SyncPeers' capture pass decide without dereferencing any peer at all.
-        (PeerTile[] players, Mob[] mobs, GroundItem[] items)[] snapshot;
-        lock (_lock)
+        // THE BUFFERS ARE RENTED, NOT BUILT — the treatment World.ViewPooled gave the walk step's snapshot in
+        // PR #266, on the tick's copy of the same shape. The LINQ above it built four arrays per POPULATED MAP
+        // per beat (the outer tuple array, plus peers, mobs and items) and threw all of them away 600 ms later.
+        // The fill is a plain loop with the SAME filter, over the SAME collections, in the SAME order, in the
+        // SAME acquisition; only the storage changed. A rented array is at LEAST as long as the fill, so every
+        // count travels beside its buffer and the per-player loop walks the count and never Length — the tail
+        // is the previous tenant's and drawing it would put another map's entities on this client.
+        // ArrayPool.Shared rather than a reusable buffer set on World, for the reason Broadcast's doc gives at
+        // the ViewPooled site: this method is the tick's today, but a pooled rent carries no assumption about
+        // which thread is in it, where a field would have to be proved tick-only again after every later edit.
+        MapViews[] snapshot = Array.Empty<MapViews>();
+        int mapCount = 0;
+        try
         {
-            snapshot = _maps.Values
-                .Where(m => m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))
-                .Select(m => (m.Players.Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
-                              m.Mobs.ToArray(), m.Items.ToArray()))
-                .ToArray();
+            lock (_lock)
+            {
+                // _maps.Count is the upper bound on populated maps and is only stable under the lock, so the
+                // outer rent is in here with the fills, exactly as ViewPooled rents inside its own block.
+                snapshot = ArrayPool<MapViews>.Shared.Rent(_maps.Count);
+                foreach (var m in _maps.Values)
+                {
+                    if (!(m.Players.Count > 0 && (m.Mobs.Count > 0 || m.Items.Count > 0 || m.Players.Count > 1))) continue;
+                    var players = ArrayPool<PeerTile>.Shared.Rent(m.Players.Count);
+                    int pc = 0;
+                    foreach (var p in m.Players) players[pc++] = new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY);
+                    // An empty roster gets Array.Empty rather than a rent: the load map has no floor items at
+                    // all, and a zero-length buffer is not the pool's to hand out or take back.
+                    Mob[] mobs = Array.Empty<Mob>();
+                    int mc = 0;
+                    if (m.Mobs.Count > 0)
+                    {
+                        mobs = ArrayPool<Mob>.Shared.Rent(m.Mobs.Count);
+                        foreach (var mo in m.Mobs) mobs[mc++] = mo;
+                    }
+                    GroundItem[] items = Array.Empty<GroundItem>();
+                    int ic = 0;
+                    if (m.Items.Count > 0)
+                    {
+                        items = ArrayPool<GroundItem>.Shared.Rent(m.Items.Count);
+                        foreach (var it in m.Items) items[ic++] = it;
+                    }
+                    snapshot[mapCount++] = new MapViews(players, pc, mobs, mc, items, ic);
+                }
+            }
+            // (3.0) The snapshot closes here, and the sweep below is then `(3) viewports` on its own. Load-run-2
+            // is why the bucket was split: `(3) viewports` led 37 of the 38 slow beats at 400 players on one map,
+            // at p50 111ms, while the whole-sweep bench models ~11ms of that — and the phase spanned two things
+            // with nothing in common. This block is the acquisition of `_lock` against 400 session read-loop
+            // threads plus the copy of every populated map's roster; everything after it is lockless
+            // per-player work. The `lock-wait` figure on the counts line cannot see this one: it measures only
+            // `Tick`'s own acquisition, taken and released before FlushTick starts. The mark is AFTER the block
+            // because MarkPhase CLOSES the bucket it names.
+            MarkPhase(PhViewSnapshot);
+            // The buffers are passed, not captured: a lambda that closed over them would be a display class
+            // plus a delegate per player per beat (104 B measured, PR #245's follow-up 3), where a tuple of the
+            // session and the map's snapshot struct stays on the stack and lets the compiler cache one delegate
+            // for this site. Same three calls, same order, same isolation, same log line.
+            for (int i = 0; i < mapCount; i++)
+            {
+                var v = snapshot[i];
+                for (int j = 0; j < v.PlayerCount; j++)
+                    Try((session: v.Players[j].Session, view: v),
+                        static t => { t.session.SyncPeers(t.view.Players, t.view.PlayerCount);
+                                      t.session.SyncMobs(t.view.Mobs, t.view.MobCount);
+                                      t.session.SyncGroundItems(t.view.Items, t.view.ItemCount); },
+                        "ReconcileViews");
+            }
         }
-        // (3.0) The snapshot closes here, and the sweep below is then `(3) viewports` on its own. Load-run-2
-        // is why the bucket was split: `(3) viewports` led 37 of the 38 slow beats at 400 players on one map,
-        // at p50 111ms, while the whole-sweep bench models ~11ms of that — and the phase spanned two things
-        // with nothing in common. This block is the acquisition of `_lock` against 400 session read-loop
-        // threads plus the LINQ copy of every populated map's roster; everything after it is lockless
-        // per-player work. The `lock-wait` figure on the counts line cannot see this one: it measures only
-        // `Tick`'s own acquisition, taken and released before FlushTick starts. The mark is AFTER the block
-        // because MarkPhase CLOSES the bucket it names.
-        MarkPhase(PhViewSnapshot);
-        // The three arrays are passed, not captured: a lambda that closed over them would be a display class
-        // plus a delegate per player per beat (104 B measured, PR #245's follow-up 3), where a tuple of three
-        // references is a struct that stays on the stack and lets the compiler cache one delegate for this
-        // site. Same three calls, same order, same isolation, same log line.
-        foreach (var (players, mobs, items) in snapshot)
-            foreach (var p in players)
-                Try((p.Session, players, mobs, items),
-                    static t => { t.Session.SyncPeers(t.players); t.Session.SyncMobs(t.mobs); t.Session.SyncGroundItems(t.items); },
-                    "ReconcileViews");
+        finally
+        {
+            // Outside the lock, after the last sweep of the last map — the loan spans exactly the per-player
+            // loop and not a line more. In a finally because Try swallows a step's throw but nothing else here
+            // does, and a buffer lost to the pool is a leak that never announces itself.
+            for (int i = 0; i < mapCount; i++) ReturnMapViews(in snapshot[i]);
+            if (snapshot.Length > 0) { Array.Clear(snapshot, 0, mapCount); ArrayPool<MapViews>.Shared.Return(snapshot); }
+        }
+    }
+
+    /// <summary>One populated map's tick snapshot: the three rosters copied out under <c>_lock</c>, each in a
+    /// buffer that is at LEAST as long as its fill, with the fill length beside it. The same loan rule
+    /// <see cref="ViewSnapshot"/> carries — walk the count and never <c>Length</c>, store neither the buffer
+    /// nor a reference into it — and a shorter life: it is rented and returned inside one
+    /// <see cref="ReconcileViews"/> call and never leaves the method.</summary>
+    private readonly struct MapViews
+    {
+        public readonly PeerTile[] Players;
+        public readonly int PlayerCount;
+        public readonly Mob[] Mobs;
+        public readonly int MobCount;
+        public readonly GroundItem[] Items;
+        public readonly int ItemCount;
+
+        public MapViews(PeerTile[] players, int playerCount, Mob[] mobs, int mobCount, GroundItem[] items, int itemCount)
+        {
+            Players = players; PlayerCount = playerCount;
+            Mobs = mobs; MobCount = mobCount;
+            Items = items; ItemCount = itemCount;
+        }
+    }
+
+    /// <summary>Give one map's three buffers back, with the slots the fill used wiped first — the same leak
+    /// fix <see cref="ReturnView"/> and <see cref="ReturnPeers"/> document, three times over: a pooled array
+    /// is a live GC root for as long as the pool holds it, and all three of these carry references (a
+    /// <see cref="Session"/> inside every <see cref="PeerTile"/>, and the <see cref="Mob"/>s and
+    /// <see cref="GroundItem"/>s themselves). Only the filled slots are ours to clear; anything past them
+    /// belongs to whoever rented the buffer last. A zero-length roster is <see cref="Array.Empty{T}()"/> and
+    /// is not the pool's to take back.</summary>
+    /// <summary>Drive one <see cref="ReconcileViews"/> pass and nothing else, for the suite — the seam
+    /// <c>Tests/ReconcileSnapshotPoolTests.cs</c> needs to measure THIS method's allocation rather than a
+    /// whole beat's, and to assert on the sweep a beat's own snapshot produces. The same
+    /// <c>…ForTest</c> shape as <see cref="FlushTickForTest"/> and <see cref="TryForTest{T}"/>; it adds no
+    /// production line and changes nothing a beat does.</summary>
+    internal void ReconcileViewsForTest() => ReconcileViews();
+
+    private static void ReturnMapViews(in MapViews v)
+    {
+        if (v.Players.Length > 0) { Array.Clear(v.Players, 0, v.PlayerCount); ArrayPool<PeerTile>.Shared.Return(v.Players); }
+        if (v.Mobs.Length > 0) { Array.Clear(v.Mobs, 0, v.MobCount); ArrayPool<Mob>.Shared.Return(v.Mobs); }
+        if (v.Items.Length > 0) { Array.Clear(v.Items, 0, v.ItemCount); ArrayPool<GroundItem>.Shared.Return(v.Items); }
     }
 
     /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one

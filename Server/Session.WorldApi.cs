@@ -341,18 +341,26 @@ public sealed partial class Session
     /// <c>ReconcilePeer</c> had before PR #245. It costs nothing on the 400-player load map, which has no
     /// floor items at all, and 109ns per item per viewer per beat in Debug on a map that has some (measured,
     /// 50 items: 5,470ns of sweep for 50 decisions). It is now one acquisition for the whole sweep, and the
-    /// sends — which were already outside the lock — are revalidated, which they were not.</para></summary>
-    public void SyncGroundItems(GroundItem[] items)
+    /// sends — which were already outside the lock — are revalidated, which they were not.</para>
+    ///
+    /// <para><paramref name="count"/> is how many of <paramref name="items"/> to sweep, and defaults to all of
+    /// it, for the reason <see cref="SyncMobs"/> and <see cref="SyncPeers"/> take one: a pooled buffer is at
+    /// LEAST as long as its fill, and the tail past the fill belongs to whoever rented it last and is not ours
+    /// to draw. Nothing here outlives the call either — the capture loop copies the item reference and its
+    /// tile into this session's own scratch, which the <c>finally</c> wipes — so a pooled buffer may go back
+    /// to the pool the moment this returns. See <c>World.ReconcileViews</c>.</para></summary>
+    public void SyncGroundItems(GroundItem[] items, int count = -1)
     {
+        if (count < 0) count = items.Length;
         // CAPTURE, OUTSIDE THE LOCK — not because the walk needs to be out here (the parameter is a concrete
         // array), but because the markers below are appended to this same array under the lock. Items never
         // move, so the captured tile is the item's tile for good.
-        var subs = Scratch<ViewSubject<GroundItem>>.Rent(items.Length + 8);
+        var subs = Scratch<ViewSubject<GroundItem>>.Rent(count + 8);
         var pend = Scratch<PendingSend<GroundItem>>.Rent(PendingSeed);
         int n = 0, p = 0;
         try
         {
-            for (int i = 0; i < items.Length; i++)
+            for (int i = 0; i < count; i++)
             {
                 var gi = items[i];                           // a reference copy: GroundItem is a class
                 if (n == subs.Length) subs = Scratch<ViewSubject<GroundItem>>.Grow(subs);
