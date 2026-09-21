@@ -28,7 +28,7 @@ This script performs the same launch as the bat, and answers those questions:
     redirected real client all dial 127.0.0.1, so a dev pair loses nothing. -Bind 0.0.0.0 (every
     interface, run-server.bat's behaviour) or a LAN address is for a pair other machines must reach.
   * It writes run/session.json in the checkout: { pid_login, pid_game, checkout, commit, branch, ports,
-    testers, gms, bind, started }, plus exe_login/exe_game, created_login/created_game and
+    testers, gms, bind, configuration, started }, plus exe_login/exe_game, created_login/created_game and
     host_login/host_game: the executable path, creation time and console PID of each slot. -Status reads
     it back; -Stop closes exactly those two processes, waits for the ports to free, and removes it. A
     session file only counts for the checkout it was written in:
@@ -100,6 +100,16 @@ Account names to grant the GM tier for this run (P1998_GMS in the launched proce
 The interface the pair listens on, as an IPv4 literal (P1998_BIND in the launched processes only).
 Default 127.0.0.1: loopback, which Windows Defender Firewall never prompts for. 0.0.0.0 is every
 interface. Applies only to a start.
+.PARAMETER Configuration
+Debug or Release: the configuration to build and to run. Default Debug, which is dotnet's own default and
+the only configuration this script built before this parameter existed -- the -c argument is added only
+for a non-default configuration, so a start without -Configuration builds and launches exactly the
+command lines it always did. Release is the configuration the deployment publishes
+(.github/workflows/ci.yml), so a load hold meant to measure the deployed build asks for it. When it is
+not the default it is named on the two console titles after the commit, on the "Started from" line, and
+in run/session.json. Applies only to a start: -Status and -Stop compare recorded PIDs against port owners
+and never look at the configuration.
+
 .PARAMETER PortBase
 First login port, 1024..65000; the pair binds base, base+1, base+5 and base+6. Default 2000. Used by a
 start, and by -Status to choose which ports to scan when there is no session file; otherwise the recorded
@@ -136,6 +146,7 @@ param(
     [string[]]$Gms = @(),
     [int]$PortBase = 2000,
     [string]$Bind = '127.0.0.1',
+    [ValidateSet('Debug','Release')][string]$Configuration = 'Debug',
     [switch]$Status,
     [switch]$Stop
 )
@@ -491,7 +502,8 @@ function Find-Dotnet([string]$Root) {
 # ---------------------------------------------------------------------------------------------------
 
 function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [string]$Project, [int[]]$Ports,
-                           [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress) {
+                           [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress,
+                           [string]$BuildConfiguration = 'Debug') {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $lines = @(
@@ -505,7 +517,12 @@ function Write-LaunchBatch([string]$Path, [string]$Title, [string]$Dotnet, [stri
     if (@($TesterNames).Count -gt 0) { $lines += "set `"P1998_TESTERS=$($TesterNames -join ',')`"" }
     if (@($GmNames).Count -gt 0)     { $lines += "set `"P1998_GMS=$($GmNames -join ',')`"" }
     $lines += "set `"P1998_BIND=$BindAddress`""
-    $lines += "`"$Dotnet`" run --no-build --project `"$Project`" -- --ports $($Ports -join ',')"
+    # "dotnet run --no-build -c Release" runs the binary in bin\Release\net8.0 and builds nothing. The
+    # argument is added only for a non-default configuration, so a Debug batch file is byte for byte the
+    # file this script has always generated.
+    $configArg = ''
+    if ($BuildConfiguration -ne 'Debug') { $configArg = " -c $BuildConfiguration" }
+    $lines += "`"$Dotnet`" run --no-build$configArg --project `"$Project`" -- --ports $($Ports -join ',')"
     Set-Content -LiteralPath $Path -Value $lines -Encoding Oem
 }
 
@@ -777,7 +794,8 @@ function Invoke-Stop([string]$Root, $Plan) {
 # Start
 # ---------------------------------------------------------------------------------------------------
 
-function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress) {
+function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$GmNames, [string]$BindAddress,
+                      [string]$BuildConfiguration) {
     $allPorts = @($Plan.Login + $Plan.Game)
 
     # 0. Identify the build first. Without git there is no commit to stamp on the consoles or record in
@@ -818,8 +836,17 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     $clone = Split-Path -Leaf $Root
     $stamp = $git.Short
     if ($git.Dirty) { $stamp += '+' }
-    $loginTitle = "LOGIN $($Plan.Login -join '/') - $clone @ $stamp"
-    $gameTitle  = "GAME $($Plan.Game -join '/') - $clone @ $stamp"
+    # Debug is dotnet's default and the only configuration this script ever built, so it is left unsaid:
+    # a default start writes the same titles, the same batch files and the same build command line it
+    # always did. Anything else is named after the commit, so the window says which build is running.
+    $configSuffix = ''
+    $buildNote    = ''
+    if ($BuildConfiguration -ne 'Debug') {
+        $configSuffix = " $BuildConfiguration"
+        $buildNote    = " ($BuildConfiguration)"
+    }
+    $loginTitle = "LOGIN $($Plan.Login -join '/') - $clone @ $stamp$configSuffix"
+    $gameTitle  = "GAME $($Plan.Game -join '/') - $clone @ $stamp$configSuffix"
 
     # 4. Build once, up front, for the same two reasons as run-server.bat: fail fast, and no two `dotnet
     #    run`s racing on Shared's obj cache.
@@ -834,7 +861,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     try {
         $env:DOTNET_NOLOGO = '1'
         $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = '0'
-        Write-Host "Building $Root\Project1998.sln with $dotnet ..."
+        Write-Host "Building $Root\Project1998.sln$buildNote with $dotnet ..."
         $ErrorActionPreference = 'Continue'
         # | Out-Host, not left bare: this line sits inside Invoke-Start, and PowerShell functions
         # implicitly return every uncaptured pipeline object, not just what follows `return` -- so the
@@ -843,7 +870,10 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         # of the scalar 0/1/2, which PowerShell coerces to 0 -- so a build failure (and every later
         # failure return in this function) reported success. Out-Host prints the same lines to the same
         # console without putting them on the pipeline.
-        & $dotnet build (Join-Path $Root 'Project1998.sln') -v:m -nologo | Out-Host
+        $buildArgs = @((Join-Path $Root 'Project1998.sln'))
+        if ($BuildConfiguration -ne 'Debug') { $buildArgs += @('-c', $BuildConfiguration) }
+        $buildArgs += @('-v:m', '-nologo')
+        & $dotnet build @buildArgs | Out-Host
         $buildCode = $LASTEXITCODE
         $ErrorActionPreference = 'Stop'
     } finally {
@@ -864,9 +894,11 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     $loginBat = Join-Path $Root $LoginBatRel
     $gameBat  = Join-Path $Root $GameBatRel
     Write-LaunchBatch -Path $loginBat -Title $loginTitle -Dotnet $dotnet -Project (Join-Path $Root 'LoginServer') `
-                      -Ports $Plan.Login -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress
+                      -Ports $Plan.Login -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress `
+                      -BuildConfiguration $BuildConfiguration
     Write-LaunchBatch -Path $gameBat  -Title $gameTitle  -Dotnet $dotnet -Project (Join-Path $Root 'Server') `
-                      -Ports $Plan.Game  -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress
+                      -Ports $Plan.Game  -TesterNames $effTesters -GmNames $effGms -BindAddress $BindAddress `
+                      -BuildConfiguration $BuildConfiguration
 
     Write-Host "Starting $loginTitle ..."
     $loginConsole = Start-Console -BatchPath $loginBat -WorkingDirectory $Root
@@ -908,6 +940,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         testers   = @($effTesters)
         gms       = @($effGms)
         bind      = $BindAddress
+        configuration = $BuildConfiguration
         started   = (Get-Date).ToString('o')
         exe_login     = [string]$loginProc.ExecutablePath
         exe_game      = [string]$gameProc.ExecutablePath
@@ -917,7 +950,7 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
         host_game     = [int]$gameConsole.Id
     }
     $file = Write-Session $Root $doc
-    Write-Host "Started from $Root ($($git.Branch) @ $stamp):"
+    Write-Host "Started from $Root ($($git.Branch) @ $stamp$configSuffix):"
     Write-Host "  LOGIN $($Plan.Login -join '/')  PID $($login.ProcessId)"
     Write-Host "  GAME  $($Plan.Game -join '/')  PID $($game.ProcessId)"
     Write-Host "  testers: [$($effTesters -join ', ')]  gms: [$($effGms -join ', ')]"
@@ -944,6 +977,9 @@ if (($Status -or $Stop) -and (@($Testers).Count -gt 0 -or @($Gms).Count -gt 0)) 
 if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('Bind')) {
     Write-Host "-Bind only applies when starting."; exit 1
 }
+if (($Status -or $Stop) -and $PSBoundParameters.ContainsKey('Configuration')) {
+    Write-Host "-Configuration only applies when starting."; exit 1
+}
 $bindAddress = $null
 if (-not [System.Net.IPAddress]::TryParse($Bind.Trim(), [ref]$bindAddress) -or
     $bindAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
@@ -962,4 +998,4 @@ $portBaseExplicit = $PSBoundParameters.ContainsKey('PortBase')
 
 if ($Status) { Show-Status $root $plan $portBaseExplicit; exit 0 }
 if ($Stop)   { exit (Invoke-Stop $root $plan) }
-exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString())
+exit (Invoke-Start $root $plan (Split-Names $Testers) (Split-Names $Gms) $bindAddress.ToString() $Configuration)
