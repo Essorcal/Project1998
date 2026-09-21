@@ -27,7 +27,7 @@ namespace Server;
 ///                "(3) viewports": 903117, "(6) time": 41, "other": 1992 },
 ///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedAtLastGcMb": 968,
 ///   "gcAvailableMb": 15776, "gcHighLoadMb": 14198,
-///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent"
+///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent-conserve5"
 /// }
 /// </code>
 /// Its poll runs every 30s, so a 10s cadence here means the number is never more than one poll stale.
@@ -61,7 +61,7 @@ namespace Server;
 /// <item><term><c>gcAvailableMb</c></term><description><c>GC.GetGCMemoryInfo().TotalAvailableMemoryBytes</c> — as of the last collection; a machine constant</description></item>
 /// <item><term><c>gcHighLoadMb</c></term><description><c>GC.GetGCMemoryInfo().HighMemoryLoadThresholdBytes</c> — as of the last collection; a machine constant</description></item>
 /// <item><term><c>gen0</c>/<c>gen1</c>/<c>gen2</c></term><description><c>GC.CollectionCount(n)</c> — since-start counts</description></item>
-/// <item><term><c>gcMode</c></term><description>the GC configuration this process started with — constant</description></item>
+/// <item><term><c>gcMode</c></term><description>the GC configuration this process started with, flavour then budget (<c>server-concurrent-conserve5</c>) — constant</description></item>
 /// </list>
 ///
 /// Read as deltas between two samples, exactly like the phase totals: <c>gen0</c>, <c>gen1</c> and
@@ -153,11 +153,46 @@ public static class StatusFile
     /// <para>Concurrency comes from the <c>System.GC.Concurrent</c> AppContext switch rather than from
     /// <c>GCSettings.LatencyMode</c>: the latency mode is a property the PROGRAM can set at any moment and
     /// would report whatever was last assigned, while the switch is the configuration the runtime actually
-    /// started with, which is the thing a hold's matrix row varies.</para></summary>
-    private static readonly string Mode =
-        (GCSettings.IsServerGC ? "server" : "workstation") +
-        (AppContext.TryGetSwitch("System.GC.Concurrent", out bool concurrent) && !concurrent
-            ? "-blocking" : "-concurrent");
+    /// started with, which is the thing a hold's matrix row varies.</para>
+    ///
+    /// <para>The string is the GC FLAVOUR then its BUDGET: <c>server-concurrent-conserve5</c> on a process
+    /// that got the repository's pinned <c>System.GC.ConserveMemory</c>, and <c>server-concurrent</c> with no
+    /// third part on one that did not. The budget half is here for the same reason as the first: the setting
+    /// is pinned in <c>Server/runtimeconfig.template.json</c> but overridable at launch without a rebuild
+    /// (<c>DOTNET_GCConserveMemory</c>), and without it in the document a hold cannot tell a run that got the
+    /// pinned budget from one whose launcher turned it off. It is the working set's other variable —
+    /// <c>gcAvailableMb</c> says what the machine offered, this says how hard the GC was told to hold
+    /// back.</para></summary>
+    private static readonly string Mode = DescribeMode();
+
+    /// <summary>The mode string, computed from this process's runtime configuration. A method rather than an
+    /// expression in the field initialiser because the configuration it reads is settable
+    /// (<c>AppContext.SetData</c>), so this is the seam a test drives: the field above is one call to it, and
+    /// a test that sets the property and calls this is testing what the document renders rather than a copy
+    /// of the rule.
+    ///
+    /// <para>The conserve suffix names <c>System.GC.ConserveMemory</c>, which the repository pins to 5 in
+    /// <c>Server/runtimeconfig.template.json</c>. The host passes runtimeconfig <c>configProperties</c> to the
+    /// runtime as strings, so the value arrives here as <c>"5"</c>; an <c>int</c> is accepted too because that
+    /// is what <c>AppContext.SetData</c> in a test would hand it. Anything else — absent, unparseable, or an
+    /// explicit 0, which is the dial's own "off" — renders exactly the string this field rendered before the
+    /// setting existed, so an unpinned process is not silently described as a pinned one.</para></summary>
+    internal static string DescribeMode()
+    {
+        string mode =
+            (GCSettings.IsServerGC ? "server" : "workstation") +
+            (AppContext.TryGetSwitch("System.GC.Concurrent", out bool concurrent) && !concurrent
+                ? "-blocking" : "-concurrent");
+
+        int conserve = AppContext.GetData("System.GC.ConserveMemory") switch
+        {
+            int i => i,
+            string s when int.TryParse(s, out int parsed) => parsed,
+            _ => 0,
+        };
+
+        return conserve == 0 ? mode : $"{mode}-conserve{conserve}";
+    }
 
     /// <summary>Bytes to whole megabytes. Truncating, not rounding: every consumer of these fields reads
     /// them as a delta over minutes against figures in the hundreds, and a megabyte of truncation is far

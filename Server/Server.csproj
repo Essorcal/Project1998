@@ -27,7 +27,11 @@
          background instead of as one blocking pause. The tick allocates several lists plus a HashSet per
          active map per 600ms, so this is squarely the allocation profile server GC is for.
          Costs more RSS (one heap per core). Override on a memory-tight host without a rebuild:
-         DOTNET_gcServer=0. The slow-tick watchdog prints a per-tick gc figure to tell if it mattered. -->
+         DOTNET_gcServer=0. The slow-tick watchdog prints a per-tick gc figure to tell if it mattered.
+         The memory BUDGET is pinned separately, in runtimeconfig.template.json beside this file
+         (System.GC.ConserveMemory = 5): server GC otherwise sizes the heap against whatever the HOST has
+         free, so the same build holds a different working set on the deployment host than on any laptop.
+         Override that one without a rebuild the same way: DOTNET_GCConserveMemory (a 0-9 dial, 0 = off). -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
 

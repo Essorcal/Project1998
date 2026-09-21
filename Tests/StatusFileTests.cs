@@ -288,6 +288,64 @@ public class StatusFileTests
             $"bytes at that collection than it had committed pages for; the two fields are crossed");
     }
 
+    /// <summary><c>gcMode</c> names the GC's memory BUDGET as well as its flavour: with
+    /// <c>System.GC.ConserveMemory</c> set the string carries a <c>-conserveN</c> suffix, and with it unset
+    /// the string is exactly what it was before the setting existed.
+    ///
+    /// <para>The silent failure: the repository pins that property in
+    /// <c>Server/runtimeconfig.template.json</c>, and the one thing a hold uses the document for is telling a
+    /// run that GOT the pinned budget from one whose launcher overrode it (<c>DOTNET_GCConserveMemory</c>) or
+    /// whose publish dropped the template. A suffix hardcoded from the repository's own value, or one
+    /// rendered whatever the property says, would read "conserve5" on both and the hold would price a setting
+    /// the process never had. So the fact drives the real seam with the property set and with it absent, and
+    /// asserts the document agrees with the seam.</para>
+    ///
+    /// <para>The test host runs workstation GC and pins nothing, so the flavour half differs from the game
+    /// process and the unset case is the host's own state; what is under test is the suffix.</para></summary>
+    [Fact]
+    public void TheModeStringNamesTheConserveMemoryLevelThisProcessGot()
+    {
+        object? restore = AppContext.GetData("System.GC.ConserveMemory");
+        try
+        {
+            AppContext.SetData("System.GC.ConserveMemory", null);
+            string unset = StatusFile.DescribeMode();
+
+            // The host hands runtimeconfig configProperties to the runtime as STRINGS, which is how the
+            // pinned 5 actually arrives in the game process; the int case is what a caller in this process
+            // would set.
+            AppContext.SetData("System.GC.ConserveMemory", "5");
+            string asString = StatusFile.DescribeMode();
+            AppContext.SetData("System.GC.ConserveMemory", 5);
+            string asInt = StatusFile.DescribeMode();
+
+            // 0 is the dial's own "off" and must not be described as a pinned budget; a value that is not a
+            // number at all is a misconfiguration the document must not invent a level for.
+            AppContext.SetData("System.GC.ConserveMemory", "0");
+            string off = StatusFile.DescribeMode();
+            AppContext.SetData("System.GC.ConserveMemory", "yes");
+            string junk = StatusFile.DescribeMode();
+
+            _out.WriteLine($"unset '{unset}', \"5\" '{asString}', 5 '{asInt}', \"0\" '{off}', " +
+                           $"\"yes\" '{junk}'");
+
+            Assert.DoesNotContain("conserve", unset);
+            Assert.Equal(unset + "-conserve5", asString);
+            Assert.Equal(unset + "-conserve5", asInt);
+            Assert.Equal(unset, off);
+            Assert.Equal(unset, junk);
+        }
+        finally
+        {
+            AppContext.SetData("System.GC.ConserveMemory", restore);
+        }
+
+        // And the document publishes that function's answer rather than a second copy of the rule. The field
+        // behind `gcMode` is resolved once at type init, so this holds for the process's own configuration —
+        // which the finally above has just put back.
+        Assert.Equal(StatusFile.DescribeMode(), Memory().Mode);
+    }
+
     /// <summary>Bytes to whole megabytes, the document's own truncation, so a comparison against a directly
     /// read counter is a comparison of the same arithmetic.</summary>
     private static long Mb(long bytes) => bytes / (1024 * 1024);
