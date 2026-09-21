@@ -497,6 +497,27 @@ function Find-Dotnet([string]$Root) {
     return $null
 }
 
+# MSBuild's GenerateBuildRuntimeConfigurationFiles is incremental against
+# <project>\obj\<cfg>\net8.0\<project>.genruntimeconfig.cache, and that cache does not notice
+# Server\runtimeconfig.template.json appearing or disappearing under a branch switch: an incremental build
+# after such a switch leaves bin\<cfg>\net8.0\<project>.runtimeconfig.json as the PREVIOUS branch wrote it,
+# so a pair can launch the binary of one branch with the GC policy of another and nothing in the build says
+# so (briefs/reports/gc-conserve-hold-long-opus.md, "The stale-runtimeconfig defect"). Removing the cache
+# before the build costs one regenerated json per project and leaves the rest of the build incremental;
+# --no-incremental or a clean would cost the whole build. Only the two projects this script launches.
+function Remove-RuntimeConfigCaches([string]$Root, [string]$BuildConfiguration) {
+    $removed = @()
+    foreach ($project in @('Server', 'LoginServer')) {
+        $dir = Join-Path $Root "$project\obj\$BuildConfiguration\net8.0"
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter '*.genruntimeconfig.cache' -File -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $f.FullName)) { $removed += $f.FullName }
+        }
+    }
+    return @($removed)
+}
+
 # ---------------------------------------------------------------------------------------------------
 # Launch pieces
 # ---------------------------------------------------------------------------------------------------
@@ -861,6 +882,11 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     try {
         $env:DOTNET_NOLOGO = '1'
         $env:DOTNET_GENERATE_ASPNET_CERTIFICATE = '0'
+        # The one build byproduct that survives a branch switch and lies about it; see
+        # Remove-RuntimeConfigCaches. Quiet on a default start: nothing is printed unless -Verbose asks.
+        foreach ($cache in (Remove-RuntimeConfigCaches $Root $BuildConfiguration)) {
+            Write-Verbose "Removed stale runtimeconfig cache $cache"
+        }
         Write-Host "Building $Root\Project1998.sln$buildNote with $dotnet ..."
         $ErrorActionPreference = 'Continue'
         # | Out-Host, not left bare: this line sits inside Invoke-Start, and PowerShell functions
