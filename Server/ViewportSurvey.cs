@@ -23,7 +23,7 @@ namespace Server;
 /// {
 ///   "t": 1758300000000, "interval": 10000,
 ///   "maps": [
-///     { "map": 1, "players": 12, "mobs": 40, "xs": 220, "ys": 220,
+///     { "map": 1, "players": 12, "mobs": 40, "steps": 84213, "xs": 220, "ys": 220,
 ///       "peerDrawnFraction": 0.18, "peerStrictFraction": 0.15,
 ///       "mobDrawnFraction": 0.31, "mobStrictFraction": 0.28,
 ///       "peerDrawnMin": 0.0, "peerDrawnMax": 0.45,
@@ -40,6 +40,7 @@ namespace Server;
 /// <item><term><c>map</c></term><description>the map id</description></item>
 /// <item><term><c>players</c></term><description>players on that map (the COUNT; the tiles are <c>playerPositions</c>)</description></item>
 /// <item><term><c>mobs</c></term><description>ALIVE mobs on that map, NPCs included — the sweep tests them too (the count; tiles are <c>mobPositions</c>)</description></item>
+/// <item><term><c>steps</c></term><description>the RUNNING TOTAL of player steps this map has accepted since the process started, never reset. A rate is two documents apart: <c>(steps₂ - steps₁) / ((t₂ - t₁)/1000)</c> is that map's steps per second, which is what <c>reviews/walk-reconcile-profile-evidence/steprate.py</c> prints. It is here beside the fraction because the two together are what prices a spatial index: the fraction says what share of the TICK's sweep an index would skip, and the step rate says how many WALK reconciles it would skip as well — and one accepted step costs about nineteen times one viewer's share of the tick's sweep (Release, <c>briefs/reports/walk-reconcile-profile-opus.md</c>). A refused step does not count, so on a map where everyone is blocked this stays flat however hard the clients push. A map that empties drops out of <c>maps</c> entirely and comes back with its total intact, so a gap in the series is a gap and not a reset; a DECREASE can only be a process restart, and a reader must treat it as one rather than as a negative rate</description></item>
 /// <item><term><c>xs</c>, <c>ys</c></term><description>the map's tile dimensions AS THE SURVEY RESOLVED THEM. Published because the rect anchor clamps at a map edge, so the raw tiles below cannot be turned back into rects offline without them — and because a map missing from the content registry shows up here as 65535 rather than as a silently wrong fraction</description></item>
 /// <item><term><c>peerDrawnFraction</c></term><description>mean over viewers of (peers inside that viewer's DRAWN 19x17 rect) / (peers on the map). 0 when the map has one player, because there is no peer to see</description></item>
 /// <item><term><c>peerStrictFraction</c></term><description>the same mean against the STRICT 17x15 rect — the rect a 0x07/0x33 spawn is accepted in</description></item>
@@ -117,6 +118,7 @@ internal static class ViewportSurvey
         [property: JsonPropertyName("map")]                ushort Map,
         [property: JsonPropertyName("players")]            int Players,
         [property: JsonPropertyName("mobs")]               int Mobs,
+        [property: JsonPropertyName("steps")]              long Steps,
         [property: JsonPropertyName("xs")]                 int Xs,
         [property: JsonPropertyName("ys")]                 int Ys,
         [property: JsonPropertyName("peerDrawnFraction")]  double PeerDrawnFraction,
@@ -227,7 +229,7 @@ internal static class ViewportSurvey
                 rawMobs[i] = new int[] { m.Mobs[i].X, m.Mobs[i].Y };
 
             docs.Add(new MapDoc(
-                m.Map, m.Players.Length, m.Mobs.Length, xs, ys,
+                m.Map, m.Players.Length, m.Mobs.Length, m.Steps, xs, ys,
                 Round(peerDrawn / viewers), Round(peerStrict / viewers),
                 Round(mobDrawn / viewers),  Round(mobStrict / viewers),
                 Round(minDrawn), Round(maxDrawn),

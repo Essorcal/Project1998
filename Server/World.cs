@@ -185,6 +185,19 @@ public sealed partial class World
         public readonly List<Mob> Mobs = new();
         public readonly List<GroundItem> Items = new();
         public readonly List<Trap> Traps = new();
+        /// <summary>How many player steps this map has ACCEPTED since the process started — a running total,
+        /// never reset, published as <c>steps</c> in <c>run/viewport.json</c> so a reader differencing two
+        /// documents gets the map's step RATE beside its in-view fraction. The two numbers together are what
+        /// prices a per-map spatial index: the fraction says how much of the tick's sweep an index would
+        /// skip, and the step rate says how many walk reconciles it would skip as well, which the holds on
+        /// record (briefs/reports/hold-spread-2x2-opus.md) showed is the larger of the two once players move.
+        ///
+        /// <para>Written by <see cref="TryMovePlayer"/> on the branch that commits the position, inside the
+        /// <c>_lock</c> acquisition that step already holds — so this is one add next to a write that was
+        /// happening anyway, with no new lock, no new acquisition and no lock-order change. Read by
+        /// <see cref="OnlineRegistry.PositionSurvey"/> under the same lock. Nothing on the tick path reads or
+        /// writes it and no player can see it.</para></summary>
+        public long Steps;
         // The weather state (0 clear / 1 rain / 2 snow) last BROADCAST to players on this map. Not the source
         // of truth — that is the deterministic WeatherModel (+ any zone override) — this is the cached
         // last-sent value the tick compares against on a period rollover to decide whether to re-broadcast.
@@ -1820,6 +1833,10 @@ public sealed partial class World
             if (otherwiseBlocked || (enforceOccupancy && why != BlockReason.None)) return false;
 
             mover.SetPositionUnderWorldLock((ushort)nx, (ushort)ny);
+            // The accepted-step counter (MapState.Steps), incremented here because here is where the step is
+            // accepted and here is the lock it already holds. `m` is null only for a map with no MapState,
+            // which is the "unknown map blocks nothing and commits" case above — nothing to count it on.
+            if (m is not null) m.Steps++;
             return true;
         }
     }
