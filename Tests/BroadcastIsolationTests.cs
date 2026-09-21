@@ -91,10 +91,10 @@ public class BroadcastIsolationTests
         finally { Leave(a, b, c, d); }
     }
 
-    /// <summary><c>World.Broadcast</c> allocates NOTHING of its own — no closure per peer, and since the
-    /// peers snapshot became a pooled rent, no snapshot array either. The only bytes a broadcast costs are
-    /// the caller's own <c>send</c> delegate, and this fact hands it a cached static one so that share is
-    /// zero too and the measurement is the helper alone.
+    /// <summary><c>World.Broadcast</c> allocates NOTHING PER CALL of its own — no closure per peer, and
+    /// since the peers snapshot became a pooled rent, no snapshot array either. The only bytes a broadcast
+    /// costs are the caller's own <c>send</c> delegate, and this fact hands it a cached static one so that
+    /// share is zero too and the measurement is the helper alone.
     ///
     /// <para>Two passes over the SAME call site, as <see cref="TickStepIsolationTests"/> does: each lambda
     /// expression in the source has its own cache slot, so the first pass pays the one cached delegate for
@@ -102,12 +102,29 @@ public class BroadcastIsolationTests
     /// apiece is small enough that a bound loose enough to cover a snapshot would swallow it, and the
     /// falsification would come back green and pin nothing.</para>
     ///
-    /// <para>Falsification, twice, and both were run. (a) Put the capture back —
-    /// <c>Try(() =&gt; send(p), "Broadcast")</c> — and this went red at <b>4,880 B a call over 40 peers</b> (against the bound this fact carried before the snapshot was pooled).
-    /// (b) Put the LINQ snapshot back — <c>peers = m.Players.Where(p =&gt; p != except).ToArray()</c> with the
-    /// <c>foreach</c> over it — and it went red at <b>1,032 B a call over the same 40 peers</b> (2,064,000 B over 2,000 calls). Run each,
-    /// confirm red, restore. Both reds are recorded in
-    /// <c>briefs/reports/broadcast-alloc-opus.md</c>.</para></summary>
+    /// <para><b>Why the bound is one byte per call and not zero.</b> The peers snapshot is rented from
+    /// <c>ArrayPool&lt;Session&gt;.Shared</c>, which is process-wide and trims its per-core stacks on a Gen2
+    /// callback. A big roster ELSEWHERE in the same run — <c>StatusTickAllocationTests</c>'s 400 sessions,
+    /// the 400-player viewport survey fixture — empties the stack this thread rents from, and the next rent
+    /// then allocates one fresh buffer. That is a cost of about one kilobyte per RUN, not per call, and it
+    /// took this fact red twice on a head nobody disputes: 520 B beside the status roster (unrecorded) and
+    /// 1,152 B on PR #261's upstream check (recorded, <c>reviews/server-261.review.json</c>). So the
+    /// assertion states what the claim means — no PER-CALL allocation — at a bound of under one byte a call,
+    /// <c>bytes &lt; Calls</c> = 2,000 B over 2,000 calls. One pool re-rent passes it; both falsifications
+    /// below miss it by three orders of magnitude. Do not put <c>Assert.Equal(0, bytes)</c> back: it asserts
+    /// the state of a process-wide pool as well as this helper, and only the second half is a fact about
+    /// <c>World.Broadcast</c>.</para>
+    ///
+    /// <para>Falsification, twice, and both were re-run against this bound. (a) Put the capture back —
+    /// <c>var p = peers[i]; Try(() =&gt; send(p), "Broadcast")</c> — and this goes red at <b>3,864 B a call
+    /// over 40 peers</b> (7,728,000 B over the 2,000 calls, Debug and Release alike): 96 B a peer, the
+    /// display class and the delegate. The 4,880 B the earlier report records is this plus (b), from before
+    /// the snapshot was pooled. (b) Put the LINQ snapshot back —
+    /// <c>peers = m.Players.Where(p =&gt; p != except).ToArray()</c> with the <c>foreach</c> over it — and it
+    /// goes red at <b>1,032 B a call over the same 40 peers</b> (2,064,000 B over 2,000 calls, 1,032x the
+    /// bound). Run each, confirm red, restore. The reds against the earlier zero bound are in
+    /// <c>briefs/reports/broadcast-alloc-opus.md</c>; the reds against this one are in
+    /// <c>reviews/test-hygiene-evidence/</c>.</para></summary>
     [Fact]
     public void BroadcastAllocatesNothingPerPeer()
     {
@@ -127,7 +144,11 @@ public class BroadcastIsolationTests
 
             Assert.True(_peers >= Crowd * Calls,
                         $"only {_peers} peer deliveries over {Calls} calls — the arrangement is wrong, not the code");
-            Assert.Equal(0, bytes);
+            // Not zero: a pool re-rent after someone else's Gen2 costs one buffer PER RUN (~1 KB). Under one
+            // byte a call still refuses every per-peer and per-call shape. See the doc comment.
+            Assert.True(bytes < Calls,
+                        $"{bytes} B over {Calls} calls to {Crowd} peers — at {(double)bytes / Calls:0.##} B a "
+                      + $"call this is a per-call allocation, not the pool's one re-rented buffer");
         }
         finally { Leave(crowd); }
     }
