@@ -84,9 +84,13 @@ public sealed partial class World
         /// everything a reader wants to DO with them — rect tests, fractions, JSON — happens outside it.
         /// Plain arrays and value tuples, no sessions and no mobs: a reference here would let a reader touch
         /// live state off the lock, which is exactly what this type exists to prevent.</summary>
+        /// <param name="Steps">The map's running total of ACCEPTED player steps (<c>World.MapState.Steps</c>),
+        /// read in the same acquisition as the tiles. Defaulted so the computation seam can be driven by a
+        /// test that has nothing to say about walking.</param>
         internal sealed record MapPositions(ushort Map,
                                             (uint Id, ushort X, ushort Y)[] Players,
-                                            (ushort X, ushort Y)[] Mobs);
+                                            (ushort X, ushort Y)[] Mobs,
+                                            long Steps = 0);
 
         /// <summary>Every map with at least one player on it, with that map's players' (id, tile) and its
         /// ALIVE mobs' tiles copied into plain arrays. The survey document's one read of the world
@@ -129,7 +133,7 @@ public sealed partial class World
                     int k = 0;
                     foreach (var mo in m.Mobs) if (mo.Alive) mobs[k++] = (mo.X, mo.Y);
 
-                    maps.Add(new MapPositions(id, players, mobs));
+                    maps.Add(new MapPositions(id, players, mobs, m.Steps));
                 }
                 return maps.ToArray();
             }
