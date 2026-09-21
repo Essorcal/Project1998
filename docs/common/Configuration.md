@@ -117,6 +117,7 @@ ignored with one startup warning.
 | `P1998_AUTOSAVE_MS` | integer ≥ 1 | `15000` | Ceiling on how often a dirty character is flushed to the store, and so on worst-case data loss in a hard crash. The session's own read loop and World's idle sweep both use this one cadence. |
 | `P1998_CAST_QUEUE` | `0` / `1` | `1` (on) | Hold over-budget casts until the next action window instead of discarding them, so a held cast key lands as one animation and one sound rather than an audible flam. 0 restores the plain drop-gate. |
 | `P1998_PASS` | `0` / `1` | `1` (on) | Server-side passability (collision). 0 lets players walk through anything — an escape hatch for a map whose 4.x top-2-bits polarity turns out wrong. |
+| `P1998_GATE_PEER_MOVES` | `0` / `1` | `1` (on) | Send a peer's 0x0C move and 0x11 turn only to clients that have been drawn that peer, the same gate the mob moves have always had. 0 restores the ungated broadcast, which queued a frame for every session on the map — about 397 of 399 of them for clients that cannot see the walker. |
 
 ### World heartbeat
 
