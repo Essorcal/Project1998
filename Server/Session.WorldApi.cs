@@ -49,6 +49,36 @@ public sealed partial class Session
         // the VIEWER (`this`) is alive. Same despawn-not-draw shape as stealth. See PvpGhostHidden. A ghost still
         // sees the living too (a living subject isn't PvpGhostHidden, so this gate never fires for them).
         if (other.PvpGhostHidden && !ReferenceEquals(other, this) && !IsDead) { DespawnEntity(s.Id); return; }
+        // THE DRAWN SET, made true to what this client is about to hold. ShowPlayer is the one peer draw that
+        // does NOT come through DecidePeerUnderViewLock: RefreshAppearance (Session.Entity.cs), CastMorph and
+        // RevertMorph (Session.Spells.cs) each broadcast DespawnEntity and then ShowPlayer to every session on
+        // the map, and the despawn takes the id OUT of the recipient's _drawnPeers while the draw put it back
+        // on the recipient's screen. That left a window of up to one beat — until the tick sweep's first-show
+        // branch re-added it — in which the client held the entity and the store said it did not. Harmless
+        // while MoveEntity sent unconditionally; with the gate below it would drop every 0x0C for that peer in
+        // the window, so the peer would freeze and then snap. (reviews/PR263-by-opus.md, F1.)
+        //
+        // DrawnBand, not DrawnInside, and the difference is a frame: "drawn, and re-assert on the next sweep"
+        // is what the store has to say here, because that re-assert is the 0x33 the next sweep sends TODAY —
+        // today's store has forgotten the id, so the sweep takes its first-show branch and draws it. Writing
+        // DrawnInside would make that sweep decide nothing and the frame would vanish, which is not this
+        // change's one permitted class of dropped frame. With DrawnBand the sweep's re-assert branch fires
+        // instead, and the wire is identical.
+        //
+        // TryAdd, never an overwrite, and that is load-bearing twice over. The sweep reaches this method with
+        // the id ALREADY written as DrawnInside by its own decide pass, and re-stating it as DrawnBand there
+        // would make the following beat re-assert a peer that has not moved — a 0x33 per in-view peer per
+        // beat, which is the opposite of what this PR is for. An add-only write also cannot take an entry
+        // away, so it can only ever let a frame through, never stop one.
+        //
+        // Only inside the STRICT rect, because that is the only place the client accepts a 0x33/0x07 (ShowPad,
+        // the same test the sweep's show branch makes), and only for a peer: ShowPlayer(this) draws OURSELVES,
+        // whom no broadcast ever addresses and no sweep ever reconciles. Taking our own _viewLock from under
+        // the SUBJECT's state monitor is the order DespawnEntity's broadcast already uses from exactly these
+        // three call sites, and it is after Snapshot() returns, never across it (#29).
+        if (!ReferenceEquals(other, this))
+            using (EnterView())
+                if (CurrentView().Contains(s.X, s.Y, ShowPad)) _drawnPeers.TryAdd(s.Id, DrawnBand);
         if (s.MorphLook != 0) { SendCreatureList(new[] { (s.Id, (ushort)(0x8000 | s.MorphLook), s.X, s.Y, s.MorphColor, s.Dir) }); return; }
         var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : s.Faded ? 5 : s.Mounted ? 3 : 0), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // [1]=form (5=invisible-spell/faded), [4]=war-paint dye
         // The nameplate is drawn straight off this string, so an empty name is the whole "hide nameplates"
@@ -980,9 +1010,34 @@ public sealed partial class Session
         if (_gm.ShowWarps) StampWarpMarkers();   // the rebuild dropped the @showwarps overlay — put it back
     }
 
+    // The kill switch for the two peer gates below, read ONCE for the process the same way PassEnforce and
+    // CastQueueEnabled are (Session.cs). 0 restores the ungated broadcast this change replaced.
+    //
+    // It is not `readonly` for one reason, and it is a test reason: the fact that proves the switch actually
+    // switches (Tests/PeerMoveGateTests.cs) has to run both shapes in one process, and it also RECORDS the
+    // base's frame sequence by running the ungated shape rather than keeping a hand copy of it. Production
+    // never writes this field — GatePeerMovesForTest is internal and has no production caller.
+    private static bool GatePeerMoves = ServerConfig.Current.GatePeerMoves;
+
+    /// <summary>The kill switch's live value, for the facts that must run both shapes in one process. Writing
+    /// it is a test-only act; nothing in the server does.</summary>
+    internal static bool GatePeerMovesForTest
+    {
+        get => GatePeerMoves;
+        set => GatePeerMoves = value;
+    }
+
     // Move a peer entity one step. (x,y) is the SOURCE tile — the client's 0x0C overshoots one tile past it
     // in `dir`, so anchoring on the source lands the peer on the true destination. See HandleWalk / MoveMob.
-    public void MoveEntity(uint id, ushort x, ushort y, byte dir) => SendMove(id, x, y, dir);      // 0x0C
+    // Skips clients that don't have the peer drawn, exactly as MoveMob does for mobs (the client ignores a
+    // 0x0C for an unknown entity anyway, so this just spares the wire on a big map); SyncPeers draws it once
+    // it enters view. _drawnPeers holds both drawn states — DrawnInside and DrawnBand are both "the client
+    // has this peer" — so the test is membership, not a state test.
+    public void MoveEntity(uint id, ushort x, ushort y, byte dir)                                  // 0x0C
+    {
+        if (GatePeerMoves) { using (EnterView()) { if (!_drawnPeers.ContainsKey(id)) return; } }
+        SendMove(id, x, y, dir);
+    }
     // Move a world MOB one step. (x,y) is the mob's SOURCE tile, not the destination: the 4.95 client's
     // 0x0C walk ends one tile past the packet tile in `dir` (forward-slide overshoot), so anchoring on the
     // source makes it land on the true destination. See World.Tick's move broadcast for the full rationale.
@@ -999,7 +1054,12 @@ public sealed partial class Session
         using (EnterView()) { if (!_drawnMobs.ContainsKey(id)) return; }
         SendSide(id, side);
     }
-    public void SideEntity(uint id, byte side) => SendSide(id, side);                              // 0x11
+    // Turn a peer in place (0x11 side) — the same drawn-only guard as MoveEntity, for the same reason.
+    public void SideEntity(uint id, byte side)                                                     // 0x11
+    {
+        if (GatePeerMoves) { using (EnterView()) { if (!_drawnPeers.ContainsKey(id)) return; } }
+        SendSide(id, side);
+    }
     public void SpeakEntity(byte chatType, uint id, byte[] msg) => SendSpeech(chatType, id, msg);  // 0x0D
     /// <summary>Play a <c>0x1A</c> action over an entity on this client. The byte overload is the boundary
     /// the dynamic senders cross — the <c>@mobact</c> calibration probe and the mob swing type it sets —
