@@ -221,7 +221,7 @@ public class DrawnStateEquivalenceTests
     }
 
     /// <summary>(b) PEERS: the same walk through the real <c>SyncPeers</c>, against the same model. A peer
-    /// has no <c>MoveMob</c>-shaped membership probe — <c>MoveEntity</c> sends unconditionally — so this fact
+    /// has no <c>MoveMob</c>-shaped membership probe to ask the server with, so this fact
     /// compares the frames alone, which is where a peer-store mistake reaches a player: a missing re-assert
     /// is an invisible player, and a missing despawn is one who never leaves the screen.
     ///
