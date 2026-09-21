@@ -341,9 +341,20 @@ public sealed partial class Session
         _world.Broadcast(_char.Map, p => p.MoveEntity(_char.Id, (ushort)fromX, (ushort)fromY, dir), except: this);
 
         // Our viewport just shifted a tile: stream in entities that entered view, drop ones that left.
-        var (viewPeers, viewMobs) = _world.View(this, _char.Map);
-        SyncPeers(viewPeers);   // OTHER PLAYERS — same viewport-gated redraw mobs get, so we see whoever we walk up to
-        SyncMobs(viewMobs);
+        //
+        // ViewPooled, not View: this runs on every accepted step, about 1,200 times a second on a walking
+        // population, and the two arrays View builds under the world lock were 16.6 KB of it. These buffers
+        // are the POOL's — handed back, wiped, in the finally — and nothing inside may keep them or a
+        // reference into them past it. The two sweeps are the whole of that "inside": each decides under this
+        // session's own _viewLock and copies what a deferred frame needs into its own scratch, so no slice of
+        // either buffer survives the call. See World.ViewPooled / World.ReturnView.
+        var view = _world.ViewPooled(this, _char.Map);
+        try
+        {
+            SyncPeers(view.Peers, view.PeerCount);   // OTHER PLAYERS — same viewport-gated redraw mobs get, so we see whoever we walk up to
+            SyncMobs(view.Mobs, view.MobCount);
+        }
+        finally { World.ReturnView(in view); }
         // ...and the FLOOR ITEMS, which need it even more than mobs do: they never move, so an item whose
         // 0x07 was dropped by the client's viewport gate (a forage chestnut across the farm, loot from a
         // kill on the far side of the map) is invisible forever unless walking up to it re-draws it.
