@@ -127,6 +127,34 @@ public readonly record struct PeerTile(Session Session, uint Id, ushort X, ushor
     public PeerTile(Session session, ushort x, ushort y) : this(session, session.PlayerId, x, y) { }
 }
 
+/// <summary>A BORROWED view snapshot: the peers and mobs <see cref="World.ViewPooled"/> copied out of the
+/// world lock, in two <see cref="System.Buffers.ArrayPool{T}"/> buffers that belong to the pool and not to
+/// the caller. <see cref="Peers"/> and <see cref="Mobs"/> are at LEAST as long as the fill, so every reader
+/// walks <see cref="PeerCount"/> / <see cref="MobCount"/> and never <c>Length</c>; the tail is the previous
+/// tenant's and is not ours to read.
+///
+/// <para>It is a loan with one rule: hand it back with <see cref="World.ReturnView"/> in a <c>finally</c>,
+/// and let nothing outlive that — no field, no closure, no deferred send, no slice kept past the call. A
+/// read after the return is silent, because the buffer is by then legitimately somebody else's, which is
+/// why this type exists rather than a bare pair of arrays.</para></summary>
+public readonly struct ViewSnapshot
+{
+    /// <summary>The peers, excluding the viewer, in the map roster's order. Valid for <see cref="PeerCount"/>
+    /// entries.</summary>
+    public readonly PeerTile[] Peers;
+    /// <summary>How many of <see cref="Peers"/> the fill wrote.</summary>
+    public readonly int PeerCount;
+    /// <summary>The map's mobs, in the map roster's order. Valid for <see cref="MobCount"/> entries.</summary>
+    public readonly Mob[] Mobs;
+    /// <summary>How many of <see cref="Mobs"/> the fill wrote.</summary>
+    public readonly int MobCount;
+
+    internal ViewSnapshot(PeerTile[] peers, int peerCount, Mob[] mobs, int mobCount)
+    {
+        Peers = peers; PeerCount = peerCount; Mobs = mobs; MobCount = mobCount;
+    }
+}
+
 /// <summary>Why <see cref="World.TryMovePlayer"/> refused a step. Flags, not a single value, because the
 /// walk log prints " mob" and " player" INDEPENDENTLY and always has: a mob and a player can share a tile
 /// (a warp lands players on object tiles, and nothing keeps a summon off an occupied one), so collapsing
@@ -1245,6 +1273,55 @@ public sealed partial class World
             return (m.Players.Where(p => p != s).Select(p => new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY)).ToArray(),
                     m.Mobs.ToArray());
         }
+    }
+
+    /// <summary>The pooled twin of <see cref="View"/>, for the one caller that can give the buffers straight
+    /// back: an accepted walk step (<c>Session.HandleWalk</c>), which runs about 1,200 times a second on a
+    /// walking population and paid 16.6 KB a step for the two arrays <see cref="View"/> builds under the
+    /// lock — a <c>Where(…).Select(…).ToArray()</c> over every peer plus a <c>ToArray()</c> over every mob,
+    /// measured at 11.1 µs Debug / 6.6 µs Release per step on a 400-player / 386-mob fixture.
+    ///
+    /// <para>Same treatment, same reasoning and the same hazards as <see cref="Broadcast"/>: the buffers are
+    /// rented from <see cref="ArrayPool{T}"/> and filled by a plain loop with the SAME filter
+    /// (<c>p != s</c>) and the SAME order, under <c>_lock</c> exactly where the LINQ ran and for less time.
+    /// A single reusable buffer pair on <see cref="World"/> would be wrong for the reason it is wrong there:
+    /// the tick thread and every session thread reach this concurrently, so each call needs its own.</para>
+    ///
+    /// <para>A rented array is at LEAST as long as the fill, so the counts come back beside it and the
+    /// caller must walk <see cref="ViewSnapshot.PeerCount"/> / <see cref="ViewSnapshot.MobCount"/> entries
+    /// and not <c>Length</c>. THE SNAPSHOT MUST NOT OUTLIVE THE CALL: give it back with
+    /// <see cref="ReturnView"/> in a <c>finally</c>, and never store it, a slice of it, or a reference into
+    /// it in a field, a closure or a deferred send — a use after return is silent and lands in whichever
+    /// caller rents that buffer next. Callers that cannot promise that (<c>ResyncPeers</c>,
+    /// <c>RedrawWorld</c>, the tests) keep using <see cref="View"/>, which is unchanged.</para></summary>
+    public ViewSnapshot ViewPooled(Session s, ushort mapId)
+    {
+        PeerTile[] peers; Mob[] mobs; int peerCount, mobCount;
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m))
+                return new ViewSnapshot(Array.Empty<PeerTile>(), 0, Array.Empty<Mob>(), 0);
+            peers = ArrayPool<PeerTile>.Shared.Rent(m.Players.Count);
+            peerCount = 0;
+            foreach (var p in m.Players) if (p != s) peers[peerCount++] = new PeerTile(p, p.PlayerId, p.PlayerX, p.PlayerY);
+            mobs = ArrayPool<Mob>.Shared.Rent(m.Mobs.Count);
+            mobCount = 0;
+            foreach (var mo in m.Mobs) mobs[mobCount++] = mo;
+        }
+        return new ViewSnapshot(peers, peerCount, mobs, mobCount);
+    }
+
+    /// <summary>Give a <see cref="ViewPooled"/> snapshot's buffers back, with the slots the fill used wiped
+    /// first. The wipe is the same leak fix <see cref="ReturnPeers"/> documents, twice over: a pooled array
+    /// is a live GC root for as long as the pool holds it, and here BOTH buffers carry references — every
+    /// <see cref="PeerTile"/> holds a <see cref="Session"/>, and the mob buffer holds the <see cref="Mob"/>
+    /// objects themselves. Only the filled slots are ours to clear; anything past them belongs to whoever
+    /// rented the buffer last. The empty snapshot an unknown map returns owns nothing, so it is skipped —
+    /// <see cref="Array.Empty{T}()"/> is not the pool's to take back.</summary>
+    public static void ReturnView(in ViewSnapshot v)
+    {
+        if (v.Peers.Length > 0) { Array.Clear(v.Peers, 0, v.PeerCount); ArrayPool<PeerTile>.Shared.Return(v.Peers); }
+        if (v.Mobs.Length > 0) { Array.Clear(v.Mobs, 0, v.MobCount); ArrayPool<Mob>.Shared.Return(v.Mobs); }
     }
 
     /// <summary>Remove <paramref name="s"/> from <paramref name="mapId"/> and despawn it for the rest.</summary>
