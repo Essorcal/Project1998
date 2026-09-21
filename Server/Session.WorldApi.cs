@@ -669,10 +669,44 @@ public sealed partial class Session
     /// visibility rule. Dying in a PvP area lets us see the other ghosts; reviving takes that sight away again.
     /// Clears the tracking sets and re-runs SyncPeers over every peer on our map: ShowPlayer redraws the ones
     /// now visible and despawns the ones now hidden (it decides per viewer), so this both reveals and hides.
-    /// Map changes get this for free via EnterMap; this covers an in-place death/revive that stays on the map.</summary>
+    /// Map changes get this for free via EnterMap; this covers an in-place death/revive that stays on the map.
+    ///
+    /// <para><b>It DOWNGRADES the drawn store, it does not clear it</b>, and the difference is a frame for
+    /// every peer the client holds in the overdraw band. This method sends the client nothing to forget with
+    /// — no 0x15, no 0x0E — so after it the client still holds every peer it held a moment earlier. Clearing
+    /// the store said otherwise, and the sweep below only draws what is inside the STRICT rect
+    /// (<see cref="DecidePeerUnderViewLock"/>: an absent id outside it decides Nothing), so a peer loitering
+    /// in the one-tile band came back held-by-the-client and absent-from-the-store. With the move gate on
+    /// (<c>P1998_GATE_PEER_MOVES</c>) that peer's 0x0C and 0x11 were then dropped until it re-entered the
+    /// strict rect, where the first-show branch SNAPPED it to its new tile — a lost step for an entity the
+    /// client holds, which is the one thing the gate must never do. Found by PR #264's review as F1 (HIGH),
+    /// reviews/PR264-by-fable.md; the probe is Tests/PeerMoveGateTests.cs fact (j).</para>
+    ///
+    /// <para>Downgrading to <see cref="DrawnBand"/> says exactly what is true: the client has these peers,
+    /// and we are no longer sure it should. Membership keeps the gate open, so no move is lost. The state
+    /// sends the sweep down its RE-ASSERT branch instead of its first-show branch, and the two build the
+    /// identical 0x33 through the identical <see cref="ShowPlayer"/>, so every peer inside the strict rect
+    /// gets the same frame the clearing version sent. And a peer now outside the drawn rect reaches the
+    /// despawn branch and gets the 0x0E that the clearing version leaked on BOTH arms — a frame this repairs
+    /// rather than removes.</para>
+    ///
+    /// <para><see cref="ForgetShownMobs"/> is the other case and needs none of this: its two callers
+    /// (<c>Session.Navigation.cs</c>'s map change, and <see cref="RedrawWorld"/> after a 0x15 mapinfo
+    /// re-send) are exactly the ones where the CLIENT has just dropped every foreign entity, so clearing the
+    /// store keeps it true. Client and store are cleared together there; here only the store was.</para></summary>
     public void ResyncPeers()
     {
-        using (EnterView()) { _drawnPeers.Clear(); _sendStamp.Clear(); }
+        using (EnterView())
+        {
+            // Copy the keys out rather than write through the dictionary while enumerating it. Overwriting an
+            // existing key does not invalidate a Dictionary enumerator on .NET Core 3.0+, but this runs once
+            // per death and once per revive, next to a full-map World.View snapshot, so the obviously correct
+            // form costs nothing worth having.
+            uint[] ids = new uint[_drawnPeers.Count];
+            _drawnPeers.Keys.CopyTo(ids, 0);
+            foreach (uint id in ids) _drawnPeers[id] = DrawnBand;
+            _sendStamp.Clear();     // no send is in flight across this, so no decision here has a stamp to keep
+        }
         SyncPeers(_world.View(this, _char.Map).peers);
     }
 

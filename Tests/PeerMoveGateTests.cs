@@ -51,6 +51,7 @@ public class PeerMoveGateTests
     private const ushort InsideMap = 60110, BandMap = 60111, OutsideMap = 60112, LeavingMap = 60113;
     private const ushort TurnMap = 60114, SwitchMap = 60115, SeqBaseMap = 60116, SeqHeadMap = 60117;
     private const ushort MorphMap = 60118, RedrawSetMap = 60119;
+    private const ushort ResyncBackMap = 60120, ResyncAwayMap = 60121;
 
     private const ushort ViewerX = 30, ViewerY = 20;
     private const ushort WalkRow = 21;
@@ -433,6 +434,97 @@ public class PeerMoveGateTests
         finally
         {
             foreach (var s in new[] { viewer, peer }) _fx.World.LeaveMap(s, RedrawSetMap);
+        }
+    }
+
+    /// <summary>(j) <c>ResyncPeers</c> — every death (<c>Session.Entity.cs</c>'s <c>Die</c>) and every in-place
+    /// revive (<c>ReviveInPlace</c>) — must not make a peer the client HOLDS look undrawn, because the gate
+    /// would then drop its moves.
+    ///
+    /// <para>PR #264's review found this as F1 (HIGH), <c>reviews/PR264-by-fable.md</c>. <c>ResyncPeers</c>
+    /// sends the client nothing to forget with — no 0x15, no 0x0E — so after it the client still holds every
+    /// peer it held; clearing the drawn store said otherwise, and the sweep it runs re-draws only the STRICT
+    /// rect, so a peer loitering in the one-tile overdraw band came back held-by-the-client and
+    /// absent-from-the-store. Its next step was then dropped and the one after that SNAPPED it into place.
+    /// The store is downgraded to the band state instead, which keeps membership (so no move is lost) and
+    /// keeps the sweep's frames identical.</para>
+    ///
+    /// <para>Both halves are the reviewer's own probe, and both assert the BASE's wire — this is a repair, so
+    /// the head must now match what the ungated server put on the wire, not merely something reasonable.</para>
+    ///
+    /// <para><b>Falsification:</b> restore <c>_drawnPeers.Clear()</c> in <c>ResyncPeers</c>. Recorded red in
+    /// the report: the westward half loses its <c>0x0C</c> and carries only the snap <c>0x33</c>, and the
+    /// eastward half carries nothing at all.</para></summary>
+    [Fact]
+    public void AResyncDoesNotStrandAPeerWhoWalksBackIntoTheStrictRect()
+    {
+        var (viewer, outbound, _) = _fx.PlayerWith("GateResyncViewer", Wide, ResyncBackMap, ViewerX, ViewerY);
+        var (walker, _, _) = _fx.PlayerWith("GateResyncWalker", Wide, ResyncBackMap, (ushort)(InBand - 1), WalkRow);
+        try
+        {
+            viewer.SyncPeers(new[] { new PeerTile(walker, (ushort)(InBand - 1), WalkRow) });   // drawn, inside
+            Walk(walker, East);                                                                // 38 -> 39
+            Assert.Equal(InBand, walker.PlayerX);
+            viewer.SyncPeers(new[] { new PeerTile(walker, InBand, WalkRow) });                  // swept: the band
+
+            outbound.Clear();
+            viewer.ResyncPeers();                                                              // the death / revive
+            // the resync itself sends this peer nothing: it is in the band, so the sweep decides Nothing
+            Assert.DoesNotContain(Wire(outbound), f => f.Id == walker.PlayerId);
+
+            Walk(walker, West);                                                                // 39 -> 38, source 39
+            viewer.SyncPeers(new[] { new PeerTile(walker, walker.PlayerX, WalkRow) });
+
+            var seq = Wire(outbound).Where(f => f.Id == walker.PlayerId).ToList();
+            var expected = new List<(byte, uint)> { (0x0C, walker.PlayerId), (0x33, walker.PlayerId) };
+            Assert.True(seq.SequenceEqual(expected),
+                $"after a resync the band-held peer must still deliver its move and then be re-asserted, as on "
+              + $"the base; expected {Render(expected)} but the wire carried {Render(seq)}");
+            Assert.Equal(new[] { (InBand, WalkRow, West) }, MovesOf(outbound, walker.PlayerId));
+            Assert.Equal(new[] { ((ushort)(InBand - 1), WalkRow) }, LooksOf(outbound, walker.PlayerId));
+        }
+        finally
+        {
+            foreach (var s in new[] { viewer, walker }) _fx.World.LeaveMap(s, ResyncBackMap);
+        }
+    }
+
+    /// <summary>(j.2) The other half of the same defect: a band-held peer that walks OUT of the drawn rect
+    /// after a resync must deliver its last move and then the despawn. With the store cleared it delivered
+    /// neither, and the client kept a frozen sprite of that peer on the band tile — the 0x0E was leaked on
+    /// the base too, so this half is a repair as well as a guard. PR #264's F1, second probe.
+    ///
+    /// <para><b>Falsification:</b> the same one — restore <c>_drawnPeers.Clear()</c>. Recorded red: the wire
+    /// carries nothing at all where it must carry a move and a despawn.</para></summary>
+    [Fact]
+    public void AResyncDoesNotStrandAPeerWhoWalksOffTheDrawnRect()
+    {
+        var (v2, out2, _) = _fx.PlayerWith("GateResyncAwayViewer", Wide, ResyncAwayMap, ViewerX, ViewerY);
+        var (w2, _, _) = _fx.PlayerWith("GateResyncAwayWalker", Wide, ResyncAwayMap, (ushort)(InBand - 1), WalkRow);
+        try
+        {
+            v2.SyncPeers(new[] { new PeerTile(w2, (ushort)(InBand - 1), WalkRow) });
+            Walk(w2, East);
+            Assert.Equal(InBand, w2.PlayerX);
+            v2.SyncPeers(new[] { new PeerTile(w2, InBand, WalkRow) });
+
+            out2.Clear();
+            v2.ResyncPeers();
+
+            Walk(w2, East);                                                                     // 39 -> 40, source 39
+            Assert.Equal((ushort)(InBand + 1), w2.PlayerX);                                      // past the drawn rect
+            v2.SyncPeers(new[] { new PeerTile(w2, w2.PlayerX, WalkRow) });
+
+            var seq = Wire(out2).Where(f => f.Id == w2.PlayerId).ToList();
+            var expected = new List<(byte, uint)> { (0x0C, w2.PlayerId), (0x0E, w2.PlayerId) };
+            Assert.True(seq.SequenceEqual(expected),
+                $"a band-held peer walking off the drawn rect after a resync must deliver its last move and "
+              + $"then the despawn; expected {Render(expected)} but the wire carried {Render(seq)}");
+            Assert.Equal(new[] { (InBand, WalkRow, East) }, MovesOf(out2, w2.PlayerId));
+        }
+        finally
+        {
+            foreach (var s in new[] { v2, w2 }) _fx.World.LeaveMap(s, ResyncAwayMap);
         }
     }
 
