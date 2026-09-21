@@ -60,6 +60,7 @@ Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Testers botone -Gms botone   # 
 Scripts\Serve.ps1 -Status                                                    # what is on 2000/2005, and whose
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Stop                        # close exactly that pair
 Scripts\Serve.ps1 -Checkout C:\Repo\Project1998-b -PortBase 3000             # a second pair, from a second clone
+Scripts\Serve.ps1 -Checkout C:\Repo\Project1998 -Configuration Release       # Release, the build the deployment publishes
 ```
 
 It needs `git` on PATH: the commit and branch are what it stamps on the consoles and records, and it
