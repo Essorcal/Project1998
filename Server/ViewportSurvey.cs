@@ -147,16 +147,20 @@ internal static class ViewportSurvey
     /// only thing allowed inside <c>World._lock</c>, so a caller that is ALREADY holding it would drag the
     /// whole 282,000-test computation in there with it. That is a stall of the tick, and it is silent — the
     /// document would still come out correct. So it throws instead, and a test holds the lock and watches it
-    /// throw.</para></summary>
+    /// throw.</para>
+    ///
+    /// <para>The guard runs BEFORE the snapshot (PR #261's review F2): with it after, a re-entrant caller
+    /// took the whole copy under its own acquisition and was only then refused — the refusal is the point,
+    /// and doing work first is exactly what it is for.</para></summary>
     internal static string Render(World world)
     {
-        // Under the lock: copies only. See World.OnlineRegistry.PositionSurvey.
-        var maps = world.Online.PositionSurvey();
-
         if (world.HoldsWorldLock)
             throw new InvalidOperationException(
                 "ViewportSurvey.Render computes outside World._lock and was called by a caller holding it — " +
                 "the rect tests are O(players^2 + players*mobs) and would stall the tick");
+
+        // Under the lock: copies only. See World.OnlineRegistry.PositionSurvey.
+        var maps = world.Online.PositionSurvey();
 
         return Render(maps, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), IntervalMs);
     }

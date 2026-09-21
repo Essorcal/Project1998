@@ -21,6 +21,10 @@ namespace Tests.Support;
 /// the whole window rather than a race. Lines written by OTHER tests during that window land in this tap,
 /// which is harmless — every caller looks for its own needle.</para>
 ///
+/// <para>The gate itself is pinned by <c>Tests/ConsoleTapExclusionTests.cs</c>: drop it and the only thing
+/// that fails is somebody else's capturing test, in another collection, on another day, blaming its own
+/// production code — which is how it was found the first two times.</para>
+///
 /// <para>It is also a <see cref="TextWriter"/> over a locked <see cref="StringBuilder"/> rather than a
 /// <c>StringWriter</c>, because <c>Log</c> writes from its own thread: reading a StringWriter's buffer while
 /// that thread appends to it is a data race of its own. This shape was already in the suite, copied privately
