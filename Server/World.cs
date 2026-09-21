@@ -276,15 +276,6 @@ public sealed partial class World
     ///
     /// <para>A map with no <see cref="MapState"/> has no roster, so no sweep reads it and there is nothing to
     /// bump — the same "an unknown map blocks nothing" case <see cref="TryMovePlayer"/> has.</para></summary>
-    /// <summary>A map's current <see cref="MapState.ViewGen"/>, for the facts that have to arrange two maps
-    /// at the SAME generation so that only the map id can tell them apart. No production caller.</summary>
-    internal long ViewGenForTest(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.ViewGen : 0; }
-
-    /// <inheritdoc cref="BumpViewGenUnderWorldLock(ushort)"/>
-    /// <summary>The same bump with its own acquisition, for the facts that arrange a generation. No
-    /// production caller: production always has the lock already.</summary>
-    internal void BumpViewGenForTest(ushort mapId) { lock (_lock) BumpViewGenUnderWorldLock(mapId); }
-
     internal void BumpViewGenUnderWorldLock(ushort mapId)
     {
         Debug.Assert(Monitor.IsEntered(_lock),
@@ -292,6 +283,14 @@ public sealed partial class World
             "by ReconcileViews, so a bump outside the lock is a viewer skipping a change it never saw.");
         if (_maps.TryGetValue(mapId, out var m)) m.ViewGen++;
     }
+
+    /// <summary>A map's current <see cref="MapState.ViewGen"/>, for the facts that have to arrange two maps
+    /// at the SAME generation so that only the map id can tell them apart. No production caller.</summary>
+    internal long ViewGenForTest(ushort mapId) { lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.ViewGen : 0; }
+
+    /// <summary><see cref="BumpViewGenUnderWorldLock"/> with its own acquisition, for the facts that arrange
+    /// a generation. No production caller: production always holds the lock already.</summary>
+    internal void BumpViewGenForTest(ushort mapId) { lock (_lock) BumpViewGenUnderWorldLock(mapId); }
 
     // The two spawn systems — the POINT roster (Spawn) and the GROUP roster (SpawnGroup) — and everything
     // that builds, materialises and refills them live in World.SpawnDirector.cs (#37). Constructed before
