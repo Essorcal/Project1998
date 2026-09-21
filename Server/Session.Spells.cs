@@ -1971,9 +1971,12 @@ public sealed partial class Session
     /// of the scope that declares it — so while these lines lived in <see cref="TickSleep"/> and
     /// <see cref="TickPoison"/>, all 400 calls a beat built one on the way IN, before either pre-check could
     /// return: 32 B a call each, 25,600 B a beat at 400 players. A bare block inside the method is NOT a
-    /// reliable fix: with a single closure scope left in the method Roslyn merges the environment back to
-    /// method entry and the allocation comes straight back, which was measured here at 12,800 B a beat with
-    /// <c>TickSleep</c> written that way. A separate method is a scope it cannot merge away, so both sites
+    /// reliable fix IN RELEASE: with a single closure scope left in the method Roslyn merges the environment
+    /// back to method entry and the allocation comes straight back, which was measured here at 12,800 B a
+    /// beat with <c>TickSleep</c> written that way. It is a Release behaviour and only a Release behaviour —
+    /// PR #260's review measured the same bare block at 0 B a beat in Debug, twice, so a Debug run cannot
+    /// tell you whether the trap is there. A separate method is a scope it cannot merge away in either
+    /// configuration, so both sites
     /// use one. Same frame, same arguments, same order, still under the caller's monitor — the callers hold
     /// <see cref="EnterState"/> across the call exactly as they held it across the lines.</para></summary>
     private void BroadcastStatusFx(int anim) =>

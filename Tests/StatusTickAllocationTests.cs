@@ -34,10 +34,15 @@ public class StatusTickAllocationTests
 
     /// <summary>A map of this roster's own, NOT <see cref="SessionFixture.HomeMap"/>. 400 sessions entering
     /// and leaving the map every other fact in the "world" collection stands on is not a neutral act: each
-    /// entry broadcasts to everyone already there, and those peer snapshots rent from
-    /// <c>ArrayPool&lt;Session&gt;.Shared</c>, which is process-wide — so the roster can perturb a
-    /// NEIGHBOURING allocation fact (<c>BroadcastIsolationTests.BroadcastAllocatesNothingPerPeer</c>, which
-    /// broadcasts to a crowd on HomeMap) without anything here being wrong. The world builds a
+    /// entry and each exit broadcasts to everyone already there. The roster's own allocation volume can then
+    /// force a Gen2, on which <c>ArrayPool&lt;Session&gt;.Shared</c> — process-wide — trims its per-core
+    /// stacks, and the next rent ANYWHERE in the process allocates a fresh buffer: that is how this roster
+    /// perturbs a NEIGHBOURING allocation fact
+    /// (<c>BroadcastIsolationTests.BroadcastAllocatesNothingPerPeer</c>, which broadcasts to a crowd on
+    /// HomeMap) without anything here being wrong. That route is a plausible mechanism, not a measurement;
+    /// the rule is what is certain, and the rule is that a roster this size stands on a map of its own.
+    /// <c>EnterMap</c> and <c>LeaveMap</c> do not themselves rent from that pool — they use plain LINQ
+    /// arrays (PR #260's review F2). The world builds a
     /// <c>MapState</c> for whatever id it is asked for, so an id no content file uses costs nothing and
     /// touches nobody: the same trick the profile harness uses.</summary>
     private const ushort RosterMap = 60998;

@@ -212,9 +212,18 @@ public sealed partial class Session
     /// See briefs/reports/mob-sweep-array-opus.md.</para>
     ///
     /// <para>The mob decision also stays written out here rather than going through the peer half's helper —
-    /// that helper is an eight-argument call neither build inlines, once per mob.</para></summary>
-    public void SyncMobs(Mob[] mobs)
+    /// that helper is an eight-argument call neither build inlines, once per mob.</para>
+    ///
+    /// <para><paramref name="count"/> is how many of <paramref name="mobs"/> to sweep, and defaults to all of
+    /// it. A caller passes one only when the array is LONGER than the fill, which is what
+    /// <see cref="System.Buffers.ArrayPool{T}"/> hands back: the tail past the fill belongs to whoever rented
+    /// the buffer last and is not ours to read. The sweep neither stores <paramref name="mobs"/> nor keeps a
+    /// reference into it — a decision copies the mob reference into this session's own pending-send scratch,
+    /// which is wiped in the <c>finally</c> below — so a pooled buffer may go back to the pool the moment
+    /// this returns. See <see cref="World.ViewPooled"/>.</para></summary>
+    public void SyncMobs(Mob[] mobs, int count = -1)
     {
+        if (count < 0) count = mobs.Length;
         var pend = Scratch<PendingSend<Mob>>.Rent(PendingSeed);
         int p = 0;
         try
@@ -225,7 +234,7 @@ public sealed partial class Session
                 // that queued behind a walk reconcile anchors on the tile it finds when it gets in, not on the
                 // one the viewer stood on when the tick reached this line (PR #240's F1).
                 var view = CurrentView();                    // once for the sweep, not once per mob per pad
-                for (int i = 0; i < mobs.Length; i++)        // under the lock, as the base had it — see above
+                for (int i = 0; i < count; i++)              // under the lock, as the base had it — see above
                 {
                     var m = mobs[i];                         // a reference copy: Mob is a class
                     if (!m.Alive) continue;                  // a dead mob's despawn is the world's broadcast
@@ -448,9 +457,17 @@ public sealed partial class Session
     /// move (or we do), so without this a peer we entered the map too far from, or who walks toward us from
     /// off-screen, is invisible forever until a room change or Ctrl+R re-draws them in view — the reported
     /// "can't see users I walk up to". Called on world entry, after each of our walk steps, and every world
-    /// tick — the same three sites as SyncMobs. Self is skipped.</summary>
-    public void SyncPeers(PeerTile[] peers)
+    /// tick — the same three sites as SyncMobs. Self is skipped.
+    ///
+    /// <para><paramref name="count"/> is how many of <paramref name="peers"/> to sweep, and defaults to all of
+    /// it, for the reason <see cref="SyncMobs"/> takes one: a pooled buffer is at least as long as the fill
+    /// and its tail is the previous tenant's. Nothing here outlives the call either — a decision copies
+    /// <c>peer.Session</c> and the tile into this session's own pending-send scratch, which the
+    /// <c>finally</c> wipes, and the loop below dereferences nothing in the array. See
+    /// <see cref="World.ViewPooled"/>.</para></summary>
+    public void SyncPeers(PeerTile[] peers, int count = -1)
     {
+        if (count < 0) count = peers.Length;
         var view = CurrentView();                            // once for the sweep, not once per peer per pad
         PeerSweepProbeForTest?.Invoke();                     // null except under test — see the field
 
@@ -504,7 +521,7 @@ public sealed partial class Session
             // already bring in. Array order is the snapshot's order, which the interface enumeration walked
             // too, so the peers are decided in exactly the order they were before.
             using (EnterView())
-                for (int i = 0; i < peers.Length; i++)
+                for (int i = 0; i < count; i++)
                 {
                     ref readonly var peer = ref peers[i];
                     if (ReferenceEquals(peer.Session, this)) continue;
