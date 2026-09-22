@@ -39,6 +39,7 @@ public class TickSweepSkipTests
     private const ushort SeqOffMap = 60160, SeqOnMap = 60161, QuietMap = 60162, SwitchMap = 60163;
     private const ushort ChangeMap = 60164, ChangeAwayMap = 60165, HopFromMap = 60166, HopToMap = 60167;
     private const ushort MidSweepMap = 60168, ParkedShowMap = 60169;
+    private const ushort CountOffMap = 60170, CountOnMap = 60171;
 
     // The maps are 100x100, so the viewer's rect is the plain edge-aware one: vx = 8, vy = 7, origin
     // (22,13), strict rect x in [22,39) and y in [13,28), drawn rect x in [21,40) and y in [12,29).
@@ -600,6 +601,161 @@ public class TickSweepSkipTests
         {
             Session.TickSweepSkipForTest = saved;
             foreach (var s in new[] { viewer, peer }) _fx.World.LeaveMap(s, ParkedShowMap);
+        }
+    }
+
+    // ---- (h)/(i) the WORLD's two counters -------------------------------------------------------------
+
+    /// <summary>The three numbers a counter fact reads: the world's two, and the sweeps the SESSIONS
+    /// themselves recorded. The third is what makes the other two attributable — see <see cref="Span"/>.</summary>
+    private (long Viewers, long Run, long SessionSweeps) Counters() =>
+        (_fx.World.SweepViewers, _fx.World.SweepsRun, _fx.World.Online.All().Sum(s => s.TickSweepsForTest));
+
+    /// <summary>Beat the world <paramref name="beats"/> times and return what that span added to each of
+    /// <see cref="Counters"/>, plus what it added to <paramref name="mine"/>'s own per-session sweep counts.
+    ///
+    /// <para><b>Why a fact here cannot read the world's counters as absolutes, or even as a stable
+    /// per-beat baseline.</b> The <c>world</c> collection shares one <see cref="World"/>, the counters are the
+    /// WORLD's, and <c>TickOnceForTest</c> runs the whole beat — including the mob AI of every other class's
+    /// leftover map. A foreign mob that steps bumps that map's generation and un-skips its viewers, so the
+    /// foreign contribution to <c>sweepsRun</c> is genuinely not constant from beat to beat (measured: 1, 1,
+    /// 0 over three beats with 301 foreign viewers). So the facts below are stated on the part of each delta
+    /// that is attributable to THIS fact's own players, and the arithmetic that makes it attributable is the
+    /// per-session counter <c>Session.TickSweepsForTest</c>, which the same call site increments.</para></summary>
+    private (long Viewers, long Run, long Foreign, long Mine) Span(int beats, IReadOnlyCollection<Session> mine)
+    {
+        var mineSet = new HashSet<Session>(mine);
+        long Mine() => _fx.World.Online.All().Where(mineSet.Contains).Sum(s => s.TickSweepsForTest);
+
+        var (v0, r0, all0) = Counters();
+        long mine0 = Mine();
+        for (int i = 0; i < beats; i++) _fx.World.TickOnceForTest();
+        var (v1, r1, all1) = Counters();
+
+        long dMine = Mine() - mine0;
+        return (v1 - v0, r1 - r0, (all1 - all0) - dMine, dMine);
+    }
+
+    /// <summary>What ONE beat adds to <c>sweepViewers</c> with none of this fact's own players seated: the
+    /// roster of every other populated map, which cannot change while this class holds the collection. Three
+    /// consecutive beats must agree, so a fixture that is not quiet fails HERE, naming itself, rather than as
+    /// a wrong arithmetic result in the fact. Only the viewer count is baselined: the foreign
+    /// <c>sweepsRun</c> is not constant, for the reason <see cref="Span"/> gives.</summary>
+    private long ForeignViewersPerBeat()
+    {
+        for (int i = 0; i < 5; i++) _fx.World.TickOnceForTest();   // let any foreign viewer settle into its skip
+        var none = Array.Empty<Session>();
+        long a = Span(1, none).Viewers, b = Span(1, none).Viewers, c = Span(1, none).Viewers;
+        Assert.True(a == b && b == c,
+            $"the shared world's roster is not stable: three single beats considered {a}, {b} and {c} " +
+            "viewers with none of this fact's players seated");
+        return a;
+    }
+
+    /// <summary>(h) WITH THE SKIP OFF, EVERY VIEWER THE TICK CONSIDERED SWEPT. Over N beats with P players on
+    /// one map, the world's <c>sweepsRun</c> moves exactly as far as its <c>sweepViewers</c>, and both move
+    /// by N × P above the fixture's own baseline.
+    ///
+    /// <para>Which is the reading the pair exists to make possible: <c>1 - Δ sweepsRun / Δ sweepViewers</c> is
+    /// the share of viewers a span skipped, so the switch-off arm has to read exactly 0. A counter pair that
+    /// disagreed here would make every later load run's skip fraction a fiction — the silent-failure shape
+    /// <c>AGENTS.md</c> rule 3 names, since nothing about a wrong ratio throws.</para>
+    ///
+    /// <para>Falsified by deleting <c>_sweepViewers += players.Length;</c> from <c>World.ReconcileViews</c>:
+    /// red on the N × P assertion, which then reads 0 considered viewers while 12 sweeps ran. The output is
+    /// in <c>briefs/reports/sweep-counter-opus.md</c>.</para></summary>
+    [Fact]
+    public void WithTheSkipOffTheWorldCountsOneSweepForEveryViewerItConsidered()
+    {
+        const int Beats = 4, Players = 3;
+        bool saved = Session.TickSweepSkipForTest;
+        var seated = new List<Session>();
+        try
+        {
+            Session.TickSweepSkipForTest = false;
+            long foreignViewers = ForeignViewersPerBeat();
+
+            for (int i = 0; i < Players; i++)
+                seated.Add(_fx.PlayerWith($"OffCounter{i}", Wide, CountOffMap,
+                                          (ushort)(ViewerX + i), ViewerY).session);
+
+            var span = Span(Beats, seated);
+
+            // The headline: with the switch off nothing is skipped anywhere, so the two world counters move
+            // by the same number over the same span, whatever else is seated in this fixture.
+            Assert.Equal(span.Viewers, span.Run);
+            // And that number is the one the tick really considered: N beats x P players on top of the
+            // foreign roster's own per-beat contribution.
+            Assert.Equal(Beats * Players, span.Viewers - Beats * foreignViewers);
+            // The world's sweep count is the sum of the sessions' own, so the N x P is THIS fact's players:
+            // every one of them swept on every beat.
+            Assert.Equal(Beats * Players, span.Mine);
+            Assert.Equal(span.Run, span.Mine + span.Foreign);
+        }
+        finally
+        {
+            Session.TickSweepSkipForTest = saved;
+            foreach (var s in seated) _fx.World.LeaveMap(s, CountOffMap);
+        }
+    }
+
+    /// <summary>(i) WITH THE SKIP ON, A STILL MAP KEEPS COUNTING VIEWERS AND STOPS COUNTING SWEEPS. Once the
+    /// P players on an unchanging map have settled, every beat adds P to <c>sweepViewers</c> and nothing to
+    /// <c>sweepsRun</c>; one change adds P to <c>sweepsRun</c> on the next beat and on that beat only.
+    ///
+    /// <para>This is the hypothesis the two hold assignments could not read. With the skip on,
+    /// <c>(3) viewports</c> repeated to 22% (standing clump) and 61% (walking spread) run to run against 3-4%
+    /// with it off, and the labelled explanation was that the phase's cost follows the number of DIRTY
+    /// viewers, which the load script does not hold fixed
+    /// (<c>briefs/reports/hold-sweep-skip-2-opus.md</c>, "Secondary"). The counter pair is what turns that
+    /// into a number a hold can quote.</para>
+    ///
+    /// <para>Falsified by deleting <c>_world.CountSweepRunOnTickThread();</c> from
+    /// <c>Session.EndTickSweep</c>: red on the change beat, which then reports 0 sweeps run where 3 viewers
+    /// swept — the exact failure that would make a hold read a 100% skip rate off a busy map. The output is
+    /// in <c>briefs/reports/sweep-counter-opus.md</c>.</para></summary>
+    [Fact]
+    public void WithTheSkipOnAStillMapCountsViewersButNoSweeps()
+    {
+        const int Beats = 4, Players = 3;
+        bool saved = Session.TickSweepSkipForTest;
+        var seated = new List<Session>();
+        try
+        {
+            Session.TickSweepSkipForTest = true;
+            long foreignViewers = ForeignViewersPerBeat();
+
+            for (int i = 0; i < Players; i++)
+                seated.Add(_fx.PlayerWith($"OnCounter{i}", Wide, CountOnMap,
+                                          (ushort)(ViewerX + i), ViewerY).session);
+            foreach (var s in seated) Settle(s);
+
+            // Nothing on this map changes for these beats, so the tick keeps CONSIDERING all three viewers
+            // every beat and sweeps none of them.
+            var still = Span(Beats, seated);
+            Assert.Equal(Beats * Players, still.Viewers - Beats * foreignViewers);
+            Assert.Equal(0, still.Mine);
+            Assert.Equal(still.Run, still.Mine + still.Foreign);   // the world counted what the sessions did
+
+            // One change source — a real player position write through the world's own seam — and the next
+            // beat sweeps all three viewers of the map, once each.
+            var mover = seated[0];
+            Put(mover, (ushort)(mover.PlayerX + 1), ViewerY);
+            var changed = Span(1, seated);
+            Assert.Equal(Players, changed.Viewers - foreignViewers);
+            Assert.Equal(Players, changed.Mine);
+            Assert.Equal(Players, changed.Run - changed.Foreign);
+
+            // ... and only that beat: the map is still again, so the sweep count stops moving.
+            var after = Span(Beats, seated);
+            Assert.Equal(Beats * Players, after.Viewers - Beats * foreignViewers);
+            Assert.Equal(0, after.Mine);
+            Assert.Equal(after.Run, after.Mine + after.Foreign);
+        }
+        finally
+        {
+            Session.TickSweepSkipForTest = saved;
+            foreach (var s in seated) _fx.World.LeaveMap(s, CountOnMap);
         }
     }
 }
