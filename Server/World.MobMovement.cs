@@ -328,6 +328,10 @@ public sealed partial class World
             ushort ox = mob.X, oy = mob.Y;
             mobTiles.Remove((mob.X, mob.Y));                 // vacate the old tile
             mob.X = (ushort)nx; mob.Y = (ushort)ny;
+            // The mob sweep reads mob.X/mob.Y LIVE off this object, so a step is a change every viewer of
+            // this map has to re-sweep. This is the world's ONLY mob commit, so it is the only bump a mob
+            // tile needs; the acquisition is the caller's, asserted above.
+            m.ViewGen++;
             mobTiles.Add((nx, ny));                          // occupy the new one
             // Broadcast the SOURCE tile, not the destination: the 4.95 client's 0x0C walk always ends
             // one tile PAST the packet tile in the walk direction (forward-slide overshoot, proven by
