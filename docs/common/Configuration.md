@@ -189,3 +189,15 @@ ignored with one startup warning.
 | `P1998_SPELLBOOK_CAP` | `SpellBookCap` in `game-data/ServerTuning.csv` | Slots the client's spellbook array can hold before a teach would overrun it. |
 
 <!-- /generated -->
+
+## What the status document publishes
+
+The knobs above say where `run/status.json` is written and how often; the document's own fields are declared
+in [`Server/StatusFile.cs`](../../Server/StatusFile.cs), which is where the full list lives. Everything after
+the launcher's `online` / `players` / `message` is a since-process-start total, read as a delta between two
+samples. Two of them describe the tick's viewport sweep:
+
+| Field | What it counts |
+|---|---|
+| `sweepViewers` | Every (viewer, beat) pair the tick CONSIDERED — one per player of every populated map, on every beat, whether or not `P1998_TICK_SWEEP_SKIP` then skipped it. |
+| `sweepsRun` | How many of those actually swept, counted after the three sweeps returned. Over a span, the share of viewers the skip saved is `1 - Δ sweepsRun / Δ sweepViewers`; with the skip off the two deltas are equal. |

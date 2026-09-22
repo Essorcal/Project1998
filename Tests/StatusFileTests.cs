@@ -89,6 +89,36 @@ public class StatusFileTests
         Assert.Equal(0, doc.RootElement.GetProperty("slowTicks").GetInt64() - slow0);
     }
 
+    /// <summary>The document carries the world's two sweep counters, and carries the world's OWN values for
+    /// them: <c>sweepViewers</c>, every (viewer, beat) pair the tick considered, and <c>sweepsRun</c>, the
+    /// ones that actually swept.
+    ///
+    /// <para>The silent failure this guards is the one the tick counters' facts guard, one field along: a
+    /// document publishing a copy, a stale value or a zero would read like a perfectly quiet server, and the
+    /// skip fraction a hold computes from it — <c>1 - Δ sweepsRun / Δ sweepViewers</c> — would be a fiction
+    /// rather than a wrong-looking number. So the assertion is against the world's accessors at the moment of
+    /// the render, not against a constant.</para>
+    ///
+    /// <para>The fixture's world is shared and is not ticking on its own, so "at the moment of the render" is
+    /// exact here. Beats are run first so the fact cannot pass on two zeroes.</para></summary>
+    [Fact]
+    public void TheStatusDocumentCarriesTheWorldsSweepCounters()
+    {
+        for (int i = 0; i < 3; i++) _fx.World.TickOnceWatchedForTest(slowMs: NeverSlow);
+
+        long viewers = _fx.World.SweepViewers, run = _fx.World.SweepsRun;
+        using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 3));
+        var root = doc.RootElement;
+
+        Assert.Equal(viewers, root.GetProperty("sweepViewers").GetInt64());
+        Assert.Equal(run, root.GetProperty("sweepsRun").GetInt64());
+
+        // A viewer cannot sweep without having been considered first, whatever the rest of the suite left
+        // behind in this shared world.
+        Assert.True(root.GetProperty("sweepsRun").GetInt64() <= root.GetProperty("sweepViewers").GetInt64(),
+                    "sweepsRun must never exceed sweepViewers");
+    }
+
     // ===== the phase totals ==============================================================================
 
     /// <summary>Every phase's total only ever goes up, the beat total carries every beat — slow or healthy —

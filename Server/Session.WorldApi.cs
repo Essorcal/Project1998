@@ -1172,10 +1172,17 @@ public sealed partial class Session
     /// <summary>Record that this viewer has now swept <paramref name="mapId"/> at
     /// <paramref name="mapGen"/> — called after the three sweeps return, with the SAME captured generation
     /// <see cref="BeginTickSweep"/> was given. Recording the captured value rather than a fresh read is what
-    /// makes a change that lands DURING the sweeps show up as a difference on the next beat.</summary>
+    /// makes a change that lands DURING the sweeps show up as a difference on the next beat.
+    ///
+    /// <para>It is also where the WORLD's <c>sweepsRun</c> is counted, beside this viewer's own
+    /// <c>_tickSweeps</c> and at the same point for the same reason — at the far end, so the number is what
+    /// happened rather than what was decided. <c>World.CountSweepRunOnTickThread</c> says why that increment
+    /// is reached through <c>_world</c> from here instead of from <c>ReconcileViews</c>' static
+    /// lambda.</para></summary>
     internal void EndTickSweep(ushort mapId, long mapGen)
     {
         _tickSweeps++;
+        _world.CountSweepRunOnTickThread();
         if (!TickSweepSkip) return;
         _sweptMap = mapId;
         _sweptGen = mapGen;

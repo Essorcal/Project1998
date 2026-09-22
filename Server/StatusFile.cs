@@ -27,7 +27,8 @@ namespace Server;
 ///                "(3) viewports": 903117, "(6) time": 41, "other": 1992 },
 ///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedAtLastGcMb": 968,
 ///   "gcAvailableMb": 15776, "gcHighLoadMb": 14198,
-///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent"
+///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent",
+///   "sweepViewers": 4812400, "sweepsRun": 91233
 /// }
 /// </code>
 /// Its poll runs every 30s, so a 10s cadence here means the number is never more than one poll stale.
@@ -96,6 +97,15 @@ namespace Server;
 /// At the 10s cadence that is 0.02% of the status thread and it is off the beat entirely, which is why it is
 /// accepted here; it would not be acceptable anywhere near the tick.</para>
 ///
+/// <para>THE SWEEP COUNTERS, <c>sweepViewers</c> and <c>sweepsRun</c>, are since-process-start totals read
+/// the same way as the phase totals — as a delta over a span. <c>sweepViewers</c> counts every (viewer, beat)
+/// pair the tick considered, one per player of every populated map on every beat; <c>sweepsRun</c> counts the
+/// ones whose three viewport sweeps actually ran. With <c>P1998_TICK_SWEEP_SKIP</c> off the two are equal.
+/// With it on, the share of viewers the skip saved over a span is
+/// <c>1 - Δ sweepsRun / Δ sweepViewers</c> — which is what makes a hold's <c>(3) viewports</c> figure
+/// comparable between two runs that did not have the same number of dirty viewers. See
+/// <c>World.SweepViewers</c>.</para>
+///
 /// The launcher treats this as ENRICHMENT, not truth: it proves reachability by opening a socket to the login
 /// port, and a missing or unreachable status document never downgrades a server it just reached. The one
 /// exception is an explicit <c>"online": false</c>, which wins — that is the maintenance switch. Which is why
@@ -140,7 +150,9 @@ public static class StatusFile
         [property: JsonPropertyName("gen0")]          long Gen0,
         [property: JsonPropertyName("gen1")]          long Gen1,
         [property: JsonPropertyName("gen2")]          long Gen2,
-        [property: JsonPropertyName("gcMode")]        string GcMode);
+        [property: JsonPropertyName("gcMode")]        string GcMode,
+        [property: JsonPropertyName("sweepViewers")]  long SweepViewers,
+        [property: JsonPropertyName("sweepsRun")]     long SweepsRun);
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
 
@@ -165,8 +177,8 @@ public static class StatusFile
     private static long Mb(long bytes) => bytes / (1024 * 1024);
 
     /// <summary>The document, as text, without touching the disk — the seam the counter test drives, and the
-    /// one place the world's two counters are read, so a test of this method is a test of what the timer
-    /// publishes rather than of a copy of it.</summary>
+    /// one place the world's counters are read (the two tick counters and the two sweep counters), so a test
+    /// of this method is a test of what the timer publishes rather than of a copy of it.</summary>
     internal static string Render(World world, bool online, int players)
     {
         // One walk of the world's totals, ordered: a plain Dictionary keeps insertion order for a set of
@@ -201,7 +213,8 @@ public static class StatusFile
                     Mb(GC.GetTotalMemory(forceFullCollection: false)),
                     Mb(gc.TotalCommittedBytes), Mb(gc.TotalAvailableMemoryBytes),
                     Mb(gc.HighMemoryLoadThresholdBytes),
-                    GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), Mode),
+                    GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), Mode,
+                    world.SweepViewers, world.SweepsRun),
             Json);
     }
 
