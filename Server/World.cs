@@ -298,6 +298,8 @@ public sealed partial class World
     private readonly SpawnDirector _spawnDirector;
     private long _tick;                                                  // heartbeat counter (TickMs each)
     private long _slowTicks;                                             // beats the watchdog reported (see SlowTicks)
+    private long _sweepViewers;                                          // (viewer, beat) pairs considered (see SweepViewers)
+    private long _sweepsRun;                                             // of those, the ones that swept (see SweepsRun)
 
     /// <summary>The world's ONE natural-regeneration clock, in accumulated tick milliseconds since start.
     /// Advanced by <see cref="TickMs"/> once a beat in <see cref="FlushTick"/> and wound back by
@@ -344,6 +346,45 @@ public sealed partial class World
     /// writer must never queue behind the world.</para></summary>
     internal long Ticks     => Volatile.Read(ref _tick);
     internal long SlowTicks => Volatile.Read(ref _slowTicks);
+
+    /// <summary>How many (viewer, beat) pairs the tick has CONSIDERED, and how many of those actually SWEPT,
+    /// since process start, for <c>run/status.json</c>.
+    ///
+    /// <para><b>Why they exist.</b> With <c>P1998_TICK_SWEEP_SKIP</c> on, a beat's <c>(3) viewports</c> cost
+    /// is proportional to the viewers that were DIRTY on that beat, and nothing the server published said how
+    /// many that was. Two Release hold assignments (<c>briefs/reports/hold-sweep-skip-opus.md</c> and
+    /// <c>hold-sweep-skip-2-opus.md</c>) found the phase repeating to 3-4% run to run with the skip OFF and
+    /// 22% (standing clump) to 61% (walking spread) apart with it ON, and could only label the explanation a
+    /// hypothesis: the load script does not hold the dirty count fixed. These two counters make it a reading.
+    /// Over a span, the share of considered viewers the skip saved is
+    /// <c>1 - Δ sweepsRun / Δ sweepViewers</c>.</para>
+    ///
+    /// <para><b>What each counts.</b> <see cref="SweepViewers"/> is incremented once per populated map per
+    /// beat by that map's player count, before the per-player loop, so it is "one per player of every map the
+    /// snapshot carried, every beat" whether or not that player was then skipped. <see cref="SweepsRun"/> is
+    /// incremented at the END of a viewer's three sweeps, from <c>Session.EndTickSweep</c> — the same point
+    /// as the per-session <c>_tickSweeps</c>, and for the reason that field's doc gives: a counter at
+    /// <c>BeginTickSweep</c>'s DECISION can read zero while every sweep runs. With the switch off the two are
+    /// equal on every beat; with it on, a still map grows the first and not the second.</para>
+    ///
+    /// <para>Written by the tick thread only and by nothing else — <c>ReconcileViews</c> and
+    /// <c>EndTickSweep</c> are both on it — so these are plain increments with no lock and no
+    /// <c>Interlocked</c> on a path that runs once per viewer per beat. Read on the status writer's thread
+    /// with <c>Volatile.Read</c>, exactly as <see cref="Ticks"/> and <see cref="SlowTicks"/> are and for the
+    /// same reason.</para></summary>
+    internal long SweepViewers => Volatile.Read(ref _sweepViewers);
+    internal long SweepsRun    => Volatile.Read(ref _sweepsRun);
+
+    /// <summary>Count one viewer whose three tick sweeps have just RUN. Called by
+    /// <c>Session.EndTickSweep</c>, on the tick thread, through the <c>World</c> the session already holds.
+    ///
+    /// <para><b>Why here and not in <see cref="ReconcileViews"/>'s lambda.</b> That lambda is <c>static</c>
+    /// and takes its arguments as a tuple precisely so the loop allocates neither a display class nor a
+    /// delegate per viewer per beat (PR #245's follow-up 3, 104 B measured). Reaching the world from inside
+    /// it would mean either capturing <c>this</c> — which un-statics the lambda and restores the allocation —
+    /// or a seventh field on a tuple that is copied for every viewer of every map on every beat. The session
+    /// already has <c>_world</c> in a field, so routing the increment through it adds nothing to either.</para></summary>
+    internal void CountSweepRunOnTickThread() => _sweepsRun++;
 
     /// <summary>World heartbeat period, and the unit every mob timer accumulates in — so it is also the
     /// FLOOR on how often any creature can act. Override with <c>P1998_TICK_MS</c>.
@@ -3163,6 +3204,11 @@ public sealed partial class World
         // three calls in the same order, inside the same Try with the same log line, and the generation is
         // recorded only AFTER they return, so a throw a Try swallows leaves the viewer un-skipped next beat.
         foreach (var (mapId, gen, players, mobs, items) in snapshot)
+        {
+            // Every player of this map is a viewer this beat CONSIDERED, skipped or not — one add per map per
+            // beat on the tick thread, outside the lock, before anything can decide otherwise. Its partner is
+            // counted at the far end, in Session.EndTickSweep; see SweepViewers for what the pair is worth.
+            _sweepViewers += players.Length;
             foreach (var p in players)
                 Try((p.Session, mapId, gen, players, mobs, items),
                     static t =>
@@ -3172,6 +3218,7 @@ public sealed partial class World
                         t.Session.EndTickSweep(t.mapId, t.gen);
                     },
                     "ReconcileViews");
+        }
     }
 
     /// <summary>Run one per-player / per-mob step in isolation: a throw in one player's RegenTick, one
