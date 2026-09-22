@@ -296,6 +296,13 @@ public sealed class ServerConfig
             "every session on the map — about 397 of 399 of them for clients that cannot see the walker.");
 
         // --- world heartbeat ---
+        public static readonly BoolKnob TickSweepSkip = new(
+            "P1998_TICK_SWEEP_SKIP", ConfigArea.World, true,
+            "Let the tick's viewport reconcile skip a viewer whose map has not changed since that viewer last " +
+            "swept it and that has no per-viewer draw pending. 0 restores the unconditional sweep, in which " +
+            "every player of every populated map walks every peer, every mob and every floor item on it every " +
+            "beat — at 400 players and 305 mobs that is 400 viewers against 704 entities a beat to decide, in " +
+            "the steady state, to send nothing.");
         public static readonly IntKnob TickMs = new(
             "P1998_TICK_MS", ConfigArea.World, 333,
             "The world heartbeat in milliseconds — the smallest action interval the world can express at " +
@@ -465,7 +472,7 @@ public sealed class ServerConfig
             LoginFails, LoginFailWindowMs,
             GameHost, LoginHost, LoginPort, EnforceHandoff, AllowTofu,
             AutoSaveMs, CastQueue, PassEnforce, GatePeerMoves,
-            TickMs, SlowTickMs,
+            TickSweepSkip, TickMs, SlowTickMs,
             PoolLagMs, SilentMs,
             StatusFile, StatusMs, StatusMessage,
             Gms, Testers,
@@ -643,6 +650,8 @@ public sealed class ServerConfig
     /// <summary>Gate a peer's 0x0C move and 0x11 turn on the recipient's drawn set.</summary>
     public bool GatePeerMoves => Get<bool>(Knobs.GatePeerMoves);
 
+    /// <summary>Let the tick's viewport reconcile skip an unchanged (viewer, map) pair.</summary>
+    public bool TickSweepSkip => Get<bool>(Knobs.TickSweepSkip);
     /// <summary>The world heartbeat in milliseconds.</summary>
     public int TickMs => Get<int>(Knobs.TickMs);
     /// <summary>Slow-tick threshold, or null to derive a quarter of <see cref="TickMs"/>.</summary>

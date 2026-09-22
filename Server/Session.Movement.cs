@@ -109,6 +109,14 @@ public sealed partial class Session
         // sweep that queued behind this write cannot decide on the tile the viewer just left. Bumping it
         // before the stores would leave exactly that hole open. One interlocked increment per step.
         Interlocked.Increment(ref _viewGen);
+        // And the MAP's change generation, for the tick's sweep skip (World.MapState.ViewGen). A player tile
+        // write changes two things at once: what the peer sweep sees of THIS player on every other viewer's
+        // client, and what THIS player's own rect contains. Both are properties of the map's beat, and this
+        // is the one seam every world writer of a player tile goes through — the walk step, every arrival
+        // (warps, scripted tiles, the Gateway, GM teleports, death and revive placement) and the snap-back —
+        // so bumping here cannot be bypassed the way a bump at each of World's three call sites could be.
+        // Under the same World._lock the two stores above are under and asserted for; no new acquisition.
+        _world.BumpViewGenUnderWorldLock(_char.Map);
     }
 
     private void HandleWalk(byte[] dec)

@@ -76,9 +76,28 @@ public sealed partial class Session
         // whom no broadcast ever addresses and no sweep ever reconciles. Taking our own _viewLock from under
         // the SUBJECT's state monitor is the order DespawnEntity's broadcast already uses from exactly these
         // three call sites, and it is after Snapshot() returns, never across it (#29).
+        //
+        // And it is exactly the per-viewer pending state the tick's sweep skip cannot see: a band entry
+        // means "re-assert this on the next sweep", and the morph pair that put it there changed nothing
+        // about the MAP, so the map generation would let this viewer skip the very sweep the entry exists
+        // for. MarkSweepPending is what makes that sweep run. See MarkSweepPending.
         if (!ReferenceEquals(other, this))
+        {
+            bool banded;
             using (EnterView())
-                if (CurrentView().Contains(s.X, s.Y, ShowPad)) _drawnPeers.TryAdd(s.Id, DrawnBand);
+                banded = CurrentView().Contains(s.X, s.Y, ShowPad) && _drawnPeers.TryAdd(s.Id, DrawnBand);
+            // Only when the entry was actually CREATED, which is only ever the redraw pair's path: a sweep
+            // reaches this method with the id already written DrawnInside by its own decide pass, so its
+            // TryAdd fails and the sweep does not flag itself into a second beat it does not need.
+            //
+            // REDUNDANT TODAY, AND KEPT DELIBERATELY. All three redraw sites broadcast DespawnEntity one line
+            // before this one, and DespawnEntity flags the recipient too, so deleting this line breaks no
+            // fact — checked, not assumed (the falsification table in briefs/reports/tick-sweep-skip-opus.md,
+            // case 3). It stays because the band entry created HERE is what the next sweep is expected to
+            // resolve: a later site that draws a peer without the despawn would otherwise leave that entry
+            // waiting on the map to change. The flag belongs with the write that creates the obligation.
+            if (banded) MarkSweepPending();
+        }
         if (s.MorphLook != 0) { SendCreatureList(new[] { (s.Id, (ushort)(0x8000 | s.MorphLook), s.X, s.Y, s.MorphColor, s.Dir) }); return; }
         var app = new byte[] { s.Sex, (byte)(s.Dead ? 1 : s.Faded ? 5 : s.Mounted ? 3 : 0), s.Face, s.Armor, s.ArmorColor, s.Weapon, s.Shield };   // [1]=form (5=invisible-spell/faded), [4]=war-paint dye
         // The nameplate is drawn straight off this string, so an empty name is the whole "hide nameplates"
@@ -724,6 +743,10 @@ public sealed partial class Session
             foreach (uint id in ids) _drawnPeers[id] = DrawnBand;
             _sendStamp.Clear();     // no send is in flight across this, so no decision here has a stamp to keep
         }
+        // Every entry is now "drawn, re-assert on the next sweep", which is per-viewer pending state by
+        // definition: the sweep below resolves what is in view now, and the flag makes the tick's next sweep
+        // run too, so a peer this one could not settle is not left to wait on the map changing.
+        MarkSweepPending();
         SyncPeers(_world.View(this, _char.Map).peers);
     }
 
@@ -1023,7 +1046,12 @@ public sealed partial class Session
     // _warpMarkers goes with them too — but unlike trap markers, the @showwarps overlay SURVIVES as a toggle:
     // EnterMap and RedrawWorld re-stamp it for whatever map the client rebuilds, so only the stale marker set
     // dies here, not the feature.
-    private void ForgetShownMobs() { using (EnterView()) { _drawnMobs.Clear(); _shownItems.Clear(); _drawnPeers.Clear(); _sendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } }
+    // MarkSweepPending: everything this client held is gone from both the client and the store, and the
+    // sweeps its callers run immediately afterwards re-stream what is in view. The flag covers the beat AFTER
+    // that, and with it the one input to a viewer's rect that is not its tile — realm-center (F4) and the
+    // Ctrl+R refresh both re-anchor ViewAnchor() with no position write at all, and both come through
+    // RedrawWorld, which comes through here.
+    private void ForgetShownMobs() { using (EnterView()) { _drawnMobs.Clear(); _shownItems.Clear(); _drawnPeers.Clear(); _sendStamp.Clear(); _trapMarkers.Clear(); _warpMarkers.Clear(); } MarkSweepPending(); }
 
     /// <summary>Rub out the spot-traps marker for one trap, if this client ever revealed it — RTK
     /// <c>removeTrapItem(npc)</c>, which every trap NPC calls right before deleting itself. Broadcast to the
@@ -1045,7 +1073,13 @@ public sealed partial class Session
     /// rect is drawn when we walk to it rather than thrown away by the 0x07 gate.</summary>
     public bool AddTrapMarker(uint trapId, GroundItem marker)
     {
-        using (EnterView()) return _trapMarkers.TryAdd(trapId, marker);
+        // MarkSweepPending, and here it is not belt and braces: this method deliberately does NOT draw —
+        // "the DRAW is left to SyncGroundItems" — and a trap revealed under a standing player changes
+        // nothing about the map, so without the flag the marker would wait for the next thing that moved.
+        bool added;
+        using (EnterView()) added = _trapMarkers.TryAdd(trapId, marker);
+        if (added) MarkSweepPending();
+        return added;
     }
 
     /// <summary>Re-assert every co-located peer + mob on OUR client. Call after re-sending 0x15 mapinfo
@@ -1060,6 +1094,112 @@ public sealed partial class Session
         SyncGroundItems(_world.ItemsOn(_char.Map));
         if (_gm.ShowWarps) StampWarpMarkers();   // the rebuild dropped the @showwarps overlay — put it back
     }
+
+    // ---- the tick's sweep skip ------------------------------------------------------------------
+    //
+    // WHAT THIS IS. World.ReconcileViews runs SyncPeers, SyncMobs and SyncGroundItems for every player of
+    // every populated map, every beat. At 400 players and 305 mobs on one map that is 400 viewers deciding
+    // against 704 entities each — and in the steady state all 281,600 decisions are "send nothing", because
+    // nothing on the map moved. The three sweeps have no way to know that: they are given the roster and
+    // they walk it. The two fields below are the fact they were missing.
+    //
+    // WHY THE SKIP IS SOUND, in one paragraph, because it is the whole argument. A sweep is IDEMPOTENT: for
+    // a fixed (entity tile, viewer rect, drawn state) it acts at most once — a first show writes DrawnInside
+    // and sends, and the next sweep over the same inputs takes the `state != DrawnBand` early-out and sends
+    // nothing; a despawn removes the entry and the next sweep finds nothing drawn and out of view; a band
+    // write is skipped when the state is already the band. So running the sweep N times over an unchanged
+    // world produces exactly what running it ONCE produces. It follows that a viewer may skip every beat on
+    // which none of the sweep's inputs changed, and the inputs are exactly two things: what the MAP holds,
+    // which World.MapState.ViewGen counts, and what THIS session's own view state holds, which
+    // MarkSweepPending flags. Nothing else reaches a sweep.
+    //
+    // THE RECORD IS THE TICK THREAD'S ALONE. Begin/EndTickSweep are called only from ReconcileViews, on the
+    // tick thread, so _sweptMap and _sweptGen need no synchronisation of their own. The walk step's and map
+    // entry's sweeps do NOT touch them: an extra tick sweep is free by the idempotence above, so leaving the
+    // record behind those is the safe direction. _sweepPending is the one field other threads write, and it
+    // is an int through Interlocked for that reason.
+    private ushort _sweptMap;
+    private long _sweptGen = -1;             // -1: this viewer has never swept _sweptMap under the tick
+    private int _sweepPending;               // 0/1 — set by any change to THIS viewer's own view state
+
+    /// <summary>"Something about THIS viewer's own view state changed, so its next tick sweep must run
+    /// whatever the map generation says." The per-viewer half of the skip, and the only half a map counter
+    /// cannot express.
+    ///
+    /// <para>Set wherever a session's drawn-state store or marker set is changed by something that is NOT a
+    /// sweep's own decision: <see cref="DespawnEntity"/> (the morph, stealth, death and pickup broadcasts,
+    /// and <see cref="ShowPlayer"/>'s own hidden-peer path), <see cref="ShowPlayer"/>'s band re-add,
+    /// <see cref="AddTrapMarker"/> and the <c>@showwarps</c> stamp (both of which register a marker and leave
+    /// the DRAW to <see cref="SyncGroundItems"/>), <see cref="ResyncPeers"/> and
+    /// <see cref="ForgetShownMobs"/>. Each of those is a state a sweep is expected to resolve on the beat
+    /// after it appears, and none of them changes anything about the MAP.</para>
+    ///
+    /// <para>It is set generously on purpose. A false positive costs one viewer one sweep it did not need;
+    /// a false negative is a frame the client never receives, which is the stale view this slice is not
+    /// allowed to create. Where the two were in tension the extra sweep won.</para></summary>
+    private void MarkSweepPending() => Interlocked.Exchange(ref _sweepPending, 1);
+
+    // The kill switch, read ONCE for the process the way GatePeerMoves below is, and not `readonly` for the
+    // same test reason: Tests/TickSweepSkipTests.cs runs both shapes in one process, because the strongest
+    // form of "the frames are identical" is to RUN the ungated shape rather than keep a hand copy of it
+    // (the PR #264 precedent). Production never writes it.
+    private static bool TickSweepSkip = ServerConfig.Current.TickSweepSkip;
+
+    /// <summary>The skip's kill switch, live, for the facts that must run both shapes in one process.</summary>
+    internal static bool TickSweepSkipForTest
+    {
+        get => TickSweepSkip;
+        set => TickSweepSkip = value;
+    }
+
+    /// <summary>May the tick skip this viewer's three sweeps this beat? Called by
+    /// <see cref="World.ReconcileViews"/> once per viewer per beat, on the tick thread, with the map id and
+    /// the generation IT CAPTURED INSIDE <c>World._lock</c> with the roster — never a live read.
+    ///
+    /// <para>Returns true to sweep. It returns true when the switch is off, when this viewer is on a map it
+    /// has not swept under the tick before (which is also how a map CHANGE is caught — the record carries the
+    /// map id, so a generation can never be read across maps), when the map has changed since, or when this
+    /// viewer has per-viewer state pending. The pending flag is consumed here, BEFORE the sweeps run, so a
+    /// change that lands while they are running sets it again and is swept on the next beat rather than
+    /// being cleared by the sweep that never saw it.</para></summary>
+    internal bool BeginTickSweep(ushort mapId, long mapGen)
+    {
+        if (!TickSweepSkip) return true;
+        bool pending = Interlocked.Exchange(ref _sweepPending, 0) != 0;
+        return pending || _sweptMap != mapId || _sweptGen != mapGen;
+    }
+
+    /// <summary>Record that this viewer has now swept <paramref name="mapId"/> at
+    /// <paramref name="mapGen"/> — called after the three sweeps return, with the SAME captured generation
+    /// <see cref="BeginTickSweep"/> was given. Recording the captured value rather than a fresh read is what
+    /// makes a change that lands DURING the sweeps show up as a difference on the next beat.</summary>
+    internal void EndTickSweep(ushort mapId, long mapGen)
+    {
+        _tickSweeps++;
+        if (!TickSweepSkip) return;
+        _sweptMap = mapId;
+        _sweptGen = mapGen;
+    }
+
+    /// <summary>How many tick sweeps of this viewer have actually RUN TO COMPLETION. Every fact about the
+    /// skip reads it: that the skip fires, that each change source un-skips, that a map change sweeps, and
+    /// that the switch off restores the per-beat sweep.
+    ///
+    /// <para>Counted HERE and not in <see cref="BeginTickSweep"/>, and the difference is what the counter is
+    /// worth. Begin's answer is a DECISION, and a falsification that keeps the decision and calls the three
+    /// sweeps anyway — <c>_ = t.Session.BeginTickSweep(...)</c> in place of the early return in
+    /// <c>ReconcileViews</c> — would leave a decision-counter reading zero while every sweep ran. Counting
+    /// at the far end means the number is what happened. (The obvious alternative, the static
+    /// <see cref="PeerSweepProbeForTest"/>, counts every SESSION's sweep in the process, so in a full suite
+    /// run it picks up other fixtures' maps; this is per viewer.)</para>
+    ///
+    /// <para>It exists for the reason <see cref="PositionWritesUnderWorldLock"/> exists — a claim about how
+    /// often something runs that nothing can falsify is not worth making — and it costs one non-atomic
+    /// increment per SWEPT viewer per beat, at the end of a walk over every peer, mob and item on the map.
+    /// The write is the tick thread's alone; the read is volatile because the reader is a test
+    /// thread.</para></summary>
+    internal long TickSweepsForTest => Volatile.Read(ref _tickSweeps);
+    private long _tickSweeps;
 
     // The kill switch for the two peer gates below, read ONCE for the process the same way PassEnforce and
     // CastQueueEnabled are (Session.cs). 0 restores the ungated broadcast this change replaced.
@@ -1118,7 +1258,11 @@ public sealed partial class Session
     public void ActionOver(uint id, byte type, ushort time, byte param) => SendAction(id, (ActionType)type, time, param);  // 0x1A
     public void ActionOver(uint id, ActionType type, ushort time, byte param) => SendAction(id, type, time, param);        // 0x1A
     public void EffectOver(uint id, int effectId) => SendEffect(id, effectId);                      // 0x29 spell effect
-    public void DespawnEntity(uint id) { using (EnterView()) { _drawnMobs.Remove(id); _shownItems.Remove(id); _drawnPeers.Remove(id); _sendStamp.Remove(id); } SendDespawn(id); }  // 0x0E
+    // MarkSweepPending: this takes an id OUT of our drawn store without the map changing — the morph,
+    // stealth, death and pickup broadcasts, and ShowPlayer's own hidden-peer path, all reach here — and the
+    // sweep after it is what draws the entity again if it is still in view. Without the flag a stealthed or
+    // just-morphed peer standing still would be drawn once and never re-asserted. See MarkSweepPending.
+    public void DespawnEntity(uint id) { using (EnterView()) { _drawnMobs.Remove(id); _shownItems.Remove(id); _drawnPeers.Remove(id); _sendStamp.Remove(id); } MarkSweepPending(); SendDespawn(id); }  // 0x0E
 
     // The one funnel every outbound packet in the server goes through, and the top half of the test seam:
     // it hands the frame to _out and does nothing transport-specific itself. TcpOutbound is a non-blocking
