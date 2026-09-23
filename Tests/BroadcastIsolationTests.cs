@@ -177,7 +177,6 @@ public class BroadcastIsolationTests
                 }
             }
 
-            Shared.Log.Warn($"BCASTFACT,realFact,allocating={allocating},bytes={bytes},old={(bytes >= Calls ? "RED" : "green")},peersPerCall={_peers / Calls},tid={Environment.CurrentManagedThreadId},sizes={string.Join(" ", firstSizes.Take(Math.Min(allocating, firstSizes.Length)))}");   // TEMPORARY probe line
             Assert.True(_peers >= Crowd * Calls,
                         $"only {_peers} peer deliveries over {Calls} calls — the arrangement is wrong, not the code");
             // Counted per CALL, not summed per pass: a pool re-rent after a Gen2 trim is ONE call allocating
