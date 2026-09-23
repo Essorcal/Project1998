@@ -119,6 +119,60 @@ public class StatusFileTests
                     "sweepsRun must never exceed sweepViewers");
     }
 
+    // ===== the send counters =============================================================================
+
+    /// <summary>The five send fields carry the counters' own values, each in its own field: frames, bytes,
+    /// slow sends, and the queued and write halves.
+    ///
+    /// <para>The silent failure: a field wired to its neighbour (bytes where frames belong, the queued half
+    /// where the write half belongs) publishes a plausible number, and a hold computing a slow-send rate from
+    /// it builds a conclusion on the wrong side of the send path. So the counts below are all different from
+    /// each other, and the counters are a private instance this test fills itself — the process-wide
+    /// <see cref="Shared.SendCounters.Game"/> is moving under other test classes' game frames.</para></summary>
+    [Fact]
+    public void TheStatusDocumentCarriesEachSendCounterInItsOwnField()
+    {
+        var sends = new Shared.SendCounters();
+        for (int i = 0; i < 7; i++) sends.CountFrame(100);   // 7 frames, 700 bytes
+        sends.CountSlow(queued: true, write: false);
+        sends.CountSlow(queued: true, write: false);
+        sends.CountSlow(queued: true, write: true);          // both halves: 3 slow, 3 queued, 1 write
+        sends.CountSlow(queued: false, write: false);        // 4 slow: the total is not the halves' sum
+
+        string json = StatusFile.Render(_fx.World, online: true, players: 0, sends);
+        _out.WriteLine(json);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        Assert.Equal(7, root.GetProperty("framesSent").GetInt64());
+        Assert.Equal(700, root.GetProperty("bytesSent").GetInt64());
+        Assert.Equal(4, root.GetProperty("slowSends").GetInt64());
+        Assert.Equal(3, root.GetProperty("slowSendsQueued").GetInt64());
+        Assert.Equal(1, root.GetProperty("slowSendsWrite").GetInt64());
+    }
+
+    /// <summary>The document the status timer writes publishes the GAME channel's counters, not a private
+    /// instance and not zero. Bounds rather than equality: other test classes send game frames in parallel,
+    /// so the published figure is at least the reading before this test counted and at most the reading
+    /// after the render.</summary>
+    [Fact]
+    public void TheStatusTimersDocumentPublishesTheGameChannelsCounters()
+    {
+        var game = Shared.SendCounters.Game;
+        long frames0 = game.FramesSent, bytes0 = game.BytesSent, slow0 = game.SlowSends;
+        game.CountFrame(3);
+        game.CountSlow(queued: true, write: true);
+
+        using var doc = JsonDocument.Parse(StatusFile.Render(_fx.World, online: true, players: 0));
+        var root = doc.RootElement;
+        long frames = root.GetProperty("framesSent").GetInt64(), bytes = root.GetProperty("bytesSent").GetInt64();
+        long slow = root.GetProperty("slowSends").GetInt64();
+
+        Assert.InRange(frames, frames0 + 1, game.FramesSent);
+        Assert.InRange(bytes, bytes0 + 3, game.BytesSent);
+        Assert.InRange(slow, slow0 + 1, game.SlowSends);
+    }
+
     // ===== the phase totals ==============================================================================
 
     /// <summary>Every phase's total only ever goes up, the beat total carries every beat — slow or healthy —

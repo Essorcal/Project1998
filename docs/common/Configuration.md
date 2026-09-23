@@ -201,3 +201,14 @@ samples. Two of them describe the tick's viewport sweep:
 |---|---|
 | `sweepViewers` | Every (viewer, beat) pair the tick CONSIDERED — one per player of every populated map, on every beat, whether or not `P1998_TICK_SWEEP_SKIP` then skipped it. |
 | `sweepsRun` | How many of those actually swept, counted after the three sweeps returned. Over a span, the share of viewers the skip saved is `1 - Δ sweepsRun / Δ sweepViewers`; with the skip off the two deltas are equal. |
+
+Five more describe the game channel's send path. They count every game session's writer, logged in or
+not; login-channel frames are never in them. A rate over a span is `Δ counter / Δ seconds`.
+
+| Field | What it counts |
+|---|---|
+| `framesSent` | Game frames whose socket write completed. A frame dropped with its connection is not counted. |
+| `bytesSent` | The bytes of those frames. `Δ bytesSent / Δ framesSent` is the mean frame size over the span. |
+| `slowSends` | Every frame the writer's slow-send watchdog flagged (`P1998_SLOW_SEND_MS`), INCLUDING the ones the `SLOW SEND` log line suppresses under its one-line-per-second-per-session limit. 0 while the watchdog is disabled. |
+| `slowSendsQueued` | Of those, the frames that waited at least the threshold between being queued and being picked up by the writer: the server's side, usually thread-pool starvation. |
+| `slowSendsWrite` | Of those, the frames whose socket write itself took at least the threshold: the network's side, a client not acknowledging fast enough. A frame that was slow both ways is in both halves, so the halves can sum to more than `slowSends`. |
