@@ -121,11 +121,11 @@ public class BroadcastIsolationTests
     /// exact multiple of 536 B (2,144, 2,680, 3,216 B). At the same storm below high pressure it went red 0
     /// times in 400, because the thread's own buffer survives the trim there.</para>
     ///
-    /// <para>On the Linux CI runner, something else. The runner sits at LOW pressure (memory load 10-18% of
+    /// <para>On the Linux CI runner, something else. The runner sits at LOW pressure (memory load 10-19% of
     /// the threshold), where that trim cannot empty the thread's buffer, yet the fact still failed about once
     /// in 20 runs. Instrumented runs caught it once in 44: ONE call allocating 7,024 B at 73 peers, where a
-    /// pool buffer would be 1,048 B. Its source is not identified. Close to 1,000 further instrumented passes
-    /// on the runner, splitting each call into lock-and-rent, sends and return, never saw it again.</para>
+    /// pool buffer would be 1,048 B. Its source is not identified. 815 further passes on the runner, each
+    /// call split into lock-and-rent, sends and return, never saw it again.</para>
     ///
     /// <para>So the claim is measured one call at a time. Each call is its own window, and a per-call cost
     /// shows as every call allocating. Both sources above show as one call, or a few. The assertion is that
