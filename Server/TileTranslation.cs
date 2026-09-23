@@ -316,6 +316,15 @@ public static class TileTranslation
     /// <summary>Reads <c>game-data/Tile533Map.csv</c> (run-length: <c>startLegacy,count,start533</c>).</summary>
     internal static CsvTable OpenSheet2() => Content.OpenTable(Content.TableId.Tile533Map);
 
+    // PR #124's review: Count came straight from the CSV with no bound, so an authored (or corrupted) row
+    // could fill this dictionary in a for loop until memory ran out, and the surrounding try/catch does
+    // nothing for a loop that never throws. The whole run — StartLegacy, Count and Start533 together — is
+    // validated before a single entry is written: every index and value the run would touch must land
+    // inside the ushort domain both clients actually index with (0..65535), which caps a single row at
+    // 65,536 iterations and rules out the ushort-cast wraparound that used to let a run silently overwrite
+    // an earlier entry. A row that fails is skipped WHOLE — no partial expansion — and counted through the
+    // normal row.Keep() convention: not calling it is what CsvTable.Skipped already counts, so the content
+    // report gets this for free.
     private static IReadOnlyDictionary<ushort, ushort> ParseSheet2(CsvTable csv)
     {
         var map = new Dictionary<ushort, ushort>();
@@ -327,6 +336,20 @@ public static class TileTranslation
                     || !int.TryParse(row.Require("StartLegacy"), out var start)
                     || !int.TryParse(row.Require("Count"), out var count)
                     || !int.TryParse(row.Require("Start533"), out var target)) continue;
+
+                // Widen to long before doing the arithmetic: Count itself can be int.MaxValue, and
+                // start/target + count - 1 would overflow int (and could wrap negative, passing a naive
+                // "<= 65535" check) long before it overflows long.
+                long startL = start, countL = count, targetL = target;
+                if (countL < 1 || startL < 0 || targetL < 0
+                    || startL + countL - 1 > ushort.MaxValue
+                    || targetL + countL - 1 > ushort.MaxValue)
+                {
+                    Log.Warn($"Tile533Map.csv row {row.Line} skipped: StartLegacy={start}, Count={count}, " +
+                             $"Start533={target} would run outside the ushort domain");
+                    continue;
+                }
+
                 for (int i = 0; i < count; i++)
                     map[(ushort)(start + i)] = (ushort)(target + i);
                 row.Keep();
