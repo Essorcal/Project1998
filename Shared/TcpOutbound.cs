@@ -16,7 +16,12 @@ namespace Shared;
 /// itself takes that long. 0 disables the warning.</param>
 /// <param name="LogLabel">Prefix the writer's own log lines carry after the peer label, so each process keeps
 /// the exact text it printed before ("" for the game, <c>"login "</c> for the login channel).</param>
-public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowSendMs, string LogLabel)
+/// <param name="Counters">Where this channel's writers count what they send, or null for a channel that is not
+/// counted. Only <see cref="Game"/> carries one (<see cref="SendCounters.Game"/>, published in the game's
+/// <c>run/status.json</c>); the login profile leaves it null, so a login frame never reaches the game's totals
+/// whichever process it is sent from.</param>
+public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowSendMs, string LogLabel,
+                                     SendCounters? Counters = null)
 {
     /// <summary><c>P1998_SLOW_SEND_MS</c> tunes it; 0 disables. 250ms is well under the ~1s a player would
     /// notice, so the log names the stall before anyone complains about it.</summary>
@@ -30,7 +35,7 @@ public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowS
     /// <summary>The game channel: a burst of world-entry packets is well under 2048 frames; a truly stuck
     /// socket hits it and we drop the connection. No per-write bound — the queue is the bound here, and a
     /// player on a bad link is warned about (<c>SLOW SEND</c>) long before anything drops them.</summary>
-    public static OutboundOptions Game { get; } = new(2048, 0, DefaultSlowSendMs, "");
+    public static OutboundOptions Game { get; } = new(2048, 0, DefaultSlowSendMs, "", SendCounters.Game);
 
     /// <summary>The login channel: a whole conversation — welcome, an availability reply, a status line or
     /// two, the redirect — is under a dozen frames, so 64 is several times the worst legitimate burst and
@@ -38,6 +43,107 @@ public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowS
     /// queue bound alone does not do the job on this channel: a peer that stalls on the very FIRST frame
     /// leaves the queue at depth 1 and the writer parked inside <c>WriteAsync</c> forever.</summary>
     public static OutboundOptions Login { get; } = new(64, DefaultLoginWriteMs, DefaultSlowSendMs, "login ");
+}
+
+/// <summary>
+/// Since-process-start totals of what a channel's writers put on the wire: frames, bytes, and every slow send
+/// the <see cref="TcpOutbound.RunWriterAsync"/> watchdog detects — including the ones its log line suppresses,
+/// which is the reason this exists. <c>SLOW SEND</c> is rate-limited to one line per session per second and
+/// its "+N more suppressed" is a per-session local, so the log cannot say how many slow sends a span had.
+/// Read as deltas between two samples, like every total in <c>run/status.json</c>: a rate is
+/// <c>Δ counter / Δ seconds</c>.
+///
+/// <para>STRIPED, and measured before it was chosen (the <c>server-slow-send-rate-1</c> report has the
+/// numbers). The writer counts once per frame on each session's own task — 400 of them at load — so one
+/// shared <c>Interlocked</c> pair is one cache line every core writes on every frame. On the 16-thread
+/// development laptop, 400 writer-shaped tasks draining full queues paid 21.2-21.7ns of wall time per frame
+/// for that line against 0.4-0.7ns for these stripes (four runs; 29.8x to 49.8x per run), and with nothing
+/// else in the loop the shared pair cost 361-364ns per increment pair against 8.8-10.6ns.
+/// Per-<see cref="TcpOutbound"/> fields summed over the online roster were the third option and were
+/// cheaper still per frame, but a player who logs out takes their totals with them
+/// (the since-start figure would FALL), and frames sent before a session is on the roster would never count.
+/// The stripes keep one monotonic process-wide total and need no lock to read.</para>
+///
+/// <para>Each writer adds to the stripe of the processor it is running on, with <c>Interlocked</c> because a
+/// thread can migrate between reading its processor id and writing, and two threads can share a stripe. A
+/// reader sums the stripes. The sum is not one atomic snapshot — a frame in flight can be in
+/// <see cref="FramesSent"/> and not yet in <see cref="BytesSent"/> — which is one frame's error against a
+/// delta taken over seconds.</para>
+/// </summary>
+public sealed class SendCounters
+{
+    /// <summary>The game channel's totals: what <see cref="OutboundOptions.Game"/> counts into and what the
+    /// game's status document publishes.</summary>
+    public static SendCounters Game { get; } = new();
+
+    /// <summary>One stripe, a whole 128 bytes so that no two stripes share a cache line or the adjacent line
+    /// the hardware prefetcher pairs with it.</summary>
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Size = 128)]
+    private struct Stripe
+    {
+        [System.Runtime.InteropServices.FieldOffset(0)]  public long Frames;
+        [System.Runtime.InteropServices.FieldOffset(8)]  public long Bytes;
+        [System.Runtime.InteropServices.FieldOffset(16)] public long Slow;
+        [System.Runtime.InteropServices.FieldOffset(24)] public long SlowQueued;
+        [System.Runtime.InteropServices.FieldOffset(32)] public long SlowWrite;
+    }
+
+    private readonly Stripe[] _stripes;
+    private readonly int _mask;
+
+    public SendCounters()
+    {
+        // A power of two at or above the processor count, so a processor id maps to its own stripe with a
+        // mask. Ids above the count (processor groups) fold onto a shared stripe, which Interlocked covers.
+        int n = (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Max(1, Environment.ProcessorCount));
+        _stripes = new Stripe[n];
+        _mask = n - 1;
+    }
+
+    private ref Stripe Mine => ref _stripes[Thread.GetCurrentProcessorId() & _mask];
+
+    /// <summary>One frame of <paramref name="bytes"/> finished its socket write.</summary>
+    internal void CountFrame(int bytes)
+    {
+        ref var s = ref Mine;
+        Interlocked.Increment(ref s.Frames);
+        Interlocked.Add(ref s.Bytes, bytes);
+    }
+
+    /// <summary>The watchdog flagged a frame: it waited too long to be picked up (<paramref name="queued"/>),
+    /// its write took too long (<paramref name="write"/>), or both.</summary>
+    internal void CountSlow(bool queued, bool write)
+    {
+        ref var s = ref Mine;
+        Interlocked.Increment(ref s.Slow);
+        if (queued) Interlocked.Increment(ref s.SlowQueued);
+        if (write) Interlocked.Increment(ref s.SlowWrite);
+    }
+
+    /// <summary>Game frames whose socket write completed.</summary>
+    public long FramesSent => Sum(static (ref Stripe s) => ref s.Frames);
+
+    /// <summary>The bytes of those frames.</summary>
+    public long BytesSent => Sum(static (ref Stripe s) => ref s.Bytes);
+
+    /// <summary>Every frame the slow-send watchdog flagged, logged or suppressed.</summary>
+    public long SlowSends => Sum(static (ref Stripe s) => ref s.Slow);
+
+    /// <summary>Of those, the ones that waited at least the threshold between enqueue and pickup.</summary>
+    public long SlowSendsQueued => Sum(static (ref Stripe s) => ref s.SlowQueued);
+
+    /// <summary>Of those, the ones whose socket write itself took at least the threshold. A frame that was
+    /// both is in both halves, so the halves can sum to more than <see cref="SlowSends"/>.</summary>
+    public long SlowSendsWrite => Sum(static (ref Stripe s) => ref s.SlowWrite);
+
+    private delegate ref long Field(ref Stripe s);
+
+    private long Sum(Field field)
+    {
+        long total = 0;
+        for (int i = 0; i < _stripes.Length; i++) total += Volatile.Read(ref field(ref _stripes[i]));
+        return total;
+    }
 }
 
 /// <summary>
@@ -183,6 +289,7 @@ public sealed class TcpOutbound : IOutbound
     {
         long lastWarnMs = 0;
         int suppressed = 0;
+        var counters = _options.Counters;   // null on a channel that is not counted (the login's)
         try
         {
             await foreach (var item in _queue.Reader.ReadAllAsync())
@@ -214,9 +321,13 @@ public sealed class TcpOutbound : IOutbound
                     await Stream.WriteAsync(item.Buf);
                 }
                 long writeMs = Environment.TickCount64 - w0;                 // time inside the socket write
+                counters?.CountFrame(item.Buf.Length);   // the write completed: this frame is on the wire
 
                 if (_options.SlowSendMs <= 0) continue;
                 if (queuedMs < _options.SlowSendMs && writeMs < _options.SlowSendMs) continue;
+
+                // Counted BEFORE the rate limit below, so the total carries every slow send the log suppresses.
+                counters?.CountSlow(queuedMs >= _options.SlowSendMs, writeMs >= _options.SlowSendMs);
 
                 // Rate-limited to one line/second per session: a genuinely bad link would otherwise fill the
                 // log with thousands of these and bury the first (most useful) one.
