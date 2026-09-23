@@ -77,21 +77,6 @@ jobs:
       - name: Content smoke test
         run: dotnet test Tests/Tests.csproj -c Release --no-build --logger "console;verbosity=normal"
 
-      # TEMPORARY (pr/log-capture-race): loop the log-capture pair on the Linux runner. Reverted before the
-      # final head.
-      - name: TEMP log-capture loop
-        run: |
-          fails=0
-          for i in $(seq 1 50); do
-            if dotnet test Tests/Tests.csproj -c Release --no-build                  --filter "FullyQualifiedName~MobAiTick|FullyQualifiedName~SendCounters|FullyQualifiedName~Log" > loop.log 2>&1; then
-              echo "run $i: $(grep -E 'Passed!' loop.log)"
-            else
-              fails=$((fails+1)); echo "run $i FAILED"; grep -E '^  Failed |Passed!|Failed!' loop.log
-            fi
-          done
-          echo "loop failures: $fails of 50"
-          test "$fails" -eq 0
-
       # linux-x64 because the host is an OVH VPS (x86). Nothing in the source is architecture-specific:
       # MoonSharp and BCrypt.Net-Next are pure managed, and Microsoft.Data.Sqlite ships a native e_sqlite3
       # for both, so this is a one-word change if the host ever moves back to arm64.
