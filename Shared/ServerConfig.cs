@@ -126,9 +126,11 @@ public sealed class ServerConfig
         // --- logging ---
         public static readonly OptionalBoolKnob LogWire = new(
             "P1998_LOG_WIRE", ConfigArea.Logging,
-            "Hex-dump every frame. Unset takes the ENTRY POINT's default, which differs by process: ON in the " +
-            "game server (the backbone of the protocol RE work, no credentials on that channel) and OFF in the " +
-            "login server (4.95's cipher is a fixed published XOR, so a dump writes plaintext passwords). " +
+            "Hex-dump every frame. Unset takes the ENTRY POINT's default, which is OFF in both processes: " +
+            "the game server (protocol RE work asks for `=1` to turn it on, on a machine with no real " +
+            "players) and the login server (4.95's cipher is a fixed published XOR, so a dump writes " +
+            "plaintext passwords, which is also why `=1` here should only be set on a machine with no real " +
+            "accounts). " +
             "Must be EXACTLY `0` or `1`: surrounding whitespace is not trimmed for this one knob, so a " +
             "padded `\" 1\"` warns and keeps the process default rather than turning the dump on.");
         public static readonly OptionalLongKnob LogMaxBytes = new(

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Shared;
 using Xunit;
 
@@ -260,8 +261,8 @@ public class ServerConfigTests
     /// unset takes the process's own answer, set overrides both processes identically. This is the fact
     /// <c>ServerConfig.ConfigureLogging</c> implements for the two <c>Program.cs</c> files.</summary>
     [Theory]
-    [InlineData(null, true, true)]     // game server, unset
-    [InlineData(null, false, false)]   // login server, unset
+    [InlineData(null, true, true)]     // an entry point whose own default is ON, unset
+    [InlineData(null, false, false)]   // an entry point whose own default is OFF (both processes today), unset
     [InlineData("", true, true)]
     [InlineData("", false, false)]
     [InlineData("0", true, false)]
@@ -272,6 +273,28 @@ public class ServerConfigTests
         string? raw, bool processDefault, bool expected)
     {
         Assert.Equal(expected, With(("P1998_LOG_WIRE", raw)).LogWire ?? processDefault);
+    }
+
+    /// <summary>The GAME process's own default, pinned against its actual declaration in
+    /// <c>Server/Program.cs</c> — a regex extraction, not a literal copied into this test — so a revert of
+    /// <c>ConfigureLogging(wireDefault: ...)</c> there fails this fact rather than drifting silently out of
+    /// step with what the process really does. With no <c>P1998_LOG_WIRE</c> set the game's effective wire
+    /// dump is OFF; <c>=1</c> turns it on (for protocol RE work on a machine with no real players, never a
+    /// live server); <c>=0</c> stays off.
+    /// <para>Falsification: put <c>wireDefault: true</c> back in <c>Server/Program.cs</c> and this fact goes
+    /// red on the unset case, because the regex below then extracts <c>true</c>.</para></summary>
+    [Fact]
+    public void The_game_processs_own_default_is_off_unless_the_environment_asks_for_it()
+    {
+        string programPath = Path.Combine(RepoPaths.Root(), "Server", "Program.cs");
+        string source = File.ReadAllText(programPath);
+        var match = Regex.Match(source, @"ConfigureLogging\(wireDefault:\s*(true|false)");
+        Assert.True(match.Success, "Server/Program.cs no longer calls ConfigureLogging(wireDefault: ...)");
+        bool gameProcessDefault = bool.Parse(match.Groups[1].Value);
+
+        Assert.False(With().LogWire ?? gameProcessDefault);
+        Assert.True(With(("P1998_LOG_WIRE", "1")).LogWire ?? gameProcessDefault);
+        Assert.False(With(("P1998_LOG_WIRE", "0")).LogWire ?? gameProcessDefault);
     }
 
     [Theory]

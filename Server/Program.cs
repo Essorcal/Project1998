@@ -8,12 +8,14 @@ using Shared;
 // because the login server's handoff packet redirects it here (reversed IP + game port). Session tags
 // the client version by the port it arrived on.
 
-// Declare this process's logging defaults before anything can log: the wire dump is ON here (it is the
-// backbone of the protocol RE work, and nothing on the game channel is a credential) and the log rotates at
-// 64MB. Both stay overridable by P1998_LOG_WIRE / P1998_LOG_MAX_BYTES, which ServerConfig declares and
-// resolves; these two arguments are the per-process defaults the environment overrides. First statement in
-// the process, above --selftest, because the self-test logs too.
-ServerConfig.ConfigureLogging(wireDefault: true, maxBytesDefault: 64L * 1024 * 1024);
+// Declare this process's logging defaults before anything can log: the wire dump is OFF here unless
+// P1998_LOG_WIRE=1 asks for it. Turn it on for protocol RE work on a machine with no real players — never
+// on a live server, where nothing on the game channel being a credential does not make a full per-frame
+// dump the right default. The log rotates at 64MB. Both stay overridable by P1998_LOG_WIRE /
+// P1998_LOG_MAX_BYTES, which ServerConfig declares and resolves; these two arguments are the per-process
+// defaults the environment overrides. First statement in the process, above --selftest, because the
+// self-test logs too.
+ServerConfig.ConfigureLogging(wireDefault: false, maxBytesDefault: 64L * 1024 * 1024);
 
 int[] ports = { 2005, 2006 };
 for (int i = 0; i < args.Length; i++)
