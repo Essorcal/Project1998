@@ -18,14 +18,14 @@ namespace Tests;
 public sealed class DrainProbeTemp
 {
     private static readonly object FileGate = new();
-    private static int _failOld, _failNew, _runOld, _runNew;
+    private static readonly int[] Fails = new int[3], Runs = new int[3];
     private static readonly byte[] Bulk = Enumerable.Range(0, 512 * 1024).Select(i => (byte)i).ToArray();
     private static long Drain(Stream s) { var buf = new byte[64 * 1024]; long n = 0; int r; while ((r = s.Read(buf)) > 0) n += r; return n; }
     private static async Task<long> DrainAsync(Stream s, CancellationToken ct) { var buf = new byte[64 * 1024]; long n = 0; int r; while ((r = await s.ReadAsync(buf, ct).ConfigureAwait(false)) > 0) n += r; return n; }   // as CopyToAsync does
 
     public static IEnumerable<object[]> Iterations()
     {
-        int n = int.TryParse(Environment.GetEnvironmentVariable("DRAIN_PROBE_N"), out var v) ? v : 600;
+        int n = int.TryParse(Environment.GetEnvironmentVariable("DRAIN_PROBE_N"), out var v) ? v : 900;
         for (int i = 0; i < n; i++) yield return new object[] { i };
     }
 
@@ -33,12 +33,12 @@ public sealed class DrainProbeTemp
     [MemberData(nameof(Iterations))]
     public async Task Probe(int iteration)
     {
-        await Run(iteration, shape: (iteration % 2) switch { 0 => "old", _ => "new" });
+        await Run(iteration, shape: (iteration % 3) switch { 0 => "old", 1 => "new", _ => "pool" });
     }
 
     private static async Task Run(int iteration, string shape)
     {
-        bool newShape = shape == "new"; bool newVerdict = shape == "new";
+        bool newShape = shape == "new"; bool newVerdict = shape != "old"; bool poolShape = shape == "pool";
         using var gate = new ManualResetEventSlim(!newShape);
         const int StallMs = 150;
         const int BulkBytes = 512 * 1024;
@@ -77,6 +77,10 @@ public sealed class DrainProbeTemp
             t.Start();
             reader = done.Task;
         }
+        else if (poolShape)
+        {
+            reader = null!;   // started at the gate, below
+        }
         else
         {
             reader = OldPeer();
@@ -94,6 +98,16 @@ public sealed class DrainProbeTemp
         outbound.Send(new byte[64]);
 
         gate.Set();
+        if (poolShape)
+            reader = Task.Run(async () =>
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await Task.Delay(StallMs, timeout.Token).ConfigureAwait(false);
+                stallEnd = clock.ElapsedMilliseconds;
+                long n = await DrainAsync(stream, timeout.Token).ConfigureAwait(false);
+                eof = clock.ElapsedMilliseconds;
+                return n;
+            });
         long drainStart = clock.ElapsedMilliseconds;
         Task<long> writerAt = writer.ContinueWith(_ => clock.ElapsedMilliseconds, CancellationToken.None,
                                                   TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -118,10 +132,10 @@ public sealed class DrainProbeTemp
         int fails, runs;
         lock (FileGate)
         {
-            if (verdict != "pass") { if (newShape) _failNew++; else _failOld++; }
-            if (newShape) _runNew++; else _runOld++;
-            fails = newShape ? _failNew : _failOld;
-            runs = newShape ? _runNew : _runOld;
+            int k = shape == "old" ? 0 : shape == "new" ? 1 : 2;
+            if (verdict != "pass") Fails[k]++;
+            Runs[k]++;
+            fails = Fails[k]; runs = Runs[k];
         }
         Shared.Log.Warn($"DRAINPROBE,{line},{shape} fails {fails}/{runs}");
     }
