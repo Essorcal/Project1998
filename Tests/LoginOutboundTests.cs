@@ -165,9 +165,27 @@ public sealed class LoginOutboundTests
     /// <c>-- CLOSE</c> line mean the bytes are gone, and it is the guarantee on any platform or path that
     /// does NOT flush — an RST, a peer that closed first, SO_LINGER 0.</para>
     ///
+    /// <para>What separates "the drain finished" from "the drain gave up at <c>DrainTimeoutMs</c> and closed
+    /// anyway" is WHEN THE WRITER FINISHED, measured at the writer, not when this test got control back. The
+    /// two used to be the same number, and they are not under load: on 2026-09-22 this fact failed three times
+    /// on the old "the drain took Xms and hit its own bound" wall clock (upstream runs 35734743035 at 1259ms
+    /// and 35753469092 at 2245ms, and once on a local Windows suite at 1506ms), each while the suite's
+    /// content-loading classes were starting beside it. Reproduced with the teardown timed from both ends,
+    /// the slow readings were of two kinds: the writer finished in ~150ms and the teardown only got back to
+    /// this test a second later, which is scheduling and says nothing about the drain; or the peer's own
+    /// <c>Task.Delay</c> and reads, queued behind the same load, left the writer parked until the drain
+    /// genuinely timed out (run 35734743035 logged the writer's send being aborted by that close). So the
+    /// bound is asserted on the writer's own completion time, and the peer no longer resumes on xunit's
+    /// synchronization context, which is one more queue its stall and its reads were waiting in.</para>
+    ///
     /// <para>FALSIFIED by replacing <c>CloseAfterDrainAsync</c>'s body with <c>await Task.Yield(); Close();</c>:
     /// it returns in about a millisecond, while the writer is still parked mid-bulk waiting on the peer, and
-    /// the elapsed-time assert below fails.</para></summary>
+    /// the elapsed-time assert below fails. A drain that genuinely times out (the peer's stall made longer
+    /// than <c>DrainTimeoutMs</c>) fails on the "the drain timed out" assert, which names the timeout. Not
+    /// caught: a no-wait teardown that load delays past half the stall, which the old fact did not catch
+    /// either. An "is the writer already complete when the teardown returns" assert would catch it, and was
+    /// tried and dropped: the drain's continuation can run a hair before the writer's task completes, and did
+    /// so for a correct drain in 5 of about 1,750 runs on the Linux runner.</para></summary>
     [Fact]
     public async Task TheRedirectsLastFrameReachesASlowButReadingPeerBeforeTheClose()
     {
@@ -176,7 +194,8 @@ public sealed class LoginOutboundTests
         // hold), and small enough that the peer's catch-up read is not itself a race against the drain's
         // one-second bound. It was four megabytes, which is 4MB of catch-up through 64KB buffers on a
         // shared Linux runner: fork run 34552742122 failed here with "the drain took 1118ms and hit its own
-        // bound". Same mis-sizing as fact 1a's, one fact further along.
+        // bound". Same mis-sizing as fact 1a's, one fact further along. The 2026-09-22 failures were not
+        // sizing (the catch-up is a few milliseconds when the peer is scheduled); see the summary above.
         const int BulkBytes = 512 * 1024;
 
         // A generous write bound: this fact is about the drain, and the peer's deliberate stall must not be
@@ -196,7 +215,6 @@ public sealed class LoginOutboundTests
         byte[] bulk = Enumerable.Range(0, BulkBytes).Select(i => (byte)i).ToArray();
 
         Task writer = pair.Outbound.RunWriterAsync();
-        Task<byte[]> reader = ReadAfterStallToEof(pair.Client.GetStream(), StallMs);
 
         Assert.True(pair.Outbound.Send(bulk));
         expected.AddRange(bulk);
@@ -205,18 +223,35 @@ public sealed class LoginOutboundTests
         expected.AddRange(redirect);
 
         // The writer cannot possibly have finished before the peer's window opens, so a teardown that returns
-        // sooner than that is one that did not wait for the redirect.
+        // sooner than that is one that did not wait for the redirect. The peer's stall starts HERE, immediately
+        // before the teardown's clock, so a test descheduled between the two cannot open the window early and
+        // make a correct teardown look like one that did not wait. Nothing is reading until then either way.
+        Task<byte[]> reader = ReadAfterStallToEof(pair.Client.GetStream(), StallMs);
         var drain = Stopwatch.StartNew();
+        // Stamped by the writer's own completion, inline on the thread that completes it, so the reading is
+        // the writer's and not however long this test then waits to be scheduled.
+        Task<long> writerFinishedAtMs = writer.ContinueWith(_ => drain.ElapsedMilliseconds, CancellationToken.None,
+                                                            TaskContinuationOptions.ExecuteSynchronously,
+                                                            TaskScheduler.Default);
         await pair.Outbound.CloseAfterDrainAsync();
-        drain.Stop();
-        // Half the stall, not all of it: the peer's timer and this stopwatch start a few scheduler ticks
-        // apart, and the distinction being drawn is between ~1ms (did not wait) and ~150ms (waited).
-        Assert.True(drain.ElapsedMilliseconds >= StallMs / 2,
-                    $"the teardown returned after {drain.ElapsedMilliseconds}ms without waiting for the "
+        long returnedMs = drain.ElapsedMilliseconds;
+        // Half the stall, not all of it: a margin for the delay's timer resolution, and the distinction being
+        // drawn is between ~1ms (did not wait) and ~150ms (waited).
+        Assert.True(returnedMs >= StallMs / 2,
+                    $"the teardown returned after {returnedMs}ms without waiting for the "
                     + $"queued frames; the peer had not even started reading until {StallMs}ms");
-        Assert.True(drain.ElapsedMilliseconds < TcpOutbound.DrainTimeoutMs,
-                    $"the drain took {drain.ElapsedMilliseconds}ms and hit its own bound");
-        await writer.WaitAsync(TimeSpan.FromSeconds(10));
+        long writerMs = await writerFinishedAtMs.WaitAsync(TimeSpan.FromSeconds(10));
+        // A drain that gives up still closes, and whether the bytes then arrive anyway is the platform's
+        // business, so this is the one assert that tells a finished drain from a timed-out one: had the writer
+        // not finished by the deadline, the close that ended it was the deadline's. The slack is the deadline
+        // timer's own resolution: with the stall forced past the deadline, the timed-out teardown returned at
+        // 996ms by this stopwatch and the writer it cut off finished at 1001ms.
+        const int DeadlineSlackMs = 50;
+        Assert.True(writerMs < TcpOutbound.DrainTimeoutMs - DeadlineSlackMs,
+                    $"the drain timed out: the writer was still sending at its {TcpOutbound.DrainTimeoutMs}ms "
+                    + $"deadline, less {DeadlineSlackMs}ms of timer slack (it finished at {writerMs}ms, the teardown "
+                    + $"returned at {returnedMs}ms), so the socket was closed by the drain's deadline, not behind the "
+                    + "last frame");
 
         byte[] received = await reader.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(expected.ToArray(), received);
@@ -346,13 +381,14 @@ public sealed class LoginOutboundTests
 
     /// <summary>A peer whose receive window stays shut for <paramref name="stallMs"/> and then opens. Reading
     /// nothing at all is what parks a sender; reading eventually is what makes this a slow peer rather than a
-    /// dead one.</summary>
+    /// dead one. Every await resumes on the thread pool, never on the caller's context: under xunit that
+    /// context is a handful of worker threads the rest of the suite is also queued on.</summary>
     private static async Task<byte[]> ReadAfterStallToEof(NetworkStream stream, int stallMs)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await Task.Delay(stallMs, timeout.Token);
+        await Task.Delay(stallMs, timeout.Token).ConfigureAwait(false);
         using var received = new MemoryStream();
-        await stream.CopyToAsync(received, timeout.Token);
+        await stream.CopyToAsync(received, timeout.Token).ConfigureAwait(false);
         return received.ToArray();
     }
 
