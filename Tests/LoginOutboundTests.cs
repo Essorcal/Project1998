@@ -165,18 +165,95 @@ public sealed class LoginOutboundTests
     /// <c>-- CLOSE</c> line mean the bytes are gone, and it is the guarantee on any platform or path that
     /// does NOT flush — an RST, a peer that closed first, SO_LINGER 0.</para>
     ///
+    /// <para>What separates "the drain finished" from "the drain gave up at <c>DrainTimeoutMs</c> and closed
+    /// anyway" is WHEN THE WRITER FINISHED, measured at the writer, not when this test got control back. The
+    /// two used to be the same number, and they are not under load: on 2026-09-22 this fact failed three times
+    /// on the old "the drain took Xms and hit its own bound" wall clock (upstream runs 35734743035 at 1259ms
+    /// and 35753469092 at 2245ms, and once on a local Windows suite at 1506ms), each while the suite's
+    /// content-loading classes were starting beside it. Reproduced with the teardown timed from both ends,
+    /// the slow readings were of two kinds: the writer finished in ~150ms and the teardown only got back to
+    /// this test a second later, which is scheduling and says nothing about the drain; or the peer's own
+    /// <c>Task.Delay</c> and reads, queued behind the same load, left the writer parked until the drain
+    /// genuinely timed out (run 35734743035 logged the writer's send being aborted by that close). So the
+    /// bound is asserted on the writer's own completion time, and the peer no longer resumes on xunit's
+    /// synchronization context, which is one more queue its stall and its reads were waiting in.</para>
+    ///
+    /// <para>That still failed on the CI runner, on the suite's first seconds, and the log says why:
+    /// <c>SLOW SEND ... write 1886ms</c>, the writer's own socket write taking nearly two seconds while the
+    /// thread pool was starved. The writer's socket completions are pool work items, the drain's deadline is
+    /// a pool timer, and the writer is production code the test cannot take off the pool (a peer on a thread
+    /// of its own was tried, and on Linux its catch-up stalled instead). Starved deliberately, by parking
+    /// every pool thread just before it ran, the original fact failed 19 of 20. So each attempt runs beside
+    /// <see cref="PoolLag"/>, which measures how long a pool work item waits to start, and a drain that misses
+    /// its deadline while that wait reached the production watchdog's starvation line is not held against
+    /// the drain: the attempt is repeated, up to <c>Attempts</c> times. A drain that misses its deadline
+    /// while the pool was answering fails at once.</para>
+    ///
     /// <para>FALSIFIED by replacing <c>CloseAfterDrainAsync</c>'s body with <c>await Task.Yield(); Close();</c>:
     /// it returns in about a millisecond, while the writer is still parked mid-bulk waiting on the peer, and
-    /// the elapsed-time assert below fails.</para></summary>
+    /// the elapsed-time assert fails on the first attempt. A drain that genuinely times out (the peer's stall
+    /// made longer than <c>DrainTimeoutMs</c>) fails on the first attempt too, on the "the drain timed out"
+    /// assert, which names the timeout and the pool's worst wait. Not caught: a no-wait teardown that load
+    /// delays past half the stall, which the old fact did not catch either. An "is the writer already complete
+    /// when the teardown returns" assert would catch it, and was tried and dropped: the drain's continuation
+    /// can run a hair before the writer's task completes, and did so for a correct drain in 5 of about 1,750
+    /// runs on the Linux runner.</para></summary>
     [Fact]
     public async Task TheRedirectsLastFrameReachesASlowButReadingPeerBeforeTheClose()
+    {
+        const int Attempts = 3;
+        var starved = new List<string>();
+        for (int attempt = 1; ; attempt++)
+        {
+            DrainReading run = await DrainIntoASlowPeer();
+            if (run.WriterMs < TcpOutbound.DrainTimeoutMs - DeadlineSlackMs)
+            {
+                Assert.Equal(run.Expected, run.Received);
+                // ...and the redirect is the LAST thing on the wire, with the socket closed behind it.
+                Assert.Equal(run.Redirect, run.Received[^run.Redirect.Length..]);
+                Assert.Null(run.DropReason);
+                return;
+            }
+            // A drain that gives up still closes, and whether the bytes then arrive anyway is the platform's
+            // business, so the writer's finishing time is the one reading that tells a finished drain from a
+            // timed-out one: had the writer not finished by the deadline, the close that ended it was the
+            // deadline's, or would have been had the deadline's own timer not been waiting on the pool too.
+            string reading = $"the writer finished at {run.WriterMs}ms, the teardown returned at "
+                           + $"{run.ReturnedMs}ms, a pool work item waited up to {run.WorstPoolLagMs}ms to start";
+            Assert.True(run.WorstPoolLagMs >= StarvedPoolLagMs,
+                        $"the drain timed out: the writer was still sending at its {TcpOutbound.DrainTimeoutMs}ms "
+                        + $"deadline, less {DeadlineSlackMs}ms of timer slack ({reading}), so the socket was closed "
+                        + "by the drain's deadline, not behind the last frame");
+            starved.Add($"attempt {attempt}: {reading}");
+            Assert.True(attempt < Attempts,
+                        $"the drain missed its {TcpOutbound.DrainTimeoutMs}ms deadline on all {Attempts} attempts, "
+                        + "each with the thread pool starved, so none of them measured the drain: "
+                        + string.Join("; ", starved));
+        }
+    }
+
+    // The slack is the deadline timer's own resolution: with the stall forced past the deadline, the timed-out
+    // teardown returned at 996ms by the attempt's stopwatch and the writer it cut off finished at 1001ms.
+    private const int DeadlineSlackMs = 50;
+
+    // P1998_POOL_LAG_MS's default: the production watchdog's own line between a busy pool and a starved one.
+    // A healthy pool starts a work item in well under a millisecond.
+    private const int StarvedPoolLagMs = 100;
+
+    private sealed record DrainReading(long ReturnedMs, long WriterMs, long WorstPoolLagMs, byte[] Expected,
+                                       byte[] Received, byte[] Redirect, string? DropReason);
+
+    /// <summary>One attempt at fact 3: a parked writer, a peer that opens its window after <c>StallMs</c>,
+    /// and the awaited teardown, timed from both ends while <see cref="PoolLag"/> watches the pool.</summary>
+    private static async Task<DrainReading> DrainIntoASlowPeer()
     {
         const int StallMs = 150;        // shut window, then open — comfortably inside the 1s drain bound
         // Enough to park the writer several times over (the two 64KB buffers below are all the kernel can
         // hold), and small enough that the peer's catch-up read is not itself a race against the drain's
         // one-second bound. It was four megabytes, which is 4MB of catch-up through 64KB buffers on a
         // shared Linux runner: fork run 34552742122 failed here with "the drain took 1118ms and hit its own
-        // bound". Same mis-sizing as fact 1a's, one fact further along.
+        // bound". Same mis-sizing as fact 1a's, one fact further along. The 2026-09-22 failures were not
+        // sizing (the catch-up is a few milliseconds when the peer is scheduled); see the summary above.
         const int BulkBytes = 512 * 1024;
 
         // A generous write bound: this fact is about the drain, and the peer's deliberate stall must not be
@@ -196,7 +273,6 @@ public sealed class LoginOutboundTests
         byte[] bulk = Enumerable.Range(0, BulkBytes).Select(i => (byte)i).ToArray();
 
         Task writer = pair.Outbound.RunWriterAsync();
-        Task<byte[]> reader = ReadAfterStallToEof(pair.Client.GetStream(), StallMs);
 
         Assert.True(pair.Outbound.Send(bulk));
         expected.AddRange(bulk);
@@ -204,25 +280,31 @@ public sealed class LoginOutboundTests
         Assert.True(pair.Outbound.Send(redirect));
         expected.AddRange(redirect);
 
+        using var poolLag = new PoolLag();
         // The writer cannot possibly have finished before the peer's window opens, so a teardown that returns
-        // sooner than that is one that did not wait for the redirect.
+        // sooner than that is one that did not wait for the redirect. The peer's stall starts HERE, immediately
+        // before the teardown's clock, so a test descheduled between the two cannot open the window early and
+        // make a correct teardown look like one that did not wait. Nothing is reading until then either way.
+        Task<byte[]> reader = ReadAfterStallToEof(pair.Client.GetStream(), StallMs);
         var drain = Stopwatch.StartNew();
+        // Stamped by the writer's own completion, inline on the thread that completes it, so the reading is
+        // the writer's and not however long this test then waits to be scheduled.
+        Task<long> writerFinishedAtMs = writer.ContinueWith(_ => drain.ElapsedMilliseconds, CancellationToken.None,
+                                                            TaskContinuationOptions.ExecuteSynchronously,
+                                                            TaskScheduler.Default);
         await pair.Outbound.CloseAfterDrainAsync();
-        drain.Stop();
-        // Half the stall, not all of it: the peer's timer and this stopwatch start a few scheduler ticks
-        // apart, and the distinction being drawn is between ~1ms (did not wait) and ~150ms (waited).
-        Assert.True(drain.ElapsedMilliseconds >= StallMs / 2,
-                    $"the teardown returned after {drain.ElapsedMilliseconds}ms without waiting for the "
+        long returnedMs = drain.ElapsedMilliseconds;
+        // Half the stall, not all of it: a margin for the delay's timer resolution, and the distinction being
+        // drawn is between ~1ms (did not wait) and ~150ms (waited).
+        Assert.True(returnedMs >= StallMs / 2,
+                    $"the teardown returned after {returnedMs}ms without waiting for the "
                     + $"queued frames; the peer had not even started reading until {StallMs}ms");
-        Assert.True(drain.ElapsedMilliseconds < TcpOutbound.DrainTimeoutMs,
-                    $"the drain took {drain.ElapsedMilliseconds}ms and hit its own bound");
-        await writer.WaitAsync(TimeSpan.FromSeconds(10));
+        long writerMs = await writerFinishedAtMs.WaitAsync(TimeSpan.FromSeconds(10));
+        long worstPoolLagMs = poolLag.WorstMs;
 
         byte[] received = await reader.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(expected.ToArray(), received);
-        // ...and the redirect is the LAST thing on the wire, with the socket closed behind it.
-        Assert.Equal(redirect, received[^redirect.Length..]);
-        Assert.Null(pair.Outbound.DropReason);
+        return new DrainReading(returnedMs, writerMs, worstPoolLagMs, expected.ToArray(), received, redirect,
+                                pair.Outbound.DropReason);
     }
 
     /// <summary>Fact 4: Close is idempotent, it completes the writer exactly once, and a Send afterwards is
@@ -344,15 +426,68 @@ public sealed class LoginOutboundTests
         return received.ToArray();
     }
 
+    /// <summary>How long a thread-pool work item waits to start, sampled every 10ms from a thread of its own
+    /// (a probe for pool starvation cannot itself live on the pool), worst reading kept. The same measurement
+    /// as the production watchdog's pool-latency probe, taken continuously for the length of one attempt.</summary>
+    private sealed class PoolLag : IDisposable
+    {
+        private readonly Thread _thread;
+        private volatile bool _stop;
+        private long _worstMs;
+        private long _queuedAt;   // Stopwatch timestamp of the sample still waiting to start, 0 if none
+
+        public PoolLag()
+        {
+            _thread = new Thread(Sample) { IsBackground = true, Name = "pool lag probe" };
+            _thread.Start();
+        }
+
+        /// <summary>The worst wait so far, INCLUDING a sample that has not started yet: in a pool starved for
+        /// the whole attempt, no sample ever completes, and that is the worst reading of all.</summary>
+        public long WorstMs
+        {
+            get
+            {
+                long queuedAt = Interlocked.Read(ref _queuedAt);
+                long pending = queuedAt == 0 ? 0 : (long)Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds;
+                return Math.Max(Interlocked.Read(ref _worstMs), pending);
+            }
+        }
+
+        private void Sample()
+        {
+            while (!_stop)
+            {
+                var started = new ManualResetEventSlim();   // not disposed: a late work item may still Set it
+                long queuedAt = Stopwatch.GetTimestamp();
+                Interlocked.Exchange(ref _queuedAt, queuedAt);
+                ThreadPool.UnsafeQueueUserWorkItem(static e => ((ManualResetEventSlim)e!).Set(), started);
+                while (!started.Wait(50) && !_stop) { }
+                if (!started.IsSet) return;   // stopped while the pool never got to it; WorstMs already saw it
+                long ms = (long)Stopwatch.GetElapsedTime(queuedAt).TotalMilliseconds;
+                Interlocked.Exchange(ref _queuedAt, 0);
+                if (ms > Interlocked.Read(ref _worstMs)) Interlocked.Exchange(ref _worstMs, ms);
+                Thread.Sleep(10);
+            }
+        }
+
+        public void Dispose()
+        {
+            _stop = true;
+            _thread.Join(TimeSpan.FromSeconds(5));
+        }
+    }
+
     /// <summary>A peer whose receive window stays shut for <paramref name="stallMs"/> and then opens. Reading
     /// nothing at all is what parks a sender; reading eventually is what makes this a slow peer rather than a
-    /// dead one.</summary>
+    /// dead one. Every await resumes on the thread pool, never on the caller's context: under xunit that
+    /// context is a handful of worker threads the rest of the suite is also queued on.</summary>
     private static async Task<byte[]> ReadAfterStallToEof(NetworkStream stream, int stallMs)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await Task.Delay(stallMs, timeout.Token);
+        await Task.Delay(stallMs, timeout.Token).ConfigureAwait(false);
         using var received = new MemoryStream();
-        await stream.CopyToAsync(received, timeout.Token);
+        await stream.CopyToAsync(received, timeout.Token).ConfigureAwait(false);
         return received.ToArray();
     }
 
