@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Server;
 using Tests.Support;
 using Xunit;
@@ -102,6 +103,99 @@ public class ContentReloadTests
             finally
             {
                 Content.ReplaceSpecForTests(Content.TableId.MobDrops, original);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
+            }
+        }
+    }
+
+    /// <summary>#128: ParseSheet2 used to fill its dictionary in a for loop straight off an unvalidated
+    /// <c>Count</c>, so one authored row with a huge Count was a denial-of-service shape (PR #124's review).
+    /// A bogus <c>Count</c> of <c>int.MaxValue</c> must now be rejected before the loop ever starts — the
+    /// whole content load (72 tables, not just this one) has to come back in ordinary time, keep nothing
+    /// from the bad row, keep the valid rows on either side of it, and count the row as skipped.</summary>
+    [Fact]
+    public void BogusSheet2CountIsRejectedBeforeExpandingAndReturnsPromptly()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-sheet2-bogus-count-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "Tile533Map.csv");
+            File.WriteAllText(path,
+                "1,1,101\n" +               // valid, kept
+                "5,2147483647,200\n" +      // bogus Count: would run 2^31 iterations unbounded
+                "10,1,110\n");              // valid, kept — proves the loader carries on past the bad row
+
+            var original = Content.OverridePathForTests(Content.TableId.Tile533Map, path);
+            try
+            {
+                var clock = Stopwatch.StartNew();
+                TestProcessState.LoadContent();
+                clock.Stop();
+
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10),
+                    $"content load took {clock.Elapsed.TotalSeconds:F1}s — the bogus Count row was not bounded");
+
+                Assert.Equal((ushort)101, TileTranslation.Sheet2ForTests[1]);
+                Assert.Equal((ushort)110, TileTranslation.Sheet2ForTests[10]);
+                // Nothing from the bogus row's run may have landed — spot-check the row's own start index and
+                // a handful of indices the unbounded loop would have reached first.
+                foreach (ushort probe in new ushort[] { 5, 6, 7, 100, 1000, ushort.MaxValue })
+                    Assert.False(TileTranslation.Sheet2ForTests.ContainsKey(probe),
+                        $"sheet-2 table kept an entry ({probe}) from the rejected row");
+
+                var report = Content.LoadReport["Tile533Map.csv"];
+                Assert.NotNull(report);
+                Assert.Equal(3, report!.Read);
+                Assert.Equal(2, report.Kept);
+                Assert.Equal(1, report.Skipped);
+            }
+            finally
+            {
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, original);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
+            }
+        }
+    }
+
+    /// <summary>#128: the run's bound is the ushort domain itself (0..65535), checked with the arithmetic
+    /// widened to long so it cannot silently wrap the way the ushort casts in the expansion loop used to.
+    /// A run that lands exactly on the boundary is kept; one that overshoots it by a single index — the
+    /// off-by-one this bug actually produced — is skipped whole, not truncated.</summary>
+    [Fact]
+    public void Sheet2RunOneOverTheUshortDomainIsSkippedButTheBoundaryRunIsKept()
+    {
+        lock (TestProcessState.Gate)
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "project1998-sheet2-wrap-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "Tile533Map.csv");
+            File.WriteAllText(path,
+                "65534,2,0\n" +   // StartLegacy+Count-1 == 65535: exactly on the boundary, must be kept
+                "65535,2,300\n"); // StartLegacy+Count-1 == 65536: one past the boundary, must be skipped whole
+
+            var original = Content.OverridePathForTests(Content.TableId.Tile533Map, path);
+            try
+            {
+                TestProcessState.LoadContent();
+
+                Assert.Equal((ushort)0, TileTranslation.Sheet2ForTests[65534]);
+                Assert.Equal((ushort)1, TileTranslation.Sheet2ForTests[65535]);
+                // The rejected row must not have landed even partially — index 65535 keeps the boundary row's
+                // value (1), not the wrapped row's (300), and the wrapped-to-zero index must be untouched.
+                Assert.False(TileTranslation.Sheet2ForTests.ContainsKey(0));
+
+                var report = Content.LoadReport["Tile533Map.csv"];
+                Assert.NotNull(report);
+                Assert.Equal(2, report!.Read);
+                Assert.Equal(1, report.Kept);
+                Assert.Equal(1, report.Skipped);
+            }
+            finally
+            {
+                Content.ReplaceSpecForTests(Content.TableId.Tile533Map, original);
                 TestProcessState.LoadContent();
                 try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup of a test fixture */ }
             }
