@@ -32,12 +32,18 @@ public sealed partial class World
     internal readonly record struct MobFaultKey(ushort Map, string? MobKey, Type ErrorType, bool WholeMap);
 
     /// <summary>A fault quiet for longer than this (about 10 s at the default 333 ms beat) logs its stack
-    /// again when it returns.</summary>
-    private static readonly int MobFaultQuietBeats = Math.Max(1, 10_000 / TickMs);
+    /// again when it returns.
+    ///
+    /// <para>This and <see cref="MobFaultRestackBeats"/> read the beat length from
+    /// <c>ServerConfig.Current.TickMs</c>, the same source as <see cref="TickMs"/>, rather than reading
+    /// <see cref="TickMs"/> itself. That field is declared in World.cs, and C# leaves the order of static
+    /// initializers across partial files to the compiler, so reading it from here would depend on the order
+    /// the files are compiled in.</para></summary>
+    private static readonly int MobFaultQuietBeats = Math.Max(1, 10_000 / ServerConfig.Current.TickMs);
 
     /// <summary>A fault that never stops logs its stack again once an hour, so a log rotation cannot leave
     /// its count lines pointing at a stack that is no longer on disk.</summary>
-    private static readonly int MobFaultRestackBeats = Math.Max(1, 3_600_000 / TickMs);
+    private static readonly int MobFaultRestackBeats = Math.Max(1, 3_600_000 / ServerConfig.Current.TickMs);
 
     /// <summary>Tick thread only, and only outside <c>_lock</c> (see <see cref="FaultThrottle{TKey}"/>).</summary>
     private readonly FaultThrottle<MobFaultKey> _mobFaultThrottle = new(MobFaultQuietBeats, MobFaultRestackBeats);
@@ -57,8 +63,10 @@ public sealed partial class World
     /// after <see cref="MobFaultQuietBeats"/> quiet, or <see cref="MobFaultRestackBeats"/> after its last
     /// stack — is written at Error with the exception in full, in the same words the guards always used.
     /// Every other throw this beat is only counted, and the counts go out as ONE Error line for the whole
-    /// beat, naming each fault and how many times it fired. So a beat costs the log at most one stack per
-    /// new fault plus one line, however many creatures throw.
+    /// beat, naming each fault and how many of its throws went without a stack. A throw whose stack was
+    /// written this beat is NOT in that count: on a fault's first beat, 20 throwing creatures give one stack
+    /// and a count of 19. So a beat costs the log at most one stack per new fault plus one line, however
+    /// many creatures throw.
     /// </summary>
     private void LogMobFaults(List<MobFault> faults, long beat)
     {
@@ -87,8 +95,8 @@ public sealed partial class World
         }
         if (repeats is null) return;
 
-        var sb = new StringBuilder("mob AI still throwing, stacks already logged: ")
-            .Append(creatures).Append(" creature(s) and ").Append(sweeps).Append(" map sweep(s) skipped this beat — ");
+        var sb = new StringBuilder("mob AI still throwing — skipped this beat with no stack (each fault's stack is logged at its first throw): ")
+            .Append(creatures).Append(" creature(s), ").Append(sweeps).Append(" map sweep(s) — ");
         for (int i = 0; i < repeats.Count; i++)
         {
             var (k, n) = repeats[i];

@@ -430,8 +430,9 @@ public class MobAiTickTests
     /// throwing, for <see cref="FaultBeats"/> beats, on a watched map with one healthy chaser among them.
     ///
     /// <para>Pins the three claims of #109 together. The stack is written ONCE for the fault, not once per
-    /// throw. The repeats cost at most one line a beat, and that line counts them — 19 on the first beat
-    /// (the twentieth throw is the one whose stack was written) and 20 on each beat after. And nothing
+    /// throw. The repeats cost at most one line a beat, and that line counts the throws that went WITHOUT a
+    /// stack, and says so — 19 on the first beat (the twentieth throw is the one whose stack was written,
+    /// and is not in the count) and 20 on each beat after. And nothing
     /// about any of it is written while <c>World._lock</c> is held: the sink's probe reads
     /// <see cref="World.HoldsWorldLock"/> on the logging thread as each line is formatted. The chaser
     /// closing on the watcher is the other half of the isolation test above, over several beats instead of
@@ -471,6 +472,9 @@ public class MobAiTickTests
             Assert.Contains("\n      ", stack.Line);   // Log.Detail's continuation: the stack is on it
 
             var counts = ours.Select(e => CountOn(e.Line, FaultMap)).Where(n => n >= 0).ToList();
+            var firstCountLine = ours.First(e => CountOn(e.Line, FaultMap) >= 0).Line;
+            Assert.Contains($"skipped this beat with no stack (each fault's stack is logged at its first throw): {FaultCount - 1} creature(s)",
+                            firstCountLine);   // the wording names what the number counts
             Assert.Equal(FaultBeats, counts.Count);   // one count line a beat, every beat
             Assert.Equal(FaultCount - 1, counts[0]);
             Assert.All(counts.Skip(1), n => Assert.Equal(FaultCount, n));
