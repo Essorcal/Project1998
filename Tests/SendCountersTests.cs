@@ -119,12 +119,19 @@ public sealed class SendCountersTests
     /// <summary>A frame whose socket write itself stalls past the threshold is one slow send and one
     /// write-slow send.
     ///
-    /// <para>The stall is a peer that does not read for 300ms against an 8MB frame, with the sender's socket
-    /// buffer at 0. That zero is load-bearing on Windows: with a 1KB send buffer (the sizing
+    /// <para>The stall is a peer that does not read for 300ms against an 8MB frame, with the SENDER's socket
+    /// buffer at 0 and the peer's receive buffer left at its default. Both halves of that are measured, not
+    /// guessed:
+    /// <list type="bullet">
+    /// <item>The sender's 0 is load-bearing on Windows. With a 1KB send buffer (the sizing
     /// <c>TcpOutboundTests</c> uses) Windows loopback accepted the whole 8MB write inside the 300ms with the
-    /// peer reading nothing, measured 3 of 3 in the scratch probe for this slice, and this fact read
-    /// <c>slowSendsWrite</c> 0. With <c>SO_SNDBUF</c> 0 Windows completes the send only as the peer drains it
-    /// (3 of 3 held until the read); Linux clamps the size to its floor, which an 8MB frame overruns either way.
+    /// peer reading nothing — 5 of 5 in the scratch probe for this slice — and this fact read
+    /// <c>slowSendsWrite</c> 0. With <c>SO_SNDBUF</c> 0 the send completed only once the peer read (5 of 5).
+    /// Linux clamps an explicit size to its floor of a few KB, far under 8MB.</item>
+    /// <item>The peer's default is load-bearing on Linux. A first version also shrank the peer's receive
+    /// buffer to 1KB, and on fork CI (run 35888854073, ubuntu) draining 8MB through that window took longer
+    /// than this fact's 10s read deadline. At the default, the Windows probe drained 8MB in 3-6ms.</item>
+    /// </list>
     /// The race then only runs one way: the write can only take LONGER than the peer's delay, never less, so
     /// the write half is certain. The queued half is not asserted — the writer starts as soon as the frame is
     /// queued, but a starved pool could still make its pickup slow.</para></summary>
@@ -135,7 +142,6 @@ public sealed class SendCountersTests
         var counters = new SendCounters();
         using var pair = await SocketPair.Connect(counters, SlowSendMs);
         pair.Server.SendBufferSize = 0;
-        pair.Client.ReceiveBufferSize = 1024;
 
         Assert.True(pair.Outbound.Send(new byte[Size]));
         Task writer = pair.Outbound.RunWriterAsync(_ => { });
