@@ -160,20 +160,16 @@ public class BroadcastIsolationTests
             int allocating = 0;
             long bytes = 0;
             var firstSizes = new long[AllocatingCallsBound];   // allocated here, outside every measured call
-            ZzBcastFactProbeTemp.Start();   // TEMPORARY probe
             for (int pass = 0; pass < 2; pass++)
             {
                 _peers = 0;
-                ZzBcastFactProbeTemp.StartPass();   // TEMPORARY probe
                 allocating = 0;
                 bytes = 0;
                 for (int i = 0; i < Calls; i++)
                 {
-                    ZzBcastFactProbeTemp.Begin();   // TEMPORARY probe
                     long before = GC.GetAllocatedBytesForCurrentThread();
-                    _fx.World.Broadcast(SessionFixture.HomeMap, ZzBcastFactProbeTemp.ProbePeer);   // TEMPORARY probe delegate
+                    _fx.World.Broadcast(SessionFixture.HomeMap, CountPeer);
                     long taken = GC.GetAllocatedBytesForCurrentThread() - before;
-                    ZzBcastFactProbeTemp.End(i);   // TEMPORARY probe
                     if (taken == 0) continue;
                     if (allocating < firstSizes.Length) firstSizes[allocating] = taken;
                     allocating++;
@@ -181,7 +177,7 @@ public class BroadcastIsolationTests
                 }
             }
 
-            ZzBcastFactProbeTemp.Stop("realFact", Calls); _peers = ZzBcastFactProbeTemp.Peers;   // TEMPORARY probe
+            Shared.Log.Warn($"BCASTFACT,realFact,allocating={allocating},bytes={bytes},old={(bytes >= Calls ? "RED" : "green")},peersPerCall={_peers / Calls},tid={Environment.CurrentManagedThreadId},sizes={string.Join(" ", firstSizes.Take(Math.Min(allocating, firstSizes.Length)))}");   // TEMPORARY probe line
             Assert.True(_peers >= Crowd * Calls,
                         $"only {_peers} peer deliveries over {Calls} calls — the arrangement is wrong, not the code");
             // Counted per CALL, not summed per pass: a pool re-rent after a Gen2 trim is ONE call allocating
