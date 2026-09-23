@@ -83,8 +83,8 @@ public sealed class FrameReader
     /// and the first ~250 body bytes — which is what a protocol question asked of this line ever needs. It is
     /// a log-volume ceiling, not a protocol fact, so unlike <see cref="MaxUnframedBytes"/> nothing is derived
     /// from it and nothing breaks if it is changed; the whole tail's SIZE is always printed, so the line
-    /// never hides how much is buffered. The wire dump is off in deployment
-    /// (<c>P1998_LOG_WIRE=0</c>) and on by default in the game process, which is the configuration this
+    /// never hides how much is buffered. The wire dump is off by default in the game process
+    /// (<c>P1998_LOG_WIRE=1</c> turns it on for protocol work), which is the configuration this
     /// bound is for.</para></summary>
     public const int MaxUnframedDumpBytes = 256;
 

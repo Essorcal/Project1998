@@ -25,6 +25,11 @@ namespace Tests.Support;
 /// that fails is somebody else's capturing test, in another collection, on another day, blaming its own
 /// production code — which is how it was found the first two times.</para>
 ///
+/// <para>The gate also keeps the log OPEN while a tap is held: a line written after <c>Log.Shutdown</c> is
+/// dropped before it reaches any sink, so a test that closes the log holds <see cref="LogShutdownWindow"/>,
+/// which takes this gate for the whole closed window (see <see cref="LogLineSink"/> for the CI run that
+/// showed it).</para>
+///
 /// <para>It is also a <see cref="TextWriter"/> over a locked <see cref="StringBuilder"/> rather than a
 /// <c>StringWriter</c>, because <c>Log</c> writes from its own thread: reading a StringWriter's buffer while
 /// that thread appends to it is a data race of its own. This shape was already in the suite, copied privately
@@ -68,6 +73,15 @@ internal sealed class ConsoleTap : TextWriter
         Console.SetOut(tap);
         return tap;
     }
+
+    /// <summary>Take the gate without installing a tap: <see cref="LogShutdownWindow"/>'s half of the
+    /// exclusion. Paired with <see cref="ReleaseGate"/>.</summary>
+    internal static void TakeGate()
+    {
+        if (!Exclusive.Wait(AcquireBound)) throw HeldTooLong();
+    }
+
+    internal static void ReleaseGate() => Exclusive.Release();
 
     private static TimeoutException HeldTooLong() =>
         new($"no test released the console tap within {AcquireBound.TotalSeconds:0}s; a capturing test is "

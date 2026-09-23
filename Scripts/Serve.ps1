@@ -22,9 +22,10 @@ This script performs the same launch as the bat, and answers those questions:
   * -Testers / -Gms go into the environment of the launched processes only (as P1998_TESTERS and
     P1998_GMS, which the game server unions with state/*_accounts.txt). The calling shell is untouched.
     The same environment carries P1998_LOG_WIRE=0 unless the launching shell already sets it or
-    -WireDump asks for the dump: the game process defaults the frame hex-dump ON, and one pair started
-    from a clean shell wrote 479,110 dump lines and 141 log queue overflows in five minutes and had to
-    be voided (briefs/reports/hold-release-pair-opus.md, Status).
+    -WireDump asks for the dump: this launcher writes it explicitly rather than leaning on the game
+    process's own default, after a pair started from a clean shell — back when that default was ON —
+    wrote 479,110 dump lines and 141 log queue overflows in five minutes and had to be voided
+    (briefs/reports/hold-release-pair-opus.md, Status).
   * The pair binds 127.0.0.1 unless -Bind says otherwise (P1998_BIND in the launched processes only;
     Shared/NetBind.cs). A loopback listener is not filtered by Windows Defender Firewall, so a pair
     started this way never raises the allow-or-cancel prompt, which otherwise fires once per
@@ -117,11 +118,12 @@ and never look at the configuration.
 .PARAMETER WireDump
 Turn the frame hex-dump ON for this run (P1998_LOG_WIRE=1 in the launched processes only). Off by
 default: the launcher writes P1998_LOG_WIRE=0 into both batch files unless the launching shell already
-says otherwise or this switch is given, because the game process defaults the dump ON
-(Server/Program.cs, ConfigureLogging wireDefault: true) and one pair started from a clean shell wrote
-479,110 dump lines and 141 log queue overflows in five minutes, rotating away its own start banner
-(briefs/reports/hold-release-pair-opus.md, Status). Shared.Core/Log.cs calls P1998_LOG_WIRE=0 the right
-setting for a live server. Precedence: this switch wins, then the launching shell's own
+says otherwise or this switch is given. This is written explicitly rather than left to the game process's
+own default (Server/Program.cs, ConfigureLogging wireDefault: false, since the process itself now
+defaults the dump off too) because one pair started from a clean shell, back when that process default
+was ON, wrote 479,110 dump lines and 141 log queue overflows in five minutes, rotating away its own start
+banner (briefs/reports/hold-release-pair-opus.md, Status). Shared.Core/Log.cs calls P1998_LOG_WIRE=0 the
+right setting for a live server. Precedence: this switch wins, then the launching shell's own
 P1998_LOG_WIRE (written as-is, the same union rule -Testers/-Gms follow), then 0. The effective value is
 recorded in run/session.json as wire_dump and named on the "Started from" line only when the dump is on.
 Applies only to a start.
@@ -539,9 +541,10 @@ function Remove-RuntimeConfigCaches([string]$Root, [string]$BuildConfiguration) 
 # Launch pieces
 # ---------------------------------------------------------------------------------------------------
 
-# What P1998_LOG_WIRE will say in the launched processes. The game process defaults the frame hex-dump ON
-# (Server/Program.cs, ConfigureLogging wireDefault: true), which is wrong for anything but protocol work:
-# a pair started from a clean shell wrote 479,110 dump lines and 141 log queue overflows in five minutes
+# What P1998_LOG_WIRE will say in the launched processes. The game process itself now defaults the frame
+# hex-dump OFF too (Server/Program.cs, ConfigureLogging wireDefault: false), but this launcher still says 0
+# explicitly rather than leaving it to that default: back when the process default was ON, a pair started
+# from a clean shell wrote 479,110 dump lines and 141 log queue overflows in five minutes
 # (briefs/reports/hold-release-pair-opus.md, Status), so the launcher says 0 unless told otherwise.
 # Precedence: -WireDump (the explicit request for this run) beats the launching shell's own value, which
 # beats the default; the shell's value is written as-is, exactly as its P1998_TESTERS/P1998_GMS are unioned
