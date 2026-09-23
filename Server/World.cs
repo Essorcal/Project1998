@@ -2853,6 +2853,7 @@ public sealed partial class World
         // This beat's outbound work, in one object: the locked phases below fill it, FlushTick drains
         // it once the lock is released (World.MobAiTick.cs).
         var q = new TickQueues();
+        List<MobFault>? faults = null;   // the mob-AI sweep's caught throws, if any; see (2)
 
         // (0) Warm every active map's terrain BEFORE taking the lock. Both the respawn refill (Materialize ->
         // FreeSpawnTile) and the wander loop below call MapData.For, which on a miss reads the .map off disk,
@@ -2938,6 +2939,12 @@ public sealed partial class World
             // old shape left, when the whole beat was lost on top of it; it is not new, and it is not repaired.
             // Plain try/catch rather than Try(): this is the hot loop, and a closure per mob per beat is an
             // allocation the sweep does not need.
+            //
+            // Neither guard logs (#109). Under the lock a throw costs one MobFault appended to `faults` — the
+            // facts, unformatted — and LogMobFaults writes them after the lock is released, one stack per new
+            // fault and one count line per beat for the repeats. It used to be a full Log.Error per throw, the
+            // whole stack formatted in here: 200 creatures of one bad row held the world for 8-15 ms a beat and
+            // wrote ~330 KB/s of identical stacks. `faults` stays null on a beat where nothing throws.
             foreach (var (mapId, m) in _maps)
             {
                 if (m.Mobs.Count == 0 || m.Players.Count == 0) continue;   // no observers -> don't bother
@@ -2945,27 +2952,25 @@ public sealed partial class World
                 {
                     // The map's collision index and this tick's queues, packaged for MobAiTick.Step (World.MobAiTick.cs).
                     var ctx = new MobTickContext(this, mapId, m, q);
+                    SweepProbeForTest?.Invoke(mapId);   // null outside the test host; see World.MobFaults.cs
 
                     foreach (var mob in m.Mobs)
                     {
                         if (!mob.Alive) continue;
                         try { MobAiTick.Step(ctx, mob); }
-                        catch (Exception e)
-                        {
-                            Log.Error($"mob AI step threw — {mob.Key}#{mob.Id} on map {mapId} is skipped this beat, the rest of the sweep continues", e);
-                        }
+                        catch (Exception e) { (faults ??= new()).Add(new MobFault(mapId, mob.Id, mob.Key, e, WholeMap: false)); }
                     }
                 }
-                catch (Exception e)
-                {
-                    Log.Error($"mob AI sweep threw — map {mapId} is skipped this beat, the other maps continue", e);
-                }
+                catch (Exception e) { (faults ??= new()).Add(new MobFault(mapId, 0, null, e, WholeMap: true)); }
             }
             MarkPhase(PhWander);
         }
 
-        // (3)-(6): everything queued above, sent now the lock is released.
-        FlushTick(q);
+        // (3)-(6): everything queued above, sent now the lock is released. The sweep's faults are written
+        // after it, in a finally so a flush that throws cannot lose them; their cost lands in the phase
+        // clock's `other`, the beat's unmarked tail, and on a beat with no fault it is one null test.
+        try { FlushTick(q); }
+        finally { if (faults is not null) LogMobFaults(faults, _tick); }
     }
 
     /// <summary>
