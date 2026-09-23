@@ -70,6 +70,27 @@ so an ordinary cast keeps its monitor and stays atomic. Only on contention does 
 drops this thread's session monitors *before* waiting. That is the whole invariant — a thread waiting for
 the gate holds no monitor, so whoever holds the gate can always finish.
 
+## How long a hold may be
+
+Wait on a contended lock grows with the **square** of each hold's length, not with the total time the lock
+is held. A few long holds cost the waiters far more than many short ones adding up to the same total. So on
+`World._lock` the thing worth avoiding is a **long** hold, not a frequent one.
+
+A local measurement (2026-09-21, 400 walkers on one synthetic map, one laptop, 700 accepted steps a second)
+found the lock's duty cycle at 1.82% (Release) / 2.45% (Debug). The tick is 1.8% of that held time (Debug)
+but about 40% of the walkers' measured wait, because its hold is one ~0.28 ms block where a walker's are
+~12 µs each. Tenfolding the tick's hold to 2.7 ms multiplied the walkers' wait by 16 (Debug, 0.28 to
+4.40 ms/s). The tick's own wait for the lock (`lock-wait`) is 0.0002 ms/s in both builds — it does not wait.
+
+A hold of a few tenths of a millisecond is free at this load; a hold of several milliseconds is not. Before
+a change lengthens a hold under `World._lock`, measure that hold's length, not only its frequency. (Local
+measurement, 2026-09-21.)
+
+Two artefacts of measuring this in-process on a laptop have to be controlled for, or the numbers lie: CPU
+idle states (undisturbed step p50 598 µs against 131 µs with a core kept awake) and the Windows 15.6 ms
+timer tick, which synchronises otherwise-independent threads (contended fraction 57% against 5%; fixed with
+`timeBeginPeriod(1)`).
+
 ## Adding a lock
 
 1. Put it in the table above, with a row number.
