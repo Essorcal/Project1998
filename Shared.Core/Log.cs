@@ -38,8 +38,8 @@ internal enum LogLevel
 /// server — the process actually exposed to the internet — was the one still holding a process-global lock
 /// across a synchronous console write, so a QuickEdit selection in ITS window blocked every login until
 /// somebody pressed Esc. The two per-process differences are declared by the entry point through
-/// <see cref="Configure"/>: the wire-dump default (ON for the game, OFF for the login channel, whose packets
-/// carry passwords in the clear — see <see cref="WireEnabled"/>) and the rotation size.</para>
+/// <see cref="Configure"/>: the wire-dump default (OFF in both processes — see <see cref="WireEnabled"/>)
+/// and the rotation size.</para>
 /// </summary>
 public static class Log
 {
@@ -586,16 +586,17 @@ public static class Log
     /// sets it in the unit file, in Project1998-infra). Guard call sites with this flag rather than letting
     /// <see cref="Hex"/> run and throwing the string away.
     ///
-    /// <para>The DEFAULT is the calling process's, declared through <see cref="Configure"/>: ON for the game
-    /// server — it's the backbone of the protocol RE work — and OFF for the login server. That asymmetry is
-    /// deliberate, not an oversight. The login channel's packets carry the player's PASSWORD in the clear
-    /// (0x02 name-check and 0x03 login are both <c>nameLen name pwLen pw</c>), and 4.95's cipher is a fixed,
-    /// published XOR, so the "raw" dump is every bit as readable as the decrypted one. Leaving this on writes
-    /// every player's password into logs/login.log and the systemd journal in plaintext, where log shipping,
-    /// backups and a support screenshot all quietly spread it further.</para>
+    /// <para>The DEFAULT is the calling process's, declared through <see cref="Configure"/>: OFF for both the
+    /// game server and the login server. The login channel's packets carry the player's PASSWORD in the
+    /// clear (0x02 name-check and 0x03 login are both <c>nameLen name pwLen pw</c>), and 4.95's cipher is a
+    /// fixed, published XOR, so the "raw" dump is every bit as readable as the decrypted one — leaving this
+    /// on writes every player's password into logs/login.log and the systemd journal in plaintext, where log
+    /// shipping, backups and a support screenshot all quietly spread it further. That is why the login
+    /// server has always defaulted off; the game server's default is off for a simpler reason — the wire
+    /// dump is for protocol RE work, not something a live deployment should carry unasked.</para>
     ///
-    /// <para>Set P1998_LOG_WIRE=1 to turn it back on for protocol work on a machine with no real
-    /// accounts.</para>
+    /// <para>Set P1998_LOG_WIRE=1 to turn it on in either process, for protocol work on a machine with no
+    /// real players or accounts — never on a live server.</para>
     ///
     /// <para>A process that never called <see cref="Configure"/> gets OFF: an entry point that declared no
     /// policy is not one whose log may carry passwords.</para></summary>
