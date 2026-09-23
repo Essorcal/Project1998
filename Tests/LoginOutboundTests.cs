@@ -178,6 +178,13 @@ public sealed class LoginOutboundTests
     /// bound is asserted on the writer's own completion time, and the peer no longer resumes on xunit's
     /// synchronization context, which is one more queue its stall and its reads were waiting in.</para>
     ///
+    /// <para>That still failed once in three CI runs, on the suite's first seconds: the peer's 150ms delay
+    /// came back after ~1s, so the thread pool itself was not answering, and the writer rides the same pool
+    /// (the socket completions are pool work items on Linux). A starved pool is a real reason for a drain to
+    /// time out, and the writer is production code the test cannot take off the pool (a peer on a thread of
+    /// its own was tried, and on Linux its catch-up stalled instead), so the fact waits for the pool to
+    /// answer promptly before it starts, and asserts everything after that as before.</para>
+    ///
     /// <para>FALSIFIED by replacing <c>CloseAfterDrainAsync</c>'s body with <c>await Task.Yield(); Close();</c>:
     /// it returns in about a millisecond, while the writer is still parked mid-bulk waiting on the peer, and
     /// the elapsed-time assert below fails. A drain that genuinely times out (the peer's stall made longer
@@ -214,6 +221,9 @@ public sealed class LoginOutboundTests
         // so that filling the buffer is not silently charged against the stall.
         byte[] bulk = Enumerable.Range(0, BulkBytes).Select(i => (byte)i).ToArray();
 
+        // Not while the pool is starved: see UntilThePoolAnswersPromptly. Here, before the writer starts, so
+        // that however long this waits is never charged against the writer's own 5s per-write bound.
+        await UntilThePoolAnswersPromptly();
         Task writer = pair.Outbound.RunWriterAsync();
 
         Assert.True(pair.Outbound.Send(bulk));
@@ -377,6 +387,24 @@ public sealed class LoginOutboundTests
         try { await stream.CopyToAsync(received, timeout.Token); }
         catch (IOException) { /* a dropped peer sees a reset, not a graceful EOF */ }
         return received.ToArray();
+    }
+
+    /// <summary>Returns once three one-millisecond delays in a row come back inside 50ms, or after 10s
+    /// whatever the pool is doing. A delay is a timer firing and a pool thread picking up its continuation,
+    /// which is what the drain's own deadline, the writer's socket completions and the peer all ride on. At
+    /// the start of the suite on the 4-vCPU CI runner that round trip took about a second (fork run
+    /// 35883643297; probe iterations in 35883631455 and 35883654346), and a fact whose deadline is one
+    /// second cannot be measured through it.</summary>
+    private static async Task UntilThePoolAnswersPromptly()
+    {
+        var giveUp = Stopwatch.StartNew();
+        int prompt = 0;
+        while (prompt < 3 && giveUp.ElapsedMilliseconds < 10_000)
+        {
+            var hop = Stopwatch.StartNew();
+            await Task.Delay(1).ConfigureAwait(false);
+            prompt = hop.ElapsedMilliseconds < 50 ? prompt + 1 : 0;
+        }
     }
 
     /// <summary>A peer whose receive window stays shut for <paramref name="stallMs"/> and then opens. Reading
