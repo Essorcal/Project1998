@@ -1,5 +1,6 @@
 // TEMPORARY LOOP COMMIT for server-drain-bound-1: reverted before the final head. Repeats the drain fact's old
-// and new shapes, interleaved, on the CI runner and prints each result as a DRAINPROBE log line.
+// and new shapes, interleaved, on the CI runner and prints each result as a DRAINPROBE log line. Round 2: the
+// bulk is shared and the peer counts bytes instead of buffering them, so the probe's own LOH churn is not the load.
 // Runs the fact's two shapes interleaved under the same load and records, for each run, when the teardown got
 // back to the test, when the writer itself finished, and when the peer opened its window and saw EOF.
 //   shape "old": peer is the async Task.Delay + CopyToAsync helper started from the test; the verdict is the
@@ -18,6 +19,9 @@ public sealed class DrainProbeTemp
 {
     private static readonly object FileGate = new();
     private static int _failOld, _failNew, _runOld, _runNew;
+    private static readonly byte[] Bulk = Enumerable.Range(0, 512 * 1024).Select(i => (byte)i).ToArray();
+    private static long Drain(Stream s) { var buf = new byte[64 * 1024]; long n = 0; int r; while ((r = s.Read(buf)) > 0) n += r; return n; }
+    private static async Task<long> DrainAsync(Stream s, CancellationToken ct) { var buf = new byte[64 * 1024]; long n = 0; int r; while ((r = await s.ReadAsync(buf, ct).ConfigureAwait(false)) > 0) n += r; return n; }   // as CopyToAsync does
 
     public static IEnumerable<object[]> Iterations()
     {
@@ -46,7 +50,7 @@ public sealed class DrainProbeTemp
         var outbound = new TcpOutbound(server, OutboundOptions.Login with { WriteTimeoutMs = 5_000 }, remote: "probe");
         server.SendBufferSize = 64 * 1024;
         client.ReceiveBufferSize = 64 * 1024;
-        byte[] bulk = Enumerable.Range(0, BulkBytes).Select(i => (byte)i).ToArray();
+        byte[] bulk = Bulk;   // shared across iterations so the probe itself adds no LOH churn
 
         var clock = Stopwatch.StartNew();
         long stallEnd = -1, eof = -1;
@@ -64,10 +68,9 @@ public sealed class DrainProbeTemp
                     gate.Wait();
                     Thread.Sleep(StallMs);
                     stallEnd = clock.ElapsedMilliseconds;
-                    using var ms = new MemoryStream();
-                    stream.CopyTo(ms);
+                    long n = Drain(stream);
                     eof = clock.ElapsedMilliseconds;
-                    done.TrySetResult(ms.Length);
+                    done.TrySetResult(n);
                 }
                 catch (Exception e) { done.TrySetException(e); }
             }) { IsBackground = true };
@@ -82,10 +85,9 @@ public sealed class DrainProbeTemp
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await Task.Delay(StallMs, timeout.Token);
                 stallEnd = clock.ElapsedMilliseconds;
-                using var ms = new MemoryStream();
-                await stream.CopyToAsync(ms, timeout.Token);
+                long n = await DrainAsync(stream, timeout.Token);
                 eof = clock.ElapsedMilliseconds;
-                return ms.Length;
+                return n;
             }
         }
         outbound.Send(bulk);
