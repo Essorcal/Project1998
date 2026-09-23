@@ -28,7 +28,9 @@ namespace Server;
 ///   "workingSetMb": 1141, "gcHeapMb": 214, "gcCommittedAtLastGcMb": 968,
 ///   "gcAvailableMb": 15776, "gcHighLoadMb": 14198,
 ///   "gen0": 1873, "gen1": 402, "gen2": 3, "gcMode": "server-concurrent",
-///   "sweepViewers": 4812400, "sweepsRun": 91233
+///   "sweepViewers": 4812400, "sweepsRun": 91233,
+///   "framesSent": 18400211, "bytesSent": 1240338817,
+///   "slowSends": 412, "slowSendsQueued": 9, "slowSendsWrite": 405
 /// }
 /// </code>
 /// Its poll runs every 30s, so a 10s cadence here means the number is never more than one poll stale.
@@ -106,6 +108,16 @@ namespace Server;
 /// comparable between two runs that did not have the same number of dirty viewers. See
 /// <c>World.SweepViewers</c>.</para>
 ///
+/// <para>THE SEND COUNTERS are the game channel's outbound totals, since process start, from
+/// <see cref="SendCounters.Game"/>: <c>framesSent</c> and <c>bytesSent</c> are the frames whose socket write
+/// completed and their bytes; <c>slowSends</c> is every frame the writer's slow-send watchdog flagged,
+/// INCLUDING the ones the rate-limited <c>SLOW SEND</c> line suppresses, split into <c>slowSendsQueued</c>
+/// (waited at least <c>P1998_SLOW_SEND_MS</c> to be picked up — the server's side) and
+/// <c>slowSendsWrite</c> (the socket write itself took that long — the network's side). A frame that was both
+/// is in both halves. Login frames are never in them: the login profile carries no counters. The reads are
+/// lock-free sums over the counters' stripes, so they cost the status thread nanoseconds and touch nothing
+/// the writers wait on.</para>
+///
 /// The launcher treats this as ENRICHMENT, not truth: it proves reachability by opening a socket to the login
 /// port, and a missing or unreachable status document never downgrades a server it just reached. The one
 /// exception is an explicit <c>"online": false</c>, which wins — that is the maintenance switch. Which is why
@@ -130,7 +142,7 @@ public static class StatusFile
     private static bool Disabled => Path == "-";
 
     /// <summary>The launcher's three fields, then the tick counters, then the phase instrument, then the
-    /// memory instrument. Order matters only for readability — the launcher's DTO is case-insensitive and ignores what it does not
+    /// memory instrument, then the sweep counters, then the send counters. Order matters only for readability — the launcher's DTO is case-insensitive and ignores what it does not
     /// know — so every addition goes on the end, where a reader of an old document and a reader of a new one
     /// see the same first three.</summary>
     private sealed record Doc(
@@ -152,7 +164,12 @@ public static class StatusFile
         [property: JsonPropertyName("gen2")]          long Gen2,
         [property: JsonPropertyName("gcMode")]        string GcMode,
         [property: JsonPropertyName("sweepViewers")]  long SweepViewers,
-        [property: JsonPropertyName("sweepsRun")]     long SweepsRun);
+        [property: JsonPropertyName("sweepsRun")]     long SweepsRun,
+        [property: JsonPropertyName("framesSent")]    long FramesSent,
+        [property: JsonPropertyName("bytesSent")]     long BytesSent,
+        [property: JsonPropertyName("slowSends")]     long SlowSends,
+        [property: JsonPropertyName("slowSendsQueued")] long SlowSendsQueued,
+        [property: JsonPropertyName("slowSendsWrite")]  long SlowSendsWrite);
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = false };
 
@@ -178,8 +195,16 @@ public static class StatusFile
 
     /// <summary>The document, as text, without touching the disk — the seam the counter test drives, and the
     /// one place the world's counters are read (the two tick counters and the two sweep counters), so a test
-    /// of this method is a test of what the timer publishes rather than of a copy of it.</summary>
-    internal static string Render(World world, bool online, int players)
+    /// of this method is a test of what the timer publishes rather than of a copy of it. The send counters
+    /// published are <see cref="SendCounters.Game"/>'s.</summary>
+    internal static string Render(World world, bool online, int players) =>
+        Render(world, online, players, SendCounters.Game);
+
+    /// <summary>The same document with the send counters read from <paramref name="sends"/>: the seam a test
+    /// uses to check the five fields against counts it set itself, which the process-wide
+    /// <see cref="SendCounters.Game"/> cannot offer while other test classes send game frames in
+    /// parallel.</summary>
+    internal static string Render(World world, bool online, int players, SendCounters sends)
     {
         // One walk of the world's totals, ordered: a plain Dictionary keeps insertion order for a set of
         // keys that is only ever added to in one pass, and the serialiser writes it in that order, so
@@ -214,7 +239,9 @@ public static class StatusFile
                     Mb(gc.TotalCommittedBytes), Mb(gc.TotalAvailableMemoryBytes),
                     Mb(gc.HighMemoryLoadThresholdBytes),
                     GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2), Mode,
-                    world.SweepViewers, world.SweepsRun),
+                    world.SweepViewers, world.SweepsRun,
+                    sends.FramesSent, sends.BytesSent, sends.SlowSends, sends.SlowSendsQueued,
+                    sends.SlowSendsWrite),
             Json);
     }
 
