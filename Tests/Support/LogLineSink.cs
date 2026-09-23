@@ -36,8 +36,12 @@ internal sealed class LogLineSink : IDisposable
 
     /// <summary>One observed line: the exact string that was formatted, the level <c>Log.LevelOf</c> gave it,
     /// and the thread it was written on — the hook runs on the caller's thread, and
-    /// <see cref="LogLineSinkTests"/> pins that rather than assuming it.</summary>
-    internal readonly record struct Entry(string Line, LogLevel Level, int ThreadId);
+    /// <see cref="LogLineSinkTests"/> pins that rather than assuming it.
+    ///
+    /// <para><c>Probe</c> is the value of the probe <see cref="Acquire"/> was handed, read on that same thread at
+    /// that same moment (false when there was none) — for a test whose claim is about the STATE the line was
+    /// written in, such as whether a lock was held.</para></summary>
+    internal readonly record struct Entry(string Line, LogLevel Level, int ThreadId, bool Probe = false);
 
     private readonly ConcurrentQueue<Entry> _lines = new();
     private int _released;
@@ -45,8 +49,10 @@ internal sealed class LogLineSink : IDisposable
     private LogLineSink() { }
 
     /// <summary>Take the line sink for this test. Dispose (a <c>using</c>) uninstalls it and lets the next
-    /// asserting test in.</summary>
-    public static LogLineSink Acquire()
+    /// asserting test in. <paramref name="probe"/>, when given, is evaluated on the logging thread as each
+    /// line is written and recorded as <see cref="Entry.Probe"/>; like the hook itself it must be cheap,
+    /// thread-safe, and must not log.</summary>
+    public static LogLineSink Acquire(Func<bool>? probe = null)
     {
         if (!Exclusive.Wait(AcquireBound))
             throw new TimeoutException(
@@ -55,7 +61,7 @@ internal sealed class LogLineSink : IDisposable
 
         var sink = new LogLineSink();
         Log.LineSinkForTest = (line, level) =>
-            sink._lines.Enqueue(new Entry(line, level, Environment.CurrentManagedThreadId));
+            sink._lines.Enqueue(new Entry(line, level, Environment.CurrentManagedThreadId, probe?.Invoke() ?? false));
         return sink;
     }
 

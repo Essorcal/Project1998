@@ -38,7 +38,8 @@ public class MobAiTickTests
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
     private const ushort StepMap = 60030, ThrowMap = 60031, TickMap = 60032, PoisonMap = 60033, BlindMap = 60034, AssertMap = 60035,
-                         OrderMap = 60036, WiringMap = 60037, WanderMap = 60038;
+                         OrderMap = 60036, WiringMap = 60037, WanderMap = 60038, FaultMap = 60039, QuietMap = 60044,
+                         SweepMap = 60045;
 
     /// <summary>Northeast Koguryo — the one map the Ice Beast melt is wired to (<c>World.IceBeastMap</c>), so
     /// the melt case below cannot use a content-free stand-in the way every other case here does. 36x22 by
@@ -419,6 +420,165 @@ public class MobAiTickTests
             Unrig(faulty);
             _fx.World.LeaveMap(watcher, TickMap);
         }
+    }
+
+    // =====================================================================================================
+    // What a fault costs the log, and when (#109).
+    // =====================================================================================================
+
+    /// <summary>The shape of a content fault: <see cref="FaultCount"/> creatures of one bad row, all
+    /// throwing, for <see cref="FaultBeats"/> beats, on a watched map with one healthy chaser among them.
+    ///
+    /// <para>Pins the three claims of #109 together. The stack is written ONCE for the fault, not once per
+    /// throw. The repeats cost at most one line a beat, and that line counts the throws that went WITHOUT a
+    /// stack, and says so — 19 on the first beat (the twentieth throw is the one whose stack was written,
+    /// and is not in the count) and 20 on each beat after. And nothing
+    /// about any of it is written while <c>World._lock</c> is held: the sink's probe reads
+    /// <see cref="World.HoldsWorldLock"/> on the logging thread as each line is formatted. The chaser
+    /// closing on the watcher is the other half of the isolation test above, over several beats instead of
+    /// one: the faults cost the healthy creature nothing.</para>
+    ///
+    /// <para>Falsified by putting the old per-throw <c>Log.Error(..., e)</c> back in the per-mob catch in
+    /// <c>World.Tick</c>, in place of the <c>faults.Add</c>: red on the lock probe — the first of the
+    /// hundred stack lines was written with the lock held — and, with the probe assertion commented out, on
+    /// <c>Assert.Single</c> over the stack lines (100 of them).</para></summary>
+    [Fact]
+    public void ThrowingCreaturesCostOneStackPerFaultAndOneCountLinePerBeat()
+    {
+        var (watcher, _) = _fx.Player("FaultWatcher", FaultMap, x: 5, y: 10);
+        var faulty = new List<Mob>();
+        try
+        {
+            for (int i = 0; i < FaultCount; i++) faulty.Add(Rigged(FaultMap, (ushort)(20 + i), 20));
+            var chaser = Registered(FaultMap, new Mob(_fx.World.AllocateMobId(), 1, 5, 5, "FaultChaser", 100)
+            {
+                Wander = true, Aggressive = true, MoveTime = 1,
+            });
+
+            IReadOnlyList<LogLineSink.Entry> lines;
+            using (var sink = LogLineSink.Acquire(probe: () => _fx.World.HoldsWorldLock))
+            {
+                for (int beat = 0; beat < FaultBeats; beat++) _fx.World.TickOnceForTest();
+                lines = sink.Lines;
+            }
+
+            string stackNeedle = $"on map {FaultMap} is skipped this beat";
+            var ours = lines.Where(e => e.Line.Contains(stackNeedle) || CountOn(e.Line, FaultMap) >= 0).ToList();
+            Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+            var stack = Assert.Single(ours, e => e.Line.Contains(stackNeedle));
+            Assert.Equal(LogLevel.Error, stack.Level);
+            Assert.Contains(nameof(ArgumentNullException), stack.Line);
+            Assert.Contains("\n      ", stack.Line);   // Log.Detail's continuation: the stack is on it
+
+            var counts = ours.Select(e => CountOn(e.Line, FaultMap)).Where(n => n >= 0).ToList();
+            var firstCountLine = ours.First(e => CountOn(e.Line, FaultMap) >= 0).Line;
+            Assert.Contains($"skipped this beat with no stack (each fault's stack is logged at its first throw): {FaultCount - 1} creature(s)",
+                            firstCountLine);   // the wording names what the number counts
+            Assert.Equal(FaultBeats, counts.Count);   // one count line a beat, every beat
+            Assert.Equal(FaultCount - 1, counts[0]);
+            Assert.All(counts.Skip(1), n => Assert.Equal(FaultCount, n));
+
+            Assert.Equal(watcher.PlayerId, chaser.TargetId);
+            Assert.True(chaser.Y > 5, $"the healthy chaser should have closed on the watcher, but stands at ({chaser.X},{chaser.Y})");
+            for (int i = 0; i < FaultCount; i++)
+                Assert.Equal(((ushort)(20 + i), (ushort)20), (faulty[i].X, faulty[i].Y));   // skipped, every beat
+        }
+        finally
+        {
+            foreach (var f in faulty) Unrig(f);
+            _fx.World.LeaveMap(watcher, FaultMap);
+        }
+    }
+
+    /// <summary>When a fault that stopped logs its stack again: after more than
+    /// <see cref="World.MobFaultQuietBeatsForTest"/> beats without a throw. One creature throws for two beats
+    /// (a stack, then a count line), is mended for the quiet window plus one, and is broken again for one
+    /// beat — a second stack, because a fault coming back is news. Nothing is written for the mended beats.
+    ///
+    /// <para>Falsified by making <c>FaultThrottle.Admit</c> admit only a key it has never seen (dropping the
+    /// quiet test): red on the stack count, one where two were expected.</para></summary>
+    [Fact]
+    public void AFaultThatWentQuietLogsItsStackAgainWhenItReturns()
+    {
+        var (watcher, _) = _fx.Player("QuietWatcher", QuietMap, x: 5, y: 10);
+        var faulty = Rigged(QuietMap, 20, 20);   // not a wanderer: mended, it stands still
+        try
+        {
+            IReadOnlyList<LogLineSink.Entry> lines;
+            using (var sink = LogLineSink.Acquire(probe: () => _fx.World.HoldsWorldLock))
+            {
+                _fx.World.TickOnceForTest();   // stack
+                _fx.World.TickOnceForTest();   // count x1
+                Unrig(faulty);
+                for (int beat = 0; beat <= World.MobFaultQuietBeatsForTest; beat++) _fx.World.TickOnceForTest();
+                faulty.Key = null!;
+                faulty.LastStandUntil = long.MaxValue;
+                _fx.World.TickOnceForTest();   // back after the quiet window: stack again
+                lines = sink.Lines;
+            }
+
+            string stackNeedle = $"#{faulty.Id} on map {QuietMap} is skipped this beat";
+            Assert.Equal(2, lines.Count(e => e.Line.Contains(stackNeedle)));
+            Assert.Equal(new[] { 1 }, lines.Select(e => CountOn(e.Line, QuietMap)).Where(n => n >= 0));
+            Assert.All(lines.Where(e => e.Line.Contains(stackNeedle)), e => Assert.False(e.Probe));
+        }
+        finally
+        {
+            Unrig(faulty);
+            _fx.World.LeaveMap(watcher, QuietMap);
+        }
+    }
+
+    /// <summary>The PER-MAP guard gets the same treatment as the per-creature one: a map whose sweep throws
+    /// on every beat writes one stack, then one count line a beat, all of it outside <c>World._lock</c>. The
+    /// throw comes from <see cref="World.SweepProbeForTest"/>, inside that guard — see its doc for why a
+    /// content-free map cannot produce one on its own.
+    ///
+    /// <para>Falsified by putting the old <c>Log.Error(..., e)</c> back in the per-map catch in
+    /// <c>World.Tick</c>: red on the lock probe, and with that assertion commented out, on
+    /// <c>Assert.Single</c> over the stack lines (five).</para></summary>
+    [Fact]
+    public void ASweepThatThrowsCostsOneStackAndOneCountLinePerBeat()
+    {
+        var (watcher, _) = _fx.Player("SweepWatcher", SweepMap, x: 5, y: 10);
+        Registered(SweepMap, new Mob(_fx.World.AllocateMobId(), 1, 20, 20, "SweepBystander", 100));   // a sweep needs a creature to run
+        _fx.World.SweepProbeForTest = id => { if (id == SweepMap) throw new InvalidOperationException("rigged sweep fault"); };
+        try
+        {
+            IReadOnlyList<LogLineSink.Entry> lines;
+            using (var sink = LogLineSink.Acquire(probe: () => _fx.World.HoldsWorldLock))
+            {
+                for (int beat = 0; beat < FaultBeats; beat++) _fx.World.TickOnceForTest();
+                lines = sink.Lines;
+            }
+
+            string stackNeedle = $"map {SweepMap} is skipped this beat";
+            string countNeedle = $"map {SweepMap} sweep {nameof(InvalidOperationException)} x1";
+            var ours = lines.Where(e => e.Line.Contains(stackNeedle) || e.Line.Contains(countNeedle)).ToList();
+            Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+            var stack = Assert.Single(ours, e => e.Line.Contains(stackNeedle));
+            Assert.Equal(LogLevel.Error, stack.Level);
+            Assert.Contains("rigged sweep fault", stack.Line);
+            Assert.Equal(FaultBeats - 1, ours.Count(e => e.Line.Contains(countNeedle)));   // the first beat's throw is the stack
+        }
+        finally
+        {
+            _fx.World.SweepProbeForTest = null;
+            _fx.World.LeaveMap(watcher, SweepMap);
+        }
+    }
+
+    private const int FaultCount = 20, FaultBeats = 5;
+
+    /// <summary>The count a per-beat fault line gives the rigged (null-key) creatures on
+    /// <paramref name="map"/>, or -1 when <paramref name="line"/> is not such a line.</summary>
+    private static int CountOn(string line, ushort map)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(
+            line, $@"'' on map {map} {nameof(ArgumentNullException)} x(\d+)");
+        return m.Success ? int.Parse(m.Groups[1].Value) : -1;
     }
 
     /// <summary>The drain ORDER of <c>World.FlushTick</c>, on the wire (#107). Phases (3), (4) and (4.5) are
