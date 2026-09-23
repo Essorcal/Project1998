@@ -21,6 +21,14 @@ namespace Tests.Support;
 /// written by OTHER tests during that window land here too, which is harmless — every caller looks for its
 /// own needle.</para>
 ///
+/// <para><b>The same gate keeps the log OPEN while a sink is held.</b> <c>Log.Enqueue</c> returns before the
+/// hook once <c>Log.Shutdown</c> has run, so a test in collection <c>"log"</c> that shuts the logger down
+/// and restarts it hides every line written in between from this sink, whatever collection wrote it.
+/// Master went red that way on upstream run 35895702560 attempt 1: two <see cref="MobAiTickTests"/> facts
+/// collected none of their lines while <see cref="SharedLoggerTests"/>' shutdown fact had the log closed.
+/// A test that closes the log therefore holds <see cref="LogShutdownWindow"/>, which takes this gate (and
+/// <see cref="ConsoleTap"/>'s) for the whole closed window.</para>
+///
 /// <para>The hook fires before admission, so a line appears here whether or not the queue took it (see
 /// <c>Log.LineSinkForTest</c>), and it fires on whichever thread logged, so the collection is
 /// concurrent.</para>
@@ -54,16 +62,24 @@ internal sealed class LogLineSink : IDisposable
     /// thread-safe, and must not log.</summary>
     public static LogLineSink Acquire(Func<bool>? probe = null)
     {
-        if (!Exclusive.Wait(AcquireBound))
-            throw new TimeoutException(
-                $"no test released the log line sink within {AcquireBound.TotalSeconds:0}s; an asserting test "
-                + "is holding it (a missing Dispose, or a capture that waits on something that never happens).");
-
+        TakeGate();
         var sink = new LogLineSink();
         Log.LineSinkForTest = (line, level) =>
             sink._lines.Enqueue(new Entry(line, level, Environment.CurrentManagedThreadId, probe?.Invoke() ?? false));
         return sink;
     }
+
+    /// <summary>Take the gate without installing a sink: <see cref="LogShutdownWindow"/>'s half of the
+    /// exclusion. Paired with <see cref="ReleaseGate"/>.</summary>
+    internal static void TakeGate()
+    {
+        if (!Exclusive.Wait(AcquireBound))
+            throw new TimeoutException(
+                $"no test released the log line sink within {AcquireBound.TotalSeconds:0}s; a test is holding "
+                + "it (a missing Dispose, or a capture that waits on something that never happens).");
+    }
+
+    internal static void ReleaseGate() => Exclusive.Release();
 
     /// <summary>Every line written since this sink was installed, in the order the hook saw them.</summary>
     public IReadOnlyList<Entry> Lines => _lines.ToArray();

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Shared;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -13,7 +14,11 @@ namespace Tests;
 /// <para><b>Collection "log", for the reason <see cref="LogDropPolicyTests"/> gives:</b> the counters, the
 /// admission override, the file sink and now the configured defaults are all process-global. The shutdown
 /// fact below additionally closes the queue for real, which is why it restarts the writer before it
-/// leaves.</para></summary>
+/// leaves.</para>
+/// <para>The collection does not cover the closed window, because the tests a closed log starves are not in
+/// it: a line written between <see cref="Log.Shutdown"/> and <c>RestartWriterForTest</c> never reaches a
+/// <see cref="LogLineSink"/> or a <see cref="ConsoleTap"/> in any collection. So each fact that shuts the log
+/// down holds <see cref="LogShutdownWindow"/> for its whole body.</para></summary>
 [Collection("log")]
 public class SharedLoggerTests
 {
@@ -122,6 +127,7 @@ public class SharedLoggerTests
         string tag = "flush-fact-" + Guid.NewGuid().ToString("N");
         string path = Path.Combine(Path.GetTempPath(), "p1998-log-flush-" + tag, "login.log");
 
+        using var closing = LogShutdownWindow.Enter();
         try
         {
             Log.AttachFile(path);
@@ -167,6 +173,7 @@ public class SharedLoggerTests
     [Fact]
     public void A_second_Shutdown_returns_at_the_guard_and_the_test_restart_reopens_it()
     {
+        using var closing = LogShutdownWindow.Enter();
         try
         {
             Log.Shutdown();
@@ -189,6 +196,53 @@ public class SharedLoggerTests
         {
             Log.RestartWriterForTest();
         }
+    }
+
+    /// <summary>While a test holds the log closed, no capture of either kind can start, in any collection,
+    /// and both start once it lets go.
+    /// <para>This pins <see cref="LogShutdownWindow"/> itself; the two shutdown facts above are what hold it.
+    /// Without it they close the log under whatever capture another collection has open, and that capture
+    /// collects nothing: upstream run 35895702560 attempt 1 failed two <c>MobAiTickTests</c> facts that way,
+    /// with "Collection: []".</para>
+    /// <para><b>The 500 ms</b> is <see cref="ConsoleTapExclusionTests"/>' window, for its reason: with the
+    /// gate gone the captures install in microseconds, so it is a window the ungated shape cannot hide in,
+    /// not a threshold anything real sits near.</para>
+    /// <para>Falsification: delete <c>LogLineSink.TakeGate()</c> from <see cref="LogShutdownWindow.Enter"/>
+    /// (and its release from Dispose) and the sink half goes red; do the same for
+    /// <c>ConsoleTap.TakeGate()</c> and the tap half does.</para></summary>
+    [Fact]
+    public async Task No_capture_starts_while_a_test_holds_the_log_closed()
+    {
+        var closing = LogShutdownWindow.Enter();
+        LogLineSink? sink = null;
+        ConsoleTap? tap = null;
+        var sinkHeld = new ManualResetEventSlim(false);
+        var tapHeld = new ManualResetEventSlim(false);
+        var sinkContender = Task.Run(() => { sink = LogLineSink.Acquire(); sinkHeld.Set(); });
+        var tapContender = Task.Run(() => { tap = ConsoleTap.Acquire(); tapHeld.Set(); });
+
+        bool sinkWhileClosed, tapWhileClosed;
+        try
+        {
+            sinkWhileClosed = sinkHeld.Wait(TimeSpan.FromMilliseconds(500));
+            tapWhileClosed = tapHeld.Wait(TimeSpan.FromMilliseconds(0));
+        }
+        finally
+        {
+            // Before any assertion, for ConsoleTapExclusionTests' reason: a leaked gate would not fail this
+            // test, it would time out every later capture 120 seconds at a time.
+            closing.Dispose();
+        }
+
+        var both = Task.WhenAll(sinkContender, tapContender);
+        var done = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.True(ReferenceEquals(done, both), "a capture never started after the log was reopened");
+        await both;   // surface anything they threw
+        sink!.Dispose();
+        tap!.Dispose();
+
+        Assert.False(sinkWhileClosed, "a LogLineSink installed while a test held the log closed — it would collect nothing");
+        Assert.False(tapWhileClosed, "a ConsoleTap installed while a test held the log closed — it would capture nothing");
     }
 
     /// <summary>Read the log while the writer still holds it open (there is no detach).</summary>

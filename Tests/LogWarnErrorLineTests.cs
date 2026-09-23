@@ -1,4 +1,5 @@
 using Shared;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -12,7 +13,8 @@ namespace Tests;
 /// read the formatted line back off disk (there is no in-process hook for the formatted string) and
 /// compare it byte-for-byte against the marker the entry point is supposed to have written.</para>
 /// <para><b>Collection "log"</b>, for the reason <see cref="LogDropPolicyTests"/> gives: the file sink and
-/// the writer thread are process-global.</para></summary>
+/// the writer thread are process-global. Each fact also shuts the log down to read the file back, so it holds
+/// <see cref="LogShutdownWindow"/> for the reason <see cref="SharedLoggerTests"/> gives.</para></summary>
 [Collection("log")]
 public class LogWarnErrorLineTests
 {
@@ -31,6 +33,7 @@ public class LogWarnErrorLineTests
         // call used to add itself.
         string msg = $"REJECT 203.0.113.5:41000 on :7000 (not in P1998_PROXY_ALLOW); 3 live [{tag}]";
 
+        using var closing = LogShutdownWindow.Enter();
         Log.AttachFile(path);
         Log.Warn(msg);
         Log.Shutdown();
@@ -66,6 +69,7 @@ public class LogWarnErrorLineTests
         // The exact shape Server/Program.cs and LoginServer/Program.cs write for a bad --ports argument.
         string msg = $"invalid --ports: not-a-number [{tag}]";
 
+        using var closing = LogShutdownWindow.Enter();
         Log.AttachFile(path);
         Log.Error(msg);
         Log.Shutdown();
