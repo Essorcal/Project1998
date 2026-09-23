@@ -119,18 +119,20 @@ public sealed class SendCountersTests
     /// <summary>A frame whose socket write itself stalls past the threshold is one slow send and one
     /// write-slow send.
     ///
-    /// <para>The stall is a peer that does not read for 300ms against an 8MB frame, with the SENDER's socket
-    /// buffer at 0 and the peer's receive buffer left at its default. Both halves of that are measured, not
+    /// <para>The stall is a peer that does not read for 300ms against a 1MB frame, with the SENDER's socket
+    /// buffer at 0 and the peer's receive buffer left at its default. Each part of that was measured, not
     /// guessed:
     /// <list type="bullet">
     /// <item>The sender's 0 is load-bearing on Windows. With a 1KB send buffer (the sizing
-    /// <c>TcpOutboundTests</c> uses) Windows loopback accepted the whole 8MB write inside the 300ms with the
+    /// <c>TcpOutboundTests</c> uses) Windows loopback accepted a whole 8MB write inside the 300ms with the
     /// peer reading nothing — 5 of 5 in the scratch probe for this slice — and this fact read
-    /// <c>slowSendsWrite</c> 0. With <c>SO_SNDBUF</c> 0 the send completed only once the peer read (5 of 5).
-    /// Linux clamps an explicit size to its floor of a few KB, far under 8MB.</item>
+    /// <c>slowSendsWrite</c> 0. With <c>SO_SNDBUF</c> 0 the send completed only once the peer read: 5 of 5 at
+    /// each of 256KB, 1MB, 2MB and 8MB. Linux clamps an explicit send size to its floor of a few KB and starts
+    /// the peer's receive buffer far under 1MB, so the frame cannot fit in the buffers there either.</item>
     /// <item>The peer's default is load-bearing on Linux. A first version also shrank the peer's receive
-    /// buffer to 1KB, and on fork CI (run 35888854073, ubuntu) draining 8MB through that window took longer
-    /// than this fact's 10s read deadline. At the default, the Windows probe drained 8MB in 3-6ms.</item>
+    /// buffer to 1KB, and on fork CI (run 35888854073, ubuntu) draining 8MB through that window overran this
+    /// fact's 10s read deadline. At the default, run 35889677092 passed but still took 4s for 8MB, hence
+    /// 1MB: the Windows probe drained 1MB in 0-2ms once the peer read.</item>
     /// </list>
     /// The race then only runs one way: the write can only take LONGER than the peer's delay, never less, so
     /// the write half is certain. The queued half is not asserted — the writer starts as soon as the frame is
@@ -138,7 +140,7 @@ public sealed class SendCountersTests
     [Fact]
     public async Task ASocketWriteThatStallsIsCountedAsWriteSlow()
     {
-        const int SlowSendMs = 50, StallMs = 300, Size = 8 * 1024 * 1024;
+        const int SlowSendMs = 50, StallMs = 300, Size = 1024 * 1024;
         var counters = new SendCounters();
         using var pair = await SocketPair.Connect(counters, SlowSendMs);
         pair.Server.SendBufferSize = 0;
