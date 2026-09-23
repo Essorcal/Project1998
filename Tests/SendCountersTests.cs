@@ -120,19 +120,20 @@ public sealed class SendCountersTests
     /// write-slow send.
     ///
     /// <para>The stall is a peer that does not read for 300ms against a 1MB frame, with the SENDER's socket
-    /// buffer at 0 and the peer's receive buffer left at its default. Each part of that was measured, not
-    /// guessed:
+    /// buffer at 0 and the peer's receive buffer left at its default. The evidence for that shape is the
+    /// slice's Windows probe (<c>scratchpad\send-counters\stall\results.txt</c> in the
+    /// <c>server-slow-send-rate-1</c> report, 5 runs per configuration, peer receive buffer at its default)
+    /// and three fork CI runs on ubuntu:
     /// <list type="bullet">
     /// <item>The sender's 0 is load-bearing on Windows. With a 1KB send buffer (the sizing
-    /// <c>TcpOutboundTests</c> uses) Windows loopback accepted a whole 8MB write inside the 300ms with the
-    /// peer reading nothing — 5 of 5 in the scratch probe for this slice — and this fact read
-    /// <c>slowSendsWrite</c> 0. With <c>SO_SNDBUF</c> 0 the send completed only once the peer read: 5 of 5 at
-    /// each of 256KB, 1MB, 2MB and 8MB. Linux clamps an explicit send size to its floor of a few KB and starts
-    /// the peer's receive buffer far under 1MB, so the frame cannot fit in the buffers there either.</item>
+    /// <c>TcpOutboundTests</c> uses), the whole 8MB write completed before the peer read anything in 5 of 5
+    /// probe runs, so the write never stalled. With <c>SO_SNDBUF</c> 0 the write was still pending when the
+    /// peer began reading in 5 of 5 runs at each of 256KB, 1MB, 2MB and 8MB.</item>
     /// <item>The peer's default is load-bearing on Linux. A first version also shrank the peer's receive
-    /// buffer to 1KB, and on fork CI (run 35888854073, ubuntu) draining 8MB through that window overran this
-    /// fact's 10s read deadline. At the default, run 35889677092 passed but still took 4s for 8MB, hence
-    /// 1MB: the Windows probe drained 1MB in 0-2ms once the peer read.</item>
+    /// buffer to 1KB, and on run 35888854073 draining 8MB through that window overran this fact's 10s read
+    /// deadline. At the default, run 35889677092 passed but took 4s for 8MB, hence 1MB: the Windows probe
+    /// drained 1MB in 0-1ms once the peer read, and run 35890526009 passed this fact at 1MB on ubuntu, which
+    /// it can only do if the write stalled there too.</item>
     /// </list>
     /// The race then only runs one way: the write can only take LONGER than the peer's delay, never less, so
     /// the write half is certain. The queued half is not asserted — the writer starts as soon as the frame is

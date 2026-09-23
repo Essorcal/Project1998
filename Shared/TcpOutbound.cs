@@ -56,10 +56,11 @@ public sealed record OutboundOptions(int Capacity, int WriteTimeoutMs, int SlowS
 /// <para>STRIPED, and measured before it was chosen (the <c>server-slow-send-rate-1</c> report has the
 /// numbers). The writer counts once per frame on each session's own task — 400 of them at load — so one
 /// shared <c>Interlocked</c> pair is one cache line every core writes on every frame. On the 16-thread
-/// development laptop, 400 writer-shaped tasks draining full queues paid about 21ns of wall time per frame for
-/// that line against about 0.6ns for these stripes, and with nothing else in the loop the shared pair cost
-/// ~360ns per increment against ~9ns. Per-<see cref="TcpOutbound"/> fields summed over the online roster were
-/// the third option and were cheaper still per frame, but a player who logs out takes their totals with them
+/// development laptop, 400 writer-shaped tasks draining full queues paid 21.2-21.7ns of wall time per frame
+/// for that line against 0.4-0.7ns for these stripes (four runs; 29.8x to 49.8x per run), and with nothing
+/// else in the loop the shared pair cost 361-364ns per increment pair against 8.8-10.6ns.
+/// Per-<see cref="TcpOutbound"/> fields summed over the online roster were the third option and were
+/// cheaper still per frame, but a player who logs out takes their totals with them
 /// (the since-start figure would FALL), and frames sent before a session is on the roster would never count.
 /// The stripes keep one monotonic process-wide total and need no lock to read.</para>
 ///
