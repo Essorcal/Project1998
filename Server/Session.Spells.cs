@@ -2159,9 +2159,9 @@ public sealed partial class Session
     internal uint LuaMaxMp        => EffMaxMp;
     // setHp CANNOT KILL (#175). Hp 0 is the whole dead state (IsDead), but only Die() makes a death: the ghost
     // redraw, the penalties, the save. A plain set to 0 skipped all of that and then left the player immune,
-    // since TakeDamage returns early for IsDead. So a living caster floors at 1; a verb that means to kill
-    // must deal damage instead. A caster who is ALREADY dead keeps the old floor of 0, so a set to 0 cannot
-    // lift a ghost to 1 hp (HandleCast refuses dead casters, so no shipped verb reaches that case).
+    // since TakeDamage returns early for IsDead. So a living caster floors at 1; killing is damage's job. A
+    // caster ALREADY dead keeps the floor of 0, so a set to 0 cannot lift a ghost to 1 hp. HandleCast refuses
+    // dead casters except for Hyun Moo Revival, whose verb revives through reviveSelf and never calls setHp.
     internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, IsDead ? 0 : 1, (int)EffMaxHp); SendStats(); }
     internal void LuaSetMana(int n) { _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp); SendStats(); }
 
