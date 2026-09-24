@@ -192,12 +192,13 @@ jobs:
       # "Unit ... was already loaded or has a fragment file" (runs 35363844440, 35671983710, 35890937712). By then
       # everything that matters has happened: the pending timer restarts login into `current`, which is already
       # this release, and the game restarts once, on this deploy's booking. Players get one restart for the burst
-      # and production ends on the newest build; the red run was the only harm. So this step passes on exactly
-      # that failure, with a warning, when the output shows THIS commit staged and the game restart booked, and
-      # either this commit is master's tip or the tip's own run has not finished (its deploy, still to come, will
-      # restage the newer build). An OLDER commit deploying after a newer one has finished (run 35890937712 staged
-      # 413bc198 over ed6c7f16) stays red: that is a rollback someone has to see. The tolerated case skips only the
-      # script's tail -- "login restart armed" and the pruning of old releases -- which the next clean deploy does.
+      # and production ends on the newest build. (Login does run the newer build for up to DELAY minutes before the
+      # game restarts onto it; that was so before this step and this step does not change it.) So this step passes
+      # on exactly that failure, with a warning, when the output shows THIS commit staged and the game restart
+      # booked, and this commit is master's tip. Anything else stays red, including a collision by a commit that
+      # is not the tip: that may be an older build staged over a newer one (run 35890937712 staged 413bc198 over
+      # ed6c7f16), a rollback someone has to see. The tolerated case skips only the script's tail -- "login
+      # restart armed" and the pruning of old releases -- which the next clean deploy does.
       - name: Stage and schedule
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -225,22 +226,15 @@ jobs:
           fi
           if [ "$collided" != true ]; then exit "$status"; fi
 
-          # Any lookup that fails leaves the run red, as it was before this step existed.
+          # A failed lookup leaves the run red, as it was before this step existed. gh prints an API error as
+          # ordinary output, so only a full SHA counts as an answer.
           tip=$(gh api "repos/$REPO/commits/master" --jq .sha 2>/dev/null || true)
-          newest=false
-          if [ -n "$tip" ] && [ "$tip" = "$SHA" ]; then
-            newest=true
-          elif [ -n "$tip" ]; then
-            tip_run=$(gh run list --repo "$REPO" --workflow ci.yml --event push --commit "$tip" --limit 1 \
-              --json status --jq '.[0].status' 2>/dev/null || true)
-            if [ -n "$tip_run" ] && [ "$tip_run" != "completed" ]; then newest=true; fi
-          fi
-          if [ -z "$tip" ]; then
-            echo "::error::Collided with the pending login restart, and master's tip could not be read, so this may have staged an older build."
+          if ! printf '%s' "$tip" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Collided with the pending login restart, and master's tip could not be read."
             exit "$status"
           fi
-          if [ "$newest" != true ]; then
-            echo "::error::Collided with the pending login restart, and master's tip ($tip) is newer and already finished its run: this deploy staged an OLDER build over it."
+          if [ "$tip" != "$SHA" ]; then
+            echo "::error::Collided with the pending login restart, and this commit is not master's tip ($tip): it may have staged an older build than production had. Check what is running before the next deploy."
             exit "$status"
           fi
           echo "::warning::The previous deploy's login restart is still pending, so this deploy could not arm its own. It staged $SHA and moved the game restart booking to it; the pending timer restarts login into the same release. Old releases were not pruned this time."
