@@ -1104,12 +1104,14 @@ public sealed partial class Session
     {
         AssertStateHeld("_char.Equipment");
         _char.Equipment.Add(worn);
+        InvalidateEquipTotals();   // the gear sum is cached: every writer drops it, so no caller can forget to
     }
 
     private void EquipRemove(InvItem worn)
     {
         AssertStateHeld("_char.Equipment");
         _char.Equipment.Remove(worn);
+        InvalidateEquipTotals();   // the gender-change strip and the armor-quest turn-in relied on their callers here, and neither did
     }
 
     private void EquipClear()
