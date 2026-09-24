@@ -172,6 +172,43 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      # host-deploy.sh schedules the login restart as a transient systemd timer (p1998-login-re*.timer) that
+      # stays loaded until it fires, DELAY minutes after the deploy. The concurrency group above only queues
+      # the JOBS; the timer outlives the job. So a deploy that starts inside the previous one's window stages
+      # its release and reschedules the game restart, then fails on the login timer with "Unit ... was already
+      # loaded or has a fragment file" (runs 35363844440, 35671983710, 35890937712), and someone reran it by
+      # hand once the timer had fired. This step waits for that instead, before anything touches the host.
+      #
+      # The query is read-only. It asks both the system and the user manager, because which one owns the
+      # timer is the infra repo's business. If neither can be queried it finds nothing and the deploy goes
+      # ahead, which is what happened before this step existed. The wait is capped: past the cap the deploy
+      # goes ahead and fails exactly as it used to, with the timer named in a warning. A content-only push
+      # restarts nothing, so it does not wait.
+      - name: Wait for the previous deploy's login restart
+        if: needs.build.outputs.code_changed != 'false'
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          query="{ systemctl list-units --all --no-legend --plain 'p1998-login-re*.timer'; systemctl --user list-units --all --no-legend --plain 'p1998-login-re*.timer'; } 2>/dev/null"
+          deadline=$(( $(date +%s) + 10 * 60 ))
+          while :; do
+            # Columns: UNIT LOAD ACTIVE SUB DESCRIPTION. An armed timer is SUB "waiting"; "running" while its
+            # restart runs. A unit that has fired and gone is not listed at all.
+            pending=$(ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" "$query" \
+              | awk '$4 == "waiting" || $4 == "running" { print $1 " (" $4 ")" }' || true)
+            if [ -z "$pending" ]; then
+              echo "No login restart pending; deploying."
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::warning::Still pending after 10 minutes, deploying anyway: $pending"
+              break
+            fi
+            echo "Waiting for the previous deploy's login restart: $pending"
+            sleep 15
+          done
+
       - name: Upload the release
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
