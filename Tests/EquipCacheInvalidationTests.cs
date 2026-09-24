@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Reflection;
 using Server;
 using Shared;
 using Tests.Support;
@@ -62,6 +63,41 @@ public sealed class EquipCacheInvalidationTests
         take.WithState(() => take.TakeReady("cimmerian_steel", 1));
 
         Assert.Equal(((uint)6, (uint)6), (stripChar.Hp, takeChar.Hp));
+    }
+
+    /// <summary>Round 1 of the PR #286 review (F1): the fix must stay on the two NPC paths. Swapping one weapon
+    /// for another while a weapon enchant is active drops the enchant mid-swap, and that drop pushes stats, which
+    /// clamps current HP. With the cache still counting the old weapon at that moment the clamp is a no-op; an
+    /// invalidation inside <c>EquipRemove</c> made it clamp against a cap counting neither weapon (200/200 read
+    /// 100/250 after the swap). Red if the invalidation moves back into <c>EquipRemove</c>.</summary>
+    [Fact]
+    public void EnchantedWeaponSwapKeepsCurrentHp()
+    {
+        var shortsword = Content.Items.First(i => i.Key == "rusty_shortsword");
+        var spear = Content.Items.First(i => i.Key == "might_spear");
+        Assert.Equal((100, 150), (shortsword.Vita, spear.Vita));
+        Assert.Equal(shortsword.EquipSlot, spear.EquipSlot);
+        var (session, _, character) = _fx.PlayerWith("eqcache_swap", c =>
+        {
+            c.Level = 99;
+            c.MaxHp = 100;
+            c.Hp = 200;
+            c.Might = 255;
+            if (spear.Sex < 2) c.Sex = spear.Sex;
+            c.Equipment.Add(new InvItem { Slot = shortsword.EquipSlot, ItemId = shortsword.Id, Dura = shortsword.Durability });
+            c.Inventory.Add(new InvItem { Slot = 0, ItemId = spear.Id, Dura = spear.Durability });
+        });
+        Assert.Equal((uint)200, session.LuaMaxHp);   // primes the gear sum with the shortsword counted
+
+        var equipFromSlot = typeof(Session).GetMethod("EquipFromSlot", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        session.WithState(() =>
+        {
+            session.LuaSetEnchant(2.0);
+            equipFromSlot.Invoke(session, new object[] { 0 });
+        });
+
+        Assert.Equal(spear.Id, character.Equipment.Single().ItemId);
+        Assert.Equal(((uint)200, (uint)250), (character.Hp, session.LuaMaxHp));
     }
 
     // ---- fixture -------------------------------------------------------------------------------------
