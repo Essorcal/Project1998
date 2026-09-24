@@ -172,43 +172,6 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      # host-deploy.sh schedules the login restart as a transient systemd timer (p1998-login-re*.timer) that
-      # stays loaded until it fires, DELAY minutes after the deploy. The concurrency group above only queues
-      # the JOBS; the timer outlives the job. So a deploy that starts inside the previous one's window stages
-      # its release and reschedules the game restart, then fails on the login timer with "Unit ... was already
-      # loaded or has a fragment file" (runs 35363844440, 35671983710, 35890937712), and someone reran it by
-      # hand once the timer had fired. This step waits for that instead, before anything touches the host.
-      #
-      # The query is read-only. It asks both the system and the user manager, because which one owns the
-      # timer is the infra repo's business. If neither can be queried it finds nothing and the deploy goes
-      # ahead, which is what happened before this step existed. The wait is capped: past the cap the deploy
-      # goes ahead and fails exactly as it used to, with the timer named in a warning. A content-only push
-      # restarts nothing, so it does not wait.
-      - name: Wait for the previous deploy's login restart
-        if: needs.build.outputs.code_changed != 'false'
-        env:
-          HOST: ${{ secrets.DEPLOY_HOST }}
-          USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          query="{ systemctl list-units --all --no-legend --plain 'p1998-login-re*.timer'; systemctl --user list-units --all --no-legend --plain 'p1998-login-re*.timer'; } 2>/dev/null"
-          deadline=$(( $(date +%s) + 10 * 60 ))
-          while :; do
-            # Columns: UNIT LOAD ACTIVE SUB DESCRIPTION. An armed timer is SUB "waiting"; "running" while its
-            # restart runs. A unit that has fired and gone is not listed at all.
-            pending=$(ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" "$query" \
-              | awk '$4 == "waiting" || $4 == "running" { print $1 " (" $4 ")" }' || true)
-            if [ -z "$pending" ]; then
-              echo "No login restart pending; deploying."
-              break
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::warning::Still pending after 10 minutes, deploying anyway: $pending"
-              break
-            fi
-            echo "Waiting for the previous deploy's login restart: $pending"
-            sleep 15
-          done
-
       - name: Upload the release
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
@@ -221,11 +184,63 @@ jobs:
       # invoked BY PATH rather than piped in over stdin. That inversion is what keeps this repo free of
       # host-shaped files: CI's job ends at "here is a tarball", and how the host installs it is the infra
       # repo's business, updated on its own cadence with `git -C /opt/project1998/infra pull`.
+      #
+      # ONE TOLERATED FAILURE. For a code change the script stages the release, points `current` at it, books the
+      # game restart (a later booking replaces an earlier one: Server/RestartSchedule.cs, Schedule), and only then
+      # arms the login restart as a transient systemd timer, p1998-login-re*.timer. That timer stays loaded until it
+      # fires, DELAY minutes after the PREVIOUS deploy, so a deploy inside that window fails right there with
+      # "Unit ... was already loaded or has a fragment file" (runs 35363844440, 35671983710, 35890937712). By then
+      # everything that matters has happened: the pending timer restarts login into `current`, which is already
+      # this release, and the game restarts once, on this deploy's booking. Players get one restart for the burst
+      # and production ends on the newest build; the red run was the only harm. So this step passes on exactly
+      # that failure, with a warning, when the output shows THIS commit staged and the game restart booked, and
+      # either this commit is master's tip or the tip's own run has not finished (its deploy, still to come, will
+      # restage the newer build). An OLDER commit deploying after a newer one has finished (run 35890937712 staged
+      # 413bc198 over ed6c7f16) stays red: that is a rollback someone has to see. The tolerated case skips only the
+      # script's tail -- "login restart armed" and the pruning of old releases -- which the next clean deploy does.
       - name: Stage and schedule
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
           DELAY: ${{ github.event.inputs.restart_delay_minutes || '3' }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
+          set +e
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
-            "bash /opt/project1998/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"
+            "bash /opt/project1998/infra/scripts/host-deploy.sh $SHA '$DELAY' ${{ needs.build.outputs.code_changed }}" \
+            2>&1 | tee deploy.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then exit 0; fi
+
+          last=$(grep -v '^[[:space:]]*$' deploy.log | tail -n 1 || true)
+          collided=false
+          if printf '%s\n' "$last" | grep -Eq '^Failed to start transient timer unit: Unit p1998-login-re[A-Za-z0-9_.@-]*\.timer was already loaded' \
+             && grep -Fq "staging release $SHA" deploy.log \
+             && grep -Fq 'game restart scheduled' deploy.log \
+             && ! grep -Fq 'login restart armed' deploy.log; then
+            collided=true
+          fi
+          if [ "$collided" != true ]; then exit "$status"; fi
+
+          # Any lookup that fails leaves the run red, as it was before this step existed.
+          tip=$(gh api "repos/$REPO/commits/master" --jq .sha 2>/dev/null || true)
+          newest=false
+          if [ -n "$tip" ] && [ "$tip" = "$SHA" ]; then
+            newest=true
+          elif [ -n "$tip" ]; then
+            tip_run=$(gh run list --repo "$REPO" --workflow ci.yml --event push --commit "$tip" --limit 1 \
+              --json status --jq '.[0].status' 2>/dev/null || true)
+            if [ -n "$tip_run" ] && [ "$tip_run" != "completed" ]; then newest=true; fi
+          fi
+          if [ -z "$tip" ]; then
+            echo "::error::Collided with the pending login restart, and master's tip could not be read, so this may have staged an older build."
+            exit "$status"
+          fi
+          if [ "$newest" != true ]; then
+            echo "::error::Collided with the pending login restart, and master's tip ($tip) is newer and already finished its run: this deploy staged an OLDER build over it."
+            exit "$status"
+          fi
+          echo "::warning::The previous deploy's login restart is still pending, so this deploy could not arm its own. It staged $SHA and moved the game restart booking to it; the pending timer restarts login into the same release. Old releases were not pruned this time."
