@@ -290,6 +290,9 @@ public sealed partial class Session
             _char.Weapon = 0; _char.Armor = 0;
             RefreshAppearance();
         }
+        // Push the gear-less stats, as every unequip path does: SendStats clamps current HP/MP to the new
+        // caps, so 1006/1006 in Cimmerian steel reads 6/6 now rather than at the next stats push (#206).
+        SendStats();
         Reply("Cleared your pack and gear.");
     }
 
