@@ -51,7 +51,7 @@ public sealed partial class Session
     // Outbound decoupling (DDoS / tick-stall defense) lives in TcpOutbound, below: Send() hands the frame
     // to _out and never blocks, and the socket write happens on that transport's own writer task.
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
-
+    internal bool IsClosed => Volatile.Read(ref _closed) != 0;   // no monitor: read under World._lock (#183)
     // Slow-loris defense: the budget for a freshly-accepted connection's FIRST valid framed packet, and the
     // watchdog that enforces it, are FrameReader's (P1998_HANDSHAKE_MS — see FrameReader.DefaultHandshakeMs
     // for the whole rationale, which both processes now share). The latch stays here: the status probe below
