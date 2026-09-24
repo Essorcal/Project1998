@@ -271,21 +271,17 @@ public class OnlineRegistryAutoSaveTests
             Assert.NotEqual(CharacterLoadStatus.Ok, _fx.Store.Load(throwerName).Status);
 
             // The fence says so in its return value — which is what the shutdown flush counts and what keeps
-            // a lost save from being reported as a clean one. Re-dirtied before each call because a THROWN
-            // flush leaves the session clean: CaptureAndWrite clears _dirty before the capture and only
-            // restores it when the write returns false, so a serializer throw skips that restore and the
-            // next flush no-ops on the dirty gate. That is a real hole in the "retried next sweep" wording,
-            // it predates this PR, and it is filed rather than fixed here (#37 section 4 is a move).
-            thrower.WithState(thrower.MarkDirty);
+            // a lost save from being reported as a clean one. The thrower is NOT re-dirtied between these
+            // calls: since #179 a thrown flush leaves the session dirty, so each call really does try again
+            // and really does fail. (This test used to re-dirty before every call, because a throw left the
+            // session clean and the second call returned true without writing anything.)
             Assert.False(World.AutoSaveLoop.FlushIsolated(thrower, "autosave"));
-            thrower.WithState(thrower.MarkDirty);
             Assert.False(World.AutoSaveLoop.FlushIsolated(thrower, "shutdown save", lastChance: true));
             saver.WithState(saver.MarkDirty);
             Assert.True(World.AutoSaveLoop.FlushIsolated(saver, "autosave"));
 
             // The shutdown flush counts it as failed, not as saved — the (saved, failed) tuple TkListener
             // reports. Deltas again: other classes' sessions are in the same sweep.
-            thrower.WithState(thrower.MarkDirty);
             saver.WithState(saver.MarkDirty);
             var (savedCount, failedCount) = _fx.World.AutoSave.SaveAll();
             Assert.True(failedCount >= 1, $"the shutdown flush counted no failure: {savedCount} saved, {failedCount} failed");
@@ -297,6 +293,106 @@ public class OnlineRegistryAutoSaveTests
             thrower.WithState(thrower.MarkDirty);
             _fx.World.LeaveMap(thrower, FenceMap);
             _fx.World.LeaveMap(saver, FenceMap);
+        }
+    }
+
+    /// <summary>#179: the fence's "that player's save is retried next sweep" has to be true. A sweep whose
+    /// flush THROWS for a player leaves that player dirty, so the NEXT sweep writes them — with nothing in
+    /// between re-dirtying the session. The throw is the same NaN-karma serializer failure the fence test
+    /// uses; between the two sweeps the karma is repaired under the monitor WITHOUT <c>MarkDirty</c>, so the
+    /// only thing that can bring the second sweep back to this player is the flag the throw left behind.
+    ///
+    /// <para>Asserted through the store: the row is absent after the first sweep and carries the pending
+    /// coins after the second.</para>
+    ///
+    /// <para>Falsified by deleting the <c>_dirty = true;</c> in <c>CaptureAndWrite</c>'s catch: red on the
+    /// dirty flag right after the first sweep, "Assert.Contains() Failure: Sub-string not found / Not found:
+    /// dirty True". With that assertion also deleted, red on the load after the second sweep, "Assert.Equal()
+    /// Failure: Values differ / Expected: Ok / Actual: NotFound" — the second sweep found the session clean
+    /// and wrote nothing. The same deletion turns <see cref="OneThrowingFlushDoesNotCostTheNextPlayerItsInterval"/>
+    /// red on its second <c>FlushIsolated</c>, "Assert.False() Failure / Expected: False / Actual: True".</para></summary>
+    [Fact]
+    public void AThrowingFlushStaysDirtyAndTheNextSweepWritesIt()
+    {
+        const ushort retryMap = 60086;   // past FenceMap/LockMap; nothing else in this class stands here
+        const string name = "RetryAfterThrow";
+        var (session, _, character) = _fx.PlayerWith(name, _ => { }, retryMap, 5, 5);
+
+        try
+        {
+            session.WithState(() =>
+            {
+                character.Karma = double.NaN;    // System.Text.Json cannot write NaN: Serialize throws
+                character.Coins = 5150;
+                session.MarkDirty();
+            });
+
+            // Sweep one: the fence catches the throw, nothing is written, and the session still owes a write.
+            Assert.Null(Record.Exception(() => _fx.World.AutoSave.Tick()));
+            Assert.NotEqual(CharacterLoadStatus.Ok, _fx.Store.Load(name).Status);
+            Assert.Contains("dirty True", session.DiagState());
+
+            // Whatever broke the serializer goes away. No MarkDirty: the retry must come from the flag alone.
+            session.WithState(() => character.Karma = 0);
+
+            // Sweep two: the retry the fence's log line promises.
+            _fx.World.AutoSave.Tick();
+
+            var load = _fx.Store.Load(name);
+            Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+            Assert.Equal(5150u, Assert.IsType<Character>(load.Character).Coins);
+            Assert.Contains("dirty False", session.DiagState());
+        }
+        finally
+        {
+            character.Karma = 0;
+            _fx.World.LeaveMap(session, retryMap);
+        }
+    }
+
+    /// <summary>#179, the pair path. <c>Session.FlushPair</c> — the trade finalizer's one-transaction save —
+    /// clears BOTH dirty flags before its capture, so a serializer throw on either side left both sessions
+    /// clean and the finalized trade in memory only, captured by no later flush. The throw is put on the
+    /// SECOND side (b serializes after a), so a's capture has already succeeded when it happens: both flags
+    /// must still come back, because nothing was written for either.
+    ///
+    /// <para>Then the retry: the thrower is repaired without <c>MarkDirty</c> and one ordinary sweep writes
+    /// both rows.</para>
+    ///
+    /// <para>Falsified by deleting the <c>a._dirty = true; b._dirty = true;</c> in <c>FlushPair</c>'s catch:
+    /// red on the first side's dirty flag, "Assert.Contains() Failure: Sub-string not found / Not found:
+    /// dirty True".</para></summary>
+    [Fact]
+    public void AThrowingPairFlushLeavesBothSidesDirty()
+    {
+        const ushort pairMap = 60087;
+        const string aName = "PairThrowA", bName = "PairThrowB";
+        var (a, _, aChar) = _fx.PlayerWith(aName, _ => { }, pairMap, 5, 5);
+        var (b, _, bChar) = _fx.PlayerWith(bName, _ => { }, pairMap, 6, 5);
+
+        try
+        {
+            a.WithState(() => aChar.Coins = 31);
+            b.WithState(() => { bChar.Coins = 32; bChar.Karma = double.NaN; });
+
+            Assert.ThrowsAny<Exception>(() => Session.FlushPair(a, b));
+
+            Assert.Contains("dirty True", a.DiagState());
+            Assert.Contains("dirty True", b.DiagState());
+            Assert.NotEqual(CharacterLoadStatus.Ok, _fx.Store.Load(aName).Status);
+            Assert.NotEqual(CharacterLoadStatus.Ok, _fx.Store.Load(bName).Status);
+
+            b.WithState(() => bChar.Karma = 0);
+            _fx.World.AutoSave.Tick();
+
+            Assert.Equal(31u, Assert.IsType<Character>(_fx.Store.Load(aName).Character).Coins);
+            Assert.Equal(32u, Assert.IsType<Character>(_fx.Store.Load(bName).Character).Coins);
+        }
+        finally
+        {
+            bChar.Karma = 0;
+            _fx.World.LeaveMap(a, pairMap);
+            _fx.World.LeaveMap(b, pairMap);
         }
     }
 
