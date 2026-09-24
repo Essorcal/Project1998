@@ -174,13 +174,24 @@ public sealed partial class Session
         WithStatePair(a, b, () =>
         {
             a._dirty = false; b._dirty = false;
-            a.CaptureTimedEffects(); b.CaptureTimedEffects();
-            seqA = ++a._saveSeq; seqB = ++b._saveSeq;
-            rows = new[]
+            try
             {
-                (CharacterStore.Key(a._char.Name), CharacterStore.Serialize(a._char)),
-                (CharacterStore.Key(b._char.Name), CharacterStore.Serialize(b._char)),
-            };
+                a.CaptureTimedEffects(); b.CaptureTimedEffects();
+                seqA = ++a._saveSeq; seqB = ++b._saveSeq;
+                rows = new[]
+                {
+                    (CharacterStore.Key(a._char.Name), CharacterStore.Serialize(a._char)),
+                    (CharacterStore.Key(b._char.Name), CharacterStore.Serialize(b._char)),
+                };
+            }
+            catch
+            {
+                // #179, the pair form of CaptureAndWrite's restore: a capture that throws (either side's
+                // serializer) wrote nothing, so BOTH flags go back up exactly as a failed write puts them back
+                // below. Otherwise the trade just finalized in memory is captured by no later flush.
+                a._dirty = true; b._dirty = true;
+                throw;
+            }
         });
 
         // BOTH write gates, in StateRank order — the same order the monitors use, so two trades finalizing

@@ -227,11 +227,13 @@ public sealed partial class Session
     /// pending, clear the flag, and reset the AutoSaveMs throttle on success. False is <c>StoreSave</c>'s
     /// unconditional write: it writes whether or not the flag is set, does not clear the flag, and leaves the
     /// AutoSaveMs throttle exactly where it found it, so a spellbook or profile edit never postpones the next
-    /// autosave. On FAILURE the two paths behave the same — a write that returned false re-dirties the
-    /// session either way (the line below the write gate), so the next flush retries the edit rather than
+    /// autosave. On FAILURE the two paths behave the same — a write that returned false, or a capture that
+    /// threw (#179), re-dirties the session either way, so the next flush retries the edit rather than
     /// losing it. <c>StoreSave</c>'s own paragraph in Session.TimedEffects.cs says why the unconditional path
     /// needs that.</param>
-    /// <returns>False only when the database write itself failed.</returns>
+    /// <returns>False only when the database write itself failed. A capture that throws re-dirties the
+    /// session and rethrows; for the autosave sweep, the fence in World.AutoSaveLoop.FlushIsolated is what
+    /// catches it.</returns>
     private bool CaptureAndWrite(bool dirtyGated)
     {
         string json;
@@ -244,11 +246,24 @@ public sealed partial class Session
                 if (!_dirty) return true;        // nothing pending
                 _dirty = false;
             }
-            CaptureTimedEffects();               // the live buff/curse/stance timers, as of this instant
-            json = CharacterStore.Serialize(_char);
-            // The key is captured in here too: @ckm (SendClickMarker) parks a marker string in _char.Name for
-            // the length of one packet, and a name read outside the monitor could be that marker.
-            user = CharacterStore.Key(_char.Name);
+            try
+            {
+                CaptureTimedEffects();           // the live buff/curse/stance timers, as of this instant
+                json = CharacterStore.Serialize(_char);
+                // The key is captured in here too: @ckm (SendClickMarker) parks a marker string in _char.Name
+                // for the length of one packet, and a name read outside the monitor could be that marker.
+                user = CharacterStore.Key(_char.Name);
+            }
+            catch
+            {
+                // #179: a capture that THROWS is a failed save exactly like a write that returns false, so it
+                // re-dirties the same way the line below the write gate does. Without this the flag cleared
+                // above stays cleared, the autosave sweep's fence logs "retried next sweep", and the next
+                // sweep finds nothing pending and skips the player — the mutation is gone at the next crash.
+                // Still under the monitor, so no mutation can land between the clear and this restore.
+                _dirty = true;
+                throw;
+            }
             seq  = ++_saveSeq;
         }
 
