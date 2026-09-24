@@ -21,9 +21,9 @@ public sealed class ZzAnormalProbe
     [Fact]
     public async Task Probe()
     {
-        int iters = Env("PROBE_ITERS", Environment.GetEnvironmentVariable("CI") == "true" ? 500 : 0);
+        int iters = Env("PROBE_ITERS", Environment.GetEnvironmentVariable("CI") == "true" ? 60 : 0);
         if (iters == 0) return;
-        int starve = Env("PROBE_STARVE", 0);          // 1 = park the pool before each iteration
+        int starve = Env("PROBE_STARVE", Environment.GetEnvironmentVariable("CI") == "true" ? 1 : 0);          // 1 = park the pool before each iteration
         int sleepMs = Env("PROBE_SLEEP_MS", 1500);
         string shape = Environment.GetEnvironmentVariable("PROBE_SHAPE") ?? "both";
         int oldFail = 0, newFail = 0, oldRuns = 0, newRuns = 0;
