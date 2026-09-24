@@ -44,13 +44,13 @@ public sealed partial class World
         /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
         internal Session? FindPlayer(string name)
         {
-            // CharName, not Snapshot().Name: this runs under _lock, and Snapshot takes the session's state
-            // monitor, which is the wrong way round (#29 — session state THEN _lock). Building a whole
-            // PlayerSnapshot — face, armour, weapon, shield, dye, all off the equipment list — per player per
-            // lookup, to read one string, was never the intent either.
+            // CharName, not Snapshot().Name: Snapshot takes the session's state monitor under _lock (#29, #87).
+            // !IsReplaced (#183): a second login leaves the replaced session on its map until its read loop unwinds,
+            // and a hit on it loses the whisper or command. Only REPLACED is skipped: a kicked or dropped session is
+            // found until its teardown, as before. A volatile read, not a monitor (rule 1); ByIdLocked does the same.
             lock (world._lock)
                 return world._maps.Values.SelectMany(m => m.Players)
-                                  .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase));
+                                  .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase) && !p.IsReplaced);
         }
 
         /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
@@ -68,7 +68,7 @@ public sealed partial class World
         internal Session? ByIdLocked(uint id)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
-            return world._maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id);
+            return world._maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id && !p.IsReplaced);
         }
 
         /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.
