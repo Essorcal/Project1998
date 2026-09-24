@@ -741,10 +741,15 @@ public sealed partial class Session
         }
 
         // A tier name wins over number parsing, but no tier name is a number, so there's no ambiguity.
+        // NumberStyles.Float also accepts "NaN", "Infinity" and "-Infinity" — System.Text.Json refuses to
+        // serialize a non-finite double, so letting one through here would leave the character unsaveable
+        // (every later sweep/FlushNow/logout save throws) until a GM set karma again. Refused the same way
+        // as an unparseable argument.
         double value;
         if (Karma.ValueForName(arg) is { } byName) value = byName;
         else if (double.TryParse(arg, System.Globalization.NumberStyles.Float,
-                                 System.Globalization.CultureInfo.InvariantCulture, out var byNum)) value = byNum;
+                                 System.Globalization.CultureInfo.InvariantCulture, out var byNum)
+                 && double.IsFinite(byNum)) value = byNum;
         else { Refuse($"'{arg}' isn't a number or a karma tier. Tiers: {string.Join(" · ", Karma.TierNames)}"); return; }
 
         _char.Karma = value;
