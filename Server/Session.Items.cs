@@ -1116,6 +1116,7 @@ public sealed partial class Session
     {
         AssertStateHeld("_char.Equipment");
         _char.Equipment.Clear();
+        InvalidateEquipTotals();   // #206: the cached gear sum must go with the gear, or its bonuses outlive it
     }
 
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()

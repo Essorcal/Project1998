@@ -99,10 +99,10 @@ public sealed partial class Session
                $"queued-casts {_queuedCasts.Count}, awaiting-dialog-reply {(_dlgReply is not null ? "YES" : "no")}, " +
                $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
     }
-    // Set once this session has been superseded by a newer login for the same account (duplicate-login
-    // guard, see World.OnlineRegistry.Register/Session.KickForReplacement). Gates the read-loop's disconnect save
-    // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
+    // Set once a newer login for the same account superseded this session (World.OnlineRegistry.Register,
+    // Session.KickForReplacement). Gates the disconnect save, so a slow OLD session never clobbers the NEW one.
     private int _replaced;
+    internal bool IsReplaced => Volatile.Read(ref _replaced) != 0;   // no monitor: read under World._lock (#183)
     // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it
     // used to cover the capture as well; consistency of the captured bytes is the state monitor's job now
     // (see FlushNow), so what is left here is purely write ORDER — the snapshot is taken under the monitor

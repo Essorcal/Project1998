@@ -23,8 +23,8 @@ namespace Server;
 /// no-ops when the recipient is offline, and the fiancé/spouse and mail-flag lookups that refuse nothing —
 /// are left where they are: they have no refusal to parameterise.</para>
 ///
-/// <para><b>Cost.</b> Unchanged: exactly one <c>FindPlayer</c> per call, as before. The per-online-player
-/// <c>Snapshot()</c> that <c>FindPlayer</c> itself builds is issue #87 and is deliberately untouched here.</para>
+/// <para><b>Cost.</b> Unchanged: exactly one <c>FindPlayer</c> per call, as before. <c>FindPlayer</c> compares
+/// the plain <c>CharName</c> field and builds no <c>Snapshot()</c>; that was issue #87, fixed under #29.</para>
 /// </summary>
 public sealed partial class Session
 {

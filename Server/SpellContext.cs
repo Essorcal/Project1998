@@ -321,7 +321,9 @@ public sealed class SpellContext
     // ---- Tier-3 utility/target primitives (mana_steal/mana_gift/cleanse/revive/leap/mana_battery) ----
     /// <summary>The caster's effective max mana.</summary>
     public double maxMp           => _s.LuaMaxMp;
-    /// <summary>Set the caster's HP (clamped to [0, maxHp]). For a raw set (e.g. mana_battery's HP cost).</summary>
+    /// <summary>Set the caster's HP (clamped to [1, maxHp]). For a raw set (e.g. mana_battery's HP cost).
+    /// It cannot kill: a living caster set to 0 or below is left on 1 hp. A verb that means to kill must deal
+    /// damage, which runs the real death. A caster who is already dead is clamped to [0, maxHp] as before.</summary>
     public void setHp(double n)   => _s.LuaSetHp((int)System.Math.Round(n));
     /// <summary>Set the caster's mana (clamped to [0, maxMp]).</summary>
     public void setMana(double n) => _s.LuaSetMana((int)System.Math.Round(n));
