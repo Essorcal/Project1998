@@ -134,9 +134,13 @@ public sealed partial class Session
     /// so there is one definition of a consistent row (snapshot under the state monitor, write outside it)
     /// and one sequence deciding which snapshot wins. It used to serialize inline under no lock at all.
     ///
-    /// <para>On success it leaves the dirty flag and the AutoSaveMs throttle exactly where it found them,
-    /// which is what it always did. Clearing them would arguably be more correct — the whole character has
-    /// just been written — but it is a behaviour change, and #29 is not the ticket for it.</para>
+    /// <para>On success it clears the dirty flag and resets the AutoSaveMs throttle, exactly as a gated
+    /// flush does (#88). The whole character has just been written, so a flag left up bought nothing but an
+    /// identical second write on the next FlushIfDue or sweep — sent at once, because the throttle had not
+    /// moved. #29 left both alone deliberately, as a behaviour change outside that ticket. Nothing could have
+    /// relied on the flag surviving: it was only up when something else had already dirtied the session, so
+    /// a caller mutating <c>_char</c> after its StoreSave without its own MarkDirty was never persisted in
+    /// the ordinary case anyway (and none of the twelve call sites does).</para>
     ///
     /// <para>On failure the flag is SET, not left alone: <see cref="CaptureAndWrite"/> re-dirties the session
     /// whether or not the write was dirty-gated, so a failed unconditional write is retried by the next

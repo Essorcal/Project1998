@@ -224,10 +224,12 @@ public sealed partial class Session
     /// happens to be set). One implementation, so there is exactly one place that decides what "a consistent
     /// character row" means and exactly one sequence deciding which row wins.</summary>
     /// <param name="dirtyGated">The throttled/dirty-flag path (<see cref="FlushNow"/>): skip when nothing is
-    /// pending, clear the flag, and reset the AutoSaveMs throttle on success. False is <c>StoreSave</c>'s
-    /// unconditional write: it writes whether or not the flag is set, does not clear the flag, and leaves the
-    /// AutoSaveMs throttle exactly where it found it, so a spellbook or profile edit never postpones the next
-    /// autosave. On FAILURE the two paths behave the same — a write that returned false, or a capture that
+    /// pending. False is <c>StoreSave</c>'s unconditional write: it writes whether or not the flag is set.
+    /// That skip is the ONLY difference between the two. Both clear the flag before the capture and both
+    /// reset the AutoSaveMs throttle on success (#88): the unconditional write ships the whole character
+    /// too, so leaving the flag up only bought an identical second write on the next FlushIfDue or sweep,
+    /// and leaving the throttle alone let that second write go out at once. On FAILURE the two paths behave
+    /// the same — a write that returned false, or a capture that
     /// threw (#179), re-dirties the session either way, so the next flush retries the edit rather than
     /// losing it. <c>StoreSave</c>'s own paragraph in Session.TimedEffects.cs says why the unconditional path
     /// needs that.</param>
@@ -241,11 +243,10 @@ public sealed partial class Session
         long seq;
         using (EnterState())
         {
-            if (dirtyGated)
-            {
-                if (!_dirty) return true;        // nothing pending
-                _dirty = false;
-            }
+            if (dirtyGated && !_dirty) return true;   // nothing pending
+            // Cleared on BOTH paths (#88): whatever was pending is in the snapshot about to be taken, since
+            // every mutation happens under this monitor. A mutation after the capture re-dirties us as usual.
+            _dirty = false;
             try
             {
                 CaptureTimedEffects();           // the live buff/curse/stance timers, as of this instant
@@ -275,7 +276,7 @@ public sealed partial class Session
             if (ok)
             {
                 _writtenSeq = seq;
-                if (dirtyGated) _lastSaveAtMs = Environment.TickCount64;
+                _lastSaveAtMs = Environment.TickCount64;   // both paths (#88): the whole row just landed
             }
         }
         if (!ok) _dirty = true;                  // retried by the next FlushIfDue / autosave sweep — an
@@ -284,6 +285,11 @@ public sealed partial class Session
                                                  // than lost until something else happens to dirty us
         return ok;
     }
+
+    /// <summary>When the last successful character write landed (<c>Environment.TickCount64</c>), the clock
+    /// the AutoSaveMs throttle in <see cref="FlushIfDue"/> reads. Zero until the first write. Test-only: it is
+    /// how the #88 fact sees that an unconditional save resets the throttle.</summary>
+    internal long LastSaveAtMsForTest => Volatile.Read(ref _lastSaveAtMs);
 
     /// <summary>Normalized account identity (matches CharacterStore's DB key), used as the key into
     /// World's online-session registry for the duplicate-login guard. Only meaningful once _enteredWorld.</summary>

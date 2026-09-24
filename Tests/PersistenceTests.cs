@@ -369,6 +369,67 @@ public class PersistenceTests : IDisposable
         Assert.Equal(blurb, LoadOk(db.Store, _a).ProfileText);
     }
 
+    /// <summary>
+    /// #88: a SUCCESSFUL unconditional save leaves the session the way a successful gated flush does — clean,
+    /// with the AutoSaveMs throttle reset — because it has just written the whole character. Before, the flag
+    /// stayed up and the throttle stayed put, so the next <c>FlushIfDue</c> or autosave sweep wrote the
+    /// identical row again, at once.
+    ///
+    /// <para>Driven through the real 0x4F change-profile frame, the same <c>StoreSave</c> the fact above
+    /// fails. The session is dirtied first, which is the state any of the twelve call sites can be in when
+    /// its edit lands (a pickup or a step earlier in the same interval).</para>
+    ///
+    /// <para>"No redundant write" is asserted as a write, not only as a flag: after the save, a probe value is
+    /// put into the character WITHOUT <c>MarkDirty</c> and <c>FlushNow</c> — the sweep's call — is run. A
+    /// flush that still thought something was pending writes the probe; one that knows the row is current
+    /// writes nothing, and the row keeps the profile.</para>
+    ///
+    /// <para>Falsified by restoring the old gating — <c>if (dirtyGated) { if (!_dirty) return true; _dirty =
+    /// false; }</c> and <c>if (dirtyGated) _lastSaveAtMs = ...</c> in <c>CaptureAndWrite</c>: red on the flag,
+    /// "Assert.Contains() Failure: Sub-string not found / Not found: dirty False". With the flag restored and
+    /// only the throttle line reverted, red on the throttle, "Assert.InRange() Failure: Value not in range /
+    /// Range: (…) / Actual: 0".</para>
+    /// </summary>
+    [Fact]
+    public void SuccessfulUnconditionalSave_ClearsTheDirtyFlag_AndResetsTheAutosaveThrottle()
+    {
+        const string blurb = "written once, not twice";
+
+        TestProcessState.LoadContent();      // World's constructor reads the spawn roster out of Content
+        Assert.True(_store.SaveMany(new[] { Make(_a, 100) }));
+
+        var character = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion,
+            Name = _a,
+        };
+        var outbound = new RecordingOutbound($"recorder:{_a}");
+        var session = new Session(outbound, 2005, _store, new World(), character);
+        outbound.Clear();
+
+        // A mutation is already pending, and nothing has been written by this session yet.
+        session.WithState(session.MarkDirty);
+        Assert.Contains("dirty True", session.DiagState());
+        Assert.Equal(0, session.LastSaveAtMsForTest);
+
+        long before = Environment.TickCount64;
+        session.Receive(SessionFixture.Frame(ClientOp.ChangeProfile, ChangeProfileBody(blurb)));
+        long after = Environment.TickCount64;
+
+        // The save itself is unchanged: it landed and the player is told so.
+        Assert.Contains("has been saved", MessageText(Assert.Single(outbound.BodiesOf(0x02))));
+        Assert.Equal(blurb, LoadOk(_a).ProfileText);
+
+        // The whole row just landed, so nothing is pending and the throttle counts from this write.
+        Assert.Contains("dirty False", session.DiagState());
+        Assert.InRange(session.LastSaveAtMsForTest, before, after);
+
+        // And the sweep's next call writes nothing: the unmarked probe never reaches the row.
+        session.WithState(() => character.ProfileText = "probe: a second write happened");
+        session.FlushNow();
+        Assert.Equal(blurb, LoadOk(_a).ProfileText);
+    }
+
     /// <summary>The 0x4F body the profile editor sends: picSize(u16 BE) pic[] blurbLen(u8) blurb[] 00. No
     /// picture here — the blurb is the part that has to survive, and an empty picture is a legal frame.</summary>
     private static byte[] ChangeProfileBody(string blurb)
