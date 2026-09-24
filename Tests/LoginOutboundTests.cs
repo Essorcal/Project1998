@@ -119,8 +119,25 @@ public sealed class LoginOutboundTests
     /// change — the single-reader channel is what replaced the send lock, and a second writer or a reordered
     /// queue would show up here as interleaved or transposed frames.
     ///
+    /// <para>The peer reads every expected byte BEFORE the teardown, and that order is the fix for a flake.
+    /// This fact used to call <c>CloseAfterDrainAsync</c> first and read to EOF after, which made the drain's
+    /// one-second deadline decide what arrived: the writer is a thread-pool task, the deadline is a pool timer,
+    /// and in a starved pool the writer had not started its first write when the deadline closed the socket.
+    /// The failures read "Actual: []" with the writer's own line <c>login writer stopped:
+    /// ObjectDisposedException</c> beside it (upstream master <c>36bac49</c>, run 35906929749 attempt 1, on
+    /// the suite's first seconds; also the #275 send-counters worker's local run, the first Debug suite in
+    /// the gate-move-broadcast report, and finding 3 of the #57 slice 2 report). Reproduced by parking every
+    /// pool thread before each run (<c>DOTNET_PROCESSOR_COUNT=4</c>): the old shape failed 7 of 20 and 8 of
+    /// 100. Fourteen of those runs received nothing, and one received only the welcome, cut off at a frame
+    /// boundary by the same close. With the pool idle it failed 0 of 500. This shape failed 0 of 120
+    /// starved. Whether the drain waits is fact 3's claim, not this one's, so nothing here has a deadline
+    /// shorter than the reads' own 10s.</para>
+    ///
     /// <para>FALSIFIED by reversing the enqueue order in the loop below: the comparison fails on the first
-    /// transposed frame.</para></summary>
+    /// transposed frame. Also checked against this shape by breaking the writer's loop in production code:
+    /// skipping the fifth frame, writing the fifth frame one byte short, and writing the fifth frame after
+    /// the sixth each fail the first comparison. The first two fail at the read's 10s deadline, because the
+    /// peer is still waiting for bytes that never come, and the third fails at once.</para></summary>
     [Fact]
     public async Task ANormalPeerReceivesEveryFrameWholeAndInOrder()
     {
@@ -143,9 +160,16 @@ public sealed class LoginOutboundTests
         Assert.True(pair.Outbound.Send(redirect));
         expected.AddRange(redirect);
 
+        // The peer reads everything BEFORE the teardown starts, so no deadline decides what arrives: the
+        // comparison is of the bytes the writer put on the wire, not of how far it got inside the drain's
+        // one-second bound (see the summary). A dropped or torn frame leaves this short, and it ends at EOF
+        // (the writer closed the socket) or at its own 10s deadline, returning what it has either way.
+        Assert.Equal(expected.ToArray(), await ReadUpTo(pair.Client.GetStream(), expected.Count));
+
         await pair.Outbound.CloseAfterDrainAsync();
         await writer.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.Equal(expected.ToArray(), await ReadToEof(pair.Client.GetStream()));
+        // Nothing after the last frame: an extra write at the end shows up here.
+        Assert.Empty(await ReadToEof(pair.Client.GetStream()));
         Assert.Null(pair.Outbound.DropReason);
     }
 
@@ -415,6 +439,28 @@ public sealed class LoginOutboundTests
         var buffer = new byte[count];
         await stream.ReadExactlyAsync(buffer, timeout.Token);
         return buffer;
+    }
+
+    /// <summary>Up to <paramref name="count"/> bytes from the peer: stops early at EOF, at a reset, or at its
+    /// 10s deadline, and returns whatever arrived rather than throwing, so a short delivery fails the caller's
+    /// comparison with the bytes in hand instead of an exception that shows none of them.</summary>
+    private static async Task<byte[]> ReadUpTo(NetworkStream stream, int count)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var buffer = new byte[count];
+        int got = 0;
+        try
+        {
+            while (got < count)
+            {
+                int n = await stream.ReadAsync(buffer.AsMemory(got), timeout.Token).ConfigureAwait(false);
+                if (n == 0) break;
+                got += n;
+            }
+        }
+        catch (OperationCanceledException) { /* the deadline: compare what arrived */ }
+        catch (IOException) { /* a reset: compare what arrived */ }
+        return buffer[..got];
     }
 
     private static async Task<byte[]> ReadToEof(NetworkStream stream)
