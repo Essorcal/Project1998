@@ -137,8 +137,11 @@ Run only part of the selected scripts, as "k/n": the k-th of n shards, taking ev
 selection starting at the k-th (round robin over the same order -Scripts or the default glob produces, so
 the n shards together are exactly the selection, each script once). Each shard is a separate run with its
 own pair, so one call fits inside a tool's time cap: a coordinator's shell tool stops a call at 600 s, and
-the full roster takes about ten minutes. Run 1/2 and then 2/2; together they are the full suite. A shard
-that selects no scripts is a usage error (exit 2), never an empty pass.
+the full roster takes about ten minutes. Run 1/2 and then 2/2; together they are the full suite, PROVIDED the
+selection is the same for every call: a script added to or removed from the test client's scripts\ between the
+calls shifts the split, so one script can be skipped or run twice while every shard exits 0. Each shard prints
+"(x of y scripts)"; if y differs between the calls, rerun them. A shard that selects no scripts is a usage error
+(exit 2), never an empty pass.
 
 .PARAMETER Plan
 Print what this run WOULD do -- the checkout, port base, the selected scripts with each one's resolved
@@ -464,7 +467,7 @@ if ($Scripts -and $Scripts.Count -gt 0) {
 
 $ShardLabel = $null
 if ($Shard) {
-    if ($Shard -notmatch '^(\d+)/(\d+)$' -or [int]$Matches[1] -lt 1 -or [int]$Matches[1] -gt [int]$Matches[2]) {
+    if ($Shard -notmatch '^([0-9]{1,6})/([0-9]{1,6})$' -or [int]$Matches[1] -lt 1 -or [int]$Matches[1] -gt [int]$Matches[2]) {
         Write-Host "-Shard must be k/n with 1 <= k <= n, e.g. 1/2 (got '$Shard')."
         exit 2
     }
