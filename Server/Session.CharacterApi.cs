@@ -734,7 +734,11 @@ public sealed partial class Session
             strippedWorn = true;
         }
 
-        if (strippedWorn) RefreshAppearance();           // peers must stop seeing gear that is gone
+        if (strippedWorn)
+        {
+            InvalidateEquipTotals();                     // the worn tribute's bonuses go with it (PR #281 review F2)
+            RefreshAppearance();                         // peers must stop seeing gear that is gone
+        }
         SendStats();
         SaveChar();
         return true;
@@ -1037,6 +1041,7 @@ public sealed partial class Session
             var def = Content.ItemById(e.ItemId);
             if (def is not null) { ApplyAppearance(def, equip: false); GiveItem(def, 1, e.Dura, e.CustomName, owner: e.Owner); }
         }
+        InvalidateEquipTotals();                         // the stripped gear's bonuses go with it (PR #281 review F2)
         SendStats();
         MarkDirty();
         return true;
