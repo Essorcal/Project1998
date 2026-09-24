@@ -102,53 +102,98 @@ public class BroadcastIsolationTests
     /// apiece is small enough that a bound loose enough to cover a snapshot would swallow it, and the
     /// falsification would come back green and pin nothing.</para>
     ///
-    /// <para><b>Why the bound is one byte per call and not zero.</b> The peers snapshot is rented from
-    /// <c>ArrayPool&lt;Session&gt;.Shared</c>, which is process-wide and trims its per-core stacks on a Gen2
-    /// callback. A big roster ELSEWHERE in the same run — <c>StatusTickAllocationTests</c>'s 400 sessions,
-    /// the 400-player viewport survey fixture — empties the stack this thread rents from, and the next rent
-    /// then allocates one fresh buffer. That is a cost of about one kilobyte per RUN, not per call, and it
-    /// took this fact red twice on a head nobody disputes: 520 B beside the status roster (unrecorded) and
-    /// 1,152 B on PR #261's upstream check (recorded, <c>reviews/server-261.review.json</c>). So the
-    /// assertion states what the claim means — no PER-CALL allocation — at a bound of under one byte a call,
-    /// <c>bytes &lt; Calls</c> = 2,000 B over 2,000 calls. One pool re-rent passes it; both falsifications
-    /// below miss it by three orders of magnitude. Do not put <c>Assert.Equal(0, bytes)</c> back: it asserts
-    /// the state of a process-wide pool as well as this helper, and only the second half is a fact about
+    /// <para><b>Why each call is measured on its own, and why the bound is not zero.</b> The old assertion
+    /// summed the pass, <c>bytes &lt; Calls</c> = 2,000 B, and went red on heads that never touched
+    /// <c>World.Broadcast</c>: 520 B and 1,152 B earlier (PR #261's upstream check,
+    /// <c>reviews/server-261.review.json</c>), which is why the bound left zero, and then on 2026-09-23
+    /// 3,728 B on PR #274's upstream check (run 35891352840), 7,032 B and 3,176 B on fork runs of the drain
+    /// branch (35885024277, 35887635561), and 5,400 B on the send-counters worker's local Debug suite. Two
+    /// sources were found (<c>briefs/reports/broadcast-alloc-flake-opus.md</c>), and neither is a cost per
+    /// call.</para>
+    ///
+    /// <para>On a machine short of memory, the pool. The peers snapshot is rented from
+    /// <c>ArrayPool&lt;Session&gt;.Shared</c>, which trims itself on every Gen2 callback. At HIGH memory
+    /// pressure (memory load at 90% or more of the GC's high-load threshold, about 81% of physical RAM) the
+    /// trim empties every thread's own cached buffer too, and when it lands between one call's return and
+    /// the next call's rent, that rent allocates one fresh buffer: 536 B for the <c>Session[64]</c> a 40-peer
+    /// crowd rents. That is one buffer per Gen2, and nothing bounds how many Gen2s fall inside one pass.
+    /// Beside a forced-Gen2 storm at high pressure the summed fact went red 20 times in 400, every time at an
+    /// exact multiple of 536 B (2,144, 2,680, 3,216 B). At the same storm below high pressure it went red 0
+    /// times in 400, because the thread's own buffer survives the trim there.</para>
+    ///
+    /// <para>On the Linux CI runner, something else. The runner sits at LOW pressure (memory load 10-19% of
+    /// the threshold), where that trim cannot empty the thread's buffer, yet the fact still failed about once
+    /// in 20 runs. Instrumented runs caught it once in 44: ONE call allocating 7,024 B at 73 peers, where a
+    /// pool buffer would be 1,048 B. Its source is not identified. 815 further passes on the runner, each
+    /// call split into lock-and-rent, sends and return, never saw it again.</para>
+    ///
+    /// <para>So the claim is measured one call at a time. Each call is its own window, and a per-call cost
+    /// shows as every call allocating. Both sources above show as one call, or a few. The assertion is that
+    /// fewer than one call in a hundred allocates anything (fewer than 20 of 2,000). Under the storm that is
+    /// red 0 times in 400. In a paired run of 400 passes, 272 saw at least one re-rent and the summed bound
+    /// would have been red on 35. Every allocating call was exactly 536 B, and no pass had more than six. The
+    /// Linux catch is one allocating call. Both falsifications below make all 2,000 calls allocate. The
+    /// resolution is the honest limit: an allocation on fewer than one call in a hundred passes this fact.
+    /// Do not put <c>Assert.Equal(0, bytes)</c> back, or a summed byte bound. Either asserts the state of a
+    /// process-wide pool and runtime as well as this helper, and only the second half is a fact about
     /// <c>World.Broadcast</c>.</para>
     ///
-    /// <para>Falsification, twice, and both were re-run against this bound. (a) Put the capture back —
-    /// <c>var p = peers[i]; Try(() =&gt; send(p), "Broadcast")</c> — and this goes red at <b>3,864 B a call
-    /// over 40 peers</b> (7,728,000 B over the 2,000 calls, Debug and Release alike): 96 B a peer, the
-    /// display class and the delegate. The 4,880 B the earlier report records is this plus (b), from before
-    /// the snapshot was pooled. (b) Put the LINQ snapshot back —
-    /// <c>peers = m.Players.Where(p =&gt; p != except).ToArray()</c> with the <c>foreach</c> over it — and it
-    /// goes red at <b>1,032 B a call over the same 40 peers</b> (2,064,000 B over 2,000 calls, 1,032x the
-    /// bound). Run each, confirm red, restore. The reds against the earlier zero bound are in
-    /// <c>briefs/reports/broadcast-alloc-opus.md</c>; the reds against this one are in
-    /// <c>reviews/test-hygiene-evidence/</c>.</para></summary>
+    /// <para>Two other ways were weighed. A <c>GC.TryStartNoGCRegion</c> around the pass was tried and
+    /// rejected. Any induced collection anywhere in the process ends the region, so it failed loudly 8 times
+    /// in 8 beside the storm that reproduces the pool source. Its own opening full collection queues the very
+    /// trim it has to keep out. And nothing shows that the Linux allocation comes from a GC, so a region is not
+    /// known to cover it. A slope, bytes at N calls against bytes at 2N, was not built. Under a steady Gen2
+    /// rate the re-rents grow with the pass's length, and so with N, so a slope separates them no better than
+    /// a summed bound does.</para>
+    ///
+    /// <para>Falsification, twice, both re-run against the per-call bound. (a) Put the capture back:
+    /// <c>var p = peers[i]; Try(() =&gt; send(p), "Broadcast")</c>. This goes red with <b>2,000 of 2,000
+    /// calls allocating, 3,864 B each</b> over 40 peers, 96 B a peer for the display class and the
+    /// delegate. (b) Put the LINQ snapshot back: <c>peers = m.Players.Where(p =&gt; p != except).ToArray()</c>,
+    /// with the <c>foreach</c> over it. This goes red with <b>2,000 of 2,000 calls allocating, 1,032 B
+    /// each</b>. Both read the same in Debug and Release. Run each, confirm red, restore. The reds against
+    /// the zero bound are in <c>briefs/reports/broadcast-alloc-opus.md</c>, the reds against the summed bound
+    /// in <c>reviews/test-hygiene-evidence/</c>, and the reds against this one in
+    /// <c>briefs/reports/broadcast-alloc-flake-opus.md</c>.</para></summary>
     [Fact]
     public void BroadcastAllocatesNothingPerPeer()
     {
         const int Calls = 2_000;
         const int Crowd = 40;
+        // Fewer than one call in a hundred may allocate anything. See the doc comment for why it is not zero.
+        const int AllocatingCallsBound = Calls / 100;
         var crowd = ManyPlayers(Crowd, "Alloc");
         try
         {
+            int allocating = 0;
             long bytes = 0;
+            var firstSizes = new long[AllocatingCallsBound];   // allocated here, outside every measured call
             for (int pass = 0; pass < 2; pass++)
             {
                 _peers = 0;
-                long before = GC.GetAllocatedBytesForCurrentThread();
-                for (int i = 0; i < Calls; i++) _fx.World.Broadcast(SessionFixture.HomeMap, CountPeer);
-                bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+                allocating = 0;
+                bytes = 0;
+                for (int i = 0; i < Calls; i++)
+                {
+                    long before = GC.GetAllocatedBytesForCurrentThread();
+                    _fx.World.Broadcast(SessionFixture.HomeMap, CountPeer);
+                    long taken = GC.GetAllocatedBytesForCurrentThread() - before;
+                    if (taken == 0) continue;
+                    if (allocating < firstSizes.Length) firstSizes[allocating] = taken;
+                    allocating++;
+                    bytes += taken;
+                }
             }
 
             Assert.True(_peers >= Crowd * Calls,
                         $"only {_peers} peer deliveries over {Calls} calls — the arrangement is wrong, not the code");
-            // Not zero: a pool re-rent after someone else's Gen2 costs one buffer PER RUN (~1 KB). Under one
-            // byte a call still refuses every per-peer and per-call shape. See the doc comment.
-            Assert.True(bytes < Calls,
-                        $"{bytes} B over {Calls} calls to {Crowd} peers — at {(double)bytes / Calls:0.##} B a "
-                      + $"call this is a per-call allocation, not the pool's one re-rented buffer");
+            // Counted per CALL, not summed per pass: a pool re-rent after a Gen2 trim, or the runner's one-off,
+            // is ONE call allocating; a per-call cost is EVERY call allocating. See the doc comment.
+            Assert.True(allocating < AllocatingCallsBound,
+                        $"{allocating} of {Calls} calls to {Crowd} peers allocated ({bytes} B in all; the first "
+                      + $"{Math.Min(allocating, firstSizes.Length)}: "
+                      + $"{string.Join(", ", firstSizes.Take(Math.Min(allocating, firstSizes.Length)))} B) — that is a "
+                      + "per-call allocation, not a one-off such as the pool re-renting one buffer after a Gen2 trim");
         }
         finally { Leave(crowd); }
     }
