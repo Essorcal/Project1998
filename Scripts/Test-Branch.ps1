@@ -132,6 +132,14 @@ one (a leading comment, the test client's convention, e.g. `# budget: 900s`) use
 timeout regardless of -ScriptTimeoutSec, default or explicit; -ScriptTimeoutSec only ever governs the
 scripts that declare nothing. A header above 3600s is refused before the pair starts rather than honoured.
 
+.PARAMETER Shard
+Run only part of the selected scripts, as "k/n": the k-th of n shards, taking every n-th script of the
+selection starting at the k-th (round robin over the same order -Scripts or the default glob produces, so
+the n shards together are exactly the selection, each script once). Each shard is a separate run with its
+own pair, so one call fits inside a tool's time cap: a coordinator's shell tool stops a call at 600 s, and
+the full roster takes about ten minutes. Run 1/2 and then 2/2; together they are the full suite. A shard
+that selects no scripts is a usage error (exit 2), never an empty pass.
+
 .PARAMETER Plan
 Print what this run WOULD do -- the checkout, port base, the selected scripts with each one's resolved
 budget and required bots, the resolved bot roster, and which names have a known password (never the
@@ -148,6 +156,9 @@ Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Scripts C:
 .EXAMPLE
 Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Plan
 
+.EXAMPLE
+Scripts\Test-Branch.ps1 -Checkout C:\Repo\Project1998\NexusTK-sonnet -Shard 1/2
+
 .NOTES
 Windows PowerShell 5.1 compatible. Exit codes: 0 every script exited 0 with zero failed expects, or -Plan
 printed its plan; 1 a script exited nonzero or reported a failed expect, the ready-probe timed out, the run
@@ -155,7 +166,7 @@ was interrupted (Ctrl+C/Ctrl+Break), a test-client build failure, or Serve.ps1 -
 (exit 0) but did not actually write a fresh run\session.json -- this also covers Serve.ps1's own exit 1 (a
 build failure in -Checkout, passed through as-is); 2 Serve.ps1 refused to start (ports held, or this
 checkout already has a pair running -- its own exit 2, passed through as-is) and this script's own usage
-errors (a bad -Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes, -Plan combined with -KeepRunning or
+errors (a bad -Checkout/-TestClient/-Scripts/-PortBase/-Bots/-Passes/-Shard, a shard with no scripts, -Plan combined with -KeepRunning or
 -Json, a script's `# budget:` header over the 3600s ceiling, a script's `# requires bots:` name with no
 known password, TestClient.Cli project missing, dotnet not found).
 #>
@@ -171,6 +182,7 @@ param(
     [string]$Json,
     [int]$ReadyTimeoutSec = 60,
     [int]$ScriptTimeoutSec = 120,
+    [string]$Shard,
     [switch]$Plan
 )
 
@@ -448,6 +460,25 @@ if ($Scripts -and $Scripts.Count -gt 0) {
     $hits = @(Get-ChildItem -Path $default -Filter '*.txt' -File -ErrorAction SilentlyContinue | Sort-Object Name)
     if ($hits.Count -eq 0) { Write-Host "No *.txt scripts under $default."; exit 2 }
     foreach ($h in $hits) { $scriptFiles.Add($h.FullName) }
+}
+
+$ShardLabel = $null
+if ($Shard) {
+    if ($Shard -notmatch '^(\d+)/(\d+)$' -or [int]$Matches[1] -lt 1 -or [int]$Matches[1] -gt [int]$Matches[2]) {
+        Write-Host "-Shard must be k/n with 1 <= k <= n, e.g. 1/2 (got '$Shard')."
+        exit 2
+    }
+    $shardIndex = [int]$Matches[1]
+    $shardCount = [int]$Matches[2]
+    $allScripts = @($scriptFiles)
+    $scriptFiles = New-Object System.Collections.Generic.List[string]
+    for ($i = $shardIndex - 1; $i -lt $allScripts.Count; $i += $shardCount) { $scriptFiles.Add($allScripts[$i]) }
+    if ($scriptFiles.Count -eq 0) {
+        Write-Host "-Shard $Shard selects no scripts: the selection has only $($allScripts.Count)."
+        exit 2
+    }
+    $ShardLabel = "$shardIndex/$shardCount ($($scriptFiles.Count) of $($allScripts.Count) scripts)"
+    Write-Host "Shard $ShardLabel"
 }
 
 # #146: read each selected script's own leading-comment budget header (Get-ScriptHeader) once, up front,
@@ -748,6 +779,7 @@ try {
                         checkout   = $CheckoutFull
                         testClient = $TestClientFull
                         portBase   = $PortBase
+                        shard      = $ShardLabel
                         bots       = @($Bots)
                         primaryBot = $PrimaryBot
                         ranAt      = (Get-Date).ToString('o')
