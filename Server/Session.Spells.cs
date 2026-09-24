@@ -2157,7 +2157,12 @@ public sealed partial class Session
     // CastLeap/CastManaBattery handlers used to own (none of them remain; Lua() fails the cast if the verb isn't
     // loaded). Self HP/MP setters clamp to the effective caps.
     internal uint LuaMaxMp        => EffMaxMp;
-    internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, 0, (int)EffMaxHp); SendStats(); }
+    // setHp CANNOT KILL (#175). Hp 0 is the whole dead state (IsDead), but only Die() makes a death: the ghost
+    // redraw, the penalties, the save. A plain set to 0 skipped all of that and then left the player immune,
+    // since TakeDamage returns early for IsDead. So a living caster floors at 1; killing is damage's job. A
+    // caster ALREADY dead keeps the floor of 0, so a set to 0 cannot lift a ghost to 1 hp. HandleCast refuses
+    // dead casters except for Hyun Moo Revival, whose verb revives through reviveSelf and never calls setHp.
+    internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, IsDead ? 0 : 1, (int)EffMaxHp); SendStats(); }
     internal void LuaSetMana(int n) { _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp); SendStats(); }
 
     // Resolve the targeted PLAYER for a Tier-3 utility cast (explicit id -> that player incl. self, else faced
