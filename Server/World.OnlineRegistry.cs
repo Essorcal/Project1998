@@ -44,13 +44,13 @@ public sealed partial class World
         /// they're offline. Used by whisper/tell (RTK clif_parsewisp's target lookup).</summary>
         internal Session? FindPlayer(string name)
         {
-            // CharName, not Snapshot().Name: Snapshot takes the session's state monitor under _lock (#29 is session
-            // state THEN _lock, #87). !IsClosed (#183): a duplicate login leaves the kicked session on its map until
-            // its read loop unwinds, and its Send drops frames, so a hit on it loses the whisper or command. It is
-            // a volatile read, not a monitor, so rule 1 holds; ByIdLocked below skips the same sessions.
+            // CharName, not Snapshot().Name: Snapshot takes the session's state monitor under _lock (#29, #87).
+            // !IsReplaced (#183): a second login leaves the replaced session on its map until its read loop unwinds,
+            // and a hit on it loses the whisper or command. Only REPLACED is skipped: a kicked or dropped session is
+            // found until its teardown, as before. A volatile read, not a monitor (rule 1); ByIdLocked does the same.
             lock (world._lock)
                 return world._maps.Values.SelectMany(m => m.Players)
-                                  .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase) && !p.IsClosed);
+                                  .FirstOrDefault(p => string.Equals(p.CharName, name, StringComparison.OrdinalIgnoreCase) && !p.IsReplaced);
         }
 
         /// <summary>The connected player with this entity id (any map), or null. Used by click-profile's "view
@@ -68,7 +68,7 @@ public sealed partial class World
         internal Session? ByIdLocked(uint id)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
-            return world._maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id && !p.IsClosed);
+            return world._maps.Values.SelectMany(m => m.Players).FirstOrDefault(p => p.PlayerId == id && !p.IsReplaced);
         }
 
         /// <summary>Every connected player, across every map — a server-wide (not map-scoped) roster snapshot.

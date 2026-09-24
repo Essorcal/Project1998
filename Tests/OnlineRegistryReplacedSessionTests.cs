@@ -8,7 +8,7 @@ namespace Tests;
 
 /// <summary>
 /// #183: the online-registry lookups (<c>World.Online.FindPlayer</c>, <c>ById</c>, <c>ByIdLocked</c>) skip a
-/// session whose connection is closed.
+/// session that a second login for the same account has REPLACED (<c>Session.IsReplaced</c>), and nothing else.
 ///
 /// <para><b>The window.</b> On an account's second login the NEW session's <c>HandleArrival</c> runs
 /// <c>Session.KickForReplacement</c> on the OLD one, which closes its connection and leaves it standing on its
@@ -33,17 +33,22 @@ namespace Tests;
 /// </list>
 ///
 /// <para>The party-invite, <c>@kick</c> and exchange facts pin the other visible effects the same skip has at
-/// those callers, found while doing this; they are stated in the #183 report for a decision.</para>
+/// those callers inside the duplicate-login window. Caleb accepted them (option B, 2026-09-24).</para>
+///
+/// <para><b>What is NOT skipped.</b> A session closed for any other reason — a GM <c>@kick</c> or <c>@ban</c>, the
+/// slow-client drop — is still found by every lookup until its own teardown takes it off the map, exactly as on
+/// master, and a kill share landing in that gap is still paid. The last two facts pin that, and go red if the
+/// skip is ever widened from "replaced" to "closed".</para>
 ///
 /// <para>Hygiene: every session leaves its map in a <c>finally</c>, and every name is unique to this class, so
 /// nothing here can be found by another class's lookup. Map ids are content-free (no Maps.csv row).</para>
 /// </summary>
 [Collection("world")]
-public class OnlineRegistryClosedSessionTests
+public class OnlineRegistryReplacedSessionTests
 {
     private const ushort RegistryMap = 60186, MonitorMap = 60187, WhisperMap = 60188, WhisperEarlyMap = 60189,
                          RezMap = 60190, RezEarlyMap = 60191, PartyMap = 60192, KickMap = 60193,
-                         ExchangeMap = 60194;
+                         ExchangeMap = 60194, KickGapMap = 60195, KillGapMap = 60196;
 
     private const byte WhisperIn = 0x19;
 
@@ -54,7 +59,7 @@ public class OnlineRegistryClosedSessionTests
 
     private readonly SessionFixture _fx;
 
-    public OnlineRegistryClosedSessionTests(SessionFixture fx)
+    public OnlineRegistryReplacedSessionTests(SessionFixture fx)
     {
         _fx = fx;
         lock (TestProcessState.Gate)
@@ -73,8 +78,8 @@ public class OnlineRegistryClosedSessionTests
     /// before the kick the name resolves to the OLD session, so the old one really is the first hit and a
     /// lookup that did not skip it would return it.
     ///
-    /// <para>Falsified (both red, see the #183 report): drop the <c>!p.IsClosed</c> test from
-    /// <c>FindPlayer</c> and <c>ByIdLocked</c>, or make <c>Session.IsClosed</c> return false.</para></summary>
+    /// <para>Falsified (red, see the #183 report): drop the <c>!p.IsReplaced</c> test from
+    /// <c>FindPlayer</c> and <c>ByIdLocked</c>.</para></summary>
     [Fact]
     public void TheLookupsSkipTheKickedSessionAndFindItsReplacement()
     {
@@ -87,8 +92,8 @@ public class OnlineRegistryClosedSessionTests
             Assert.Same(old, online.FindPlayer("DupRegistry"));     // old entered first: it is the first hit
 
             old.KickForReplacement();
-            Assert.True(old.IsClosed);
-            Assert.False(fresh.IsClosed);
+            Assert.True(old.IsReplaced);
+            Assert.False(fresh.IsReplaced);
 
             Assert.Same(fresh, online.FindPlayer("DupRegistry"));
             Assert.Same(fresh, online.FindPlayer("dupregistry"));   // still case-insensitive
@@ -116,7 +121,7 @@ public class OnlineRegistryClosedSessionTests
 
     /// <summary>The skip takes no session monitor. The lookups run under <c>World._lock</c>, and Locking.md
     /// rule 1 forbids entering a session's state monitor there (#29: session state THEN <c>_lock</c>). With the
-    /// kicked session's monitor held on another thread, both lookups must still finish: an <c>IsClosed</c> that
+    /// kicked session's monitor held on another thread, both lookups must still finish: an <c>IsReplaced</c> that
     /// entered the monitor would block here until the holder let go.</summary>
     [Fact]
     public async Task TheLookupsDoNotWaitOnTheKickedSessionsMonitor()
@@ -365,6 +370,78 @@ public class OnlineRegistryClosedSessionTests
             _fx.World.LeaveMap(old, ExchangeMap);
             _fx.World.LeaveMap(fresh, ExchangeMap);
             _fx.World.LeaveMap(sender, ExchangeMap);
+        }
+    }
+
+    // =====================================================================================================
+    // Closed but NOT replaced: still found until teardown, as on master (option B keeps effect 6 out).
+    // =====================================================================================================
+
+    /// <summary>A GM <c>@kick</c> closes the target's connection straight away, but its read loop has not yet
+    /// reached <c>TearDownWorldState</c>, so it is still on the map. It was not replaced, so every lookup still
+    /// finds it in that gap — exactly as on master.
+    ///
+    /// <para>Falsified by widening the skip to "closed" (<c>IsReplaced</c> reading <c>_closed</c>): red on the
+    /// first lookup, which comes back null.</para></summary>
+    [Fact]
+    public void ASessionClosedByAGmKickIsStillFoundUntilItsTeardown()
+    {
+        var (target, targetOut) = _fx.Player("GapKicked", KickGapMap, 5, 5);
+        var (gm, _) = _fx.Player(GmName, KickGapMap, 7, 5);
+        var online = _fx.World.Online;
+
+        try
+        {
+            Run(gm, "@kick GapKicked");
+            Assert.True(targetOut.Closed, "the kick must have closed the target's connection");
+
+            Assert.Same(target, online.FindPlayer("GapKicked"));
+            Assert.Same(target, online.ById(target.PlayerId));
+            Session? locked = null;
+            _fx.World.UnderWorldLockForTest(() => locked = online.ByIdLocked(target.PlayerId));
+            Assert.Same(target, locked);
+            Assert.False(target.IsReplaced);   // closed by the kick, not replaced by a login
+        }
+        finally
+        {
+            _fx.World.LeaveMap(target, KickGapMap);
+            _fx.World.LeaveMap(gm, KickGapMap);
+        }
+    }
+
+    /// <summary>A kill credited by owner id (<c>ApplyTrapDamage</c> -&gt; <c>Online.ById(owner)?.AwardKillExp</c>,
+    /// the trap and poison path; a pet kill uses the same lookup) that lands after a GM <c>@kick</c> closed the
+    /// owner's connection but before their teardown is still paid to them, and their teardown's flush then
+    /// saves it — as on master.
+    ///
+    /// <para>Falsified by widening the skip to "closed": the lookup comes back null and the exp is never
+    /// awarded.</para></summary>
+    [Fact]
+    public void AKillShareLandingInTheKickGapIsStillAwarded()
+    {
+        var (target, targetOut, character) = _fx.PlayerWith("GapKiller", _ => { }, KillGapMap, 5, 5);
+        var (gm, _) = _fx.Player(GmName, KillGapMap, 7, 5);
+        var prey = new Mob(_fx.World.AllocateMobId(), 1, 6, 6, "GapPrey", 10) { Exp = 40 };
+        _fx.World.AddMob(KillGapMap, prey);
+
+        try
+        {
+            Run(gm, "@kick GapKiller");
+            Assert.True(targetOut.Closed, "the kick must have closed the owner's connection");
+            uint before = character.Exp;
+
+            var q = new World.TickQueues();
+            q.TrapDamage.Add((KillGapMap, prey, prey.Hp, target.PlayerId));
+            _fx.World.FlushTickForTest(q);
+
+            Assert.False(prey.Alive, "the trap hit must have killed the prey");
+            Assert.True(character.Exp > before,
+                $"the kill share must still reach the kicked owner before their teardown (exp {before} -> {character.Exp})");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(target, KillGapMap);
+            _fx.World.LeaveMap(gm, KillGapMap);
         }
     }
 

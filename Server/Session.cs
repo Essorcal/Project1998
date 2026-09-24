@@ -51,7 +51,7 @@ public sealed partial class Session
     // Outbound decoupling (DDoS / tick-stall defense) lives in TcpOutbound, below: Send() hands the frame
     // to _out and never blocks, and the socket write happens on that transport's own writer task.
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
-    internal bool IsClosed => Volatile.Read(ref _closed) != 0;   // no monitor: read under World._lock (#183)
+
     // Slow-loris defense: the budget for a freshly-accepted connection's FIRST valid framed packet, and the
     // watchdog that enforces it, are FrameReader's (P1998_HANDSHAKE_MS — see FrameReader.DefaultHandshakeMs
     // for the whole rationale, which both processes now share). The latch stays here: the status probe below
@@ -99,10 +99,10 @@ public sealed partial class Session
                $"queued-casts {_queuedCasts.Count}, awaiting-dialog-reply {(_dlgReply is not null ? "YES" : "no")}, " +
                $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
     }
-    // Set once this session has been superseded by a newer login for the same account (duplicate-login
-    // guard, see World.OnlineRegistry.Register/Session.KickForReplacement). Gates the read-loop's disconnect save
-    // so a slow-to-unwind OLD session can never clobber the NEW session's fresher state.
+    // Set once a newer login for the same account superseded this session (World.OnlineRegistry.Register,
+    // Session.KickForReplacement). Gates the disconnect save, so a slow OLD session never clobbers the NEW one.
     private int _replaced;
+    internal bool IsReplaced => Volatile.Read(ref _replaced) != 0;   // no monitor: read under World._lock (#183)
     // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it
     // used to cover the capture as well; consistency of the captured bytes is the state monitor's job now
     // (see FlushNow), so what is left here is purely write ORDER — the snapshot is taken under the monitor
