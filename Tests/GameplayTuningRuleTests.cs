@@ -18,6 +18,7 @@ namespace Tests;
 /// other test that drives the same process environment variable, and the real content is loaded back in a
 /// finally.</para>
 /// </summary>
+[Collection("tile-translation")]
 public class GameplayTuningRuleTests
 {
     private static void WithTuningRow(string row, Action body)

@@ -3,6 +3,7 @@ using Xunit;
 
 namespace Tests;
 
+[Collection("tile-translation")]
 public sealed class TableSpecTests
 {
     private static readonly string[] ExpectedLoadOrder =

@@ -10,6 +10,7 @@ namespace Tests;
 
 /// <summary>Proof for #35's one-reader extraction: the four server tables keep their pre-swap parsed
 /// values, every CSV is opened once per content load, and the formerly silent era failure is observable.</summary>
+[Collection("tile-translation")]
 public class CsvReaderConsolidationTests
 {
     [Fact]

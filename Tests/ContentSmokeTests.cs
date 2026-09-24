@@ -16,6 +16,7 @@ namespace Tests;
 /// error either, it just quietly stops doing anything (which is exactly the ~145-spell no-op bug this codebase
 /// has already been through once).
 /// </summary>
+[Collection("tile-translation")]
 public class ContentSmokeTests
 {
     // Content.Load populates static registries, so every test in this class shares one load. Doing it in a
