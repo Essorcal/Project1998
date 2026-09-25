@@ -512,7 +512,11 @@ public sealed partial class Session
     /// <para>A line that already fits comes back untouched, exactly as written. That matters: some lines are
     /// deliberately spaced (RTK's verbatim column-17 toggle lines, "No-clip          :ON") and re-flowing
     /// them would collapse the padding for no gain. Continuation lines keep the original leading indent, so
-    /// an indented list entry stays visually inside its list.</para></summary>
+    /// an indented list entry stays visually inside its list.</para>
+    ///
+    /// <para>A line that DOES have to be wrapped is rebuilt from its <c>Split(' ')</c>'d words, so any run of
+    /// spaces inside it collapses to one on the way out — a caller that wants a run of spaces preserved only
+    /// gets it if the whole line is short enough to skip wrapping entirely (see #159).</para></summary>
     internal static IEnumerable<string> WrapForPane(string line)
     {
         if (line.Length <= PaneWidth) { yield return line; yield break; }

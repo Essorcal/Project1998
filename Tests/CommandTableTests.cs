@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using Protocol.Tk495;
 using Server;
 using Shared;
@@ -318,9 +320,12 @@ public sealed class CommandTableTests
     /// real beat.</para>
     ///
     /// <para><b>What it does NOT pin, because <c>WrapForPane</c> rebuilds each line from whitespace-split
-    /// words:</b> runs of spaces. Squeezing the two spaces before "[hour pinned" down to one is invisible
-    /// here — verified, not assumed: that edit leaves the test green. The pane collapses them on the way to
-    /// the client too, so nothing observable is lost; it is simply not this test's reach.</para>
+    /// words:</b> runs of spaces. #159 found the source claiming a double space before "[hour pinned" that
+    /// the wire never carried — this readout line is long enough to always wrap, and wrapping collapses any
+    /// run of spaces to one, so the second space was invisible here even before the fix (verified, not
+    /// assumed: squeezing it to one left this test green). The call site now writes one space, matching what
+    /// the client has always received; this test still cannot distinguish one source space from two, because
+    /// nothing downstream of <c>WrapForPane</c> can.</para>
     ///
     /// <para>Falsified twice. Inverting the pin condition to <c>HourOverride is null</c>, so the marker
     /// lands on the released readout instead of the pinned one: red at pos 3,
@@ -342,7 +347,7 @@ public sealed class CommandTableTests
             string readout =
                 $"In-game time: hour 7 - day {day} of {_fx.World.Clock.SeasonName}, Yuri {year}. " +
                 $"Totem time: {TotemsAt(7)}.";
-            Assert.Equal(Paned(readout + "  [hour pinned - @clock real to release]"), Transcript(outbound));
+            Assert.Equal(Paned(readout + " [hour pinned - @clock real to release]"), Transcript(outbound));
 
             outbound.Clear();
             Run(session, "@clock real");
@@ -811,6 +816,111 @@ public sealed class CommandTableTests
         foreach (var line in pane)
             Assert.True(line.Length <= Session.PaneWidth || !line.Trim().Contains(' '),
                         $"'{command}' printed a {line.Length}-char line that could have been broken: \"{line}\"");
+    }
+
+    /// <summary>#176: the sweep above only ever renders bare <c>@help</c>'s first <see cref="Session"/>-
+    /// private <c>HelpPageSize</c> rows plus whatever "@help warp" happens to match — of the ~107 rows in
+    /// <c>CommandTable</c>, six were actually measured. This renders EVERY row instead, the cheap way #176
+    /// itself suggests: <c>CommandTable</c> and <c>HelpLines</c> straight, no session and no access tier, so
+    /// a Tester- or Player-only row (there is no tier above Gm to gate one out of a GM's reach anyway, but
+    /// this does not even rely on that) is covered exactly the same as a Gm one.
+    ///
+    /// <para>Both members are private to <see cref="Session"/> and this stays reflection rather than making
+    /// them internal, because Commands.cs is otherwise off-limits for this slice (see the packet's
+    /// do-not-touch list) — and a private surface reached only by reflection is one less thing a future
+    /// change has to keep source-compatible for a test. A rename of either member fails this loudly (a
+    /// <see cref="System.NullReferenceException"/> out of <see cref="CommandTableRows"/>), not silently.</para>
+    ///
+    /// <para>The pass rule is a per-TOKEN one, not a per-line one (#176 fix round 1): no single
+    /// whitespace-split token in a row's rendered output — measured together with the leading indent
+    /// <c>HelpLines</c> puts in front of it, the same way <see cref="Session.WrapForPane"/> itself measures
+    /// it (<c>indent = line[..(line.Length - line.TrimStart(' ').Length)]</c>) — is wider than
+    /// <see cref="Session.PaneWidth"/>. This is deliberately NOT "no output line is wider than the pane
+    /// unless it has no internal space": round 0 of this slice proved that check can never fail for
+    /// anything that reaches <c>WrapForPane</c> — a run of 2+ words always packs to <c>&lt;=PaneWidth</c> by
+    /// construction (the pre-flush check before every word after the first guarantees it), so the only line
+    /// <c>WrapForPane</c> ever lets overrun is a single unbreakable token, which that line-level rule
+    /// explicitly exempts. Checking the token directly is the version of the rule that can actually fail —
+    /// and does, for real, pre-existing rows (see <see cref="KnownWideTokenRows"/>).
+    ///
+    /// <para>Row count is cross-checked two ways, kept from round 0: against <c>CommandTable</c>'s own
+    /// length (so a reflection bug that silently found zero rows cannot pass by finding nothing to fail on)
+    /// and against the live "@help" header's own "of N" count (so the two ways of counting a command — the
+    /// table and the paged command a player actually runs — cannot drift apart unnoticed). A row in
+    /// <see cref="KnownWideTokenRows"/> still counts toward both.</para></summary>
+    [Fact]
+    public void EveryHelpRowFitsThePane()
+    {
+        var rows = CommandTableRows();
+        Assert.True(rows.Count > 50, $"reflection found only {rows.Count} CommandTable row(s) — " +
+                                      "either the table shrank a lot or CommandTableRows() broke");
+
+        var (session, outbound) = GmRoster.Session(_fx);
+        Run(session, "@help");
+        var header = Transcript(outbound).First(l => l.StartsWith("pane", StringComparison.Ordinal));
+        var headerMatch = Regex.Match(header, @"of (\d+) \(p\d+/\d+\)");
+        Assert.True(headerMatch.Success, $"could not parse the @help header line: \"{header}\"");
+        Assert.Equal(rows.Count, int.Parse(headerMatch.Groups[1].Value));
+
+        int measured = 0;
+        foreach (var (label, lines) in rows)
+        {
+            measured++;
+            if (KnownWideTokenRows.Contains(label)) continue;
+
+            foreach (var raw in lines)
+            {
+                string indent = raw[..(raw.Length - raw.TrimStart(' ').Length)];
+                foreach (var token in raw.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int width = indent.Length + token.Length;
+                    Assert.True(width <= Session.PaneWidth,
+                                $"{label}: token \"{token}\" plus its {indent.Length}-char indent is " +
+                                $"{width} chars, wider than PaneWidth ({Session.PaneWidth}): \"{raw}\"");
+                }
+            }
+        }
+        Assert.Equal(rows.Count, measured);
+    }
+
+    /// <summary>Rows this sweep found ALREADY failing the token-width rule, on `upstream/master` before
+    /// this slice touched anything — not introduced by it. Both are the Args column's enum-style list
+    /// (<c>"&lt;A|B|C|...&gt;"</c>), which has no space for <c>WrapForPane</c> to break on, so the client
+    /// re-wraps it on its own exactly like a long pasted map/item key would (see
+    /// <see cref="Session.WrapForPane"/>'s doc — "half of a mangled token is no worse than half of a mangled
+    /// token"). Not reworded: Help/Args text is player-visible, and this slice's stop rule is explicit that
+    /// rewording it is Caleb's call, not this worker's. If Caleb wants these shortened, that is a follow-up,
+    /// not this test's job.
+    ///
+    /// <list type="bullet">
+    /// <item><c>@class &lt;Warrior|Rogue|Mage|Poet|Peasant&gt;</c> — the Args token is 33 chars (indent 0).</item>
+    /// <item><c>@align &lt;Unaligned|Kwisin|Mingken|Ohaeng|0-3&gt;</c> — the Args token is 37 chars (indent 0),
+    /// the widest in the table.</item>
+    /// </list></summary>
+    private static readonly HashSet<string> KnownWideTokenRows = new() { "@class", "@align" };
+
+    /// <summary>Every <c>Session.CommandTable</c> row, rendered through the private <c>Session.HelpLines</c>
+    /// exactly the way <c>ShowCommandHelp</c> does — reached by reflection because both stay private (see
+    /// <see cref="EveryHelpRowFitsThePane"/>'s doc). <c>label</c> is the row's own calling shape ("@name" or
+    /// "@name/@alias"), built from <c>Names</c> the same way <c>HelpShape</c> does, so a failing assertion
+    /// names the row without needing to re-derive it from wrapped text.</summary>
+    private static List<(string Label, string[] Lines)> CommandTableRows()
+    {
+        var tableField = typeof(Session).GetField("CommandTable", BindingFlags.NonPublic | BindingFlags.Static)
+                          ?? throw new MissingFieldException("Session.CommandTable not found by reflection");
+        var helpLinesMethod = typeof(Session).GetMethod("HelpLines", BindingFlags.NonPublic | BindingFlags.Static)
+                              ?? throw new MissingMethodException("Session.HelpLines not found by reflection");
+
+        var table = (System.Collections.IEnumerable)tableField.GetValue(null)!;
+        var result = new List<(string, string[])>();
+        foreach (var row in table)
+        {
+            var names = (string[])row.GetType().GetProperty("Names")!.GetValue(row)!;
+            var label = "@" + string.Join("/@", names);
+            var lines = ((IEnumerable<string>)helpLinesMethod.Invoke(null, new[] { row })!).ToArray();
+            result.Add((label, lines));
+        }
+        return result;
     }
 
     // ---- Session.Navigation.cs, after the same pass ----------------------------------------------------
