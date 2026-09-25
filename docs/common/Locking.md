@@ -40,7 +40,8 @@ map two players can produce it by accident in the same instant. A total order ma
 Not comments. Each rule has an assert, and each assert has a test in `Tests/SessionActorTests.cs`.
 
 * `Session.EnterState` asserts `!World.HoldsWorldLock` and `!Session.HoldsAnyViewLock`.
-* `Session.EnterScriptGate` asserts `!Session.HoldsAnyViewLock`.
+* `Session.EnterScriptGate` asserts `!Session.HoldsAnyViewLock` and `!World.HoldsAnyWorldLock` (#90): see
+  the note on the gate and `World._lock` below.
 * `World.MobAiTick.Step` (the per-mob half of the tick) asserts `World.HoldsWorldLock`: the AI runs under row 3 and nowhere else. Debug builds only, like the rest of this list; `Tests/MobAiTickTests.cs` (`StepOutsideTheWorldLockAsserts`) pins it firing.
 * `World.SpawnDirector` (the spawn points and batch groups, #37) asserts `World.HoldsWorldLock` at the top of every method that touches map state — twelve of them, the tick's two sweeps, map entry and the death path included — and takes no lock of its own. `Tests/SpawnDirectorTests.cs` (`DirectorMethodsRefuseToRunOutsideTheWorldLock`) pins the five entry points firing.
 * `Session.EnterState` sorts by `StateRank`; a descending nested acquisition drops what it holds, retakes in
@@ -49,12 +50,17 @@ Not comments. Each rule has an assert, and each assert has a test in `Tests/Sess
   belongs to a **different** session and `Monitor.IsEntered` cannot see it. That is why `lock (_viewLock)`
   is spelled `using (EnterView())` everywhere.
 
-**One rule is convention, not an assert, and it is named here so that stays visible:** nothing may enter the
-Lua gate while holding `World._lock` (row 3 under row 1). `MobScript.Fire` is the only path that could —
-the tick's AI hooks — and it carries the rule in its own doc comment; `MobScript.Has`, which *is* called
-under `_lock` by `World.QueueHook`, is deliberately lock-free so the hot path never reaches the gate.
-Asserting it properly needs `World._lock` to be counted the way `_viewLock` now is, which means routing its
-~60 `lock (_lock)` sites through a guard — filed as **#90**, for the next time that file is open anyway.
+**The gate and `World._lock` (#90).** Nothing may enter the Lua gate while holding `World._lock` (row 3
+under row 1). The gate is static and has no `World` to ask, so instead of counting `_lock` the way `_viewLock`
+is counted — which would mean routing its ~60 `lock (_lock)` sites through a guard — every `World` registers
+its lock object when it is built (`World.ScriptGateRegistry.cs`, weak references, Debug only), and the gate
+asserts `Monitor.IsEntered` is false for each. No lock site changes, and the check covers every host at once:
+`LuaVerbHost`, `NpcScript`, `MobScript` and the `Content.PublishSnapshot` boundary. It fires for ANY world's
+lock, not only one: the gate is process-wide, so holding a second world's lock while waiting for it is the
+same cycle. A Release build compiles neither the registration nor the check. `MobScript.Fire` keeps its own
+earlier assert on the tick's hook path; `MobScript.Has`, which *is* called under `_lock` by `World.QueueHook`,
+is deliberately lock-free so the hot path never reaches the gate. `Tests/SessionActorTests.cs`
+(`EnteringTheLuaGateUnderAWorldLockAsserts`) pins it.
 
 ## The two shapes that keep coming back
 
