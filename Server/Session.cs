@@ -51,6 +51,11 @@ public sealed partial class Session
     // Outbound decoupling (DDoS / tick-stall defense) lives in TcpOutbound, below: Send() hands the frame
     // to _out and never blocks, and the socket write happens on that transport's own writer task.
     private int _closed;   // 0 until the connection is being torn down; set once (Interlocked) — idempotent close
+    // True from the FIRST statement of TearDownWorldState on, written and read only under this session's monitor
+    // (#173). _closed cannot say this: on an ordinary disconnect CloseConnection sets it only AFTER the teardown
+    // has returned, and the teardown can drop our monitor part-way (RemoveFromParty's broadcast descends into a
+    // lower-ranked member), so a peer holding our monitor needs its own way to see we are on our way out.
+    private bool _leaving;
 
     // Slow-loris defense: the budget for a freshly-accepted connection's FIRST valid framed packet, and the
     // watchdog that enforces it, are FrameReader's (P1998_HANDSHAKE_MS — see FrameReader.DefaultHandshakeMs
@@ -396,6 +401,7 @@ public sealed partial class Session
     /// was inline.</summary>
     private void TearDownWorldState()
     {
+        _leaving = true;   // first, before anything below can drop the monitor: TryStartTrade refuses from here on (#173)
         // Drop out of any live party/trade so the other side(s) aren't left waiting on someone who's gone
         // (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is exactly what a
         // disconnect does here too — the difference is we also close the survivor's exchange window with
