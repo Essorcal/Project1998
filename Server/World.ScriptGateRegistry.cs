@@ -13,20 +13,21 @@ public sealed partial class World
     /// only. Weak so the registry never keeps a dead World's lock alive: the test suite builds a World per
     /// fixture and several more inline, and a strong list would grow for the whole run. Dead entries are
     /// dropped the next time a World registers, so the array holds the live worlds plus whatever died since
-    /// the last construction.</summary>
-    private static WeakReference<object>[] _scriptGateWorldLocks = Array.Empty<WeakReference<object>>();
+    /// the last construction. No initializer, so a Release build — where nothing registers — adds nothing to
+    /// World's static constructor either: null until the first World registers.</summary>
+    private static WeakReference<object>[]? _scriptGateWorldLocks;
 
     /// <summary>Add this world's lock to the registry the Lua gate checks. <c>[Conditional("DEBUG")]</c>: in
     /// a Release build the compiler removes the call from the constructor entirely, so the registry stays
-    /// empty and nothing is allocated.</summary>
+    /// null and nothing is allocated.</summary>
     [Conditional("DEBUG")]
     private static void RegisterForScriptGateAssert(object worldLock)
     {
         while (true)
         {
             var old = Volatile.Read(ref _scriptGateWorldLocks);
-            var next = new List<WeakReference<object>>(old.Length + 1);
-            foreach (var w in old)
+            var next = new List<WeakReference<object>>((old?.Length ?? 0) + 1);
+            foreach (var w in old ?? Array.Empty<WeakReference<object>>())
                 if (w.TryGetTarget(out _)) next.Add(w);
             next.Add(new WeakReference<object>(worldLock));
             if (ReferenceEquals(Interlocked.CompareExchange(ref _scriptGateWorldLocks, next.ToArray(), old), old))
@@ -44,7 +45,9 @@ public sealed partial class World
     {
         get
         {
-            foreach (var w in Volatile.Read(ref _scriptGateWorldLocks))
+            var locks = Volatile.Read(ref _scriptGateWorldLocks);
+            if (locks is null) return false;
+            foreach (var w in locks)
                 if (w.TryGetTarget(out var worldLock) && Monitor.IsEntered(worldLock)) return true;
             return false;
         }
