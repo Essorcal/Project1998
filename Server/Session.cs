@@ -932,9 +932,9 @@ public sealed partial class Session
     /// share whose killer was waiting on the departed session's monitor, or a mob swing the tick queued
     /// before it. A login that loaded in between would have that write land under it, and its own next write
     /// would then erase the share. The kick is the fence: it enters the departed session's monitor, so it
-    /// waits out whatever still holds it (at most that holder's one database write), writes the row, and
-    /// latches <c>_replaced</c>, so anything later is refused. The load below then sees every write that won
-    /// the race, and none can land after it.</para>
+    /// waits out whatever still holds it (for the two late writers above, the rest of one payout or one death,
+    /// each ending in one database write), writes the row, and latches <c>_replaced</c>, so anything later is
+    /// refused. The caller's load then sees every write that won the race, and none can land after it.</para>
     ///
     /// <para>A departed kick that THROWS is logged and the arrival carries on with the row as it stands. The
     /// only route to a throw is a character the serializer rejects, whose teardown save already threw and was
