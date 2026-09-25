@@ -2740,8 +2740,12 @@ public sealed partial class World
             long t0 = clock.ElapsedMilliseconds;
             var gc0 = GC.GetTotalPauseDuration();
             _lockWaitMs = 0;
+            // What still reaches this catch: the pre-sweep phases (1)-(1.7) and the spawn rows inside (1)/(1.1)
+            // catch their own throws (#106), and so do the sweep's per-map and per-creature guards (#109). Left
+            // here are FlushTick, the sweep's outer walk over the maps, the terrain pre-warm, and the rest of
+            // Tick outside those guards.
             try { Tick(); }
-            catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+            catch (Exception e) { Log.Error("world tick threw outside its phase and sweep guards (FlushTick, the sweep's map walk, the terrain pre-warm) — the rest of this beat is abandoned, the next runs on schedule", e); }
             EndPhases();
 
             if (SlowTickMs <= 0) continue;
