@@ -412,7 +412,12 @@ public sealed partial class Session
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
         if (_enteredWorld) _world.LeaveMap(this, _char.Map);
-        if (_enteredWorld) _world.Online.Unregister(UserKey, this);
+        // Give the account's slot back, parked in the departed table rather than dropped (#168), and only if we
+        // still own it. The next login for the account within one autosave interval is handed us and fences us
+        // (HandleArrival -> ClaimAccountSlot -> KickForReplacement), so a late write still landing under our
+        // monitor — a group share decided before this teardown, a mob swing queued before it — lands before
+        // that login loads the row, and nothing from us lands after.
+        if (_enteredWorld) _world.Online.Depart(UserKey, this, Environment.TickCount64);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // flushed the freshest state; saving again here from this now-stale session would clobber it —
@@ -881,6 +886,50 @@ public sealed partial class Session
     // port. P1998_LOGIN_PORT overrides for a custom layout; unset it resolves to null and the pairing wins.
     private int LoginRedirectPort => ServerConfig.Current.LoginPort ?? ChannelPorts.LoginFor(_port);
 
+    /// <summary>HandleArrival's register-and-kick block, split out so a test can run an arrival's slot claim
+    /// without a handoff token. Takes the account's online slot and kicks whatever session the registry hands
+    /// back, BEFORE the caller loads the row.
+    ///
+    /// <para><b>Live:</b> another session is still connected for this account. As it always was.</para>
+    ///
+    /// <para><b>Departed (#168):</b> the account's last session tore down less than an autosave interval ago.
+    /// Its teardown wrote the row, but a write decided before that teardown can still land after it: a group
+    /// share whose killer was waiting on the departed session's monitor, or a mob swing the tick queued
+    /// before it. A login that loaded in between would have that write land under it, and its own next write
+    /// would then erase the share. The kick is the fence: it enters the departed session's monitor, so it
+    /// waits out whatever still holds it (at most that holder's one database write), writes the row, and
+    /// latches <c>_replaced</c>, so anything later is refused. The load below then sees every write that won
+    /// the race, and none can land after it.</para>
+    ///
+    /// <para>A departed kick that THROWS is logged and the arrival carries on with the row as it stands. The
+    /// only route to a throw is a character the serializer rejects, whose teardown save already threw and was
+    /// logged as lost; letting it escape would refuse this login, which the same logout without the fence
+    /// lets in. A live kick's throw still propagates, as it always has.</para></summary>
+    internal void ClaimAccountSlot(string user)
+    {
+        _world.Online.RegisterArrival(CharacterStore.Key(user), this, out var oldSession, out bool departed);
+        if (oldSession is null) return;
+        ArrivalFenceProbeForTest?.Invoke(oldSession);   // null except under test; see the field
+        if (!departed)
+        {
+            Log.Info($"   -> ARRIVAL: '{user}' already online — kicking previous session");
+            oldSession.KickForReplacement();
+            return;
+        }
+        Log.Info($"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load");
+        try { oldSession.KickForReplacement(); }
+        catch (Exception e)
+        {
+            Log.Error($"   -> ARRIVAL: the departed session's final write for '{user}' threw — its save is LOST; " +
+                      "loading the row as it stands", e);
+        }
+    }
+
+    /// <summary>Test seam (#168): called with the session <see cref="ClaimAccountSlot"/> is about to kick,
+    /// after the registry handed it back and before the kick enters its monitor. A fence fact uses it to know
+    /// the arrival has reached the fence without timing anything. Null outside the test host.</summary>
+    internal static Action<Session>? ArrivalFenceProbeForTest;
+
     private void HandleArrival(TkPacket pkt)
     {
         // plaintext body: <klen> "NexonInc." <ulen> "<user>" <token>
@@ -941,13 +990,9 @@ public sealed partial class Session
         // after a network blip, or someone else with the password), force the OLD session out and flush it
         // FIRST — otherwise its eventual disconnect save could clobber THIS session with stale data, since
         // CharacterStore.Save is a blind last-write-wins upsert. Must run BEFORE _store.Load below so the
-        // kicked session's flush (if any) is visible to our own load.
-        _world.Online.Register(CharacterStore.Key(_user), this, out var oldSession);
-        if (oldSession is not null)
-        {
-            Log.Info($"   -> ARRIVAL: '{_user}' already online — kicking previous session");
-            oldSession.KickForReplacement();
-        }
+        // kicked session's flush (if any) is visible to our own load. Since #168 the same kick also fences a
+        // session for this account that tore down moments ago; see ClaimAccountSlot.
+        ClaimAccountSlot(_user);
 
         // Load the persisted character (created on the login channel, or saved at last logout). There is NO
         // fallback spawn any more: world entry never invents a character. A missing record here means the
