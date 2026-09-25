@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Server;
 using Shared;
 using Tests.Support;
@@ -403,7 +402,7 @@ public class OnlineRegistryAutoSaveTests
     /// <summary>Two things this move could have broken silently, pinned at the source because neither is
     /// observable from inside the test process.
     ///
-    /// <para><b>The threads.</b> <c>TkListener.StartWorld</c> must still create exactly two, one named
+    /// <para><b>The threads.</b> <c>TkListener.StartWorld</c> must still create these two, one named
     /// <c>world-tick</c> running <c>TickLoop</c> and one named <c>world-autosave</c> running the sweep
     /// (<c>AutoSave.Run</c>), and <c>World.cs</c> must start none: #37 section 5 moved thread start-up to the
     /// host, so the pin moved with it. The .NET runtime exposes no way to enumerate managed threads by name
@@ -411,6 +410,15 @@ public class OnlineRegistryAutoSaveTests
     /// the source would be starting a second <c>World</c> in the test process — which starts the watchdog,
     /// the status writer and the restart ladder, and that ladder polls <c>run/restart_at</c> and calls
     /// <c>Environment.Exit</c> when it finds one. Not worth it for this assertion.</para>
+    ///
+    /// <para>This fact checks identity, not exhaustiveness: that these two named starts exist in <c>Net.cs</c>
+    /// and that neither <c>AutoSaveTick</c> nor <c>FlushIsolated</c> is still reachable from <c>World.cs</c>.
+    /// Whether these are the ONLY dedicated thread starts anywhere under <c>Server/</c> — including forms that
+    /// never write the literal text <c>new Thread(</c>, and a start moved to some other file entirely — is
+    /// pinned exhaustively, file:count, by <see cref="ServerThreadStartsTests.TheDedicatedThreadStartsUnderServerAreThisExactPinnedSet"/>
+    /// (#195). That split is deliberate: a whole-<c>Server/</c> count folded in here would have to duplicate
+    /// that test's comment-stripping and every other file's baseline just to keep two unrelated facts in
+    /// sync.</para>
     ///
     /// <para><b>The two flush wordings.</b> A sweep failure "is retried next sweep"; a shutdown failure is
     /// "save LOST". Reporting the second as the first is the one thing an operator reading the last lines of
@@ -425,8 +433,10 @@ public class OnlineRegistryAutoSaveTests
     /// Pattern not found in value / Regex: new Thread\(_world\.AutoSave\.Run\)...". Falsified again by
     /// softening the periodic wording to "retried later": red with "Assert.Contains() Failure: Sub-string not
     /// found / Not found: that player's save is retried next sweep,...". Falsified again by renaming the tick
-    /// thread in <c>Net.cs</c> and by adding a third <c>new Thread(</c> to each file: red on the
-    /// <c>world-tick</c> pattern and on the two counts.</para></summary>
+    /// thread in <c>Net.cs</c>: red on the <c>world-tick</c> name pattern. Adding a third <c>new Thread(</c>
+    /// to either file, or moving one to a third file, no longer reds HERE — that is exactly what
+    /// <see cref="ServerThreadStartsTests"/> now exists to catch instead; see its own falsification
+    /// notes.</para></summary>
     [Fact]
     public void TheThreadWiringAndTheTwoFlushWordingsAreWhereTheyWere()
     {
@@ -435,11 +445,9 @@ public class OnlineRegistryAutoSaveTests
         string hostSource = File.ReadAllText(Path.Combine(serverDir, "Net.cs"));
         string sweepSource = File.ReadAllText(Path.Combine(serverDir, "World.AutoSaveLoop.cs"));
 
-        // Exactly two threads, now started from TkListener.StartWorld, still named what the logs and the ops
-        // runbook call them. World.cs starts none of its own: section 5 moved thread start-up to the host,
-        // and a thread reappearing in World.cs would put the heartbeat back on the object a test constructs.
-        Assert.DoesNotContain("new Thread(", worldSource);
-        Assert.Equal(2, Regex.Matches(hostSource, @"new Thread\(").Count);
+        // These two threads, still started from TkListener.StartWorld and still named what the logs and the
+        // ops runbook call them. (Whether World.cs starts none of its own, and whether these are the only
+        // dedicated thread starts under Server/, is ServerThreadStartsTests's pinned count, not this fact's.)
         Assert.Matches(@"new Thread\(_world\.TickLoop\)\s*\{[^}]*Name = ""world-tick""[^}]*\}\.Start\(\);", hostSource);
         Assert.Matches(@"new Thread\(_world\.AutoSave\.Run\)\s*\{[^}]*Name = ""world-autosave""[^}]*\}\.Start\(\);", hostSource);
         Assert.Contains("IsBackground = true, Name = \"world-tick\"", hostSource);
