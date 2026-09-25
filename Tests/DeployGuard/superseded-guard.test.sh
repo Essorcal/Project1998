@@ -296,6 +296,13 @@ run_case "a newer log holding only the echoed scripts (both phrases, no host lin
 base_incident1; OUT[$(p_log 108212779155)]=$(other_sha_log $TIP $OLD)
 run_case "a newer log whose host lines name another commit: deploy" false "" none "No master commit newer"
 
+# The proof is pinned to the whole SHA, start to end of the line: a commit that shares all but the last
+# character, or the SHA with anything after it, is another commit's line and proves nothing.
+base_incident1; OUT[$(p_log 108212779155)]=$(staged_log "${TIP:0:39}$([ "${TIP:39:1}" = 0 ] && echo 1 || echo 0)")
+run_case "a newer log naming a SHA that shares its first 39 characters: deploy" false "" none "No master commit newer"
+base_incident1; OUT[$(p_log 108212779155)]=$(staged_log "${TIP}0")
+run_case "a newer log naming the SHA with a character after it: deploy" false "" none "No master commit newer"
+
 base_incident1; OUT[$p_runs]="99 $MID_PR
 $RUNS"; OUT[$(p_jobs 99)]=""
 run_case "a newer non-master commit with a run proves nothing by itself; the tip still does: skip" true $TIP notice "Superseded: $TIP"
