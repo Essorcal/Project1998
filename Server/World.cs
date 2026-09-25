@@ -2853,7 +2853,8 @@ public sealed partial class World
         // This beat's outbound work, in one object: the locked phases below fill it, FlushTick drains
         // it once the lock is released (World.MobAiTick.cs).
         var q = new TickQueues();
-        List<MobFault>? faults = null;   // the mob-AI sweep's caught throws, if any; see (2)
+        List<PhaseFault>? phaseFaults = null;   // phases (1)-(1.7)'s caught throws, if any; see (1)
+        List<MobFault>? faults = null;          // the mob-AI sweep's caught throws, if any; see (2)
 
         // (0) Warm every active map's terrain BEFORE taking the lock. Both the respawn refill (Materialize ->
         // FreeSpawnTile) and the wander loop below call MapData.For, which on a miss reads the .map off disk,
@@ -2874,9 +2875,35 @@ public sealed partial class World
             _lockWaitMs = (acquired - lockT0) * 1000 / System.Diagnostics.Stopwatch.Frequency;
             MarkPhaseAt(PhLockWait, acquired);
 
+            // Phases (1) to (1.7) each have their own exception boundary (#106), the same log-and-skip shape
+            // as the (2) sweep's guards below. A phase that throws loses the rest of ITSELF this beat and
+            // nothing else: the phases after it, the mob sweep and FlushTick still run. Before these guards a
+            // throw here reached TickLoop's catch and the whole beat was lost, every queue with it.
+            //
+            // Drain what there is. Whatever a phase did or queued before it threw stands and is sent: a point
+            // that materialised before the bad one is drawn by (3), a morph already queued is reverted. Nothing
+            // is unwound, and what the phase did not reach waits for the next beat — so a point that throws on
+            // every beat keeps every point (1) walks after it waiting too, on its own map and on the maps
+            // visited after it, until the content is fixed. A throw
+            // part-way through a phase can leave its work half done: forage items already added to the map
+            // when TopUpForageLocked throws are on the ground but not broadcast this beat, because its drop
+            // list is never returned. That is the same torn state the per-mob guard documents at (2), and the
+            // same state the old shape left before it lost the rest of the beat on top of it.
+            //
+            // MarkPhase runs after each guard, thrown or not, so the phase clock still closes every bucket.
+            // Nothing is logged under the lock (#109): a throw costs one PhaseFault in `phaseFaults`, and
+            // LogPhaseFaults writes it after the lock is released. Plain try/catch, no closure or delegate per
+            // phase: a beat with no throw allocates nothing, and `phaseFaults` stays null. PreSweepProbeForTest
+            // is null outside the test host (World.MobFaults.cs).
+
             // (1) respawns: refill any due spawn point on a map someone is watching. Points only — the
             // hunting maps refill in batches at (1.1), not one mob at a time as they die.
-            _spawnDirector.RespawnDuePoints(_tick);
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhRespawns);
+                _spawnDirector.RespawnDuePoints(_tick);
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhRespawns, e)); }
             MarkPhase(PhRespawns);
 
             // (1.1) batch refills: every due spawn group on a map someone is hunting (RTK's spawner NPC,
@@ -2884,43 +2911,73 @@ public sealed partial class World
             // EnsureMaterialized when someone walks in, so the room is full before their viewport is built
             // rather than filling in around them. Sampled every BatchSweepTicks — these clocks are in whole
             // seconds and the shortest is 2s, so there is nothing to gain from looking every 600ms.
-            _spawnDirector.RefillDueGroups(_tick);
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhRefills);
+                _spawnDirector.RefillDueGroups(_tick);
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhRefills, e)); }
             MarkPhase(PhRefills);
 
             // (1.2) morph expiry (Session.CastMorph/RevertMorph): purely cosmetic per-player visual state
             // with no server-side entity of its own — the revert broadcast is socket I/O, so it's deferred
             // outside the lock same as trapDamage/expiredPets below.
-            foreach (var (_, pm) in _maps)
-                foreach (var p in pm.Players)
-                    if (p.IsMorphExpired) q.ExpiredMorphs.Add(p);
-            foreach (var (_, pm) in _maps)
-                foreach (var p in pm.Players)
-                    if (p.IsStealthExpired) q.ExpiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhMorphs);
+                foreach (var (_, pm) in _maps)
+                    foreach (var p in pm.Players)
+                        if (p.IsMorphExpired) q.ExpiredMorphs.Add(p);
+                foreach (var (_, pm) in _maps)
+                    foreach (var p in pm.Players)
+                        if (p.IsStealthExpired) q.ExpiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhMorphs, e)); }
             MarkPhase(PhMorphs);
 
             // (1.3) bladestorm auto-expiry: an untriggered decoy despawns silently after its 21s lifetime —
             // traps have no ground graphic (same precedent as the hazard family), so this is a plain in-lock
             // removal, no broadcast/deferral needed.
-            foreach (var (_, pm) in _maps)
-                pm.Traps.RemoveAll(t => t.ExpiresAt != 0 && Environment.TickCount64 >= t.ExpiresAt);
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhDecoys);
+                foreach (var (_, pm) in _maps)
+                    pm.Traps.RemoveAll(t => t.ExpiresAt != 0 && Environment.TickCount64 >= t.ExpiresAt);
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhDecoys, e)); }
             MarkPhase(PhDecoys);
 
             // (1.5) forage top-up: on a slow cadence, refill each forage box (chestnuts &c.) to its target count.
-            if (_tick % ForageTicks == 0) q.Forage = TopUpForageLocked();
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhForage);
+                if (_tick % ForageTicks == 0) q.Forage = TopUpForageLocked();
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhForage, e)); }
             MarkPhase(PhForage);
 
             // (1.6) day/night clock (see the Epoch doc): re-derive the shared calendar from wall-clock time
             // and, on an in-game hour rollover, flag every connected session for a fresh 0x20 broadcast.
             // Checked every tick rather than every 750th, so the broadcast lands within 600ms of the true
             // rollover instead of drifting by however far into an hour the process happened to start.
-            if (Clock.Sync()) q.TimeChanged = true;
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhClock);
+                if (Clock.Sync()) q.TimeChanged = true;
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhClock, e)); }
             MarkPhase(PhClock);
 
             // (1.7) weather: when the deterministic weather PERIOD rolls over (WeatherModel.PeriodHours, ~15
             // real min), recompute each active map's weather and broadcast to any whose sky actually changed.
             // A season change lands on a period boundary too, so this pass catches those as well. Cheap: the
             // period only advances a couple of times an hour. Overrides are broadcast eagerly elsewhere.
-            Weather.SweepPeriod(q);
+            try
+            {
+                PreSweepProbeForTest?.Invoke(PhWeather);
+                Weather.SweepPeriod(q);
+            }
+            catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhWeather, e)); }
             MarkPhase(PhWeather);
 
             // (2) wander: each mob acts only when its own MoveTime has elapsed (RTK MobMoveTime), and even
@@ -2966,11 +3023,16 @@ public sealed partial class World
             MarkPhase(PhWander);
         }
 
-        // (3)-(6): everything queued above, sent now the lock is released. The sweep's faults are written
-        // after it, in a finally so a flush that throws cannot lose them; their cost lands in the phase
-        // clock's `other`, the beat's unmarked tail, and on a beat with no fault it is one null test.
+        // (3)-(6): everything queued above, sent now the lock is released. The phase faults and the sweep's
+        // faults are written after it, in the order they happened, in a finally so a flush that throws
+        // cannot lose them; their cost lands in the phase clock's `other`, the beat's unmarked tail, and on a
+        // beat with no fault it is two null tests.
         try { FlushTick(q); }
-        finally { if (faults is not null) LogMobFaults(faults, _tick); }
+        finally
+        {
+            if (phaseFaults is not null) LogPhaseFaults(phaseFaults, _tick);
+            if (faults is not null) LogMobFaults(faults, _tick);
+        }
     }
 
     /// <summary>

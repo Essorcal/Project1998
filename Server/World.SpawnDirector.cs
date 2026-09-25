@@ -501,15 +501,21 @@ public sealed partial class World
             }
         }
 
-        /// <summary>Drop both rosters and the materialised set ahead of a <see cref="Build"/> from re-read
-        /// content (<see cref="RebuildPopulation"/>). The death registry is deliberately kept: a reload is
-        /// not a world reset for a boss cooldown. Caller holds <c>_lock</c>.</summary>
+        /// <summary>Drop both rosters, the materialised set and the mob-to-point index ahead of a
+        /// <see cref="Build"/> from re-read content (<see cref="RebuildPopulation"/>). The death registry is
+        /// deliberately kept: a reload is not a world reset for a boss cooldown. Caller holds <c>_lock</c>.
+        ///
+        /// <para><c>_mobSpawn</c> goes with the rosters (#121). The rebuild has already torn down every
+        /// creature it indexes, and mob ids are never reused, so after a reload no lookup can ever hit one of
+        /// its entries again; kept, they only held every pre-reload point mob's entry, and the old
+        /// <c>Spawn</c> behind it, for the life of the process.</para></summary>
         internal void Clear()
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             _spawns.Clear();
             _groups.Clear();
             _materialized.Clear();
+            _mobSpawn.Clear();
         }
 
         /// <summary>How many maps carry at least one spawn point / batch group — the start-up log lines.</summary>
@@ -521,11 +527,21 @@ public sealed partial class World
         // UnderWorldLockForTest: a reader of the roster should be able to see everything that writes it.
 
         /// <summary>Register one spawn point with a fixed home tile and its own respawn delay, the way
-        /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. Caller holds <c>_lock</c>.</summary>
-        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery)
+        /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. <paramref name="dueAt"/>, when non-zero,
+        /// registers it as a point whose creature is dead and whose respawn clock falls due on that beat, so
+        /// the tick's phase (1) materialises it without a map entry first. Caller holds <c>_lock</c>.</summary>
+        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery, long dueAt = 0)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
-            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery });
+            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery, RespawnTick = dueAt });
+        }
+
+        /// <summary>How many live creatures the mob-to-point index holds, on every map. Caller holds
+        /// <c>_lock</c>.</summary>
+        internal int MobSpawnIndexCountForTest()
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _mobSpawn.Count;
         }
 
         /// <summary>Register one batch group over the whole map, due immediately, the way <see cref="Build"/>

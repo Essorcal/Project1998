@@ -374,7 +374,14 @@ public class SpawnDirectorTests
 /// rebuild tears down every creature on every map; that puts it in its own xUnit collection, so its
 /// <c>LoadContent()</c> can run in parallel with the shared world fixture's — the established pattern for
 /// tests that build a World of their own. Falsified by deleting the <c>_spawnDirector.Clear()</c> line in
-/// <c>RebuildPopulation</c>: red on the test point's count (still 1).</summary>
+/// <c>RebuildPopulation</c>: red on the test point's count (still 1).
+///
+/// <para>#121: the rebuild also empties the live-mob-to-spawn-point index. Before it, the test point's
+/// creature — torn down by the rebuild, its id never to be reused — stayed indexed for the life of the
+/// process. Nobody is on any map of this world, so the rebuild re-materialises nothing and the index is
+/// exactly the test point's one entry before and nothing after. Falsified by deleting
+/// <c>_mobSpawn.Clear()</c> from <c>SpawnDirector.Clear</c>: red on the index count after the rebuild
+/// (still 1).</para></summary>
 public class SpawnDirectorRebuildTests
 {
     private const ushort RebuildMap = 60042;
@@ -420,6 +427,7 @@ public class SpawnDirectorRebuildTests
         Assert.Equal(1, Locked(world, () => spawns.GroupCountForTest(RebuildMap)));
         Assert.True(Locked(world, () => spawns.IsMaterializedForTest(RebuildMap)));
         Assert.Equal(1, world.MobCountForTest(RebuildMap));   // the point's creature (the group has no box to roll in here)
+        Assert.Equal(1, Locked(world, () => spawns.MobSpawnIndexCountForTest()));   // …indexed to its point
 
         var (mobs, npcs, maps) = world.RebuildPopulation();
 
@@ -430,6 +438,7 @@ public class SpawnDirectorRebuildTests
         Assert.Equal(0, Locked(world, () => spawns.GroupCountForTest(RebuildMap)));
         Assert.False(Locked(world, () => spawns.IsMaterializedForTest(RebuildMap)));
         Assert.Equal(0, world.MobCountForTest(RebuildMap));
+        Assert.Equal(0, Locked(world, () => spawns.MobSpawnIndexCountForTest()));    // #121: no stale entry left behind
         Assert.Equal(kugnaeBefore, Locked(world, () => spawns.PointCountForTest(Kugnae)));   // …and Content's roster is back as it was
     }
 }
