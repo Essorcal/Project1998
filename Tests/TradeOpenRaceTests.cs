@@ -289,8 +289,11 @@ public sealed class TradeOpenRaceTests
     [Fact]
     public void AnOpenRacingTheTargetsDeathLeavesNoHalfOpenTrade()
     {
-        var (victim, _) = _fx.Player("OpenDeathVictim", DeathMap, 5, 10);
-        var (opener, openerOut) = _fx.Player("OpenDeathOpener", DeathMap, 6, 10);
+        // The opener stands OUT of the victim's viewport. Beside it, Die()'s ResyncPeers would read the opener
+        // through its Snapshot and so block on the monitor the opener's handler holds, parking the death
+        // before its own _trade check on ANY code, which would hide the unlocked open's defect.
+        var (victim, _, victimChar) = _fx.PlayerWith("OpenDeathVictim", _ => { }, DeathMap, 5, 10);
+        var (opener, openerOut) = _fx.Player("OpenDeathOpener", DeathMap, 60, 60);
 
         var progress = new StallWatch.RoundCounter();
         var killed = new ManualResetEventSlim();
@@ -306,7 +309,11 @@ public sealed class TradeOpenRaceTests
             }) { IsBackground = true, Name = "killer" };
             Volatile.Write(ref killer, k);
             k.Start();
-            WaitUntil(() => killed.IsSet || Parked(k));
+            // Released when the death has run to its end (the unlocked open), or when the killer is blocked with
+            // the victim's HP still untouched, which is where ReceiveEnvironmentDamage waits for the victim's
+            // monitor (the pair). A block with HP already at 0 is somewhere inside the death (a log line, the
+            // save) and does not count.
+            WaitUntil(() => killed.IsSet || (Parked(k) && Volatile.Read(ref victimChar.Hp) > 0));
         };
         try
         {
