@@ -226,6 +226,59 @@ public sealed class TradeOpenRaceTests
     }
 
     /// <summary>
+    /// Our OWN side changes while the pair has our monitor dropped. The opener ranks above its target, so
+    /// #29 rule 2 exits the opener's monitor while it waits for the target's (held here by a third thread). In
+    /// that gap a third player opens a trade with the opener and gets it. When the opener's open resumes it
+    /// must see that trade and refuse with "You are already trading.", leaving the third player's trade
+    /// intact on both sides and the target untouched. Without the re-check inside the body, the opener's
+    /// _trade is overwritten and the third player is left holding a trade whose other side points elsewhere.
+    /// </summary>
+    [Fact]
+    public void AnOpenWithUsDuringTheDroppedWindowIsSeenInside()
+    {
+        // Rank order is creation order: the target below the opener, so the opener's pair descends.
+        var (target, targetOut) = _fx.Player("OpenGapOwnTarget", RaceMap, 20, 10);
+        var (opener, openerOut) = _fx.Player("OpenGapOwnOpener", RaceMap, 21, 10);
+        var (third, _) = _fx.Player("OpenGapOwnThird", RaceMap, 22, 10);
+        Assert.True(target.StateRank < opener.StateRank);
+
+        var progress = new StallWatch.RoundCounter();
+        var targetHeld = new ManualResetEventSlim();
+        var releaseTarget = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            target.WithState(() => { targetHeld.Set(); releaseTarget.Wait(); });
+            progress.Bump();
+        }) { IsBackground = true, Name = "target-holder" };
+        holder.Start();
+        Assert.True(targetHeld.Wait(5000));
+
+        var open = new Thread(() => { opener.Receive(OpenRequest(target.PlayerId)); progress.Bump(); })
+        { IsBackground = true, Name = "opener" };
+        open.Start();
+        // Blocked on the target's monitor means the descending pair has already exited the opener's.
+        WaitUntil(() => Parked(open));
+        Assert.True(Parked(open), "the opener never blocked on the target's monitor");
+
+        third.Receive(OpenRequest(opener.PlayerId));   // lands in the gap: the opener's monitor is free
+        var thirds = TradeOf(third);
+        Assert.NotNull(thirds);
+        Assert.Same(thirds, TradeOf(opener));
+        openerOut.Clear();
+
+        releaseTarget.Set();
+        StallWatch.RunUntilDoneOrStalled(new[] { open, holder }, () => progress.Rounds,
+            StallWatch.StallQuiet, StallWatch.StallCap, "the opener and the target holder");
+
+        Assert.Same(thirds, TradeOf(opener));
+        Assert.Same(thirds, TradeOf(third));
+        Assert.Null(TradeOf(target));
+        Assert.Equal("You are already trading.", Assert.Single(MiniTexts(openerOut)));
+        Assert.Empty(openerOut.BodiesOf(ExchangeOut));
+        Assert.Empty(targetOut.BodiesOf(ExchangeOut));
+    }
+
+    /// <summary>
     /// The target is killed while an open aimed at it is past its gates. No half-open trade survives: under
     /// the pair the death waits for the open, then its own teardown closes both windows, so the initiator sees
     /// its window open and then close with the teardown's line.
