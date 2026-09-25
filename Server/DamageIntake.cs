@@ -226,10 +226,14 @@ public sealed partial class Session
     /// </summary>
     /// <returns>The damage actually applied, AFTER every term but NOT capped by the victim's remaining HP —
     /// so a killing blow reports how far past zero it went (what the vita strikes' overflow is computed
-    /// from). 0 when nothing landed: already dead, or immune.</returns>
+    /// from). 0 when nothing landed: already dead, replaced by a second login, or immune.</returns>
     internal int TakeDamage(DamageIntake intake)
     {
         if (IsDead) return 0;   // already down — don't re-trigger Die() while the revive delay is pending
+        // Replaced by a second login (#168 item 5): the new session has already loaded this character, so a
+        // death here would spill a pile onto the floor that the new session still carries — a duplication.
+        // Nothing lands, which also stops a blow the tick queued before the kick. Volatile, no monitor.
+        if (IsReplaced) return 0;
         // ---- Harden Body: total damage immunity -----------------------------------------------------------
         // RTK Player.removeHealthExtend (player.lua:164) opens by RETURNING OUTRIGHT if any of four wards is
         // up: harden_body_poet / deaths_guard_poet / lifes_protection_poet / body_of_alignment_poet — the
