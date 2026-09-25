@@ -501,15 +501,21 @@ public sealed partial class World
             }
         }
 
-        /// <summary>Drop both rosters and the materialised set ahead of a <see cref="Build"/> from re-read
-        /// content (<see cref="RebuildPopulation"/>). The death registry is deliberately kept: a reload is
-        /// not a world reset for a boss cooldown. Caller holds <c>_lock</c>.</summary>
+        /// <summary>Drop both rosters, the materialised set and the mob-to-point index ahead of a
+        /// <see cref="Build"/> from re-read content (<see cref="RebuildPopulation"/>). The death registry is
+        /// deliberately kept: a reload is not a world reset for a boss cooldown. Caller holds <c>_lock</c>.
+        ///
+        /// <para><c>_mobSpawn</c> goes with the rosters (#121). The rebuild has already torn down every
+        /// creature it indexes, and mob ids are never reused, so after a reload no lookup can ever hit one of
+        /// its entries again; kept, they only held every pre-reload point mob's entry, and the old
+        /// <c>Spawn</c> behind it, for the life of the process.</para></summary>
         internal void Clear()
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             _spawns.Clear();
             _groups.Clear();
             _materialized.Clear();
+            _mobSpawn.Clear();
         }
 
         /// <summary>How many maps carry at least one spawn point / batch group — the start-up log lines.</summary>
@@ -526,6 +532,14 @@ public sealed partial class World
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery });
+        }
+
+        /// <summary>How many live creatures the mob-to-point index holds, on every map. Caller holds
+        /// <c>_lock</c>.</summary>
+        internal int MobSpawnIndexCountForTest()
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            return _mobSpawn.Count;
         }
 
         /// <summary>Register one batch group over the whole map, due immediately, the way <see cref="Build"/>
