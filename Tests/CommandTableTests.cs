@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using Protocol.Tk495;
 using Server;
 using Shared;
@@ -318,9 +320,12 @@ public sealed class CommandTableTests
     /// real beat.</para>
     ///
     /// <para><b>What it does NOT pin, because <c>WrapForPane</c> rebuilds each line from whitespace-split
-    /// words:</b> runs of spaces. Squeezing the two spaces before "[hour pinned" down to one is invisible
-    /// here — verified, not assumed: that edit leaves the test green. The pane collapses them on the way to
-    /// the client too, so nothing observable is lost; it is simply not this test's reach.</para>
+    /// words:</b> runs of spaces. #159 found the source claiming a double space before "[hour pinned" that
+    /// the wire never carried — this readout line is long enough to always wrap, and wrapping collapses any
+    /// run of spaces to one, so the second space was invisible here even before the fix (verified, not
+    /// assumed: squeezing it to one left this test green). The call site now writes one space, matching what
+    /// the client has always received; this test still cannot distinguish one source space from two, because
+    /// nothing downstream of <c>WrapForPane</c> can.</para>
     ///
     /// <para>Falsified twice. Inverting the pin condition to <c>HourOverride is null</c>, so the marker
     /// lands on the released readout instead of the pinned one: red at pos 3,
@@ -342,7 +347,7 @@ public sealed class CommandTableTests
             string readout =
                 $"In-game time: hour 7 - day {day} of {_fx.World.Clock.SeasonName}, Yuri {year}. " +
                 $"Totem time: {TotemsAt(7)}.";
-            Assert.Equal(Paned(readout + "  [hour pinned - @clock real to release]"), Transcript(outbound));
+            Assert.Equal(Paned(readout + " [hour pinned - @clock real to release]"), Transcript(outbound));
 
             outbound.Clear();
             Run(session, "@clock real");
@@ -811,6 +816,77 @@ public sealed class CommandTableTests
         foreach (var line in pane)
             Assert.True(line.Length <= Session.PaneWidth || !line.Trim().Contains(' '),
                         $"'{command}' printed a {line.Length}-char line that could have been broken: \"{line}\"");
+    }
+
+    /// <summary>#176: the sweep above only ever renders bare <c>@help</c>'s first <see cref="Session"/>-
+    /// private <c>HelpPageSize</c> rows plus whatever "@help warp" happens to match — of the ~107 rows in
+    /// <c>CommandTable</c>, six were actually measured. This renders EVERY row instead, the cheap way #176
+    /// itself suggests: <c>CommandTable</c> and <c>HelpLines</c> straight, no session and no access tier, so
+    /// a Tester- or Player-only row (there is no tier above Gm to gate one out of a GM's reach anyway, but
+    /// this does not even rely on that) is covered exactly the same as a Gm one.
+    ///
+    /// <para>Both members are private to <see cref="Session"/> and this stays reflection rather than making
+    /// them internal, because Commands.cs is otherwise off-limits for this slice (see the packet's
+    /// do-not-touch list) — and a private surface reached only by reflection is one less thing a future
+    /// change has to keep source-compatible for a test. A rename of either member fails this loudly (a
+    /// <see cref="System.NullReferenceException"/> out of <see cref="CommandTableRows"/>), not silently.</para>
+    ///
+    /// <para>The pass rule is the SAME one <see cref="NothingAListingPrintsOverrunsThePane"/> uses: at most
+    /// <see cref="Session.PaneWidth"/> wide, unless the line is a single unbreakable token (the client
+    /// re-wraps that case on its own — see <see cref="Session.WrapForPane"/>'s doc). Row count is
+    /// cross-checked two ways: against <c>CommandTable</c>'s own length (so a reflection bug that silently
+    /// found zero rows cannot pass by finding nothing to fail on) and against the live "@help" header's own
+    /// "of N" count (so the two ways of counting a command — the table and the paged command a player
+    /// actually runs — cannot drift apart unnoticed).</para></summary>
+    [Fact]
+    public void EveryHelpRowFitsThePane()
+    {
+        var rows = CommandTableRows();
+        Assert.True(rows.Count > 50, $"reflection found only {rows.Count} CommandTable row(s) — " +
+                                      "either the table shrank a lot or CommandTableRows() broke");
+
+        var (session, outbound) = GmRoster.Session(_fx);
+        Run(session, "@help");
+        var header = Transcript(outbound).First(l => l.StartsWith("pane", StringComparison.Ordinal));
+        var headerMatch = Regex.Match(header, @"of (\d+) \(p\d+/\d+\)");
+        Assert.True(headerMatch.Success, $"could not parse the @help header line: \"{header}\"");
+        Assert.Equal(rows.Count, int.Parse(headerMatch.Groups[1].Value));
+
+        int measured = 0;
+        foreach (var (label, lines) in rows)
+        {
+            measured++;
+            foreach (var raw in lines)
+                foreach (var pane in Session.WrapForPane(raw))
+                    Assert.True(pane.Length <= Session.PaneWidth || !pane.Trim().Contains(' '),
+                                $"{label}: printed a {pane.Length}-char line that could have been broken: " +
+                                $"\"{pane}\"");
+        }
+        Assert.Equal(rows.Count, measured);
+    }
+
+    /// <summary>Every <c>Session.CommandTable</c> row, rendered through the private <c>Session.HelpLines</c>
+    /// exactly the way <c>ShowCommandHelp</c> does — reached by reflection because both stay private (see
+    /// <see cref="EveryHelpRowFitsThePane"/>'s doc). <c>label</c> is the row's own calling shape ("@name" or
+    /// "@name/@alias"), built from <c>Names</c> the same way <c>HelpShape</c> does, so a failing assertion
+    /// names the row without needing to re-derive it from wrapped text.</summary>
+    private static List<(string Label, string[] Lines)> CommandTableRows()
+    {
+        var tableField = typeof(Session).GetField("CommandTable", BindingFlags.NonPublic | BindingFlags.Static)
+                          ?? throw new MissingFieldException("Session.CommandTable not found by reflection");
+        var helpLinesMethod = typeof(Session).GetMethod("HelpLines", BindingFlags.NonPublic | BindingFlags.Static)
+                              ?? throw new MissingMethodException("Session.HelpLines not found by reflection");
+
+        var table = (System.Collections.IEnumerable)tableField.GetValue(null)!;
+        var result = new List<(string, string[])>();
+        foreach (var row in table)
+        {
+            var names = (string[])row.GetType().GetProperty("Names")!.GetValue(row)!;
+            var label = "@" + string.Join("/@", names);
+            var lines = ((IEnumerable<string>)helpLinesMethod.Invoke(null, new[] { row })!).ToArray();
+            result.Add((label, lines));
+        }
+        return result;
     }
 
     // ---- Session.Navigation.cs, after the same pass ----------------------------------------------------
