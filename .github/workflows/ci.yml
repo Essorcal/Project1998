@@ -186,6 +186,11 @@ jobs:
         id: superseded
         # Even a crash here must not block the deploy: with no `skip` output, every later step runs as before.
         continue-on-error: true
+        # Nor may a hang, which would hold the deploy-production group for the job's 360-minute default. The
+        # runner fails a step that times out, continue-on-error turns that into a pass, and `skip` is written
+        # only as this script's last line, so a killed check writes none and the deploy goes ahead. A normal
+        # run takes seconds; the longest wait built in is 12 s of retries on one late log.
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}

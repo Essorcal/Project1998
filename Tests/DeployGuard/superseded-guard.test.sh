@@ -56,6 +56,9 @@ check "exactly one step is named \"Stage and schedule\" (the guard reads that na
 step "Stage and schedule" | grep -Fq 'grep -Fq "staging release $SHA" deploy.log' \
     && step "Stage and schedule" | grep -Fq "grep -Fq 'game restart scheduled' deploy.log"
 check "the stage step still reads the two host lines the guard takes as proof" $? "the stage step's host signature changed"
+step "Skip if a newer commit has already staged" | grep -Eq '^ +continue-on-error: true$' \
+    && step "Skip if a newer commit has already staged" | grep -Eq '^ +timeout-minutes: [0-9]+$'
+check "the guard step has continue-on-error and a timeout, so neither a crash nor a hang blocks a deploy" $? "one is missing"
 
 # The log fetch passes --allow-escape-sequences (gh refuses to print a job log without it). An older gh would
 # reject the flag, the fetch would fail, and every deploy would fall back to "deploy": safe, and useless. So a
@@ -414,6 +417,28 @@ run_case "incident 2: a0f6645, the tip, deploys" false "" none "master's tip"
 # cdc2eeb not yet staged either, this deploy must go ahead, or production keeps something older than fad26aa.
 base_incident2; OUT[$(p_jobs 36183622957)]=""
 run_case "incident 2 variant: nothing newer staged yet, tip still building: deploy" false "" none "No master commit newer"
+
+# ------------------------------------------------------------------------------------------------------------
+# A check killed mid-lookup, as the step's timeout-minutes kills it, writes no skip output, so every later step
+# runs: the deploy goes ahead. This runs the step's whole script, marker to its $GITHUB_OUTPUT line, in a fresh
+# bash with a gh on PATH that hangs, under a 1-second timeout. The control is the same script with a gh that
+# answers at once, which does write its output.
+
+awk '/^ *# >>> superseded-guard *\r?$/ {on = 1} on {print} on && /GITHUB_OUTPUT/ {exit}' "$ci" | tr -d '\r' > "$state/step.sh"
+mkdir -p "$state/bin"
+printf '#!/usr/bin/env bash\nsleep 5\n' > "$state/bin/gh"
+chmod +x "$state/bin/gh"
+: > "$state/ghout"
+PATH="$state/bin:$PATH" SHA=$TIP REPO=$REPO GITHUB_OUTPUT="$state/ghout" timeout 1 bash "$state/step.sh" > /dev/null 2>&1
+rc=$?
+[ "$rc" -eq 124 ] && ! grep -q '^skip=' "$state/ghout"
+check "a guard killed by its timeout writes no skip output (every later step runs)" $? "rc=$rc, output: $(tr '\n' '|' < "$state/ghout")"
+printf '#!/usr/bin/env bash\necho %s\n' "$TIP" > "$state/bin/gh"
+: > "$state/ghout"
+PATH="$state/bin:$PATH" SHA=$TIP REPO=$REPO GITHUB_OUTPUT="$state/ghout" timeout 10 bash "$state/step.sh" > /dev/null 2>&1
+rc=$?
+[ "$rc" -eq 0 ] && grep -qx 'skip=false' "$state/ghout"
+check "control: the same script, not killed, writes its output" $? "rc=$rc, output: $(tr '\n' '|' < "$state/ghout")"
 
 echo
 if [ "$fail" -eq 0 ]; then
