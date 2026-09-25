@@ -179,7 +179,16 @@ public sealed partial class World
 
         /// <summary>Instantiate a map's spawn roster the first time anyone enters it (idempotent). Until this runs
         /// the map's mobs don't exist, so a newcomer must trigger it BEFORE the room's mob list is read for them.
-        /// Caller holds <c>_lock</c>.</summary>
+        /// Caller holds <c>_lock</c>.
+        ///
+        /// <para><b>No spawn row guard here, deliberately.</b> A group member or a point that throws on this
+        /// path throws out of <c>World.EnterMap</c>, as it always has: the player is not added to the map's
+        /// roster, and the session's per-packet catch (or the login path's) logs it. The tick's row guards
+        /// are not extended to it for two reasons. Their faults are logged through a throttle that only the
+        /// tick thread may touch (<see cref="FaultThrottle{TKey}"/>), and this runs on a session thread; and
+        /// catching here would turn a failed entry into a successful one, a player-visible change of its own.
+        /// Both are left as a follow-up (the spawn-row-guards report), with the facts in
+        /// <c>Tests/SpawnRowGuardTests.cs</c> pinning today's behaviour until then.</para></summary>
         internal void EnsureMaterialized(ushort mapId)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -187,7 +196,8 @@ public sealed partial class World
             // timer came due while nobody was in it is already full when they walk in rather than popping into
             // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
             // entry, since that is the only moment a due group on an unwatched map gets looked at.
-            RefillGroups(mapId);
+            List<PhaseFault>? unguarded = null;   // stays null: guarded is false, so nothing is caught
+            RefillGroups(mapId, guarded: false, ref unguarded);
             world.RefillAmbushLocked(mapId);   // top up this map's hidden ambush traps (also every entry, same reason)
             world.RefillFrigidLocked(mapId);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
 
@@ -216,8 +226,27 @@ public sealed partial class World
         /// Deliberately NOT ported from RTK: its <c>deleteMob</c> (which wipes a group off a player-free map, so
         /// mobs you walked away from are gone when you return) and its accelerator (which pulls the clock back
         /// 10s every 10s on a mob-free map, roughly halving the wait on a fully cleared room). Continuity across
-        /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.</summary>
-        private void RefillGroups(ushort mapId)
+        /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.
+        ///
+        /// <para><b>One guard per group member, on the tick's path only.</b> With <paramref name="guarded"/>
+        /// (phase (1.1), <see cref="RefillDueGroups"/>) a member whose <see cref="FillMember"/> throws is
+        /// recorded in <paramref name="faults"/> and the batch goes on to the next member, the next group and
+        /// the next map. Before the guard the throw ended the whole phase, so every member and every group
+        /// after the bad one waited too, for as long as the content stayed broken.</para>
+        ///
+        /// <para><b>A group with a member that threw does not stamp its clock</b>, which is what the unguarded
+        /// throw did too: the batch did not finish. So the group stays due and is run again on the next
+        /// sampled beat, its good members topped up and its bad one retried, exactly as the members before
+        /// the bad one were before this guard. Stamping the clock anyway would put the good members back on
+        /// the group's timer — arguably what a batch should do — but it would change how often they refill on
+        /// beats where nothing throws, which is a decision this guard does not make. Nothing else is unwound:
+        /// whatever the member placed before it threw stands, as it did.</para>
+        ///
+        /// <para>Unguarded on the map-entry path (<see cref="EnsureMaterialized"/>, from
+        /// <c>World.EnterMap</c>): the filter below is false there, so a throw leaves this method exactly as
+        /// it always did. That path runs on a session thread, and the throttle behind <c>LogPhaseFaults</c>
+        /// has one owner, the tick thread; see the entry path's own note.</para></summary>
+        private void RefillGroups(ushort mapId, bool guarded, ref List<PhaseFault>? faults)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             if (!_groups.TryGetValue(mapId, out var groups)) return;
@@ -227,8 +256,17 @@ public sealed partial class World
             {
                 if (now < g.NextBatchUnix) continue;
                 taken ??= world.OccupiedTiles(mapId);
-                foreach (var (def, cap) in g.Members) FillMember(g, def, cap, taken);
-                g.NextBatchUnix = now + g.TimerSec;
+                bool threw = false;
+                foreach (var (def, cap) in g.Members)
+                {
+                    try { FillMember(g, def, cap, taken); }
+                    catch (Exception e) when (guarded)
+                    {
+                        threw = true;
+                        (faults ??= new()).Add(new PhaseFault(PhRefills, e, Row: true, g.Map, def));
+                    }
+                }
+                if (!threw) g.NextBatchUnix = now + g.TimerSec;
             }
         }
 
@@ -441,16 +479,32 @@ public sealed partial class World
 
         /// <summary>Phase (1): refill any due spawn point on a map someone is watching. Points only — the
         /// hunting maps refill in batches in <see cref="RefillDueGroups"/>, not one mob at a time as they
-        /// die. Caller holds <c>_lock</c>.</summary>
-        internal void RespawnDuePoints(long tick)
+        /// die. Caller holds <c>_lock</c>.
+        ///
+        /// <para><b>One guard per due point.</b> A point whose <see cref="Materialize"/> throws — a bad
+        /// content row, typically — costs only itself: it is recorded in <paramref name="faults"/> as a row
+        /// fault and the walk goes on to the next point, on this map and on every map after it. Before this
+        /// guard the throw ended the whole phase, so every point after the bad one waited, on its own map and
+        /// on the maps visited after it, for as long as the content stayed broken.</para>
+        ///
+        /// <para>Nothing is unwound. A point that threw keeps the clock it had, so it is due again next beat
+        /// and throws again until the content is fixed — exactly as it did before, when it was the first
+        /// thing each beat's phase (1) reached — and whatever <see cref="Materialize"/> did before the throw
+        /// stands. Nothing is logged here (#109): <c>faults</c> is the tick's own list, written after the
+        /// lock is released by <c>LogPhaseFaults</c>. Plain try/catch, no closure: a beat with no throw
+        /// allocates nothing and leaves <c>faults</c> as it found it.</para></summary>
+        internal void RespawnDuePoints(long tick, ref List<PhaseFault>? faults)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             foreach (var (mapId, list) in _spawns)
             {
                 if (!world._maps.TryGetValue(mapId, out var pm) || pm.Players.Count == 0) continue;
                 foreach (var sp in list)
-                    if (sp.Live is null && sp.RespawnTick != 0 && tick >= sp.RespawnTick)
-                        Materialize(mapId, sp);
+                {
+                    if (sp.Live is not null || sp.RespawnTick == 0 || tick < sp.RespawnTick) continue;
+                    try { Materialize(mapId, sp); }
+                    catch (Exception e) { (faults ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, mapId, sp.Def)); }
+                }
             }
         }
 
@@ -458,15 +512,18 @@ public sealed partial class World
         /// own <c>#pc &gt; 0</c> test this mirrors). A map nobody is on is skipped here and caught by
         /// <see cref="EnsureMaterialized"/> when someone walks in. Sampled every <c>BatchSweepTicks</c> —
         /// these clocks are in whole seconds and the shortest is 2s, so there is nothing to gain from looking
-        /// every beat. Caller holds <c>_lock</c>.</summary>
-        internal void RefillDueGroups(long tick)
+        /// every beat. Caller holds <c>_lock</c>.
+        ///
+        /// <para>Guarded per group member (see <see cref="RefillGroups"/>): a member whose fill throws is
+        /// recorded in <paramref name="faults"/> and costs only itself.</para></summary>
+        internal void RefillDueGroups(long tick, ref List<PhaseFault>? faults)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             if (tick % BatchSweepTicks != 0) return;
             foreach (var (mapId, _) in _groups)
             {
                 if (!world._maps.TryGetValue(mapId, out var pm) || pm.Players.Count == 0) continue;
-                RefillGroups(mapId);
+                RefillGroups(mapId, guarded: true, ref faults);
             }
         }
 
