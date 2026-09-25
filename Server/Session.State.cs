@@ -215,11 +215,17 @@ public sealed partial class Session
         Debug.Assert(!HoldsAnyViewLock,
             "lock order violated: a session viewport lock is held while entering the Lua gate. Nothing under " +
             "_viewLock may run a script — decide under the viewport lock and act outside it.");
-        // The OTHER half of the #90 rule — that World._lock must not be held on the way IN here — is asserted
-        // at the Lua host entry points rather than in this method, because this method is static and has no
-        // World to ask (EnterState can, being an instance). See MobScript.Fire. LuaVerbHost and NpcScript hold
-        // no World at all, so their entries are documented by that rule rather than checked by it; the path
-        // that can realistically be reached from inside the lock is the tick's hook drain, which is Fire's.
+        // The other half of the order (#90): World._lock is row 3, the gate row 1, so no World's lock may be
+        // held on the way in. This method is static and has no World to ask, so every World registers its lock
+        // object when it is built (World.ScriptGateRegistry.cs) and this asks Monitor.IsEntered of each. That
+        // covers every host at once — LuaVerbHost, NpcScript, MobScript and the Content snapshot publication
+        // all come through here. ANY world, not only one: the gate is process-wide, so a thread holding a
+        // second World's lock and waiting here is the same cycle. Debug only, like the assert above; in a
+        // Release build neither the registration nor this check is compiled in.
+        Debug.Assert(!World.HoldsAnyWorldLock,
+            "lock order violated: World._lock is held while entering the Lua gate (#90). Nothing under the " +
+            "world lock may run a script — queue the call and run it after releasing the lock, the way " +
+            "World.Tick queues its mob hooks.");
 
         if (Monitor.IsEntered(ScriptGateLock)) return default;   // re-entrant: one host reaching another
         if (Monitor.TryEnter(ScriptGateLock)) return new ScriptGateGuard(true);
