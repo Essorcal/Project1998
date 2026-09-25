@@ -58,10 +58,17 @@ step "Stage and schedule" | grep -Fq 'grep -Fq "staging release $SHA" deploy.log
 check "the stage step still reads the two host lines the guard takes as proof" $? "the stage step's host signature changed"
 
 # The log fetch passes --allow-escape-sequences (gh refuses to print a job log without it). An older gh would
-# reject the flag, the fetch would fail, and every deploy would fall back to "deploy": safe, and useless.
+# reject the flag, the fetch would fail, and every deploy would fall back to "deploy": safe, and useless. So a
+# missing flag is a warning here, never a failure: this script gates the build job, and every deploy needs that
+# job, so failing on a runner-image change would stop all deploys over something that only disables the guard.
 if gh_bin=$(type -P gh); then
-    "$gh_bin" api --help 2>/dev/null | grep -Fq -- '--allow-escape-sequences'
-    check "the installed gh ($("$gh_bin" --version | head -n 1)) accepts --allow-escape-sequences" $? "flag missing"
+    gh_version=$("$gh_bin" --version | head -n 1)
+    if "$gh_bin" api --help 2>/dev/null | grep -Fq -- '--allow-escape-sequences'; then
+        echo "ok    the installed gh ($gh_version) accepts --allow-escape-sequences"
+    else
+        echo "::warning::The installed gh ($gh_version) no longer lists --allow-escape-sequences. The deploy's superseded check cannot read job logs with it, so it will deploy every time (safe, but the guard is off) until the log fetch in ci.yml is updated."
+        echo "warn  the installed gh ($gh_version) lacks --allow-escape-sequences (a warning, not a failure)"
+    fi
 else
     echo "note  gh is not installed here, so its --allow-escape-sequences flag was not checked"
 fi
