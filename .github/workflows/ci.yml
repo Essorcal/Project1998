@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
 
       # The deploy job's superseded check, run against a stubbed gh on every push and pull request, so a change
-      # that would let it skip without proof goes red here rather than on a deploy. Bash only: 1.7 s on the runner.
+      # that would let it skip without proof goes red here rather than on a deploy. Bash only: 2.8 s on the runner.
       - name: Deploy guard harness
         run: bash Tests/DeployGuard/superseded-guard.test.sh
 
