@@ -5,9 +5,10 @@ using Shared;
 namespace Server;
 
 // The tick's fault records. World.Tick's guards catch a throw under World._lock — one guard per pre-sweep
-// phase (1)-(1.7) (#106), and two in the mob-AI sweep, one per creature and one per map (#36, #109); this
-// file is what happens to a caught throw afterwards, once the lock is released. Its own file so the tick
-// body keeps only the lines that queue a fault.
+// phase (1)-(1.7) (#106), one per spawn row inside phases (1) and (1.1) (World.SpawnDirector.cs), and two
+// in the mob-AI sweep, one per creature and one per map (#36, #109); this file is what happens to a caught
+// throw afterwards, once the lock is released. Its own file so the tick body keeps only the lines that queue
+// a fault.
 public sealed partial class World
 {
     /// <summary>One throw caught by the mob-AI sweep, as the guard saw it. Queued under <c>_lock</c> —
@@ -119,16 +120,31 @@ public sealed partial class World
     // stays exactly as it was. What the two DO share is the throttle's shape and its two spans, and those
     // are reused as they are.
 
-    /// <summary>One throw caught by a pre-sweep phase's guard in <see cref="Tick"/>: which phase (a
-    /// <c>Ph*</c> constant) and the exception. Queued under <c>_lock</c> — one int and one reference — and
-    /// formatted after the lock is released by <see cref="LogPhaseFaults"/>. A phase ends at its throw, so a
-    /// beat holds at most one of these per phase.</summary>
-    internal readonly record struct PhaseFault(int Phase, Exception Error);
+    /// <summary>One throw caught inside a pre-sweep phase, as the guard saw it: which phase (a <c>Ph*</c>
+    /// constant) and the exception. Queued under <c>_lock</c> — the guard copies a few numbers and
+    /// references and nothing else — and formatted after the lock is released by
+    /// <see cref="LogPhaseFaults"/>.
+    ///
+    /// <para>Two guards write these. The phase's own guard in <see cref="Tick"/> (<paramref name="Row"/>
+    /// false) ends the phase at its throw, so a beat holds at most one of those per phase. The SPAWN ROW
+    /// guards inside phases (1) and (1.1) (<see cref="SpawnDirector.RespawnDuePoints"/>, one per due point,
+    /// and <see cref="SpawnDirector.RefillDueGroups"/>, one per group member) end only that row, so a beat
+    /// can hold many of those: <paramref name="Map"/> is the row's roster map and <paramref name="Def"/> the
+    /// creature the row spawns, the reference as the row held it, not a copy.</para>
+    ///
+    /// <para>A row fault is a phase fault narrowed to one row, which is why it shares this record rather
+    /// than being a sibling like <see cref="MobFault"/>: same phase names, same lock rule, same log path,
+    /// and the beat's one list of them already runs from the phase guards to the flush's finally.</para></summary>
+    internal readonly record struct PhaseFault(int Phase, Exception Error, bool Row = false, ushort Map = 0, MobDef? Def = null);
 
     /// <summary>What the throttle counts as "the same phase fault": the phase and the exception's type, so a
     /// second, unrelated bug in the same phase gets its own stack instead of hiding in the first one's
-    /// count. Bounded by seven phases times the exception types they can throw.</summary>
-    internal readonly record struct PhaseFaultKey(int Phase, Type ErrorType);
+    /// count. A spawn row's fault adds its roster map and its creature's CONTENT id (<see cref="MobDef.Id"/>),
+    /// never a live mob id: a bad row throws again on every beat it is due, and a key by mob id would be a
+    /// new key each time. By content id the table is bounded by the content — two phases times the maps
+    /// times the creatures on them times the exception types — however long the process runs. A whole-phase
+    /// fault leaves the three row fields at their defaults, so its key is what it always was.</summary>
+    internal readonly record struct PhaseFaultKey(int Phase, Type ErrorType, bool Row = false, ushort Map = 0, int DefId = 0);
 
     /// <summary>Tick thread only, and only outside <c>_lock</c> (see <see cref="FaultThrottle{TKey}"/>).
     /// The mob throttle's spans: a stack at the first throw, again after ~10 s quiet, again hourly.</summary>
@@ -136,8 +152,9 @@ public sealed partial class World
 
     /// <summary>A test seam, null in every process that is not the test host: run first inside each
     /// pre-sweep phase's guard, (1) to (1.7), with that phase's <c>Ph*</c> constant. A throw from it is that
-    /// phase's guard's to catch, which is how a test reaches the six guards whose phases no content-free
-    /// setup can make throw on its own — (1) alone has a natural one, a point whose materialisation throws.
+    /// phase's guard's to catch, which is how a test reaches the seven guards: no content-free setup can make
+    /// any phase throw on its own. (1) and (1.1) have natural throws — a point or a group member whose spawn
+    /// throws — but those are caught one level down, by the spawn row guards, and never reach the phase's.
     /// An instance field, like <see cref="SweepProbeForTest"/>, so it reaches only the world a test
     /// installed it on. Its production cost is seven field reads per beat.</summary>
     internal Action<int>? PreSweepProbeForTest;
@@ -153,21 +170,44 @@ public sealed partial class World
     /// Write one beat's pre-sweep phase faults, after <c>_lock</c> is released. A fault's first throw — or
     /// its first after <see cref="MobFaultQuietBeats"/> quiet, or <see cref="MobFaultRestackBeats"/> after its
     /// last stack — is written at Error with the exception in full. Every other throw this beat is only
-    /// named, and the names go out as ONE Error line for the whole beat. A phase throws at most once a beat,
-    /// so the line carries no counts: each name on it is one phase that lost its rest this beat.
+    /// named, and the names go out as at most TWO Error lines for the whole beat:
+    /// <list type="bullet">
+    /// <item>one for whole-phase faults. A phase throws at most once a beat, so that line carries no counts:
+    /// each name on it is one phase that lost its rest this beat;</item>
+    /// <item>one for spawn row faults, with a count per (phase, map, creature, exception type). Several
+    /// points of one bad creature can throw in one beat, so these are counted the way
+    /// <see cref="LogMobFaults"/> counts creatures: a throw whose stack was written this beat is not in the
+    /// count.</item>
+    /// </list>
     /// </summary>
     private void LogPhaseFaults(List<PhaseFault> faults, long beat)
     {
         Debug.Assert(!HoldsWorldLock, "phase faults are formatted after World._lock is released, never under it");
 
         StringBuilder? repeats = null;
+        List<(PhaseFault First, PhaseFaultKey Key, int Count)>? rowRepeats = null;
         foreach (var f in faults)
         {
             string phase = PhaseNames[f.Phase];
-            if (_phaseFaultThrottle.Admit(new PhaseFaultKey(f.Phase, f.Error.GetType()), beat))
+            var key = f.Row
+                ? new PhaseFaultKey(f.Phase, f.Error.GetType(), Row: true, f.Map, f.Def?.Id ?? 0)
+                : new PhaseFaultKey(f.Phase, f.Error.GetType());
+            if (_phaseFaultThrottle.Admit(key, beat))
             {
-                Log.Error($"world tick phase {phase} threw — the rest of that phase is skipped this beat, the later phases, the mob sweep and the flush continue (repeats are named, not re-logged)",
-                          f.Error);
+                Log.Error(f.Row
+                    ? $"world tick phase {phase}: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {key.DefId}) on map {f.Map} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)"
+                    : $"world tick phase {phase} threw — the rest of that phase is skipped this beat, the later phases, the mob sweep and the flush continue (repeats are named, not re-logged)",
+                    f.Error);
+                continue;
+            }
+
+            if (f.Row)
+            {
+                rowRepeats ??= new();
+                int i = 0;
+                while (i < rowRepeats.Count && !rowRepeats[i].Key.Equals(key)) i++;
+                if (i == rowRepeats.Count) rowRepeats.Add((f, key, 1));
+                else rowRepeats[i] = (rowRepeats[i].First, key, rowRepeats[i].Count + 1);
                 continue;
             }
 
@@ -178,5 +218,19 @@ public sealed partial class World
             repeats.Append(phase).Append(' ').Append(f.Error.GetType().Name);
         }
         if (repeats is not null) Log.Error(repeats.ToString());
+        if (rowRepeats is null) return;
+
+        var sb = new StringBuilder("spawn rows still throwing — each skipped this beat with no stack (each fault's stack is logged at its first throw): ");
+        for (int i = 0; i < rowRepeats.Count; i++)
+        {
+            var (f, k, n) = rowRepeats[i];
+            if (i > 0) sb.Append(", ");
+            sb.Append(PhaseNames[k.Phase]).Append(" '").Append(f.Def?.Key).Append("' (creature id ").Append(k.DefId)
+              .Append(") on map ").Append(k.Map).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
+        }
+        Log.Error(sb.ToString());
     }
+
+    /// <summary>What a spawn row is in each phase that has them, for the log.</summary>
+    private static string RowKind(int phase) => phase == PhRespawns ? "a spawn point" : "a spawn group member";
 }

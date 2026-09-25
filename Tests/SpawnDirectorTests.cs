@@ -350,11 +350,12 @@ public class SpawnDirectorTests
             Assert.False(_fx.World.HoldsWorldLock);
 
             var stray = new Mob(_fx.World.AllocateMobId(), 1, 1, 1, "Stray", 100);
+            List<World.PhaseFault>? faults = null;
             foreach (var (name, call) in new (string, Action)[]
             {
                 ("EnsureMaterialized", () => Spawns.EnsureMaterialized(LockMap)),
-                ("RespawnDuePoints",   () => Spawns.RespawnDuePoints(0)),
-                ("RefillDueGroups",    () => Spawns.RefillDueGroups(0)),
+                ("RespawnDuePoints",   () => Spawns.RespawnDuePoints(0, ref faults)),
+                ("RefillDueGroups",    () => Spawns.RefillDueGroups(0, ref faults)),
                 ("RecordDeath",        () => Spawns.RecordDeath(LockMap, stray)),
                 ("ReleasePoint",       () => Spawns.ReleasePoint(stray)),
             })

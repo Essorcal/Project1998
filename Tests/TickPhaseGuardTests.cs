@@ -22,8 +22,10 @@ namespace Tests;
 ///
 /// <para>The first fact is a real throw from a real line — a spawn point whose creature has a null key, so
 /// <c>Materialize</c>'s <c>Content.MobSpawnRules.TryGetValue(d.Key, ...)</c> hands a null key to a
-/// <c>Dictionary</c>. The other phases have no throw a content-free setup can reach, so the per-phase facts
-/// throw from <see cref="World.PreSweepProbeForTest"/>, which runs first inside each guard.</para>
+/// <c>Dictionary</c>. Since the spawn row guards that throw is caught one level below phase (1)'s own guard
+/// and costs only its point (<see cref="SpawnRowGuardTests"/> has the group and throttle facts). No phase
+/// has a throw of its own that a content-free setup can reach, so the per-phase facts throw from
+/// <see cref="World.PreSweepProbeForTest"/>, which runs first inside each guard.</para>
 ///
 /// <para>Hygiene, as in <see cref="MobAiTickTests"/>: the fixture's <c>World</c> is shared by the
 /// <c>world</c> collection, so every probe is uninstalled, every seated player removed and every registered
@@ -77,17 +79,18 @@ public class TickPhaseGuardTests
         _fx.World.View(viewer, map).mobs.Where(m => m.DefId == def.Id).ToList();
 
     /// <summary>Phase (1), the natural case: three due spawn points on one watched map, the middle one's
-    /// creature carrying a null key. In ONE beat the first point materialises, the second throws, and the
-    /// guard ends phase (1) there; the mob sweep still runs for the map, <c>FlushTick</c> still draws the
-    /// first point's creature to the watcher (drain what there is), and the fault is written once, with its
-    /// stack, after the lock is released. The third point is the stated cost of a per-phase guard: it sat
-    /// after the throw, so it waits.
+    /// creature carrying a null key. In ONE beat the first point materialises, the second throws, and its
+    /// spawn row guard (<c>SpawnDirector.RespawnDuePoints</c>) costs only that point: the third point
+    /// materialises in the same beat, the mob sweep still runs for the map, <c>FlushTick</c> draws BOTH good
+    /// creatures to the watcher, and the fault is written once, with its stack, after the lock is released —
+    /// as a row fault naming the creature and the map, not as a phase fault.
     ///
-    /// <para>Falsified by disabling phase (1)'s guard in <c>World.Tick</c> (its catch given a filter that is
-    /// never true, <c>when (e.HResult == 1)</c>): red, "System.ArgumentNullException : Value cannot be null.
-    /// (Parameter 'key')" out of <c>TickOnceForTest</c>.</para></summary>
+    /// <para>Falsified by removing the row guard in <c>RespawnDuePoints</c> (the bare <c>Materialize</c>
+    /// call, the #289 shape): red, the third point is absent (#289's phase guard catches the throw and ends
+    /// the phase there). Falsified again with the row guard's catch logging straight from under the lock:
+    /// red on the lock probe.</para></summary>
     [Fact]
-    public void APointWhoseMaterialisationThrowsCostsOnlyTheRestOfPhaseOne()
+    public void APointWhoseMaterialisationThrowsCostsOnlyThatPoint()
     {
         var before = Creature(990_101, "test_guard_before");
         var broken = Creature(990_102, null!);   // Materialize's first line refuses it: ArgumentNullException
@@ -114,19 +117,24 @@ public class TickPhaseGuardTests
                 lines = sink.Lines;
             }
 
-            // Phase (1) ran up to the throw and stopped there.
+            // Phase (1) went past the throw: both good points materialised, the bad one did not.
             var first = Assert.Single(MobsOf(watcher, PointMap, before));
             Assert.Equal(((ushort)3, (ushort)5), (first.X, first.Y));
-            Assert.Empty(MobsOf(watcher, PointMap, after));
+            var third = Assert.Single(MobsOf(watcher, PointMap, after));
+            Assert.Equal(((ushort)7, (ushort)5), (third.X, third.Y));
+            Assert.Empty(MobsOf(watcher, PointMap, broken));
 
-            // The sweep ran for the map, and FlushTick drew the creature phase (1) made before it threw.
+            // The sweep ran for the map, and FlushTick drew both creatures phase (1) made this beat.
             Assert.Contains(PointMap, swept);
             Assert.Contains(first.Id, SpawnedIds(outbound));
+            Assert.Contains(third.Id, SpawnedIds(outbound));
 
-            // One stack, written with the lock released, naming the phase and the real exception.
+            // One stack, written with the lock released, naming the row and the real exception. The phase's
+            // own guard never saw it.
             var ours = lines.Where(e => e.Line.Contains(StackPrefix)).ToList();
             var stack = Assert.Single(ours);
-            Assert.Contains("world tick phase (1) respawns threw", stack.Line);
+            Assert.Contains($"world tick phase (1) respawns: a spawn point threw — '' (creature id {broken.Id}) on map {PointMap}", stack.Line);
+            Assert.DoesNotContain("world tick phase (1) respawns threw", stack.Line);
             Assert.Contains(nameof(ArgumentNullException), stack.Line);
             Assert.Contains("\n      ", stack.Line);   // Log.Detail's continuation: the stack is on it
             Assert.Equal(LogLevel.Error, stack.Level);

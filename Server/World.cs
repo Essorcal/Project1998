@@ -2882,9 +2882,9 @@ public sealed partial class World
             //
             // Drain what there is. Whatever a phase did or queued before it threw stands and is sent: a point
             // that materialised before the bad one is drawn by (3), a morph already queued is reverted. Nothing
-            // is unwound, and what the phase did not reach waits for the next beat — so a point that throws on
-            // every beat keeps every point (1) walks after it waiting too, on its own map and on the maps
-            // visited after it, until the content is fixed. A throw
+            // is unwound, and what the phase did not reach waits for the next beat. (1) and (1.1) go one level
+            // finer: a spawn point, or a group member, that throws is caught by its own row guard inside the
+            // SpawnDirector and costs only itself, so the rows after it still spawn in the same beat. A throw
             // part-way through a phase can leave its work half done: forage items already added to the map
             // when TopUpForageLocked throws are on the ground but not broadcast this beat, because its drop
             // list is never returned. That is the same torn state the per-mob guard documents at (2), and the
@@ -2897,11 +2897,12 @@ public sealed partial class World
             // is null outside the test host (World.MobFaults.cs).
 
             // (1) respawns: refill any due spawn point on a map someone is watching. Points only — the
-            // hunting maps refill in batches at (1.1), not one mob at a time as they die.
+            // hunting maps refill in batches at (1.1), not one mob at a time as they die. A point that throws
+            // is a row fault in `phaseFaults` and the walk goes on (SpawnDirector.RespawnDuePoints).
             try
             {
                 PreSweepProbeForTest?.Invoke(PhRespawns);
-                _spawnDirector.RespawnDuePoints(_tick);
+                _spawnDirector.RespawnDuePoints(_tick, ref phaseFaults);
             }
             catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhRespawns, e)); }
             MarkPhase(PhRespawns);
@@ -2910,11 +2911,12 @@ public sealed partial class World
             // whose own `#pc > 0` test this mirrors). A map nobody is on is skipped here and caught by
             // EnsureMaterialized when someone walks in, so the room is full before their viewport is built
             // rather than filling in around them. Sampled every BatchSweepTicks — these clocks are in whole
-            // seconds and the shortest is 2s, so there is nothing to gain from looking every 600ms.
+            // seconds and the shortest is 2s, so there is nothing to gain from looking every 600ms. A group
+            // member that throws is a row fault in `phaseFaults` and the batch goes on (RefillGroups).
             try
             {
                 PreSweepProbeForTest?.Invoke(PhRefills);
-                _spawnDirector.RefillDueGroups(_tick);
+                _spawnDirector.RefillDueGroups(_tick, ref phaseFaults);
             }
             catch (Exception e) { (phaseFaults ??= new()).Add(new PhaseFault(PhRefills, e)); }
             MarkPhase(PhRefills);
