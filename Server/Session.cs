@@ -442,8 +442,9 @@ public sealed partial class Session
         if (_enteredWorld) _world.Online.Depart(UserKey, this, Environment.TickCount64);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
-        // flushed the freshest state; saving again here from this now-stale session would clobber it —
-        // see the duplicate-login guard, World.OnlineRegistry.Register). The login-channel session never
+        // wrote the freshest state; saving again here from this now-stale session would clobber it —
+        // see the duplicate-login guard, World.OnlineRegistry.Register — and since #168 CaptureAndWrite
+        // refuses it as well). The login-channel session never
         // populates _char, so saving it would clobber the real record with defaults.
         if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
         {
