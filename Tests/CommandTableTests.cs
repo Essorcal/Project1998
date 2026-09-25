@@ -831,13 +831,23 @@ public sealed class CommandTableTests
     /// change has to keep source-compatible for a test. A rename of either member fails this loudly (a
     /// <see cref="System.NullReferenceException"/> out of <see cref="CommandTableRows"/>), not silently.</para>
     ///
-    /// <para>The pass rule is the SAME one <see cref="NothingAListingPrintsOverrunsThePane"/> uses: at most
-    /// <see cref="Session.PaneWidth"/> wide, unless the line is a single unbreakable token (the client
-    /// re-wraps that case on its own — see <see cref="Session.WrapForPane"/>'s doc). Row count is
-    /// cross-checked two ways: against <c>CommandTable</c>'s own length (so a reflection bug that silently
-    /// found zero rows cannot pass by finding nothing to fail on) and against the live "@help" header's own
-    /// "of N" count (so the two ways of counting a command — the table and the paged command a player
-    /// actually runs — cannot drift apart unnoticed).</para></summary>
+    /// <para>The pass rule is a per-TOKEN one, not a per-line one (#176 fix round 1): no single
+    /// whitespace-split token in a row's rendered output — measured together with the leading indent
+    /// <c>HelpLines</c> puts in front of it, the same way <see cref="Session.WrapForPane"/> itself measures
+    /// it (<c>indent = line[..(line.Length - line.TrimStart(' ').Length)]</c>) — is wider than
+    /// <see cref="Session.PaneWidth"/>. This is deliberately NOT "no output line is wider than the pane
+    /// unless it has no internal space": round 0 of this slice proved that check can never fail for
+    /// anything that reaches <c>WrapForPane</c> — a run of 2+ words always packs to <c>&lt;=PaneWidth</c> by
+    /// construction (the pre-flush check before every word after the first guarantees it), so the only line
+    /// <c>WrapForPane</c> ever lets overrun is a single unbreakable token, which that line-level rule
+    /// explicitly exempts. Checking the token directly is the version of the rule that can actually fail —
+    /// and does, for real, pre-existing rows (see <see cref="KnownWideTokenRows"/>).
+    ///
+    /// <para>Row count is cross-checked two ways, kept from round 0: against <c>CommandTable</c>'s own
+    /// length (so a reflection bug that silently found zero rows cannot pass by finding nothing to fail on)
+    /// and against the live "@help" header's own "of N" count (so the two ways of counting a command — the
+    /// table and the paged command a player actually runs — cannot drift apart unnoticed). A row in
+    /// <see cref="KnownWideTokenRows"/> still counts toward both.</para></summary>
     [Fact]
     public void EveryHelpRowFitsThePane()
     {
@@ -856,14 +866,38 @@ public sealed class CommandTableTests
         foreach (var (label, lines) in rows)
         {
             measured++;
+            if (KnownWideTokenRows.Contains(label)) continue;
+
             foreach (var raw in lines)
-                foreach (var pane in Session.WrapForPane(raw))
-                    Assert.True(pane.Length <= Session.PaneWidth || !pane.Trim().Contains(' '),
-                                $"{label}: printed a {pane.Length}-char line that could have been broken: " +
-                                $"\"{pane}\"");
+            {
+                string indent = raw[..(raw.Length - raw.TrimStart(' ').Length)];
+                foreach (var token in raw.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int width = indent.Length + token.Length;
+                    Assert.True(width <= Session.PaneWidth,
+                                $"{label}: token \"{token}\" plus its {indent.Length}-char indent is " +
+                                $"{width} chars, wider than PaneWidth ({Session.PaneWidth}): \"{raw}\"");
+                }
+            }
         }
         Assert.Equal(rows.Count, measured);
     }
+
+    /// <summary>Rows this sweep found ALREADY failing the token-width rule, on `upstream/master` before
+    /// this slice touched anything — not introduced by it. Both are the Args column's enum-style list
+    /// (<c>"&lt;A|B|C|...&gt;"</c>), which has no space for <c>WrapForPane</c> to break on, so the client
+    /// re-wraps it on its own exactly like a long pasted map/item key would (see
+    /// <see cref="Session.WrapForPane"/>'s doc — "half of a mangled token is no worse than half of a mangled
+    /// token"). Not reworded: Help/Args text is player-visible, and this slice's stop rule is explicit that
+    /// rewording it is Caleb's call, not this worker's. If Caleb wants these shortened, that is a follow-up,
+    /// not this test's job.
+    ///
+    /// <list type="bullet">
+    /// <item><c>@class &lt;Warrior|Rogue|Mage|Poet|Peasant&gt;</c> — the Args token is 33 chars (indent 0).</item>
+    /// <item><c>@align &lt;Unaligned|Kwisin|Mingken|Ohaeng|0-3&gt;</c> — the Args token is 37 chars (indent 0),
+    /// the widest in the table.</item>
+    /// </list></summary>
+    private static readonly HashSet<string> KnownWideTokenRows = new() { "@class", "@align" };
 
     /// <summary>Every <c>Session.CommandTable</c> row, rendered through the private <c>Session.HelpLines</c>
     /// exactly the way <c>ShowCommandHelp</c> does — reached by reflection because both stay private (see
