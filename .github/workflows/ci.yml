@@ -184,11 +184,57 @@ jobs:
       # invoked BY PATH rather than piped in over stdin. That inversion is what keeps this repo free of
       # host-shaped files: CI's job ends at "here is a tarball", and how the host installs it is the infra
       # repo's business, updated on its own cadence with `git -C /opt/project1998/infra pull`.
+      #
+      # ONE TOLERATED FAILURE. For a code change the script stages the release, points `current` at it, books the
+      # game restart (a later booking replaces an earlier one: Server/RestartSchedule.cs, Schedule), and only then
+      # arms the login restart as a transient systemd timer, p1998-login-re*.timer. That timer stays loaded until it
+      # fires, DELAY minutes after the PREVIOUS deploy, so a deploy inside that window fails right there with
+      # "Unit ... was already loaded or has a fragment file" (runs 35363844440, 35671983710, 35890937712). By then
+      # everything that matters has happened: the pending timer restarts login into `current`, which is already
+      # this release, and the game restarts once, on this deploy's booking. Players get one restart for the burst
+      # and production ends on the newest build. (Login does run the newer build for up to DELAY minutes before the
+      # game restarts onto it; that was so before this step and this step does not change it.) So this step passes
+      # on exactly that failure, with a warning, when the output shows THIS commit staged and the game restart
+      # booked, and this commit is master's tip. Anything else stays red, including a collision by a commit that
+      # is not the tip: that may be an older build staged over a newer one (run 35890937712 staged 413bc198 over
+      # ed6c7f16), a rollback someone has to see. The tolerated case skips only the script's tail -- "login
+      # restart armed" and the pruning of old releases -- which the next clean deploy does.
       - name: Stage and schedule
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
           DELAY: ${{ github.event.inputs.restart_delay_minutes || '3' }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
+          set +e
           ssh -p "${{ secrets.DEPLOY_PORT || 22 }}" "$USER@$HOST" \
-            "bash /opt/project1998/infra/scripts/host-deploy.sh ${{ github.sha }} '$DELAY' ${{ needs.build.outputs.code_changed }}"
+            "bash /opt/project1998/infra/scripts/host-deploy.sh $SHA '$DELAY' ${{ needs.build.outputs.code_changed }}" \
+            2>&1 | tee deploy.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then exit 0; fi
+
+          last=$(grep -v '^[[:space:]]*$' deploy.log | tail -n 1 || true)
+          collided=false
+          if printf '%s\n' "$last" | grep -Eq '^Failed to start transient timer unit: Unit p1998-login-re[A-Za-z0-9_.@-]*\.timer was already loaded' \
+             && grep -Fq "staging release $SHA" deploy.log \
+             && grep -Fq 'game restart scheduled' deploy.log \
+             && ! grep -Fq 'login restart armed' deploy.log; then
+            collided=true
+          fi
+          if [ "$collided" != true ]; then exit "$status"; fi
+
+          # A failed lookup leaves the run red, as it was before this step existed. gh prints an API error as
+          # ordinary output, so only a full SHA counts as an answer.
+          tip=$(gh api "repos/$REPO/commits/master" --jq .sha 2>/dev/null || true)
+          if ! printf '%s' "$tip" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Collided with the pending login restart, and master's tip could not be read."
+            exit "$status"
+          fi
+          if [ "$tip" != "$SHA" ]; then
+            echo "::error::Collided with the pending login restart, and this commit is not master's tip ($tip): it may have staged an older build than production had. Check what is running before the next deploy."
+            exit "$status"
+          fi
+          echo "::warning::The previous deploy's login restart is still pending, so this deploy could not arm its own. It staged $SHA and moved the game restart booking to it; the pending timer restarts login into the same release. Old releases were not pruned this time."
