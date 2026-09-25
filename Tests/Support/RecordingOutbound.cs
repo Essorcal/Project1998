@@ -13,12 +13,22 @@ namespace Tests.Support;
 /// not intent. <see cref="BodiesOf"/> decrypts them back with the same cipher <c>TkPacket.BuildGame</c> encrypts
 /// with, so an assertion reads as the layout the client's own parser walks.</para>
 ///
-/// <para>Not thread-safe and deliberately not made so: a handler test drives one session from one thread, and
-/// a lock here would hide it if that ever stopped being true.</para>
+/// <para><b>Safe to <see cref="Send"/> into from several threads at once (#188).</b> Two threads sending to
+/// the SAME session is a real production shape, not a test accident: two party members leaving at once both
+/// broadcast to every remaining member, and an initiator's thread opens a trade window on its target while the
+/// target's own read loop is still sending to it. A plain list here lost or duplicated frames under exactly
+/// the concurrency a race test exists to exercise, so an end-to-end assertion on what one player was told
+/// could flip either way and prove nothing. Every read hands back a SNAPSHOT taken under the same lock, never
+/// the live list, so a caller can enumerate it while another thread is still sending.</para>
+///
+/// <para>What the old "not thread-safe" warning was really protecting is a rule about tests, not about this
+/// class: a test should not need two threads unless the thing under test is concurrent. A test that relies on
+/// one-thread-only delivery should assert that itself rather than lean on this recorder to misbehave.</para>
 /// </summary>
 public sealed class RecordingOutbound : IOutbound
 {
     private readonly List<byte[]> _frames = new();
+    private readonly object _gate = new();   // guards _frames: every Send, Clear and read goes through it
 
     public RecordingOutbound(string remote = "recorder") => Remote = remote;
 
@@ -36,12 +46,16 @@ public sealed class RecordingOutbound : IOutbound
     /// see whether anything slipped past it.</summary>
     public bool Closed { get; private set; }
 
-    /// <summary>Every frame handed over, in order.</summary>
-    public IReadOnlyList<byte[]> Frames => _frames;
+    /// <summary>Every frame handed over so far, in order — a snapshot, so it does not grow under a caller who is
+    /// enumerating it while another thread sends. Read it again to see later frames.</summary>
+    public IReadOnlyList<byte[]> Frames
+    {
+        get { lock (_gate) return _frames.ToArray(); }
+    }
 
     public bool Send(byte[] frame)
     {
-        _frames.Add(frame);
+        lock (_gate) _frames.Add(frame);
         return true;
     }
 
@@ -49,7 +63,10 @@ public sealed class RecordingOutbound : IOutbound
 
     /// <summary>Forget everything recorded so far — used to drop world-entry chatter so a test asserts only on
     /// what its own packet produced.</summary>
-    public void Clear() => _frames.Clear();
+    public void Clear()
+    {
+        lock (_gate) _frames.Clear();
+    }
 
     /// <summary>The DECRYPTED bodies of every recorded frame carrying <paramref name="opcode"/>, in order.
     /// 4.95 has one cipher on both channels (see TkCrypt), and <c>TkPacket.BuildGame</c> encrypts every game
@@ -57,7 +74,7 @@ public sealed class RecordingOutbound : IOutbound
     public List<byte[]> BodiesOf(byte opcode)
     {
         var bodies = new List<byte[]>();
-        foreach (var frame in _frames)
+        foreach (var frame in Frames)   // the snapshot: decrypting under the lock would stall every sender
         {
             if (!TkPacket.TryParse(frame, out var pkt, out _)) continue;
             if (pkt.Opcode != opcode) continue;

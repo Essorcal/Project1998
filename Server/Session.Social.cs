@@ -239,25 +239,70 @@ public sealed partial class Session
     /// to put a message box on.</summary>
     private void TryStartTrade(Session target)
     {
+        // OUR OWN gates first, under our own monitor (Session.Handle wraps Dispatch in WithState): the fast path
+        // that stops a ghost, a player already mid-trade or a self-click reaching for anyone else's monitor.
+        // The first two are asked again inside below, because the pair can drop ours on the way in.
         if (IsDead) { SendMiniText("Spirits can't do that."); return; }
         if (_trade is not null) { SendMiniText("You are already trading."); return; }
         // RTK's own line for this (clif_startexchange's `target == sd->bl.id` branch). Reachable because the
         // self-view profile carries a real id too, so its Exchange button sends OUR id back.
         if (ReferenceEquals(target, this))
         { SendMiniText("You move your items from one hand to another, but quickly get bored."); return; }
-        if (target.CharMap != CharMap) { SendMiniText("That person refuses to exchange with you."); return; }
-        if (target._trade is not null || target.IsDead || !target.WantsExchange)
-        { SendMiniText("That person refuses to exchange with you."); return; }   // client's literal wording (esp. their Exchange flag off)
 
-        var trade = new Trade(this, target);
-        _trade = trade;
-        target._trade = trade;
-        // RTK also XORs FLAG_EXCHANGE off on both players here and never restores it (clif_exchange_close and
-        // clif_exchange_cleanup both leave it flipped), which silently corrupts a setting the profile window
-        // displays. The `_trade is not null` checks above already do the "busy" job, so that is not ported.
-        SendExchangeOpen(target);
-        target.SendExchangeOpen(this);
+        // THE GATES AND THE WRITES THEY GUARD ARE ONE CRITICAL SECTION ON BOTH SESSIONS (#173). The target's
+        // half used to be read with no monitor at all, and `target._trade = trade` then wrote another session's
+        // field from our thread: a target already past its own disconnect teardown's or death's
+        // `if (_trade is not null) EndTrade(...)` could be handed a trade that nothing would ever close.
+        // FinalizeTrade and EndTrade already run under this same pair; the open now does too.
+        //
+        // What refuses a target on its way out, once we hold its monitor:
+        //   * dying    — IsDead. Hp reaches 0 before anything in the damage path or Die() can drop the monitor,
+        //                and Die()'s two drops are its last statements, so every gap a death opens has it set.
+        //   * leaving  — _leaving, the first statement of TearDownWorldState. The teardown drops the monitor
+        //                inside RemoveFromParty's broadcast (a lower-ranked member), where the leaver's _trade
+        //                is already checked, it is alive, on its map and _closed is still 0; and after the
+        //                teardown returns it has left the map. The flag covers both.
+        //
+        // LOCK ORDER. We already hold our monitor, so this is the nested acquisition #29 rule 2 resolves: when
+        // the target ranks below us the pair drops ours, takes theirs and puts ours back. While ours is dropped
+        // our own state is unguarded (a third player can open a trade with us, or kill us), so our two gates
+        // are asked AGAIN inside, where both monitors are held. The refusals are tried in exactly the order the
+        // unlocked code tried them. Nothing in here enters the Lua gate (WithStatePair's rule) or World._lock.
+        //
+        // The open frames go out INSIDE the pair too. Sent after it, a teardown on the target's thread could
+        // close the window (sub-4) before our open reached them, and the client would draw a window for a trade
+        // that had already ended.
+        const string Refuse = "That person refuses to exchange with you.";   // client's literal wording
+        string refusal = "";
+        bool opened = false;
+        WithStatePair(this, target, () =>
+        {
+            if (IsDead) { refusal = "Spirits can't do that."; return; }
+            if (_trade is not null) { refusal = "You are already trading."; return; }
+            if (target.CharMap != CharMap) { refusal = Refuse; return; }
+            if (target._trade is not null || target.IsDead || !target.WantsExchange || target._leaving)
+            { refusal = Refuse; return; }   // (esp. their Exchange flag off)
+
+            TradeOpenProbeForTest?.Invoke(this);   // null except under test; see the field
+
+            var trade = new Trade(this, target);
+            _trade = trade;
+            target._trade = trade;
+            // RTK also XORs FLAG_EXCHANGE off on both players here and never restores it (clif_exchange_close and
+            // clif_exchange_cleanup both leave it flipped), which silently corrupts a setting the profile window
+            // displays. The `_trade is not null` checks above already do the "busy" job, so that is not ported.
+            SendExchangeOpen(target);
+            target.SendExchangeOpen(this);
+            opened = true;
+        });
+        if (!opened) SendMiniText(refusal);
     }
+
+    /// <summary>Test seam (#173): called with the initiator once every gate in <see cref="TryStartTrade"/> has
+    /// passed and before either side's <c>_trade</c> is written — inside the pair, so while it runs both
+    /// monitors are held. A race fact parks one initiator here and sends a second opener (or a death) at the
+    /// same target, which is the interleaving the unlocked code lost. Null outside the test host.</summary>
+    internal static Action<Session>? TradeOpenProbeForTest;
 
     private static void UnconfirmBoth(Trade trade) { trade.OfferA.Confirmed = false; trade.OfferB.Confirmed = false; }
 
