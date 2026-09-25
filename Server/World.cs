@@ -547,7 +547,13 @@ public sealed partial class World
     /// the worst it does is move aggro between people already in the fight, which is the intent (a group
     /// CAN peel a mob off whoever pulled it, by out-damaging them).
     /// <para>Callers hold <c>_lock</c>. Players who have left the map simply aren't considered; their threat
-    /// stays banked in case they come back, exactly as RTK's per-mob table does.</para></summary>
+    /// stays banked in case they come back, exactly as RTK's per-mob table does.</para>
+    /// <para>A session a second login has replaced (<see cref="Session.IsReplaced"/>) is treated as already
+    /// gone, at all three reads below (#168 item 5): it is not the current target, it does not corner the
+    /// mob, and it is never the pick. All three are needed together. Skipping it at the current-target read
+    /// alone would let it still corner the mob, which confines the pick to arm's reach and can keep the mob
+    /// off a live player it would otherwise have turned to. Each is one volatile read with no session
+    /// monitor, made only after the existing cheaper tests have passed.</para></summary>
     private void RetargetByThreat(MapState m, Mob mob)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
@@ -559,9 +565,9 @@ public sealed partial class World
         bool cornered = false;
         if (mob.TargetId != 0)
         {
-            var current = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
+            var current = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId && !p.IsReplaced);
             if (current is null || !Adjacent(current))
-                cornered = m.Players.Any(p => !p.IsDead && Adjacent(p));
+                cornered = m.Players.Any(p => !p.IsDead && Adjacent(p) && !p.IsReplaced);
         }
 
         long now = Environment.TickCount64;
@@ -577,7 +583,7 @@ public sealed partial class World
             if (cornered && !Adjacent(p)) continue;
             if (mob.HasForgotten(p.PlayerId, now)) continue;   // Amnesia: this one isn't here as far as it knows
             long t = mob.ThreatOf(p.PlayerId);
-            if (t > bestThreat) { bestThreat = t; best = p; }
+            if (t > bestThreat && !p.IsReplaced) { bestThreat = t; best = p; }
         }
 
         if (best is null || best.PlayerId == mob.TargetId) return;
@@ -2160,13 +2166,17 @@ public sealed partial class World
     }
 
     /// <summary>The player standing on (x,y) of <paramref name="mapId"/>, or null. Used by the ';' look key
-    /// (RTK clif_parselookat checks PC before mob/item/NPC).</summary>
+    /// (RTK clif_parselookat checks PC before mob/item/NPC).
+    /// <para>A session a second login has replaced (<see cref="Session.IsReplaced"/>) is skipped: it stays on
+    /// its map until its read loop unwinds into its teardown, and in that window nothing may swing at it, cast
+    /// at it or trade with it (#168 item 5). The read is volatile and takes no session monitor, which is what
+    /// makes it legal under <c>_lock</c>; it runs only for a player already on the tile.</para></summary>
     public Session? PeerAt(ushort mapId, int x, int y)
     {
         lock (_lock)
         {
             if (!_maps.TryGetValue(mapId, out var m)) return null;
-            return m.Players.FirstOrDefault(p => p.PlayerX == x && p.PlayerY == y);
+            return m.Players.FirstOrDefault(p => p.PlayerX == x && p.PlayerY == y && !p.IsReplaced);
         }
     }
 

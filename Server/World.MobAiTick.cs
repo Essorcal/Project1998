@@ -382,7 +382,9 @@ public sealed partial class World
                 // just led off, say. On a PK map it keeps them until they die or leave, exactly like
                 // any other mob, so a pet being beaten on can still fight back.
                 if (mob.TargetId != 0 && !Content.IsPvpMap(mapId)) mob.TargetId = 0;
-                var owner = m.Players.FirstOrDefault(p => p.PlayerId == mob.OwnerId && !p.IsDead);
+                // An owner a second login has replaced counts as gone (#168 item 5), which is what its own
+                // teardown makes it a moment later: one volatile read, no session monitor, after the id test.
+                var owner = m.Players.FirstOrDefault(p => p.PlayerId == mob.OwnerId && !p.IsDead && !p.IsReplaced);
 
                 if (owner is null)
                 {
@@ -406,7 +408,7 @@ public sealed partial class World
                     // Setting TargetId and NOT continuing hands the pet to the ordinary player-chase
                     // branch below, which already knows how to close on a Session and swing at it.
                     if (Content.IsPvpMap(mapId) && owner.PvpFoeId != 0 && owner.PvpFoeId != mob.OwnerId
-                        && m.Players.Any(p => p.PlayerId == owner.PvpFoeId && !p.IsDead))
+                        && m.Players.Any(p => p.PlayerId == owner.PvpFoeId && !p.IsDead && !p.IsReplaced))
                     {
                         mob.TargetId = owner.PvpFoeId;
                         mob.TargetMobId = 0;
@@ -575,7 +577,9 @@ public sealed partial class World
             if (mob.TargetId != 0)
             {
                 mob.Returning = false;   // RTK: `if (mob.target ~= 0) then mob.returning = false end`
-                var target = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId);
+                // A target a second login has replaced is dropped like one that left (#168 item 5): no chase,
+                // no swing, no spell. One volatile read, no session monitor, after the id test.
+                var target = m.Players.FirstOrDefault(p => p.PlayerId == mob.TargetId && !p.IsReplaced);
                 // An OWNED creature has no leash: it belongs to a player, not to a spawn point, so
                 // tethering it to the tile it was summoned on would make it quit mid-fight.
                 bool inRange = target is not null && !target.IsDead
