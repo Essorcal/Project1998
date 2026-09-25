@@ -383,11 +383,31 @@ public sealed partial class Session
         catch (Exception e) { Log.Error($"{_remote} read loop threw — dropping the connection", e); }
         finally
         {
+            await EndReadLoopAsync(writer);
+        }
+    }
+
+    /// <summary>The read loop's exit: the world teardown, then the connection close, the writer await and the
+    /// CLOSE line. Split out of <see cref="RunAsync"/>'s <c>finally</c> so a socket-free session can run it.
+    ///
+    /// <para><b>The close is in a <c>finally</c> of its own (#168).</b> Anything the teardown throws used to leave
+    /// this method before <c>CloseConnection</c>: the socket stayed open on our side, a client whose read loop
+    /// ended on our own exception stayed connected to a session nobody reads, and no CLOSE line was logged. The
+    /// exception still leaves (TkAcceptor logs it and releases the admission slot, as before), but only after
+    /// the connection is closed and the CLOSE line is written. The teardown's own save is fenced inside it, so
+    /// a character the serializer rejects no longer reaches here at all.</para></summary>
+    internal async Task EndReadLoopAsync(Task writer)
+    {
+        try
+        {
             // Teardown is one critical section (#29). It is the last thing that touches this session's state
             // and it runs while the tick and the autosave sweep are still perfectly entitled to enter us —
             // the leave/unregister is exactly what stops that, so everything before it has to be inside the
             // monitor too, or a RegenTick can land between the final flush and the deregistration.
             WithState(TearDownWorldState);
+        }
+        finally
+        {
             CloseConnection("read-loop exit");   // completes the outbound channel + closes the socket
             // EXPECTED: the writer task has its own catch and has already logged whatever it hit, with a stack
             // where it warranted one. Logging the same exception again here would double every writer fault.
@@ -397,8 +417,10 @@ public sealed partial class Session
     }
 
     /// <summary>Everything the read loop's exit does to this session's own state, in one place so it can run
-    /// as one critical section (see the <c>finally</c> above). Unchanged in order and content from when it
-    /// was inline.</summary>
+    /// as one critical section (see <see cref="EndReadLoopAsync"/>). In order: the leaving latch (#173), the
+    /// trade and the party, the map, the account slot — parked for the next login's fence rather than dropped
+    /// (#168) — and the final save, which is fenced so a capture that throws is logged as a lost save instead
+    /// of escaping (#168).</summary>
     private void TearDownWorldState()
     {
         _leaving = true;   // first, before anything below can drop the monitor: TryStartTrade refuses from here on (#173)
@@ -426,8 +448,20 @@ public sealed partial class Session
         if (_enteredWorld && Volatile.Read(ref _replaced) == 0)
         {
             _dirty = true;
-            FlushNow();
-            Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+            // Fenced (#168). A capture that throws (a value the serializer rejects) re-dirties and rethrows out
+            // of CaptureAndWrite; left alone it escaped the teardown with the save lost and nothing saying so in
+            // those words. We have already left the map, so no sweep will retry it. Only the next login for this
+            // account, within one interval, tries once more (its fence).
+            try
+            {
+                FlushNow();
+                Log.Info($"   -> persisted '{_char.Name}' at map {_char.Map} ({_char.X},{_char.Y})");
+            }
+            catch (Exception e)
+            {
+                Log.Error($"   -> disconnect save of '{_char.Name}' threw — save LOST: the session has left the " +
+                          "world and no sweep will retry it", e);
+            }
         }
     }
 
