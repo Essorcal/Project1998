@@ -137,6 +137,108 @@ public class DepartedSessionFenceTests
         }
     }
 
+    /// <summary>L2 of the #168 sheet, the first of its two new late writers, in the order this slice closes: a
+    /// mob swing the tick queued before M's teardown kills M after it, and its <c>Die()</c> is still writing the
+    /// dead row — under M's monitor, since <c>ApplyMobHit</c> holds it for the whole blow — when the same account
+    /// logs in again. The fence waits for that write, so the new login loads the dead row (the death's exp loss
+    /// in it), never the live one underneath a death that lands after it.
+    ///
+    /// <para>The write is parked for real: this fact's own database file has its write lock held by hand, so
+    /// <c>Die()</c>'s <c>SaveChar</c> waits in SQLite with M's monitor held. Its capture having run (M dead, the
+    /// exp charged, the dirty flag down) is the proof it is parked there. The lock is let go once the arrival
+    /// has reached the fence (the probe) or finished.</para>
+    ///
+    /// <para>The other order — the queued hit applied only AFTER the fence latched M — is not closed here: the
+    /// death's row write is refused, but <c>TakeDamage</c> still kills M and a pile would still drop. That is the
+    /// slice 2 gate in <c>DamageIntake.TakeDamage</c>.</para>
+    ///
+    /// <para>Falsified (see the #168 report) by <c>Depart</c> back to a plain remove: red on the loaded exp,
+    /// which is the live row's.</para></summary>
+    [Fact]
+    public void ALateDeathStillWritingIsInTheRowAFastReLoginLoads()
+    {
+        const ushort deathMap = 61713;   // instance band, content-free: the death charges exp and drops nothing
+        const string name = "FenceLateDeath";
+        string key = CharacterStore.Key(name);
+        using var db = new IsolatedDatabase();
+        var character = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Name = name, Map = deathMap, X = 5, Y = 5,
+            Level = 3, Exp = 500, Hp = 1, Totem = 4,
+        };
+        var departed = new Session(new RecordingOutbound($"recorder:{name}"), 2005, db.Store, _fx.World, character);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        var mob = new Mob(_fx.World.AllocateMobId(), 1, 6, 5, "FenceLateSwinger", 10);
+        var online = _fx.World.Online;
+        _fx.World.EnterMap(departed, deathMap);
+
+        using var locked = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var fenceReached = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            release.Wait(TimeSpan.FromSeconds(60));
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true };
+        Thread? swing = null, arrival = null;
+
+        try
+        {
+            online.Register(key, departed, out _);
+            departed.WithState(() => TearDown.Invoke(departed, null));      // R1: alive, 500 exp
+            Assert.Equal(500u, Assert.IsType<Character>(db.Store.Load(name).Character).Exp);
+            Assert.True(online.HoldsDepartedForTest(key, departed));
+
+            holder.Start();
+            Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
+
+            // The swing the tick queued before the teardown, applied after it — FlushTick's own call.
+            swing = new Thread(() => departed.ApplyMobHit(mob, 9999)) { IsBackground = true };
+            swing.Start();
+            Assert.True(SpinWait.SpinUntil(() => departed.IsDead && character.Exp < 500
+                                                 && departed.DiagState().Contains("dirty False"),
+                                           TimeSpan.FromSeconds(30)), "the death never reached its row write");
+            uint deadExp = character.Exp;
+
+            Session.ArrivalFenceProbeForTest = s => { if (ReferenceEquals(s, departed)) fenceReached.Set(); };
+            CharacterLoadResult? loaded = null;
+            arrival = new Thread(() =>
+            {
+                fresh.WithState(() => fresh.ClaimAccountSlot(name));
+                loaded = db.Store.Load(name);
+            }) { IsBackground = true };
+            arrival.Start();
+            Assert.True(SpinWait.SpinUntil(() => fenceReached.IsSet || !arrival.IsAlive, TimeSpan.FromSeconds(30)),
+                        "the arrival neither reached the fence nor finished");
+
+            release.Set();
+            Assert.True(arrival.Join(TimeSpan.FromSeconds(30)), "the arrival never finished");
+            Assert.True(swing.Join(TimeSpan.FromSeconds(30)), "the swing never finished");
+
+            Assert.NotNull(loaded);
+            Assert.Equal(CharacterLoadStatus.Ok, loaded!.Status);
+            Assert.Equal(deadExp, Assert.IsType<Character>(loaded.Character).Exp);
+        }
+        finally
+        {
+            Session.ArrivalFenceProbeForTest = null;
+            release.Set();
+            holder.Join(TimeSpan.FromSeconds(30));
+            swing?.Join(TimeSpan.FromSeconds(30));
+            arrival?.Join(TimeSpan.FromSeconds(30));
+            online.Unregister(key, fresh);
+            online.Unregister(key, departed);
+            _fx.World.LeaveMap(departed, deathMap);
+        }
+    }
+
     /// <summary>The prune: a departed entry survives a sweep inside its interval and is gone after the first
     /// sweep past it, after which the next login finds nobody to fence. <c>Tick(long)</c> ages the table
     /// without waiting.
