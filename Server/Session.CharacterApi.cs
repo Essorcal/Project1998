@@ -422,6 +422,10 @@ public sealed partial class Session
                 foreach (var m in _party.Members)
                 {
                     if (ReferenceEquals(m, this)) continue;                    // the killer, added above
+                    // #168: a member a newer login has replaced is not paid and does not count toward the
+                    // group's size. Its row is refused anyway (CaptureAndWrite), and counting it only shrank
+                    // everyone else's share. A volatile read, no monitor, like #183's lookups.
+                    if (m.IsReplaced) continue;
                     if (m.IsDead || m.CharMap != mobMap) continue;
                     if (Math.Abs(m.CharX - mobX) > GroupExpRange || Math.Abs(m.CharY - mobY) > GroupExpRange) continue;
                     eligible.Add(m);
