@@ -119,11 +119,14 @@ public static class MobScript
     /// swallowed — one broken hook can't take down a tick.</summary>
     public static void Fire(string mobKey, string hook, MobContext ctx)
     {
-        // The #90 rule's second half, asserted here rather than in Session.EnterScriptGate: the gate is
-        // static and has no World to ask, and this is the entry that can actually be reached from inside the
-        // lock — World.Tick queues these hooks precisely so it can drain them after releasing it. A hook is
-        // free to call INTO the world (vanish, say, heal all do); a thread already holding the world lock
-        // entering Lua is the direction that deadlocks.
+        // The #90 rule, asserted here as well as in Session.EnterScriptGate (which now checks every World's
+        // lock for every host). This one stays because it fires EARLIER: before the Has lookup, so a hook
+        // fired under the lock is caught even for a creature with no script, and outside the try below,
+        // whose catch would swallow the gate's assert into a log line wherever an assert throws (the test
+        // host). This is the entry that can actually be reached from inside the lock — World.Tick queues
+        // these hooks precisely so it can drain them after releasing it. A hook is free to call INTO the world
+        // (vanish, say, heal all do); a thread already holding the world lock entering Lua is the direction
+        // that deadlocks.
         Debug.Assert(!ctx.World.HoldsWorldLock,
             "lock order violated: World._lock is held while firing a Lua mob hook (#90). Queue the hook and " +
             "run it after the lock is released, the way World.Tick does.");

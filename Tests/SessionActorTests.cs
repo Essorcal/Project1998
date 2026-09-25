@@ -431,6 +431,70 @@ public class SessionActorTests
         var rightWay = Record.Exception(() => a.WithState(() => b.UnderViewLockForTest(() => { })));
         Assert.Null(rightWay);
     }
+
+    /// <summary>
+    /// The gate's other rule (#90): nothing holding <c>World._lock</c> may enter the Lua gate. The gate is
+    /// static and has no World to ask, so each World registers its lock when it is built and the gate asks
+    /// <c>Monitor.IsEntered</c> of every one (<c>World.ScriptGateRegistry.cs</c>). Asserted in the gate
+    /// itself, so it holds for every host: driven here through the gate directly — which is also how the
+    /// Content snapshot publication enters it — and through one cheap, log-free entry of each script host,
+    /// which proves each host really does come through the gate.
+    ///
+    /// <para>Both directions, because only the pair means anything: with no world lock held the same entry is
+    /// silent, and so is the legal order (gate first, then the world lock), which is what every Lua hook that
+    /// calls into the world does.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("gate")]
+    [InlineData("LuaVerbHost")]
+    [InlineData("NpcScript")]
+    [InlineData("MobScript")]
+    public void EnteringTheLuaGateUnderAWorldLockAsserts(string entry)
+    {
+        Action enter = entry switch
+        {
+            "gate" => () => { using (Session.EnterScriptGate()) { } },
+            "LuaVerbHost" => () => new LuaVerbHost("gate-order-test").HasVerb("anything"),
+            "NpcScript" => () => NpcScript.Has("gate-order-test"),
+            // Compiles the real file into a candidate and never commits it, so the live hooks are untouched
+            // and nothing is logged. (A missing path would log a warning, which a parallel collection's
+            // log-window test can see.)
+            "MobScript" => () => MobScript.PrepareReload(Path.Combine(RepoPaths.GameDataDir(), "mob_ai.lua")),
+            _ => throw new ArgumentOutOfRangeException(nameof(entry)),
+        };
+
+        var wrongWay = Record.Exception(() => _fx.World.UnderWorldLockForTest(enter));
+        Assert.NotNull(wrongWay);
+        Assert.Contains("World._lock is held while entering the Lua gate", wrongWay!.Message);
+
+        var noLock = Record.Exception(enter);
+        Assert.Null(noLock);
+
+        var rightWay = Record.Exception(() =>
+        {
+            using (Session.EnterScriptGate()) _fx.World.UnderWorldLockForTest(() => { });
+        });
+        Assert.Null(rightWay);
+    }
+
+    /// <summary>Any world's lock, not only one. The gate is process-wide and every World's <c>_lock</c> ranks
+    /// below it, so a thread holding a SECOND world's lock while it waits for the gate is the same cycle: the
+    /// gate holder can call into that world. Production has one World; the test host has many, which is the
+    /// only place this can come up — and the only place the registry could quietly be answering for the wrong
+    /// world, which is why it is pinned. Dropping the lock again has to make the gate silent.</summary>
+    [Fact]
+    public void EnteringTheLuaGateUnderAnotherWorldsLockAssertsToo()
+    {
+        var other = new World();   // constructed, never started — the fixture already loaded Content
+
+        var wrongWay = Record.Exception(
+            () => other.UnderWorldLockForTest(() => { using (Session.EnterScriptGate()) { } }));
+        Assert.NotNull(wrongWay);
+        Assert.Contains("World._lock is held while entering the Lua gate", wrongWay!.Message);
+
+        var afterRelease = Record.Exception(() => { using (Session.EnterScriptGate()) { } });
+        Assert.Null(afterRelease);
+    }
 #endif
 
     /// <summary>

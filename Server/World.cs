@@ -615,6 +615,7 @@ public sealed partial class World
     /// to it.</summary>
     public World()
     {
+        RegisterForScriptGateAssert(_lock);   // Debug only: lets Session.EnterScriptGate assert #90 (World.ScriptGateRegistry.cs)
         _spawnDirector = new SpawnDirector(this);
         Online = new OnlineRegistry(this);
         AutoSave = new AutoSaveLoop(this);
