@@ -4,9 +4,10 @@ using Shared;
 
 namespace Server;
 
-// The mob-AI sweep's fault records (#109). World.Tick's two guards (one per creature, one per map) catch a
-// throw under World._lock; this file is what happens to it afterwards, once the lock is released. Its own
-// file so the tick body keeps only the two lines that queue a fault.
+// The tick's fault records. World.Tick's guards catch a throw under World._lock — one guard per pre-sweep
+// phase (1)-(1.7) (#106), and two in the mob-AI sweep, one per creature and one per map (#36, #109); this
+// file is what happens to a caught throw afterwards, once the lock is released. Its own file so the tick
+// body keeps only the lines that queue a fault.
 public sealed partial class World
 {
     /// <summary>One throw caught by the mob-AI sweep, as the guard saw it. Queued under <c>_lock</c> —
@@ -106,5 +107,76 @@ public sealed partial class World
             sb.Append(k.ErrorType.Name).Append(" x").Append(n);
         }
         Log.Error(sb.ToString());
+    }
+
+    // ---- the pre-sweep phases (1)-(1.7) (#106) ------------------------------------------------------
+    //
+    // A sibling of MobFault rather than a MobFault with a phase added. The two describe different things: a
+    // mob fault names a map and a creature, a phase fault names neither — its phase is the whole world's —
+    // so one shared record would carry three fields that mean nothing for half its rows, and every reader
+    // would branch on which half it holds. A separate key and throttle also mean a phase fault can never be
+    // folded into a creature's count, or the other way round, and the mob-fault wording the #109 facts pin
+    // stays exactly as it was. What the two DO share is the throttle's shape and its two spans, and those
+    // are reused as they are.
+
+    /// <summary>One throw caught by a pre-sweep phase's guard in <see cref="Tick"/>: which phase (a
+    /// <c>Ph*</c> constant) and the exception. Queued under <c>_lock</c> — one int and one reference — and
+    /// formatted after the lock is released by <see cref="LogPhaseFaults"/>. A phase ends at its throw, so a
+    /// beat holds at most one of these per phase.</summary>
+    internal readonly record struct PhaseFault(int Phase, Exception Error);
+
+    /// <summary>What the throttle counts as "the same phase fault": the phase and the exception's type, so a
+    /// second, unrelated bug in the same phase gets its own stack instead of hiding in the first one's
+    /// count. Bounded by seven phases times the exception types they can throw.</summary>
+    internal readonly record struct PhaseFaultKey(int Phase, Type ErrorType);
+
+    /// <summary>Tick thread only, and only outside <c>_lock</c> (see <see cref="FaultThrottle{TKey}"/>).
+    /// The mob throttle's spans: a stack at the first throw, again after ~10 s quiet, again hourly.</summary>
+    private readonly FaultThrottle<PhaseFaultKey> _phaseFaultThrottle = new(MobFaultQuietBeats, MobFaultRestackBeats);
+
+    /// <summary>A test seam, null in every process that is not the test host: run first inside each
+    /// pre-sweep phase's guard, (1) to (1.7), with that phase's <c>Ph*</c> constant. A throw from it is that
+    /// phase's guard's to catch, which is how a test reaches the six guards whose phases no content-free
+    /// setup can make throw on its own — (1) alone has a natural one, a point whose materialisation throws.
+    /// An instance field, like <see cref="SweepProbeForTest"/>, so it reaches only the world a test
+    /// installed it on. Its production cost is seven field reads per beat.</summary>
+    internal Action<int>? PreSweepProbeForTest;
+
+    /// <summary>The pre-sweep phases, (1) to (1.7), in the order <see cref="Tick"/> runs them — the
+    /// values <see cref="PreSweepProbeForTest"/> is called with.</summary>
+    internal static readonly int[] PreSweepPhasesForTest = { PhRespawns, PhRefills, PhMorphs, PhDecoys, PhForage, PhClock, PhWeather };
+
+    /// <summary>A phase's name as the log and the watchdog print it, e.g. <c>(1.6) clock</c>.</summary>
+    internal static string PhaseNameForTest(int phase) => PhaseNames[phase];
+
+    /// <summary>
+    /// Write one beat's pre-sweep phase faults, after <c>_lock</c> is released. A fault's first throw — or
+    /// its first after <see cref="MobFaultQuietBeats"/> quiet, or <see cref="MobFaultRestackBeats"/> after its
+    /// last stack — is written at Error with the exception in full. Every other throw this beat is only
+    /// named, and the names go out as ONE Error line for the whole beat. A phase throws at most once a beat,
+    /// so the line carries no counts: each name on it is one phase that lost its rest this beat.
+    /// </summary>
+    private void LogPhaseFaults(List<PhaseFault> faults, long beat)
+    {
+        Debug.Assert(!HoldsWorldLock, "phase faults are formatted after World._lock is released, never under it");
+
+        StringBuilder? repeats = null;
+        foreach (var f in faults)
+        {
+            string phase = PhaseNames[f.Phase];
+            if (_phaseFaultThrottle.Admit(new PhaseFaultKey(f.Phase, f.Error.GetType()), beat))
+            {
+                Log.Error($"world tick phase {phase} threw — the rest of that phase is skipped this beat, the later phases, the mob sweep and the flush continue (repeats are named, not re-logged)",
+                          f.Error);
+                continue;
+            }
+
+            if (repeats is null)
+                repeats = new StringBuilder("world tick phase still throwing — the rest of it skipped this beat with no stack (each fault's stack is logged at its first throw): ");
+            else
+                repeats.Append(", ");
+            repeats.Append(phase).Append(' ').Append(f.Error.GetType().Name);
+        }
+        if (repeats is not null) Log.Error(repeats.ToString());
     }
 }

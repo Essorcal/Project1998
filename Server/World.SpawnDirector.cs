@@ -527,11 +527,13 @@ public sealed partial class World
         // UnderWorldLockForTest: a reader of the roster should be able to see everything that writes it.
 
         /// <summary>Register one spawn point with a fixed home tile and its own respawn delay, the way
-        /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. Caller holds <c>_lock</c>.</summary>
-        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery)
+        /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. <paramref name="dueAt"/>, when non-zero,
+        /// registers it as a point whose creature is dead and whose respawn clock falls due on that beat, so
+        /// the tick's phase (1) materialises it without a map entry first. Caller holds <c>_lock</c>.</summary>
+        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery, long dueAt = 0)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
-            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery });
+            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery, RespawnTick = dueAt });
         }
 
         /// <summary>How many live creatures the mob-to-point index holds, on every map. Caller holds
