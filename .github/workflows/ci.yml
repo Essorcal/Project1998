@@ -37,6 +37,11 @@ jobs:
           # Full history: the lane check below diffs against github.event.before.
           fetch-depth: 0
 
+      # The deploy job's superseded check, run against a stubbed gh on every push and pull request, so a change
+      # that would let it skip without proof goes red here rather than on a deploy. Bash only: 2.8 s on the runner.
+      - name: Deploy guard harness
+        run: bash Tests/DeployGuard/superseded-guard.test.sh
+
       - name: Which lane is this?
         id: changes
         run: |
@@ -157,12 +162,150 @@ jobs:
       # Two deploys racing would interleave rsyncs into the same release tree. Queue them instead.
       group: deploy-production
       cancel-in-progress: false
+    # What this job's `gh api` calls read: master's tip and the compare (contents), and the superseded check's
+    # workflow runs, jobs and job logs (actions). Naming permissions drops every other one to none, and this
+    # job uses no other: the artifact download of this same run goes through the runner's own token.
+    permissions:
+      actions: read
+      contents: read
     steps:
+      # A SUPERSEDED COMMIT DOES NOT STAGE. The concurrency group runs one deploy at a time, but in the order the
+      # deploys reach it, which is the order their builds finish, not the order of the commits. So an older
+      # commit whose build ran slower staged over a newer one and moved the game restart booking to itself: a
+      # rollback (run 36177648282 staged 84992e9 over 1e95345, run 36183611949 staged fad26aa over cdc2eeb).
+      #
+      # This step skips everything after it, and ends green with a notice naming the newer commit, only on PROOF
+      # that a newer master commit has already staged: that commit's own deploy log holds the host's
+      # "staging release <its sha>" and "game restart scheduled" lines, the two the stage step below reads.
+      # A newer commit that is still building, queued behind this deploy, failed before staging, cancelled, or
+      # content-only (that lane stages no release) proves nothing, so this deploys exactly as before; if that
+      # commit stages later it lands on top, which is the right order. Every lookup that fails also deploys,
+      # with a warning: a skip must be proven, and an error is not proof. The decision is the one function
+      # between the markers below, which Tests/DeployGuard/superseded-guard.test.sh runs against a stubbed gh.
+      - name: Skip if a newer commit has already staged
+        id: superseded
+        # Even a crash here must not block the deploy: with no `skip` output, every later step runs as before.
+        continue-on-error: true
+        # Nor may a hang, which would hold the deploy-production group for the job's 360-minute default. The
+        # runner fails a step that times out, continue-on-error turns that into a pass, and `skip` is written
+        # only as this script's last line, so a killed check writes none and the deploy goes ahead. A normal
+        # run takes seconds; the longest wait built in is 12 s of retries on one late log.
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # >>> superseded-guard
+          superseded_guard_unproven() {
+            echo "::warning::Superseded check: $1. Deploying as before: a skip needs proof, and a failed lookup is not proof."
+          }
+          # Sets GUARD_SKIP=true (and GUARD_NEWER) only on proof; every other path leaves it false.
+          superseded_guard() {
+            GUARD_SKIP=false
+            GUARD_NEWER=
+            local hex='^[0-9a-f]{40}$' tip cmp status newer runs id head jobs job stage log try
+            if ! [[ $SHA =~ $hex ]]; then
+              superseded_guard_unproven "this run's commit '$SHA' is not a full SHA"
+              return 0
+            fi
+            # gh prints an API error as ordinary output, so only a full SHA counts as an answer.
+            if ! tip=$(gh api "repos/$REPO/commits/master" --jq .sha 2>/dev/null) || ! [[ $tip =~ $hex ]]; then
+              superseded_guard_unproven "master's tip could not be read"
+              return 0
+            fi
+            if [ "$tip" = "$SHA" ]; then
+              echo "This commit is master's tip, so nothing newer can have staged. Deploying."
+              return 0
+            fi
+            # One call answers both questions: is this commit behind the tip, and which commits are newer. The
+            # list stops at 250 commits; a newer commit past that is simply not considered, which only deploys.
+            if ! cmp=$(gh api "repos/$REPO/compare/$SHA...$tip" --jq '.status, .commits[].sha' 2>/dev/null); then
+              superseded_guard_unproven "the comparison with master's tip $tip failed"
+              return 0
+            fi
+            status=$(head -n 1 <<< "$cmp")
+            newer=$(tail -n +2 <<< "$cmp")
+            case $status in
+              ahead) ;;
+              identical|behind|diverged)
+                # A dispatch from another ref or a force-moved master: deploy, and the stage step's own
+                # "not master's tip" handling stands.
+                echo "This commit is not behind master's tip $tip (compare: $status). Deploying as before."
+                return 0 ;;
+              *)
+                superseded_guard_unproven "the comparison with master's tip $tip answered '$status'"
+                return 0 ;;
+            esac
+            if [ -z "$newer" ] || grep -Evq "$hex" <<< "$newer"; then
+              superseded_guard_unproven "the commits between this one and master's tip $tip could not be read"
+              return 0
+            fi
+            if ! runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=master&per_page=50" \
+                          --jq '.workflow_runs[] | "\(.id) \(.head_sha)"' 2>/dev/null); then
+              superseded_guard_unproven "master's workflow runs could not be listed"
+              return 0
+            fi
+            # Newest run first. Only runs of commits newer than this one count.
+            while read -r id head <&3; do
+              if [ -z "$id" ]; then continue; fi
+              if ! [[ $id =~ ^[0-9]+$ && $head =~ $hex ]]; then
+                superseded_guard_unproven "a workflow run was listed as '$id $head'"
+                return 0
+              fi
+              if ! grep -Fxq "$head" <<< "$newer"; then continue; fi
+              if ! jobs=$(gh api "repos/$REPO/actions/runs/$id/jobs" \
+                            --jq '.jobs[] | select(.name == "deploy") | "\(.id) \(first(.steps[]? | select(.name == "Stage and schedule") | "\(.status)/\(.conclusion)") // "none")"' \
+                            2>/dev/null); then
+                superseded_guard_unproven "the jobs of run $id ($head) could not be read"
+                return 0
+              fi
+              job= stage=
+              read -r job stage <<< "$jobs"
+              # No deploy job yet (still building), queued behind this one, cancelled before it ran, or skipped by
+              # this same check: that commit has not staged, so it proves nothing.
+              case $stage in
+                completed/success|completed/failure|completed/cancelled) ;;
+                *) continue ;;
+              esac
+              if ! [[ $job =~ ^[0-9]+$ ]]; then
+                superseded_guard_unproven "the deploy job of run $id ($head) was listed as '$job'"
+                return 0
+              fi
+              # A job's log can lag its completion by a few seconds, and these races are seconds apart.
+              log=
+              for try in 1 2 3 4 5; do
+                if log=$(gh api "repos/$REPO/actions/jobs/$job/logs" --allow-escape-sequences 2>/dev/null); then break; fi
+                log=
+                if [ "$try" -lt 5 ]; then ${GUARD_SLEEP:-sleep} 3; fi
+              done
+              if [ -z "$log" ]; then
+                superseded_guard_unproven "the deploy log of run $id ($head) could not be read"
+                return 0
+              fi
+              # Host lines only: "<time> [tag] message". The log also echoes this script and the stage step's,
+              # which name both phrases, but as "<time> <colour code>..." lines with no SHA after either one.
+              if grep -Eq "^[^ ]+ \[[^]]*\] staging release $head[[:space:]]*\$" <<< "$log" \
+                 && grep -Eq '^[^ ]+ \[[^]]*\] game restart scheduled' <<< "$log"; then
+                GUARD_SKIP=true
+                GUARD_NEWER=$head
+                echo "::notice::Superseded: $head is newer than $SHA on master, and its deploy (run $id) has already put its release on the host. Skipped this upload and stage so production is not rolled back to $SHA."
+                return 0
+              fi
+            done 3<<< "$runs"
+            echo "No master commit newer than this one has staged its release. Deploying."
+          }
+          # <<< superseded-guard
+          superseded_guard || true
+          echo "skip=$GUARD_SKIP" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v8
+        if: steps.superseded.outputs.skip != 'true'
         with:
           name: p1998-${{ github.sha }}
 
       - name: Set up SSH
+        if: steps.superseded.outputs.skip != 'true'
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -173,6 +316,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Upload the release
+        if: steps.superseded.outputs.skip != 'true'
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
@@ -200,6 +344,7 @@ jobs:
       # ed6c7f16), a rollback someone has to see. The tolerated case skips only the script's tail -- "login
       # restart armed" and the pruning of old releases -- which the next clean deploy does.
       - name: Stage and schedule
+        if: steps.superseded.outputs.skip != 'true'
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
