@@ -201,7 +201,9 @@ public class SpawnRowGuardTests
     /// refills it either, since phase (1.1) skips a map with nobody on it.
     ///
     /// <para>A characterisation, not a guard: it pins that this slice left the entry path as it was. The
-    /// follow-up that guards it will turn it red on purpose.</para></summary>
+    /// follow-up that guards it will turn it red on purpose. Shown live by passing <c>guarded: true</c> on
+    /// <c>EnsureMaterialized</c>'s <c>RefillGroups</c> call: red, "Assert.Throws() Failure: No exception was
+    /// thrown".</para></summary>
     [Fact]
     public void OnEntryABadGroupMemberFailsTheEntryAndEveryEntryAfterIt()
     {
