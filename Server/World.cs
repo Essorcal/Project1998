@@ -2798,7 +2798,7 @@ public sealed partial class World
         var gc0 = GC.GetTotalPauseDuration();
         _lockWaitMs = 0;
         try { Tick(); }
-        catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+        catch (Exception e) { Log.Error("world tick threw outside its phase and sweep guards (FlushTick, the sweep's map walk, the terrain pre-warm) — the rest of this beat is abandoned, the next runs on schedule", e); }
         EndPhases();
 
         if (slowMs <= 0) return;
@@ -2829,7 +2829,7 @@ public sealed partial class World
         var clock = Stopwatch.StartNew();
         BeginPhases();
         try { FlushTick(new TickQueues()); }
-        catch (Exception e) { Log.Error("world tick threw — this beat is abandoned, the next runs on schedule", e); }
+        catch (Exception e) { Log.Error("world tick threw outside its phase and sweep guards (FlushTick, the sweep's map walk, the terrain pre-warm) — the rest of this beat is abandoned, the next runs on schedule", e); }
         EndPhases();
 
         if (slowMs <= 0) return;
