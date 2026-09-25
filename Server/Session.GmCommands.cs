@@ -175,7 +175,7 @@ public sealed partial class Session
             .Where(t => Content.IsTotemTime(hour, t)).Select(Content.TotemName));
         Reply($"In-game time: hour {hour} — day {day} of {_world.Clock.SeasonName}, Yuri {year}. " +
                 $"Totem time: {(totems.Length > 0 ? totems : "none")}." +
-                (_world.Clock.HourOverride is not null ? $"  [hour pinned — {Prefix}clock real to release]" : ""));
+                (_world.Clock.HourOverride is not null ? $" [hour pinned — {Prefix}clock real to release]" : ""));
     }
 
     // "@killtrack [clear]" — the eight-slot kill track, most-recent-first, which is what the mythic
