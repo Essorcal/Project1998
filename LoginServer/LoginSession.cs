@@ -182,16 +182,13 @@ public sealed class LoginSession
     // non-alphanumerics stripped), so the character set has to be restricted to what survives that
     // normalization — otherwise "Bo b" and "Bob" would be the same account under two different display names.
     //
-    // The rule matches STANDARD NexusTK: up to 12 characters, LETTERS ONLY — no spaces, no digits, no
-    // punctuation. (It used to allow digits and _, which normalization would have folded together anyway.)
-    private const int MaxNameLength = 12;
-
+    // The shape is Shared/NameRules: 3 to 11 characters, LETTERS ONLY — no spaces, no digits, no punctuation.
+    // (It used to allow digits and _, which normalization would have folded together anyway.) The ceiling is
+    // HandoffTokens.MaxNameLength, the most the client's handoff field carries back whole. It used to be 12,
+    // and a 12-letter account was created but could never enter the world (#299).
     private static string? NameProblem(string name)
     {
-        if (string.IsNullOrWhiteSpace(name)) return "Please enter a name.";
-        if (name.Length < 3 || name.Length > MaxNameLength) return $"Names must be 3 to {MaxNameLength} letters.";
-        foreach (var ch in name)
-            if (!char.IsAsciiLetter(ch)) return "Names may only use letters.";
+        if (NameRules.ShapeProblem(name) is { } why) return why;
         if (CharacterStore.CharacterExists(name) || Accounts.Exists(name)) return "That name is already taken.";
         return null;
     }
