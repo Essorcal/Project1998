@@ -216,11 +216,11 @@ public class MobStateLockTests
     /// and <c>say</c> always have — so the gate calling INTO the world is legal; entering Lua while already
     /// holding <c>World._lock</c> is the direction that deadlocks, and until #103 nothing said so.
     ///
-    /// <para>Asserted at <see cref="MobScript.Fire"/> rather than inside <c>Session.EnterScriptGate</c>,
-    /// because the gate is static and has no World to ask, and Fire is the entry that can realistically be
-    /// reached from inside the lock — the tick queues these hooks precisely so it can drain them after
-    /// releasing it. <c>LuaVerbHost</c> and <c>NpcScript</c> hold no World at all, so their gate entries are
-    /// covered by the documented rule rather than by this assert; see the report on #103.</para>
+    /// <para><see cref="MobScript.Fire"/> keeps its own earlier assert on the tick's hook path: the tick queues
+    /// these hooks precisely so it can drain them after releasing the lock. The gate itself now asserts through
+    /// each World's Debug-only lock registration, so every host — <c>LuaVerbHost</c>, <c>NpcScript</c>,
+    /// <c>MobScript</c> and the content publication boundary — is covered. The gate-level fact is
+    /// <c>SessionActorTests.EnteringTheLuaGateUnderAWorldLockAsserts</c>.</para>
     ///
     /// <para>Both directions, because only the pair means anything: the legal one has to stay silent.
     /// Debug-only by construction, like the #29 lock-order test.</para>
