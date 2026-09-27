@@ -431,7 +431,12 @@ public sealed partial class Session
     /// review, pre-existing 1). The fault is not rethrown: once the rest of the teardown has run there is
     /// nothing left for it to stop, and TkAcceptor would only log it a second time, without the character's
     /// name. The map and the slot are not fenced: <c>World.LeaveMap</c> isolates each peer's despawn itself,
-    /// and what is left of it and of the slot is dictionary work under <c>World._lock</c>.</para></summary>
+    /// and what is left of it and of the slot is dictionary work under <c>World._lock</c>.</para>
+    ///
+    /// <para><b>A session that claimed the slot but never entered the world</b> — its arrival threw between
+    /// <see cref="ClaimAccountSlot"/> and world entry — gives the slot back at the slot's step, if it still owns
+    /// it. It drops the slot where an entered session parks it: nothing from it can write the row, so the next
+    /// login has nothing to fence.</para></summary>
     private void TearDownWorldState()
     {
         _leaving = true;   // first, before anything below can drop the monitor: TryStartTrade refuses from here on (#173)
@@ -467,6 +472,12 @@ public sealed partial class Session
         // monitor — a group share decided before this teardown, a mob swing queued before it — lands before
         // that login loads the row, and nothing from us lands after.
         if (_enteredWorld) _world.Online.Depart(UserKey, this, Environment.TickCount64);
+        // An arrival that claimed the slot and then threw before entering the world gives it back here, and only
+        // if it still owns it: Unregister's compare-and-remove, so a newer login that has taken the slot since
+        // keeps it. Dropped, not parked. Every writer is gated on _enteredWorld, so nothing from this session can
+        // land on the row and there is nothing for the next login to fence; the arrival's own refusals drop the
+        // slot for the same reason. Held until the next login kicked it before (#298 review, pre-existing 2).
+        else if (_claimedKey is { } claimed) _world.Online.Unregister(claimed, this);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // wrote the freshest state; saving again here from this now-stale session would clobber it —
@@ -966,10 +977,15 @@ public sealed partial class Session
     /// <para>A departed kick that THROWS is logged and the arrival carries on with the row as it stands. The
     /// only route to a throw is a character the serializer rejects, whose teardown save already threw and was
     /// logged as lost; letting it escape would refuse this login, which the same logout without the fence
-    /// lets in. A live kick's throw still propagates, as it always has.</para></summary>
+    /// lets in. A live kick's throw still propagates, as it always has.</para>
+    ///
+    /// <para>The key the slot was claimed under is kept (<see cref="_claimedKey"/>), so that if the arrival throws
+    /// before it enters the world, its teardown can give the slot back (<see cref="TearDownWorldState"/>).</para></summary>
     internal void ClaimAccountSlot(string user)
     {
-        _world.Online.RegisterArrival(CharacterStore.Key(user), this, out var oldSession, out bool departed);
+        string key = CharacterStore.Key(user);
+        _world.Online.RegisterArrival(key, this, out var oldSession, out bool departed);
+        _claimedKey = key;
         if (oldSession is null) return;
         ArrivalFenceProbeForTest?.Invoke(oldSession);   // null except under test; see the field
         if (!departed)
@@ -991,6 +1007,19 @@ public sealed partial class Session
     /// after the registry handed it back and before the kick enters its monitor. A fence fact uses it to know
     /// the arrival has reached the fence without timing anything. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalFenceProbeForTest;
+
+    /// <summary>The account key this session's arrival claimed the online slot under, set by
+    /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then. Read only by the teardown of a
+    /// session that never entered the world, which gives the slot back under it. A session that did enter parks
+    /// the slot under its character's key (<c>UserKey</c>), as it always has. Written and read under this
+    /// session's monitor: the arrival and the teardown both run inside it.</summary>
+    private string? _claimedKey;
+
+    /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right after
+    /// <see cref="ClaimAccountSlot"/> returns, before the row is loaded. A fact throws from it to stand for any
+    /// throw between the claim and world entry (the row load, the restores after it), which leaves the session
+    /// holding the account's slot with <c>_enteredWorld</c> false. Null outside the test host.</summary>
+    internal static Action<Session>? ArrivalClaimedProbeForTest;
 
     private void HandleArrival(TkPacket pkt)
     {
@@ -1055,6 +1084,7 @@ public sealed partial class Session
         // kicked session's flush (if any) is visible to our own load. Since #168 the same kick also fences a
         // session for this account that tore down moments ago; see ClaimAccountSlot.
         ClaimAccountSlot(_user);
+        ArrivalClaimedProbeForTest?.Invoke(this);   // null except under test; see the field
 
         // Load the persisted character (created on the login channel, or saved at last logout). There is NO
         // fallback spawn any more: world entry never invents a character. A missing record here means the
