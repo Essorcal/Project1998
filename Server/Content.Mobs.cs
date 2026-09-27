@@ -401,10 +401,11 @@ public static partial class Content
         private set => Builder.ShopCatalogues = value;
     }
 
-    // NPC composition (game-data/NpcAbilities.csv): NpcKey -> the ability NAMES it's built from (a
-    // pipe-list). NpcScripts.For resolves each name to its C# INpcAbility instance (NpcScripts.AbilityByName).
-    // The "which abilities" is data; the ability code stays code. Hot-reloads via @reload.
-    public static IReadOnlyDictionary<string, string[]> NpcCompositions
+    // NPC composition (game-data/NpcAbilities.csv): NpcKey -> the abilities it's built from, in order (a
+    // pipe-list), each optionally narrowed to some of the NPC ids or maps of that identifier. NpcScripts.For
+    // resolves each name to its C# INpcAbility instance (NpcScripts.AbilityByName) and drops the narrowed-away
+    // ones. The "which abilities, on which NPCs" is data; the ability code stays code. Hot-reloads via @reload.
+    public static IReadOnlyDictionary<string, NpcAbilityRef[]> NpcCompositions
     {
         get => _snapshotBuilder?.NpcCompositions ?? Snapshot.NpcCompositions;
         private set => Builder.NpcCompositions = value;

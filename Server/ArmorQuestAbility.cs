@@ -8,10 +8,10 @@ namespace Server;
 /// the word again after each completed step, so this contributes no click-menu entry and clicking a
 /// guildmaster still shows the ordinary trainer menu.
 ///
-/// <para>Composed onto all four <c>*TrainerNpc</c> identifiers (game-data/NpcAbilities.csv), then narrowed
-/// here to the eight Kugnae/Buya guildmasters and to the speaker's OWN path — see
-/// <see cref="ArmorQuest.GuildMasters"/>. A word that isn't for this NPC returns false and falls through to
-/// ordinary chat, exactly as an unrecognised word does.</para>
+/// <para>Composed onto the eight Kugnae/Buya guildmasters of the four <c>*TrainerNpc</c> identifiers
+/// (game-data/NpcAbilities.csv), and narrowed here to the speaker's OWN path — see
+/// <see cref="ArmorQuest.GuildMasters"/>, which gives each guildmaster's path. A word that isn't for this NPC
+/// returns false and falls through to ordinary chat, exactly as an unrecognised word does.</para>
 ///
 /// <para><b>Progress state</b> is one stage int per chain (<see cref="ArmorChain.StageKey"/> — RTK's own
 /// <c>star_armor</c>/<c>moon_armor</c>/<c>sun_armor</c> names, so imported characters keep their place) plus

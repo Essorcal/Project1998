@@ -90,10 +90,12 @@ public static class ArmorQuest
     /// the four in Buya. Atlas is explicit and identical on all four pages — <i>"Say 'Star' to Kugnae or
     /// Buya &lt;Path&gt; Guildmaster"</i> — and the Rogue tutor names Maro by name.
     ///
-    /// <para>This is a DELIBERATE narrowing. The ability is composed onto the four <c>*TrainerNpc</c>
-    /// identifiers, and eighteen NPCs share those four keys: the eight guildmasters, the twelve alignment
-    /// trainers in the path halls, and the three Nagnang masters (Sword/Wand/Staff/Dagger). RTK lets any of
-    /// them run the chain; no period source mentions anywhere but the two capitals.</para></summary>
+    /// <para>This is a DELIBERATE narrowing. The four <c>*TrainerNpc</c> identifiers are shared by
+    /// eighteen NPCs: the eight guildmasters, the twelve alignment trainers in the path halls, and the three
+    /// Nagnang masters (Sword/Wand/Staff/Dagger). RTK lets any of them run the chain; no period source
+    /// mentions anywhere but the two capitals. NpcAbilities.csv composes the ability onto exactly these eight
+    /// (<c>armor_quest@36;41</c> and so on), and NpcAbilityNarrowingTests holds that set equal to this
+    /// table's keys, because this table is where each one's path comes from.</para></summary>
     public static readonly IReadOnlyDictionary<int, int> GuildMasters = new Dictionary<int, int>
     {
         [36] = 1, [41] = 1,   // Tabaek (Kugnae 12)  · Yabaek   (Buya 366)   — Warrior

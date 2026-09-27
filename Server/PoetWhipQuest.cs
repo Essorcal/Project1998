@@ -14,7 +14,7 @@ namespace Server;
 /// <list type="number">
 /// <item>Buy a <b>Sonhi pipe</b> from Sying (Sying's Shop, Kaming's Encampment — MessengerNpc stock) and give
 /// it to <b>Staff</b>, the Poet guildmaster of Nagnang (NPCs.csv 137, map 3832 — or whichever of his
-/// alignment-sanctum copies your own alignment routes you to; see <see cref="PoetWhipQuest.Everyone"/>).
+/// alignment-sanctum copies your own alignment routes you to; see <see cref="PoetWhipQuestAbility"/>).
 /// "Welcome Stranger" without a pipe in the bag gets you nothing but "Hmmm, what? Oh hello, Stranger". The
 /// pipe is the quest's one sacrifice.</item>
 /// <item>He asks for "a shard of wood that will last forever". Walk the ground around the Forever Tree in the
@@ -81,24 +81,6 @@ public static class PoetWhipQuest
     /// <summary>Icon/colour for the two legends. RTK's values, and the only witness for them — neither period
     /// page records a glyph index. Cosmetic either way (the same call ArmorQuest made).</summary>
     public const byte AcolyteIcon = 4, DestroyedIcon = 7, LegendColor = 128;
-
-    /// <summary>Every NPC who runs this chain: <b>Staff</b>, Poet guildmaster of Nagnang (137, map 3832),
-    /// and his three alignment-sanctum copies — Kwi-Sin (408, 3833), Ming-Ken (409, 3834) and Ohaeng Staff
-    /// (410, 3835). Nine NPCs share the PoetTrainerNpc identifier the composition row is keyed by, so this set
-    /// is what keeps the chain in Staff's mouth alone; RTK narrows the same way, on
-    /// <c>npc.mapTitle == "Staff"</c>, which matches its alignment rooms for exactly the same reason.
-    ///
-    /// <para><b>All four, not just 137.</b> An ALIGNED Poet never meets 137: <c>Session.TryPathHallWarp</c>
-    /// routes the Poet Staff hall's north doorway to the sanctum for the player's own alignment, so a Kwi-Sin
-    /// Poet only ever stands in front of NPC 408. Gating on the base id alone silently hid the whole quest
-    /// from three quarters of the path — and silently is the operative word, because the menu option simply
-    /// does not appear and nothing says why. <see cref="Everyone"/> is asserted complete against NPCs.csv in
-    /// the tests, so a future variant fails loudly instead of going missing.</para></summary>
-    public const int StaffNpcId = 137;
-    public static readonly int[] Everyone = { StaffNpcId, 408, 409, 410 };
-
-    /// <summary>Whether this NPC runs the chain — see <see cref="Everyone"/>.</summary>
-    public static bool IsStaff(int npcId) => Array.IndexOf(Everyone, npcId) >= 0;
 
     public const int MinLevel = 50;   // nexusatlas/quests/poetswhip.php; RTK asks 10
     public const int PoetPath = 4;
@@ -170,10 +152,23 @@ public static class PoetWhipQuest
 }
 
 /// <summary>
-/// Staff's half of the chain. Composed onto every PoetTrainerNpc (game-data/NpcAbilities.csv) and narrowed
-/// here to Staff and his alignment copies (<see cref="PoetWhipQuest.Everyone"/>), to Poets, and to level
+/// Staff's half of the chain. Composed onto Staff and his alignment copies only (game-data/NpcAbilities.csv,
+/// <c>poet_whip@137;408;409;410</c>), and narrowed here to Poets and to level
 /// <see cref="PoetWhipQuest.MinLevel"/> — RTK hides the option the same way rather than refusing inside it,
 /// so a Warrior clicking Staff sees the ordinary trainer menu.
+///
+/// <para><b>Who runs it:</b> <b>Staff</b>, Poet guildmaster of Nagnang (137, map 3832), and his three
+/// alignment-sanctum copies — Kwi-Sin (408, 3833), Ming-Ken (409, 3834) and Ohaeng Staff (410, 3835). Nine
+/// NPCs share the PoetTrainerNpc identifier, so the row's narrowing is what keeps the chain in Staff's mouth
+/// alone; RTK narrows the same way, on <c>npc.mapTitle == "Staff"</c>, which matches its alignment rooms for
+/// exactly the same reason.</para>
+///
+/// <para><b>All four, not just 137.</b> An ALIGNED Poet never meets 137: <c>Session.TryPathHallWarp</c>
+/// routes the Poet Staff hall's north doorway to the sanctum for the player's own alignment, so a Kwi-Sin
+/// Poet only ever stands in front of NPC 408. Narrowing to the base id alone silently hid the whole quest
+/// from three quarters of the path — and silently is the operative word, because the menu option simply
+/// does not appear and nothing says why. PoetWhipQuestTests asserts the row's set complete against NPCs.csv,
+/// so a future variant fails loudly instead of going missing.</para>
 /// </summary>
 public sealed class PoetWhipQuestAbility : INpcAbility
 {
@@ -181,7 +176,6 @@ public sealed class PoetWhipQuestAbility : INpcAbility
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        if (!PoetWhipQuest.IsStaff(ctx.Def.Id)) yield break;
         if (ctx.BasePathId != PoetWhipQuest.PoetPath) yield break;
         if (ctx.Level < PoetWhipQuest.MinLevel) yield break;
         if (ctx.HasLegend(PoetWhipQuest.LegendDestroyed)) yield break;   // done, and it is once per character

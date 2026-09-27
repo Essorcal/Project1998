@@ -169,8 +169,8 @@ public static partial class Content
         internal IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; set; } = new Dictionary<ushort, AmbushMapDef>();
         internal IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; set; } =
             new Dictionary<string, IReadOnlyList<(string, string[])>>(StringComparer.OrdinalIgnoreCase);
-        internal IReadOnlyDictionary<string, string[]> NpcCompositions { get; set; } =
-            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        internal IReadOnlyDictionary<string, NpcAbilityRef[]> NpcCompositions { get; set; } =
+            new Dictionary<string, NpcAbilityRef[]>(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, bool> MobFleeOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         internal Dictionary<string, bool> MobStationaryOverrides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -382,7 +382,7 @@ public static partial class Content
         internal IReadOnlyDictionary<string, IReadOnlyList<int[]>> AmbushBursts { get; }
         internal IReadOnlyDictionary<ushort, AmbushMapDef> Ambushes { get; }
         internal IReadOnlyDictionary<string, IReadOnlyList<(string Name, string[] Keys)>> ShopCatalogues { get; }
-        internal IReadOnlyDictionary<string, string[]> NpcCompositions { get; }
+        internal IReadOnlyDictionary<string, NpcAbilityRef[]> NpcCompositions { get; }
         internal Dictionary<string, bool> MobFleeOverrides { get; }
         internal Dictionary<string, bool> MobStationaryOverrides { get; }
         internal IReadOnlyList<SpellDef> Spells { get; }

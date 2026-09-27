@@ -21,7 +21,9 @@ public sealed class AlignmentAbility : INpcAbility
 
     // Shrine map id -> (alignment id 1-3, the shaman's own name for the nature). RTK's shrine strings:
     // "Kwi-Sin" / "Ming-ken" / "Ohaeng" (note the casing — kept verbatim because the dialog interpolates it).
-    private static readonly IReadOnlyDictionary<int, (int Align, string Shrine)> Shrines =
+    // The ability is composed onto AlignmentNpc only on these maps (NpcAbilities.csv, alignment@map:...); a
+    // test holds the two sets equal, since this table is what the dialog reads and the CSV is what decides.
+    internal static readonly IReadOnlyDictionary<int, (int Align, string Shrine)> Shrines =
         new Dictionary<int, (int, string)>
         {
             [324] = (1, "Kwi-Sin"),

@@ -241,13 +241,24 @@ handled as plaintext by the client. Most importantly for the server, the **game-
      | 8 | 3 |
      | 9 | 2 |
      | 10 | 1 |
-     | ≥ 11 | 0 — nothing survives |
+     | 11 | 0 — nothing survives; the length byte and the name fill all 12 bytes |
+     | 12 | 0 — and the **name itself** loses its last letter, so the arrival can never match |
 
      The earlier note here — "the client preserves the first 4 bytes and forces the 5th to 0" — was
      probed only with 7-character names, where `11 - 7 = 4` makes the two rules look identical. Validating
      a fixed 4 bytes therefore **rejected every account with a name longer than 7 characters**: it could log
      in, then bounced at world entry with `invalid/expired handoff token`. Both sides now derive the
      surviving length from the username (`HandoffTokens.SurvivingBytes`) so they cannot disagree.
+
+     **So 11 letters is the longest name that can enter the world, and creation refuses anything longer**
+     (#299, 2026-09-27): "Names must be 3 to 11 letters." The cap is not a number of its own. It is
+     `HandoffTokens.MaxNameLength = HandoffFieldBytes - 1`, the 12 usable bytes less the length byte, and
+     `Shared/NameRules` applies it at both the `0x02` name check and the `0x04` create (§9). Creation used to
+     allow 12: the test client's 12-letter `tutorninetyb` got "Account created." on 2026-09-25 and was then
+     dropped by the game server on its `0x10` arrival, while an 11-letter name on the same pair entered the
+     world. After the length byte the field has room for 11 letters, so the username the game server reads
+     is not the one the token was minted for. An account already created with a 12-letter name stays locked
+     out.
    - Because that leaves as little as one byte (or none), **the address binding, not the nonce, is what
      carries the security for long names.** Mint records the login connection's IP; the `0x10` arrival must
      come from the same address. Keep the significant nonce bytes **non-zero** — the client's copy stops at

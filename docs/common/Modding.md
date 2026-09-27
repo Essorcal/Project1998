@@ -106,7 +106,9 @@ Add a row, pick/author a verb, `@reload`.
   `@reload` and the NPC moves/appears/vanishes live.
 - **Behavior — reusable services** (shop/bank/repair/parcel/trainer/…): `NpcAbilities.csv` maps an NPC
   identifier to a pipe-list of ability names (`SmithNpc,shop|repair`). The names resolve to C# ability
-  singletons via `NpcScripts.AbilityByName` — add a name there to expose a new service to the CSV.
+  singletons via `NpcScripts.AbilityByName` — add a name there to expose a new service to the CSV. When only
+  some NPCs of a shared identifier should have an ability, narrow that one entry: `sute@39` (NPC ids,
+  `;`-separated) or `alignment@map:324;325;326` (the maps they stand on). The file's header has the rules.
 - **Behavior — bespoke dialog** (`npc_dialog.lua`): write the NPC as a coroutine.
   - Click dialog: `function npcs.MyNpc(ctx) ... end`.
   - Spoken trigger: `function npcs_say.MyNpc(ctx, speech) ... return true end` (return `true` to consume the

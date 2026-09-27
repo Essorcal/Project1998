@@ -1282,18 +1282,68 @@ public static partial class Content
         return (swaps, deltas, open);
     }
 
-    // NpcAbilities.csv: NpcKey -> pipe-list of ability names (resolved to instances by NpcScripts.AbilityByName).
-    private static Dictionary<string, string[]> LoadNpcCompositions(CsvTable csv)
+    // NpcAbilities.csv: NpcKey -> its abilities, in order (names resolved to instances by NpcScripts.AbilityByName).
+    // A token is `name` (every NPC of the identifier), `name@id;id` (only those NPC ids) or `name@map:id;id` (only
+    // the NPCs of the identifier standing on those maps); the file's header is the reference. A narrowing that
+    // names nothing real is logged here, at load, and kept as written: an id with no NPC of this identifier
+    // behind it matches nobody at run time too, so the ability stays OFF rather than falling open onto every
+    // NPC of the identifier. A malformed id is dropped for the same reason, never read as "no narrowing".
+    private static Dictionary<string, NpcAbilityRef[]> LoadNpcCompositions(CsvTable csv, IReadOnlyList<NpcDef> npcs,
+        IReadOnlyDictionary<ushort, MapInfo> maps)
     {
-        var d = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var npcById = IndexFirst(npcs, n => n.Id);
+        var d = new Dictionary<string, NpcAbilityRef[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in csv)
         {
             var k = c.Require("NpcKey", "").Trim();
             if (k.Length == 0) continue;
-            d[k] = c.Require("Abilities", "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            d[k] = c.Require("Abilities", "")
+                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(token => ParseNpcAbility(k, token, npcs, npcById, maps))
+                .ToArray();
             c.Keep();
         }
         return d;
+    }
+
+    internal static NpcAbilityRef ParseNpcAbility(string key, string token, IReadOnlyList<NpcDef> npcs,
+        IReadOnlyDictionary<int, NpcDef> npcById, IReadOnlyDictionary<ushort, MapInfo> maps)
+    {
+        int at = token.IndexOf('@');
+        if (at < 0) return new NpcAbilityRef(token);
+
+        string name = token[..at].Trim();
+        string spec = token[(at + 1)..].Trim();
+        bool byMap = spec.StartsWith("map:", StringComparison.OrdinalIgnoreCase);
+        if (byMap) spec = spec["map:".Length..];
+        string where = $"NpcAbilities.csv row NpcKey='{key}', '{token}'";
+
+        var ids = new HashSet<int>();
+        foreach (var part in spec.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(part, System.Globalization.NumberStyles.None,
+                              System.Globalization.CultureInfo.InvariantCulture, out int id))
+            {
+                Log.Warn($"{where}: '{part}' is not {(byMap ? "a map" : "an NPC")} id — ignored");
+                continue;
+            }
+            ids.Add(id);
+            if (byMap)
+            {
+                if (id > ushort.MaxValue || !maps.ContainsKey((ushort)id))
+                    Log.Warn($"{where}: map {id} is not in the maps table — the ability reaches nobody through it");
+                else if (!npcs.Any(n => n.Map == id && string.Equals(n.Key, key, StringComparison.OrdinalIgnoreCase)))
+                    Log.Warn($"{where}: no {key} stands on map {id} — the ability reaches nobody through it");
+            }
+            else if (!npcById.TryGetValue(id, out var npc))
+                Log.Warn($"{where}: NPC {id} is not in NPCs.csv (or was dropped at load) — the ability reaches nobody through it");
+            else if (!string.Equals(npc.Key, key, StringComparison.OrdinalIgnoreCase))
+                Log.Warn($"{where}: NPC {id} ({npc.Name}) is a {npc.Key}, not a {key} — the ability reaches nobody through it");
+        }
+        if (ids.Count == 0)
+            Log.Warn($"{where}: narrowed to no {(byMap ? "map" : "NPC")} at all — the ability is on nobody");
+
+        return byMap ? new NpcAbilityRef(name, MapIds: ids) : new NpcAbilityRef(name, NpcIds: ids);
     }
 
     // Load a verb/row params CSV into "key -> whole row" — shared by SpellParams and ItemParams (both feed a Lua
