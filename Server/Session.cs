@@ -476,7 +476,8 @@ public sealed partial class Session
         // if it still owns it: Unregister's compare-and-remove, so a newer login that has taken the slot since
         // keeps it. Dropped, not parked. Every writer is gated on _enteredWorld, so nothing from this session can
         // land on the row and there is nothing for the next login to fence; the arrival's own refusals drop the
-        // slot for the same reason. Held until the next login kicked it before (#298 review, pre-existing 2).
+        // slot for the same reason, and clear the key when they do, so a refused login's teardown takes nothing
+        // here. Held until the next login kicked it before (#298 review, pre-existing 2).
         else if (_claimedKey is { } claimed) _world.Online.Unregister(claimed, this);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
@@ -1009,8 +1010,9 @@ public sealed partial class Session
     internal static Action<Session>? ArrivalFenceProbeForTest;
 
     /// <summary>The account key this session's arrival claimed the online slot under, set by
-    /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then. Read only by the teardown of a
-    /// session that never entered the world, which gives the slot back under it. A session that did enter parks
+    /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then, and null again once one of the
+    /// arrival's refusals has given the slot back itself. Read only by the teardown of a session that never
+    /// entered the world, which gives the slot back under it. A session that did enter parks
     /// the slot under its character's key (<c>UserKey</c>), as it always has. Written and read under this
     /// session's monitor: the arrival and the teardown both run inside it.</summary>
     private string? _claimedKey;
@@ -1096,6 +1098,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
             _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
+            _claimedKey = null;   // given back here, so the teardown has nothing to return (TearDownWorldState)
             CloseConnection("arrival rejected (no character record)");
             return;
         }
@@ -1103,6 +1106,7 @@ public sealed partial class Session
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
             _world.Online.Unregister(CharacterStore.Key(_user), this);
+            _claimedKey = null;
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
@@ -1110,6 +1114,7 @@ public sealed partial class Session
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
             _world.Online.Unregister(CharacterStore.Key(_user), this);
+            _claimedKey = null;
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }
