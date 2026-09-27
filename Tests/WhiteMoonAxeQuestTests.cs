@@ -26,15 +26,20 @@ public class WhiteMoonAxeQuestTests
         }
     }
 
-    /// <summary>Every Maso (the Buya guildmaster and his alignment copies) is in the gate, and hears "moon"
-    /// before the armor chain does.</summary>
+    /// <summary>Every Maso (the Buya guildmaster and his alignment copies), and no other rogue trainer, carries
+    /// the quest through its NpcAbilities.csv narrowing, and hears "moon" before the armor chain does.</summary>
     [Fact]
     public void EveryMasoCarriesTheQuestAheadOfTheArmorChain()
     {
         EnsureLoaded();
 
+        // The row's narrowing IS the gate (the ability no longer checks), so it must name every Maso.
         var masos = Content.Npcs.Where(n => n.Key == "RogueTrainerNpc" && n.Name.EndsWith("Maso")).ToList();
-        Assert.Equal(WhiteMoonAxeAbility.Masos.OrderBy(i => i), masos.Select(n => n.Id).OrderBy(i => i));
+        var entry = Content.NpcCompositions["RogueTrainerNpc"].Single(r => r.Name == "white_moon_axe");
+        Assert.True(entry.NpcIds is not null, "white_moon_axe is on every rogue trainer — it must be narrowed to the Masos");
+        Assert.Equal(entry.NpcIds!.OrderBy(i => i), masos.Select(n => n.Id).OrderBy(i => i));
+        foreach (var npc in Content.Npcs.Where(n => n.Key == "RogueTrainerNpc" && !masos.Contains(n)))
+            Assert.DoesNotContain(NpcScripts.For(npc), a => a is WhiteMoonAxeAbility);
 
         foreach (var npc in masos)
         {
