@@ -60,7 +60,7 @@ public static class NpcScripts
     /// Content.NpcCompositions) if listed, else derived from its data flags (so simple shops/banks work with no
     /// row). A row's ability that is narrowed to other NPC ids or maps of the same identifier is left off
     /// (<see cref="NpcAbilityRef.AppliesTo"/>), so the ability never sees an NPC it is not for. An ability name
-    /// with no registration here is skipped without a word at run time; ContentSmokeTests fails on one.</summary>
+    /// with no registration here is skipped without a word at run time; NpcAbilityNarrowingTests fails on one.</summary>
     public static INpcAbility[] For(NpcDef def)
     {
         var list = new List<INpcAbility>();

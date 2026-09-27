@@ -62,9 +62,9 @@ public class SuteQuestTests
         Assert.True(trainers.Count > 1, "expected the identifier to be shared — the gate below is why");
         Assert.Contains(trainers, n => n.Id == SuteQuest.GuildMasterNpcId);
 
-        // Every one of them CARRIES the ability (there is no per-NPC composition key) …
+        // Only Eldritch CARRIES the ability: NpcAbilities.csv narrows it to him (sute@39) …
         foreach (var t in trainers)
-            Assert.Contains(NpcScripts.For(t), a => a is SuteQuestAbility);
+            Assert.Equal(t.Id == SuteQuest.GuildMasterNpcId, NpcScripts.For(t).Any(a => a is SuteQuestAbility));
 
         // … and every one of them EXCEPT Eldritch declines the word, so it falls through to normal chat.
         foreach (var t in trainers.Where(n => n.Id != SuteQuest.GuildMasterNpcId))

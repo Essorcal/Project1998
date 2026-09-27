@@ -45,8 +45,9 @@ public class MageStoneQuestTests
         var trainers = Content.Npcs.Where(n => n.Key == "MageTrainerNpc").ToList();
         Assert.True(trainers.Count > 1, "the identifier is shared — the gate below is why");
 
+        // Only Wand CARRIES the ability: NpcAbilities.csv narrows it to him (mage_stone@133).
         foreach (var t in trainers)
-            Assert.Contains(NpcScripts.For(t), a => a is MageStoneAbility);
+            Assert.Equal(t.Id == MageStoneQuest.WandNpcId, NpcScripts.For(t).Any(a => a is MageStoneAbility));
 
         Assert.True(MageStoneAbility.AnswersFor(wand));
         foreach (var t in trainers.Where(n => n.Id != MageStoneQuest.WandNpcId))

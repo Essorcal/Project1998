@@ -1306,7 +1306,7 @@ public static partial class Content
         return d;
     }
 
-    private static NpcAbilityRef ParseNpcAbility(string key, string token, IReadOnlyList<NpcDef> npcs,
+    internal static NpcAbilityRef ParseNpcAbility(string key, string token, IReadOnlyList<NpcDef> npcs,
         IReadOnlyDictionary<int, NpcDef> npcById, IReadOnlyDictionary<ushort, MapInfo> maps)
     {
         int at = token.IndexOf('@');
@@ -1324,7 +1324,7 @@ public static partial class Content
             if (!int.TryParse(part, System.Globalization.NumberStyles.None,
                               System.Globalization.CultureInfo.InvariantCulture, out int id))
             {
-                Log.Warn($"{where}: '{part}' is not a {(byMap ? "map" : "NPC")} id — ignored");
+                Log.Warn($"{where}: '{part}' is not {(byMap ? "a map" : "an NPC")} id — ignored");
                 continue;
             }
             ids.Add(id);

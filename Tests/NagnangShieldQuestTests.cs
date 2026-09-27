@@ -49,12 +49,12 @@ public class NagnangShieldQuestTests
 
         // Keyed on the IDENTIFIER, not on Sword's own placement: which room he stands in is a world-layout
         // fact that has already moved once under this quest (map 3820 gained terrain), and the thing that
-        // actually goes silently missing is the composition row. Every warrior trainer carries the ability
-        // — there is no per-NPC composition key — and NagnangShieldAbility.Entries narrows it to Sword.
+        // actually goes silently missing is the composition row. Of the warrior trainers, only Sword carries
+        // the ability: NpcAbilities.csv narrows it to him (nagnang_shield@91).
         var trainers = Content.Npcs.Where(n => n.Key == "WarriorTrainerNpc").ToList();
         Assert.NotEmpty(trainers);
         foreach (var t in trainers)
-            Assert.Contains(NpcScripts.For(t), a => a is NagnangShieldAbility);
+            Assert.Equal(t.Id == NagnangShieldQuest.SwordNpcId, NpcScripts.For(t).Any(a => a is NagnangShieldAbility));
 
         var chul = Content.Npcs.FirstOrDefault(n => n.Id == NagnangShieldQuest.ChulNpcId);
         Assert.NotNull(chul);

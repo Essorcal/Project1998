@@ -1,32 +1,48 @@
+# Which reusable abilities each NPC identifier is built from (Server/NpcScripts.cs, AbilityByName), in the
+# order their menu entries and speech handlers run. Loaded into Content.NpcCompositions; hot-reloads.
+#
+# Abilities is a |-list, and each entry is one of:
+#   name              on every NPC of the identifier
+#   name@39           only on NPC 39 of it (NPCs.csv NpcId); several ids are ;-separated: name@35;39
+#   name@map:324;325  only on the NPCs of it standing on those maps
+# The narrowing is for that one entry, never the row, so the row's order holds for every NPC. It is how an
+# ability that belongs to SOME of the NPCs sharing an identifier says which: nine NPCs are MageTrainerNpc,
+# and only Eldritch (39) tells the Sute story. An id that names no NPC of the identifier is logged at load,
+# and the entry then reaches nobody.
+#
+# Four abilities also carry data per NPC elsewhere, and their narrowing here must name exactly those keys
+# (Tests/NpcAbilityNarrowingTests.cs checks it): armor_quest (ArmorQuest.GuildMasters, id -> path),
+# totem_worship (TotemWorship.Shrines, id -> totem), mythic_alliance (MythicAlliances.csv NpcId) and
+# alignment (AlignmentAbility's shrine maps, map -> alignment).
 NpcKey,Abilities
-SmithNpc,shop|repair|nagnang_tall_shield|forgotten_past
+SmithNpc,shop|repair|nagnang_tall_shield@108|forgotten_past@142;196
 MessengerNpc,shop|messenger
 InnNpc,shop|bank
 InnNpc2,
 FishNpc,fish
 LibrarianNpc,librarian
 MainTutorialNpc,stars_hint
-WarriorTrainerNpc,warrior_trainer|minor_quest|armor_quest|nagnang_shield
-RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe|armor_quest|dagger_uniform
-MageTrainerNpc,mage_trainer|minor_quest|sute|armor_quest|mage_stone
-PoetTrainerNpc,poet_trainer|minor_quest|armor_quest|poet_whip
+WarriorTrainerNpc,warrior_trainer|minor_quest|armor_quest@36;41|nagnang_shield@91
+RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe@42;162;163;164|armor_quest@37;42|dagger_uniform
+MageTrainerNpc,mage_trainer|minor_quest|sute@39|armor_quest@35;39|mage_stone@133
+PoetTrainerNpc,poet_trainer|minor_quest|armor_quest@38;40|poet_whip@137;408;409;410
 BloodNpc,forget_secret
 RogueGuildShamanNpc,appearance
 ArenaMasterNpc,war_paint
 ExpSeller,shadow_stats
 BonHwaNpc,bon_hwa
 ChapelNpc,shop|chapel
-ShamanNpc,revive|forgotten_past
-BaekhoNpc,revive|totem_worship
-HyunMooNpc,revive|totem_worship
-ChungRyongNpc,revive|totem_worship
-JuJakNpc,revive|totem_worship
+ShamanNpc,revive|forgotten_past@64
+BaekhoNpc,revive|totem_worship@388
+HyunMooNpc,revive|totem_worship@390
+ChungRyongNpc,revive|totem_worship@389
+JuJakNpc,revive|totem_worship@391
 HermitNpc,hermit
 AncientLeviathanNpc,ancient_leviathan
 BorderPatrolNpc,border_patrol
 ClawNpc,tiger_mail
-MythicAllianceNpc,mythic_alliance
-AlignmentNpc,alignment
+MythicAllianceNpc,mythic_alliance@120;121;122;123;124;125;126;127;128;129;130;131
+AlignmentNpc,alignment@map:324;325;326
 SummitNpc,summit
 BlackbirdNpc,dagger_uniform
 RotahNpc,shop|repair|bank|forgotten_past

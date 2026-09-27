@@ -32,7 +32,8 @@ public static class TotemWorship
 {
     /// <summary>Shrine NpcId → totem index (0 Ju Jak · 1 Baekho · 2 Hyun Moo · 3 Chung Ryong), RTK's
     /// <c>_totemIndexByName</c>. The four totem PRIESTS (NPCs 94-97, identifier <c>TotemNpc</c>) are a
-    /// different set and take no worship — the shrines are the animals themselves.</summary>
+    /// different set and take no worship — the shrines are the animals themselves. NpcAbilities.csv names the
+    /// same four ids (<c>totem_worship@388</c> and so on), and NpcAbilityNarrowingTests holds the two equal.</summary>
     public static readonly IReadOnlyDictionary<int, int> Shrines = new Dictionary<int, int>
     {
         [388] = 1,   // Baekho      (map 1406)
