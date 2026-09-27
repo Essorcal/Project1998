@@ -41,7 +41,9 @@ public class NagnangShieldQuestTests
         !m.Solid(x, y) && !ObjectFlags.Blocks(m.Obj(x, y), 0);
 
     /// <summary>Both halves of the quest are reachable ONLY through a composition row. Sword's menu entry and
-    /// Chul's spoken "shield" have no fallback — drop either row and the quest is silently unplayable.</summary>
+    /// Chul's spoken "shield" have no fallback — drop either row and the quest is silently unplayable. And
+    /// each row is narrowed to its one NPC (<c>nagnang_shield@91</c>, <c>nagnang_tall_shield@108</c>), with
+    /// no check left in the abilities, so the other warrior trainers and smiths must NOT carry them.</summary>
     [Fact]
     public void SwordAndChulCarryTheirAbilities()
     {
@@ -49,14 +51,15 @@ public class NagnangShieldQuestTests
 
         // Keyed on the IDENTIFIER, not on Sword's own placement: which room he stands in is a world-layout
         // fact that has already moved once under this quest (map 3820 gained terrain), and the thing that
-        // actually goes silently missing is the composition row. Of the warrior trainers, only Sword carries
-        // the ability: NpcAbilities.csv narrows it to him (nagnang_shield@91).
-        var trainers = Content.Npcs.Where(n => n.Key == "WarriorTrainerNpc").ToList();
-        Assert.NotEmpty(trainers);
-        foreach (var t in trainers)
-            Assert.Equal(t.Id == NagnangShieldQuest.SwordNpcId, NpcScripts.For(t).Any(a => a is NagnangShieldAbility));
+        // actually goes silently missing is the composition row.
+        var sword = Content.Npcs.Single(n => n.Id == 91);
+        Assert.Equal("WarriorTrainerNpc", sword.Key);
+        Assert.Equal("Sword", sword.Name);
+        foreach (var t in Content.Npcs.Where(n => n.Key == "WarriorTrainerNpc"))
+            Assert.True(ReferenceEquals(t, sword) == NpcScripts.For(t).Any(a => a is NagnangShieldAbility),
+                        $"{t.Name} (npc {t.Id}) {(ReferenceEquals(t, sword) ? "lost" : "offers")} the Nagnang shield");
 
-        var chul = Content.Npcs.FirstOrDefault(n => n.Id == NagnangShieldQuest.ChulNpcId);
+        var chul = Content.Npcs.FirstOrDefault(n => n.Id == 108);
         Assert.NotNull(chul);
         Assert.Equal("SmithNpc", chul!.Key);
         Assert.Equal("Chul", chul.Name);
@@ -65,6 +68,9 @@ public class NagnangShieldQuestTests
         Assert.Contains(chulAbilities, a => a is NagnangTallShieldAbility);
         // and reachable by EAR specifically — the say dispatcher only considers INpcSayHandler.
         Assert.Contains(chulAbilities.OfType<INpcSayHandler>(), h => h is NagnangTallShieldAbility);
+        foreach (var smith in Content.Npcs.Where(n => n.Key == "SmithNpc" && !ReferenceEquals(n, chul)))
+            Assert.False(NpcScripts.For(smith).Any(a => a is NagnangTallShieldAbility),
+                         $"{smith.Name} (npc {smith.Id}) forges the Nagnang tall shield");
     }
 
     /// <summary>The one token that starts the quest. Green squirrels are the only source of the pelt, and
