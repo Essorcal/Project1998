@@ -24,11 +24,18 @@ namespace Shared;
 ///
 ///   7-char name -> 4 bytes survive (32 bits)   ..the case the original "the client keeps 4 and zeroes
 ///   8-char name -> 3 bytes survive (24 bits)     the 5th" note was probed on, and mistook for a fixed slot
-///   9-char name -> 2 bytes                     10-char name -> 1 byte    11+ -> nothing at all
+///   9-char name -> 2 bytes                     10-char name -> 1 byte    11 -> nothing at all
+///  12-char name -> the NAME is cut: the field holds the length byte and only its first 11 letters
 ///
 /// Validating a fixed 4 bytes therefore rejected every name longer than 7 characters outright — a
 /// freshly created 8-character account could log in but never enter the world. Both sides now derive the
 /// surviving length from the username, so they agree by construction.
+///
+/// The same field caps the name itself. At 11 letters the length byte and the name fill all 12 bytes and
+/// nothing of the nonce is left; at 12 the name loses its last letter, so the 0x10 arrival claims a
+/// username the token was never minted for and <see cref="Consume"/> refuses it. Such an account is
+/// created and then can never enter the world (#299), which is why account creation refuses any name
+/// longer than <see cref="MaxNameLength"/>.
 ///
 /// Because that leaves as little as one byte (or none), the nonce alone is NOT the security boundary for
 /// long names — the address binding is. An attacker must both be at the login's source address and guess
@@ -38,6 +45,17 @@ public static class HandoffTokens
 {
     private const int TtlSeconds = 60;   // generous: the client opens the game port within ~1s of the 0x03 reply
     private const int SigBytes = 4;      // nonce bytes we mint; how many SURVIVE depends on the name (see above)
+
+    /// <summary>The usable bytes of the client's handoff field: the 13-byte field of the truncation rule
+    /// above, less the NUL terminator the client forces. The length byte, the username and whatever of
+    /// the nonce survives all share these bytes.</summary>
+    public const int HandoffFieldBytes = 12;
+
+    /// <summary>The longest name that reaches the game server whole: the field less its length byte. One
+    /// letter more and the arrival carries a cut name that <see cref="Consume"/> can never match, so
+    /// account creation (<see cref="NameRules"/>) refuses anything longer. Nothing of the nonce survives
+    /// at this length; the address binding carries the check (see above).</summary>
+    public const int MaxNameLength = HandoffFieldBytes - 1;
 
     /// <summary>How many nonce bytes the client will still be carrying when it re-sends them in its 0x10
     /// arrival, given the username it shares the field with. Both minting and consuming key off this, so

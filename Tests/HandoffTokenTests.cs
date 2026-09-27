@@ -44,6 +44,11 @@ public class HandoffTokenTests : IDisposable
         catch { /* best effort cleanup */ }
     }
 
+    /// <summary>The client's handoff field as these tests model it: 13 bytes, the last forced to NUL. Written
+    /// out here rather than read from <see cref="HandoffTokens"/>, so the server's constants have an
+    /// independent number to disagree with.</summary>
+    private const int ClientField = 13;
+
     /// <summary>Simulate the client's copy of our 0x03 reply tail: it strncpy's
     /// &lt;ulen&gt;&lt;username&gt;&lt;nonce&gt; into a 13-byte field (12 bytes + a forced NUL) and echoes
     /// the field back in 0x10. This is the exact transform that broke long names.</summary>
@@ -52,10 +57,10 @@ public class HandoffTokenTests : IDisposable
         var blob = new List<byte> { (byte)user.Length };
         blob.AddRange(System.Text.Encoding.ASCII.GetBytes(user));
         blob.AddRange(nonce);
-        while (blob.Count < 13) blob.Add(0);   // strncpy pads the remainder with NULs
-        blob = blob.GetRange(0, 13);
-        blob[12] = 0;                          // ...and the field is always NUL-terminated
-        return blob.GetRange(1 + user.Length, 12 - user.Length).ToArray();   // what lands in the token slot
+        while (blob.Count < ClientField) blob.Add(0);   // strncpy pads the remainder with NULs
+        blob = blob.GetRange(0, ClientField);
+        blob[ClientField - 1] = 0;                      // ...and the field is always NUL-terminated
+        return blob.GetRange(1 + user.Length, ClientField - 1 - user.Length).ToArray();   // the token slot
     }
 
     // 7 chars was the only length ever probed, which is how the fixed-4-bytes assumption survived. The 8-
@@ -126,4 +131,27 @@ public class HandoffTokenTests : IDisposable
     [InlineData(12, 0)]
     public void SurvivingBytesMatchesTheClientField(int nameLength, int expected) =>
         Assert.Equal(expected, HandoffTokens.SurvivingBytes(new string('x', nameLength)));
+
+    /// <summary>#299: the name cap is the client's field, not a number of its own. The field's usable bytes
+    /// carry the length byte and then the name, so the longest name that arrives whole is one less than
+    /// the field, and at that length nothing of the nonce is left. At 12 letters the name itself was cut,
+    /// and the account was created but could never enter the world.</summary>
+    [Fact]
+    public void MaxNameLengthIsTheClientFieldLessItsLengthByte()
+    {
+        Assert.Equal(ClientField - 1, HandoffTokens.HandoffFieldBytes);
+        Assert.Equal(ClientField - 1, 1 + HandoffTokens.MaxNameLength);
+        Assert.Equal(0, HandoffTokens.SurvivingBytes(new string('x', HandoffTokens.MaxNameLength)));
+    }
+
+    /// <summary>The longest name creation allows still enters the world: no nonce byte survives, so its token
+    /// consumes on the username and the address binding alone.</summary>
+    [Fact]
+    public void LongestAllowedNameStillConsumes()
+    {
+        var user = Name(HandoffTokens.MaxNameLength);
+        var nonce = HandoffTokens.Mint(user, Ip);
+        Assert.True(HandoffTokens.Consume(ClientEcho(user, nonce), user, Ip),
+            $"a {HandoffTokens.MaxNameLength}-character name must survive the client's truncation");
+    }
 }
