@@ -30,28 +30,26 @@ public class MageStoneQuestTests
     }
 
     /// <summary>Wand carries the ability, and — because nine NPCs share <c>MageTrainerNpc</c> — he is the only
-    /// one of them who runs the quest. Without the in-code gate the other eight would each offer their own
-    /// "Mage Stone" entry, in the wrong kingdom, pointing at a cave above Nagnang.</summary>
+    /// one of them who does. NpcAbilities.csv narrows it to him (<c>mage_stone@133</c>) and the ability no
+    /// longer checks for itself, so without the narrowing the other eight would each offer their own "Mage
+    /// Stone" entry, in the wrong kingdom, pointing at a cave above Nagnang.</summary>
     [Fact]
     public void OnlyWandRunsTheQuest()
     {
         EnsureLoaded();
 
-        var wand = Content.Npcs.FirstOrDefault(n => n.Id == MageStoneQuest.WandNpcId);
+        var wand = Content.Npcs.FirstOrDefault(n => n.Id == 133);
         Assert.NotNull(wand);
         Assert.Equal("MageTrainerNpc", wand!.Key);
         Assert.Equal("Wand", wand.Name);
+        Assert.Equal(3828, wand.Map);                        // the Nagnang Mage Guild, below the prophets
 
         var trainers = Content.Npcs.Where(n => n.Key == "MageTrainerNpc").ToList();
-        Assert.True(trainers.Count > 1, "the identifier is shared — the gate below is why");
+        Assert.True(trainers.Count > 1, "the identifier is shared — the narrowing below is why");
 
-        // Only Wand CARRIES the ability: NpcAbilities.csv narrows it to him (mage_stone@133).
         foreach (var t in trainers)
-            Assert.Equal(t.Id == MageStoneQuest.WandNpcId, NpcScripts.For(t).Any(a => a is MageStoneAbility));
-
-        Assert.True(MageStoneAbility.AnswersFor(wand));
-        foreach (var t in trainers.Where(n => n.Id != MageStoneQuest.WandNpcId))
-            Assert.False(MageStoneAbility.AnswersFor(t), $"{t.Name} (npc {t.Id}) offers the Mage Stone but should not");
+            Assert.True(ReferenceEquals(t, wand) == NpcScripts.For(t).Any(a => a is MageStoneAbility),
+                        $"{t.Name} (npc {t.Id}) {(ReferenceEquals(t, wand) ? "lost" : "offers")} the Mage Stone");
     }
 
     /// <summary>The three prophets are Lua, not C#, so their whole conversation hangs off one identifier

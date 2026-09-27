@@ -73,11 +73,6 @@ public static class MageStoneQuest
 
     public const int MinLevel  = 55;                 // Atlas: "Level Required: 55"
     public const int MagePath  = 3;                  // NpcContext.BaseClass
-    /// <summary>Wand, Nagnang's guild master (NPCs.csv 133, map 3828). Nine NPCs share the
-    /// <c>MageTrainerNpc</c> identifier the ability is composed onto, and only this one runs the quest:
-    /// Atlas sends the player to "Wand at the Mage Guild in Nagnang" by name, and the prophets are up the
-    /// stairs from that guild.</summary>
-    public const int WandNpcId = 133;
 
     /// <summary>The prophets' room and the three cells off it (NPCs.csv 134/135/136).</summary>
     public const ushort ProphetsMap = 2570;
@@ -110,24 +105,21 @@ public static class MageStoneQuest
 /// <summary>
 /// Wand's half of the quest: the "Mage Stone" menu entry that opens it and closes it.
 ///
-/// <para>Composed onto <c>MageTrainerNpc</c> (game-data/NpcAbilities.csv) because that is the only handle the
-/// composition table offers, and narrowed to <see cref="MageStoneQuest.WandNpcId"/> here — the same shape
-/// <see cref="SuteQuestAbility"/> uses on the same identifier, and for the same reason: eight other NPCs
-/// share it and none of them is Wand.</para>
+/// <para><b>Wand alone</b> (NPCs.csv 133, map 3828, Nagnang's guild master): NpcAbilities.csv composes it onto
+/// him only, <c>mage_stone@133</c>, the same shape <see cref="SuteQuestAbility"/> has on the same identifier
+/// and for the same reason. Nine NPCs share <c>MageTrainerNpc</c> and only this one runs the quest: Atlas sends
+/// the player to "Wand at the Mage Guild in Nagnang" by name, and the prophets are up the stairs from that
+/// guild.</para>
 /// </summary>
 public sealed class MageStoneAbility : INpcAbility
 {
     public static readonly MageStoneAbility Instance = new();
-
-    /// <summary>Whether this NPC runs the quest at all.</summary>
-    public static bool AnswersFor(NpcDef def) => def.Id == MageStoneQuest.WandNpcId;
 
     /// <summary>The entry is Wand's, and only for mages who have not already earned the mark — RTK hides it
     /// the same way. The LEVEL gate is not hidden but spoken, so a young mage who clicks it is told why
     /// rather than left wondering whether the quest exists.</summary>
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        if (!AnswersFor(ctx.Def)) yield break;
         if (ctx.BaseClass != MageStoneQuest.MagePath) yield break;
         if (ctx.HasLegend(MageStoneQuest.Legend)) yield break;
         yield return ("Mage Stone", Talk);
