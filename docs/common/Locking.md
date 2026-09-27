@@ -113,3 +113,6 @@ timer tick, which synchronises otherwise-independent threads (contended fraction
   watchdog, so it reads plain fields and takes nothing.
 * The scalar reads the tick makes under `World._lock` — `PlayerX`, `PlayerY`, `IsDead`, `IsMorphExpired` and
   friends. They are unsynchronised on purpose: taking the monitor there would invert row 2 against row 3.
+  `IsReplaced` is a volatile read of `_replaced`; its one writer, `KickForReplacement`, latches it under the
+  session's own monitor and nothing clears it. `World` reads it under `World._lock` without the session's monitor
+  (#183, #297).
