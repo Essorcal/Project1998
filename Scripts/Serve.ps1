@@ -69,13 +69,15 @@ recorded path, created within 1 s of the recorded time, and currently listening 
 
 HOW -Stop CLOSES THEM. A console signal first, not TerminateProcess: the game server's Ctrl+C /
 ProcessExit handler (Server/Net.cs) flushes connected players before exiting, and a hard kill would skip
-it. A short-lived helper powershell attaches to the server's console (the caller's own console must not be
+it. A short-lived Windows PowerShell helper, started by absolute path even from a PowerShell 7 shell (see
+Send-ConsoleBreak), attaches to the server's console (the caller's own console must not be
 detached for this; that would break an interactive shell), sends Ctrl+C, and if the process is still there
 5 s later sends Ctrl+Break as well: Ctrl+C reached the servers with anything from 4 s to well over 20 s of
 latency on the machine this was written on, and Ctrl+Break is not subject to the inheritable
 "ignore Ctrl+C" state a launching shell can leave behind. The game server handles both the same way. A
 GAME process that has answered neither after 30 s is asked to leave through its own deploy trigger,
-run\restart_at (RestartSchedule.cs: same Environment.Exit, same flush), and only after that is a process
+run\restart_at, booked 8 s ahead so its 6 s poll does not find it already stale (RestartSchedule.cs: same
+Environment.Exit, same flush), and only after that is a process
 terminated. Liveness is judged by HasExited, not by the process list: a terminated apphost stays listed
 while "dotnet run" still holds its handle. The cmd window that hosted the batch is closed once its server
 is gone -- after the server exits it is only a prompt sitting at "Terminate batch job (Y/N)?" -- and it is
@@ -618,10 +620,18 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # attached to. Runs in a helper powershell because the sender has to detach from its own console to attach
 # to the target's, and detaching THIS process would take an interactive caller's shell down with it. The
 # helper installs a real handler that swallows both events for itself (ignoring Ctrl+C alone would not
-# survive its own Ctrl+Break). Returns 0 when the process exited after Ctrl+C, 1 when Ctrl+Break was sent
-# as well, 10000+/20000+/30000+ plus the Win32 error when attaching or generating failed. Invoked through
-# cmd so that nothing on the helper's streams reaches this session: a redirected powershell stderr is
-# expected to carry CLIXML, and anything else on it is an error in the caller.
+# survive its own Ctrl+Break). Returns 100 when the process exited after Ctrl+C, 101 when Ctrl+Break was
+# sent as well, 10000+/20000+/30000+ plus the Win32 error when attaching or generating failed, and 40000
+# when Windows PowerShell is not where Windows keeps it. Any other code means the helper never ran its
+# code: cmd's own "not recognized" is 1, which is why success is not 0/1 (it used to be, and a helper that
+# never started read as "Ctrl+Break sent as well").
+#
+# The helper is always Windows PowerShell, by absolute path: under PowerShell 7 $PSHOME holds pwsh.exe and
+# no powershell.exe, so "$PSHOME\powershell.exe" silently never started and every -Stop run from a
+# PowerShell 7 shell ended in a terminate (2026-09-27). The path has no spaces, which keeps the cmd line
+# below unquoted; a spaced path (pwsh's WindowsApps home) does not survive cmd's quote stripping from either
+# shell. Invoked through cmd so that nothing on the helper's streams reaches this session: a redirected
+# powershell stderr is expected to carry CLIXML, and anything else on it is an error in the caller.
 function Send-ConsoleBreak([int]$ProcessId, [int]$WaitMs) {
     $code = @'
 Add-Type -TypeDefinition @"
@@ -645,13 +655,13 @@ public static class P1998Sig {
     if (!GenerateConsoleCtrlEvent(0, 0)) return 20000 + Marshal.GetLastWin32Error();
     DateTime until = DateTime.UtcNow.AddMilliseconds(waitMs);
     while (DateTime.UtcNow < until) {
-      if (Gone(pid)) { FreeConsole(); return 0; }
+      if (Gone(pid)) { FreeConsole(); return 100; }
       Thread.Sleep(250);
     }
     if (!GenerateConsoleCtrlEvent(1, 0)) return 30000 + Marshal.GetLastWin32Error();
     Thread.Sleep(300);
     FreeConsole();
-    return 1;
+    return 101;
   }
 }
 "@
@@ -659,7 +669,8 @@ exit [P1998Sig]::Send(TARGETPID, WAITMS)
 '@
     $code = $code.Replace('TARGETPID', [string]$ProcessId).Replace('WAITMS', [string]$WaitMs)
     $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
-    $ps = Join-Path $PSHOME 'powershell.exe'
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $ps -PathType Leaf)) { return 40000 }
     $ErrorActionPreference = 'Continue'
     & $env:ComSpec /c "$ps -NoProfile -NonInteractive -EncodedCommand $enc >nul 2>nul"
     return $LASTEXITCODE
@@ -671,16 +682,27 @@ function Stop-SessionProcess($Slot, [string]$Root) {
     $id = [int]$Slot.ProcessId
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $rc = Send-ConsoleBreak -ProcessId $id -WaitMs 5000
-    if ($rc -ge 10000) { Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered (helper code $rc)." }
+    $delivered = $rc -eq 100 -or $rc -eq 101
+    if (-not $delivered) {
+        $why = if ($rc -eq 40000) { 'Windows PowerShell not found' } else { "helper exit $rc" }
+        Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered ($why)."
+    }
     if (Wait-Exit $id 30) {
-        if ($rc -eq 0) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
-        return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s"
+        if ($rc -eq 100) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
+        if ($rc -eq 101) { return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s" }
+        return "exited after $([int]$sw.Elapsed.TotalSeconds) s, with no console signal delivered"
     }
     if ($Slot.Label -eq 'GAME') {
         $trigger = Join-Path $Root 'run\restart_at'
-        Write-Host "GAME PID $id has ignored Ctrl+C and Ctrl+Break for 30 s; asking it to exit through run\restart_at."
-        [System.IO.File]::WriteAllText($trigger, "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())|Serve.ps1 -Stop")
-        if (Wait-Exit $id 20) { return "exited through run\restart_at after $([int]$sw.Elapsed.TotalSeconds) s" }
+        $what = if ($delivered) { 'has ignored Ctrl+C and Ctrl+Break for 30 s' } else { 'is still running after 30 s' }
+        Write-Host "GAME PID $id $what; asking it to exit through run\restart_at."
+        # RestartSchedule polls this file every 6 s (FilePollMs) and refuses a deadline that is not in the
+        # future as a stale file, so "now" was always stale by the time it was read. Book it 8 s ahead: the
+        # poll finds it with time to spare, the deadline fires, and the server exits 3 s later (FinalGraceMs)
+        # through the same Environment.Exit and ProcessExit flush as a signal. 25 s covers all three.
+        $deadline = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 8000
+        [System.IO.File]::WriteAllText($trigger, "$deadline|Serve.ps1 -Stop")
+        if (Wait-Exit $id 25) { return "exited through run\restart_at after $([int]$sw.Elapsed.TotalSeconds) s" }
         # Not consumed, so nobody is reading it; do not leave a restart booked for the next process.
         if (Test-Path -LiteralPath $trigger) { Remove-Item -LiteralPath $trigger -Force -ErrorAction SilentlyContinue }
     }
