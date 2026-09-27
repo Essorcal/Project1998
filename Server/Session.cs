@@ -979,7 +979,9 @@ public sealed partial class Session
     /// <para>A kick that THROWS, live or departed, is logged as a LOST save and the arrival carries on with the
     /// row as it stands. The only route to a throw is the old session's capture (a character the serializer
     /// rejects), and <see cref="KickForReplacement"/> still finishes the kick around it: the old session is
-    /// latched, told and closed, so nothing from it writes afterwards and nothing is left connected. For a
+    /// latched, told and closed, and a write it captured before the kick is dropped at its write gate (or, if
+    /// already past the gate, lands first), so the row the caller loads is final and nothing is left connected
+    /// (#303 review, F1). For a
     /// departed session the teardown save already threw and was logged as lost; for a live one, what it had not
     /// yet written is lost with this save. Letting the throw escape refused this login and left it holding the
     /// slot without entering the world (#298 review, pre-existing 2), where the same account without the old

@@ -40,7 +40,8 @@ namespace Tests;
 public sealed class TeardownSlotLeakTests
 {
     /// <summary>Content-free map ids; no other class stands here.</summary>
-    private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744;
+    private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744,
+                         SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747;
 
     /// <summary>What the arrival probe throws, so the handler guard's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
@@ -59,6 +60,8 @@ public sealed class TeardownSlotLeakTests
         typeof(Session).GetField("_trade", BindingFlags.NonPublic | BindingFlags.Instance)!;
     private static readonly FieldInfo PartyField =
         typeof(Session).GetField("_party", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo WriteGateField =
+        typeof(Session).GetField("_writeGate", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     private readonly SessionFixture _fx;
     private readonly ITestOutputHelper _out;
@@ -333,6 +336,291 @@ public sealed class TeardownSlotLeakTests
             _fx.World.LeaveMap(old, KickMap);
             _fx.World.LeaveMap(fresh, KickMap);
         }
+    }
+
+    /// <summary>
+    /// Fix round 1, the #303 review's F1, live branch. An autosave sweep has captured the old session (350 coins
+    /// over a landed 300) and its write is on the way to the write gate when the account logs in again, and the
+    /// old session's state can no longer be captured (NaN karma). The kick's capture throws before it takes a
+    /// sequence number. The kick must still fence: the sweep's older capture is dropped at the gate, so the row
+    /// the new login loaded (300) is the row that stays, and the new session's next write erases nothing.
+    ///
+    /// <para>The order capture, kick, gate check is forced without a clock. The test thread holds the old
+    /// session's write gate, so the sweep's write waits there, and runs the arrival itself. The gate is
+    /// re-entrant, so the kick's fence enters it at once. That holds row 4 across row 2 entries on the test
+    /// thread, which production never does; the sweep thread holds no monitor while it waits at the gate, so no
+    /// cycle can form. A write already past the gate is <see cref="AThrowingKickWaitsOutAWriteAlreadyAtTheDatabase"/>.</para>
+    ///
+    /// <para>From the review's probe Hunt4, which read "row at load=300; row after the in-flight write
+    /// landed=350; row after the new session's next write=300" without the fence.</para>
+    /// </summary>
+    [Fact]
+    public void ALiveKickWhoseCaptureThrowsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkSweep";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        var (old, oldOut, oldChar) = _fx.PlayerWith(name, c => c.Coins = 300, SweepDropMap, 5, 5);
+        var (fresh, _) = Arriving(name, "new");
+        object gate = WriteGateOf(old);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, old, out _);
+            old.WithState(old.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(old, "autosave"));   // the last landed row: 300
+            old.WithState(() => { oldChar.Coins = 350; old.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(old, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the old session's write gate");
+                Assert.Contains("dirty False", old.DiagState());               // it has captured 350
+                old.WithState(() => { oldChar.Coins = 999; oldChar.Karma = double.NaN; old.MarkDirty(); });
+
+                using (var sink = LogLineSink.Acquire())
+                {
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.EntryContaining($"the previous session's final write for '{name}' threw — its save is LOST");
+                }
+                Assert.True(old.IsReplaced);
+                Assert.True(oldOut.Closed);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(name).Coins;
+            fresh.WithState(fresh.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(fresh, "autosave"));   // the new session's next write
+            uint rowAfterNext = LoadOk(name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write=" +
+                           $"{rowAfterSweep}, row after the new session's next write={rowAfterNext}");
+
+            Assert.Equal(300u, loaded);
+            Assert.Equal(300u, rowAtLoad);
+            Assert.True(sweepReturned);                     // refused at the gate, not failed
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+            Assert.Equal(loaded, rowAfterNext);
+        }
+        finally
+        {
+            oldChar.Karma = 0;
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, old);
+            _fx.World.LeaveMap(old, SweepDropMap);
+            _fx.World.LeaveMap(fresh, SweepDropMap);
+        }
+    }
+
+    /// <summary>
+    /// Fix round 1, the departed branch (the #303 review's pre-existing 1). A sweep captured the session (350
+    /// over a landed 100) and its write is on the way to the gate; the session's state then stops serializing
+    /// and it logs out, so its teardown save throws ("save LOST") and it is parked for the next login's fence. A
+    /// fast re-login fences it, and that kick's capture throws too. The fence must still drop the sweep's older
+    /// capture: the row the new login loaded (100) stays. Forced the same way as the live fact: the test thread
+    /// holds the departed session's write gate across the logout and the arrival.
+    /// </summary>
+    [Fact]
+    public void ADepartedKickWhoseCaptureThrowsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkParked";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        var (departed, _, ch) = _fx.PlayerWith(name, c => c.Coins = 100, DepartedDropMap, 5, 5);
+        var (fresh, _) = Arriving(name, "new");
+        object gate = WriteGateOf(departed);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, departed, out _);
+            departed.WithState(departed.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(departed, "autosave"));   // the last landed row: 100
+            departed.WithState(() => { ch.Coins = 350; departed.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the session's write gate");
+                Assert.Contains("dirty False", departed.DiagState());          // it has captured 350
+                departed.WithState(() => { ch.Coins = 999; ch.Karma = double.NaN; departed.MarkDirty(); });
+
+                using (var sink = LogLineSink.Acquire())
+                {
+                    // The logout: the teardown's save throws and the slot is parked (#168). EndReadLoopAsync runs
+                    // synchronously to the end here, still on this thread and inside the gate: its only await is on
+                    // an already-completed writer.
+                    Assert.True(departed.EndReadLoopAsync(Task.CompletedTask).IsCompletedSuccessfully,
+                                "the logout did not run to its end on this thread");
+                    sink.LineContaining($"disconnect save of '{name}' threw — save LOST");
+                    Assert.True(online.HoldsDepartedForTest(key, departed));
+
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.LineContaining($"ARRIVAL: '{name}' left moments ago — fencing");
+                    sink.EntryContaining($"the departed session's final write for '{name}' threw — its save is LOST");
+                }
+                Assert.True(departed.IsReplaced);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write={rowAfterSweep}");
+
+            Assert.Equal(100u, loaded);
+            Assert.Equal(100u, rowAtLoad);
+            Assert.True(sweepReturned);
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+        }
+        finally
+        {
+            ch.Karma = 0;
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, departed);
+            _fx.World.LeaveMap(departed, DepartedDropMap);
+            _fx.World.LeaveMap(fresh, DepartedDropMap);
+        }
+    }
+
+    /// <summary>
+    /// Fix round 1, the other half of the fence: a write already PAST the gate. The sweep's write of 350 has
+    /// passed its sequence check and is stuck in SQLite (this fact's own database file, its write lock held by
+    /// hand), holding the old session's write gate. A re-login's kick throws on the old session's NaN karma. The
+    /// fence takes the gate, so the arrival cannot load until that write has landed; it then loads 350, and the
+    /// row stays 350. With a stamp that skipped the gate, the arrival would load 300 underneath the stuck write,
+    /// and the write would land after it.
+    ///
+    /// <para>The database lock is let go once the arrival is seen blocked, milliseconds later, far inside the
+    /// 5 s busy timeout the stuck write waits under.</para>
+    /// </summary>
+    [Fact]
+    public void AThrowingKickWaitsOutAWriteAlreadyAtTheDatabase()
+    {
+        const string name = "SlkStuck";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        var oldChar = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = name,
+            Map = StuckWriteMap, X = 5, Y = 5, Coins = 300,
+        };
+        var old = new Session(new RecordingOutbound($"recorder:{name}"), 2005, db.Store, _fx.World, oldChar);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        _fx.World.EnterMap(old, StuckWriteMap);
+        object gate = WriteGateOf(old);
+
+        using var locked = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var fenceReached = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            release.Wait(Bound);
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true, Name = "db-write-lock" };
+        Thread? sweep = null, arrival = null;
+
+        try
+        {
+            online.Register(key, old, out _);
+            old.WithState(old.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(old, "autosave"));   // the last landed row: 300
+            Assert.Equal(300u, LoadOk(db.Store, name).Coins);
+            old.WithState(() => { oldChar.Coins = 350; old.MarkDirty(); });
+
+            holder.Start();
+            Assert.True(locked.Wait(Bound), "the blocking thread never took the database's write lock");
+            sweep = new Thread(() => World.AutoSaveLoop.FlushIsolated(old, "autosave")) { IsBackground = true, Name = "sweep-write" };
+            sweep.Start();
+            // Captured (dirty down) and inside the gate (a try-enter from here fails): the write is in SQLite.
+            Assert.True(SpinWait.SpinUntil(() => old.DiagState().Contains("dirty False") && GateHeldElsewhere(gate), Bound),
+                        "the sweep's write never reached the database");
+            old.WithState(() => { oldChar.Coins = 999; oldChar.Karma = double.NaN; old.MarkDirty(); });
+
+            Session.ArrivalFenceProbeForTest = s => { if (ReferenceEquals(s, old)) fenceReached.Set(); };
+            arrival = new Thread(() => fresh.Receive(ArrivalFrame(name))) { IsBackground = true, Name = "arrival" };
+            arrival.Start();
+            Assert.True(fenceReached.Wait(Bound), "the arrival never reached the kick");
+            Assert.True(SpinWait.SpinUntil(() => !arrival.IsAlive || Blocked(arrival), Bound));
+            bool pendingWhileStuck = arrival.IsAlive;
+            uint loadedEarly = pendingWhileStuck ? 0 : fresh.CharCoins;
+
+            release.Set();
+            Assert.True(arrival.Join(Bound), "the arrival never finished");
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfter = LoadOk(db.Store, name).Coins;
+            _out.WriteLine($"[state] {name}: arrival pending while the write was stuck={pendingWhileStuck}" +
+                           (pendingWhileStuck ? "" : $" (loaded {loadedEarly} before it landed)") +
+                           $", loaded={fresh.CharCoins}, row after={rowAfter}");
+
+            Assert.True(pendingWhileStuck, "the arrival loaded while a write already past the gate was still pending");
+            Assert.Contains(fresh, _fx.World.Online.All());
+            Assert.Equal(350u, rowAfter);                    // the stuck write landed ...
+            Assert.Equal(rowAfter, fresh.CharCoins);         // ... before the load
+        }
+        finally
+        {
+            Session.ArrivalFenceProbeForTest = null;
+            release.Set();
+            oldChar.Karma = 0;
+            holder.Join(Bound);
+            sweep?.Join(Bound);
+            arrival?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, old);
+            _fx.World.LeaveMap(old, StuckWriteMap);
+            _fx.World.LeaveMap(fresh, StuckWriteMap);
+        }
+    }
+
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
+
+    private static object WriteGateOf(Session s) => WriteGateField.GetValue(s)!;
+
+    private static bool Blocked(Thread t) => (t.ThreadState & ThreadState.WaitSleepJoin) != 0;
+
+    /// <summary>Wait until <paramref name="t"/> is parked on a lock, failing if it finishes instead.</summary>
+    private static void WaitBlocked(Thread t, string what)
+    {
+        Assert.True(SpinWait.SpinUntil(() => !t.IsAlive || Blocked(t), Bound), $"{what}: the thread never blocked");
+        Assert.True(t.IsAlive, $"{what}: the thread finished instead of blocking");
+    }
+
+    /// <summary>Whether another thread holds <paramref name="gate"/> right now: a try-enter from here fails.</summary>
+    private static bool GateHeldElsewhere(object gate)
+    {
+        if (!Monitor.TryEnter(gate)) return true;
+        Monitor.Exit(gate);
+        return false;
+    }
+
+    private static Character LoadOk(CharacterStore store, string name)
+    {
+        var load = store.Load(name);
+        Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+        return Assert.IsType<Character>(load.Character);
     }
 
     private Character LoadOk(string name)

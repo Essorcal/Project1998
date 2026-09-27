@@ -325,6 +325,12 @@ public sealed partial class Session
     /// capture still finishes the kick: the old connection is told and closed rather than left open on a session
     /// that will never write again (#298 review, pre-existing 2). The caller logs the lost save.</para>
     ///
+    /// <para><b>A throwing capture still fences.</b> The unconditional write is what makes the kick a fence: its
+    /// newer sequence number drops at the write gate any capture taken before it. A capture that throws takes no
+    /// number, so the catch takes one and stamps it as written under <c>_writeGate</c> without writing. The row
+    /// the caller then loads is final on this path too: an older in-flight write is dropped, or, if it was
+    /// already past the gate, lands before the caller's load (#303 review, F1).</para>
+    ///
     /// <para>Safe to call from the NEW session's thread. The state monitor taken here is what serializes
     /// against anything this (old) session's own thread, a late group share or a late death is doing: they
     /// all run under it, so the kick waits for them and they see the latch after it. <c>_writeGate</c> only
@@ -337,6 +343,18 @@ public sealed partial class Session
         try
         {
             if (_enteredWorld) CaptureAndWrite(dirtyGated: false);
+        }
+        catch
+        {
+            // The capture threw before it took a sequence number, so the gate has nothing newer to drop an
+            // older capture with: a sweep or a late share captured before this kick, still on its way to the
+            // gate, would land after the caller's load (#303 review, F1). Take the number the write would have
+            // taken and stamp it as written, under the gate, without writing. A capture older than the kick is
+            // dropped at the gate, and a write already past it finishes before this returns, so the row the
+            // caller loads is final. The same _writeGate-under-the-monitor nesting as the write above.
+            long fence = ++_saveSeq;
+            lock (_writeGate) _writtenSeq = fence;
+            throw;
         }
         finally
         {
