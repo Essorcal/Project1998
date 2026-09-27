@@ -76,9 +76,10 @@ public static class ForgottenPastQuest
     public const int MinLevel = 50;
 
     // ---- the four NPCs -----------------------------------------------------------------------------
-    // Each identifier below is SHARED (nineteen smiths, ten shamans), so every branch is narrowed to one id
-    // here — the same shape SuteQuestAbility and MageStoneAbility use, and the same narrowing RTK gets from
-    // its `npc.mapTitle == "..."` tests, since our map names ARE its map titles.
+    // SmithNpc and ShamanNpc are SHARED identifiers, so NpcAbilities.csv composes the ability onto these
+    // four only (forgotten_past@142;196 on SmithNpc, @64 on ShamanNpc; RotahNpc is Rotah's alone) — the
+    // same narrowing RTK gets from its `npc.mapTitle == "..."` tests, since our map names ARE its map
+    // titles. The ids below are the chain's own data: which NPC hears which word at which stage.
 
     /// <summary>Rotah, the Wilderness village elder (map 1002 at 208/138). Atlas says 207/139 — same NPC,
     /// one-based.</summary>
@@ -90,12 +91,6 @@ public static class ForgottenPastQuest
     public const int SanhaeSmithNpcId = 142;
     /// <summary>Thane, map 1144 ("Thane's Cave"), the mining shop in the Wilderness.</summary>
     public const int ThaneNpcId = 196;
-
-    /// <summary>Every NPC that answers for this quest — what the composition rows in NpcAbilities.csv are
-    /// narrowed down to.</summary>
-    public static readonly int[] Everyone = { RotahNpcId, StormShamanNpcId, SanhaeSmithNpcId, ThaneNpcId };
-
-    public static bool AnswersFor(NpcDef def) => Array.IndexOf(Everyone, def.Id) >= 0;
 
     // ---- stages ------------------------------------------------------------------------------------
     // RTK's own numbering, kept so an imported character lands on the step it was already on.
@@ -294,10 +289,11 @@ public static class ForgottenPastQuest
 }
 
 /// <summary>
-/// The whole chain, in one ability composed onto all four of its NPCs (game-data/NpcAbilities.csv:
-/// <c>RotahNpc</c>, <c>ShamanNpc</c>, <c>SmithNpc</c>) and narrowed by NPC id inside — see
-/// <see cref="ForgottenPastQuest.Everyone"/>. One class because it is one conversation: the stage the shaman
-/// leaves is the stage the smith needs, and splitting it across four files would only hide that.
+/// The whole chain, in one ability composed onto its four NPCs and no others (game-data/NpcAbilities.csv:
+/// <c>RotahNpc</c>, and <c>ShamanNpc</c> and <c>SmithNpc</c> narrowed to Storm, Gruff and Thane), which then
+/// picks each NPC's part by id — see <see cref="ForgottenPastQuest.Chain"/>. One class because it is one
+/// conversation: the stage the shaman leaves is the stage the smith needs, and splitting it across four files
+/// would only hide that.
 ///
 /// <para>Rotah gets the one click entry; everything else is spoken, which is what the whole quest is made of.
 /// <b>Rotah had no composition row at all before this</b>, which meant clicking him opened nothing — the
@@ -339,7 +335,6 @@ public sealed class ForgottenPastAbility : INpcAbility, INpcSayHandler
 
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
-        if (!ForgottenPastQuest.AnswersFor(ctx.Def)) return false;
         if (ctx.HasLegend(ForgottenPastQuest.Legend)) return false;   // done forever — nothing here listens
 
         int stage = ctx.Stage(ForgottenPastQuest.StageReg);
