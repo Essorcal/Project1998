@@ -392,10 +392,11 @@ public sealed partial class Session
     ///
     /// <para><b>The close is in a <c>finally</c> of its own (#168).</b> Anything the teardown throws used to leave
     /// this method before <c>CloseConnection</c>: the socket stayed open on our side, a client whose read loop
-    /// ended on our own exception stayed connected to a session nobody reads, and no CLOSE line was logged. The
+    /// ended on our own exception stayed connected to a session nobody reads, and no CLOSE line was logged. An
     /// exception still leaves (TkAcceptor logs it and releases the admission slot, as before), but only after
-    /// the connection is closed and the CLOSE line is written. The teardown's own save is fenced inside it, so
-    /// a character the serializer rejects no longer reaches here at all.</para></summary>
+    /// the connection is closed and the CLOSE line is written. The teardown fences its own steps that can throw
+    /// — ending the trade, leaving the party and the final save — and logs each one's fault itself, so a
+    /// character the serializer rejects, or a peer whose send throws, no longer reaches here at all.</para></summary>
     internal async Task EndReadLoopAsync(Task writer)
     {
         try
@@ -420,7 +421,17 @@ public sealed partial class Session
     /// as one critical section (see <see cref="EndReadLoopAsync"/>). In order: the leaving latch (#173), the
     /// trade and the party, the map, the account slot — parked for the next login's fence rather than dropped
     /// (#168) — and the final save, which is fenced so a capture that throws is logged as a lost save instead
-    /// of escaping (#168).</summary>
+    /// of escaping (#168).
+    ///
+    /// <para><b>A step that throws does not stop the steps after it.</b> Ending the trade and leaving the party
+    /// reach into other sessions — their monitors, their sends — with nothing isolating one peer's fault from
+    /// us, so each is fenced: a throw is logged with its stack and the teardown carries on, in the same order,
+    /// to the map, the slot and the save. Unfenced, such a throw left the session standing on its map holding
+    /// the account's slot with its row unwritten, until the next login kicked it as a live duplicate (#298
+    /// review, pre-existing 1). The fault is not rethrown: once the rest of the teardown has run there is
+    /// nothing left for it to stop, and TkAcceptor would only log it a second time, without the character's
+    /// name. The map and the slot are not fenced: <c>World.LeaveMap</c> isolates each peer's despawn itself,
+    /// and what is left of it and of the slot is dictionary work under <c>World._lock</c>.</para></summary>
     private void TearDownWorldState()
     {
         _leaving = true;   // first, before anything below can drop the monitor: TryStartTrade refuses from here on (#173)
@@ -428,8 +439,24 @@ public sealed partial class Session
         // (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is exactly what a
         // disconnect does here too — the difference is we also close the survivor's exchange window with
         // RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
-        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
-        if (_party is { } party) RemoveFromParty(this, party);   // read under our own monitor: this runs inside WithState
+        if (_trade is not null)
+        {
+            try { EndTrade(_trade, "Exchange cancelled."); }
+            catch (Exception e)
+            {
+                Log.Error($"{_remote} teardown of '{_char.Name}': ending the trade threw — the map, the slot and the " +
+                          "save still run", e);
+            }
+        }
+        if (_party is { } party)   // read under our own monitor: this runs inside WithState
+        {
+            try { RemoveFromParty(this, party); }
+            catch (Exception e)
+            {
+                Log.Error($"{_remote} teardown of '{_char.Name}': leaving the party threw — the map, the slot and the " +
+                          "save still run", e);
+            }
+        }
 
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
