@@ -33,6 +33,11 @@ namespace Server;
 /// (level 76), and Moon armor is still said to Maro in Kugnae, where tswolf puts every armor quest. The
 /// ability sits before <c>armor_quest</c> in NpcAbilities.csv so it hears the word first. Below 70 it stays
 /// silent and the armor chain answers as it always did.</para>
+///
+/// <para><b>Which Masos.</b> The row composes it onto Buya's rogue guildmaster Maso (42) and the three
+/// alignment copies that <c>PathHalls.csv</c> routes an aligned rogue to instead (Kwi-Sin 162, Ming-Ken 163,
+/// Ohaeng 164): <c>white_moon_axe@42;162;163;164</c>. Narrowing to 42 alone would hide the quest from every
+/// aligned rogue.</para>
 /// </summary>
 public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
 {
@@ -41,11 +46,6 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
     /// <summary>RTK <c>player.quest["white_moon_axe"]</c>, so imported characters keep their place.</summary>
     public const string Key = "white_moon_axe";
     public const int StageBracelet = 1, StageScorpions = 2, StageJu = 3, StagePay = 4;
-
-    /// <summary>Buya's rogue guildmaster Maso (42) and the three alignment copies that
-    /// <c>PathHalls.csv</c> routes an aligned rogue to instead (Kwi-Sin 162, Ming-Ken 163, Ohaeng 164).
-    /// Gating on 42 alone would hide the quest from every aligned rogue.</summary>
-    public static readonly int[] Masos = { 42, 162, 163, 164 };
 
     public const int RoguePath = 2;
     public const int MinLevel = 70;       // tswolf, Atlas, the Rogue tutor; RTK asks 50
@@ -66,7 +66,6 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         if ((speech ?? "").Trim().ToLowerInvariant() != "moon") return false;
-        if (Array.IndexOf(Masos, ctx.Def.Id) < 0) return false;
         if (ctx.BasePathId != RoguePath || ctx.Level < MinLevel) return false;   // armor_quest answers instead
         if (ctx.KarmaTooLow()) return true;
 

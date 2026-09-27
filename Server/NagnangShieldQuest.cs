@@ -66,8 +66,6 @@ public static class NagnangShieldQuest
 
     public const int MinLevel    = 10;    // Atlas: "Level Required: 10"
     public const int WarriorPath = 1;     // Atlas: "Prerequisite: Warrior Path"
-    public const int SwordNpcId  = 91;    // Sword, the Nagnang warrior guildmaster (map 2510)
-    public const int ChulNpcId   = 108;   // Chul, the Nagnang smith (map 2518, "Chul Smith")
 
     /// <summary>The creatures the trial forbids. The Gauntlet's middle rooms hold red, blue, green and orange
     /// deer, doe and rabbit (AreaSpawns.csv 2546-2548 and their four copies); only the first two colours are
@@ -176,8 +174,8 @@ public static class NagnangShieldQuest
 /// <summary>
 /// Sword's half of the quest: take the pelt, send them in, and repeat the briefing while they are on it.
 ///
-/// <para>Composed onto <c>WarriorTrainerNpc</c> (NpcAbilities.csv) because that identifier is the only handle
-/// the composition table offers, but it answers for exactly one NPC — RTK gates the same branch on
+/// <para>Composed onto Sword alone (NPCs.csv 91, the Nagnang warrior guildmaster): NpcAbilities.csv narrows the
+/// <c>WarriorTrainerNpc</c> row's entry to him, <c>nagnang_shield@91</c>. RTK gates the same branch on
 /// <c>npc.mapTitle == "Sword"</c>, and every other warrior trainer shares the identifier. Same narrowing as
 /// <see cref="SuteQuestAbility"/>.</para>
 /// </summary>
@@ -187,8 +185,6 @@ public sealed class NagnangShieldAbility : INpcAbility
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        if (ctx.Def.Id != NagnangShieldQuest.SwordNpcId) yield break;
-
         // "Strangers" is FLAVOUR, not a step. It is Sword's brush-off to an outsider — the same line the
         // Nagnang mage trainer gives, verbatim — so it is offered unconditionally and touches no quest
         // state: clicking it can never start, advance or block the shield.
@@ -248,6 +244,10 @@ public sealed class NagnangShieldAbility : INpcAbility
 /// <para>All four paths are listed because that is RTK's own table and it is four lines; only the warrior's
 /// legend is obtainable today, so the other three rows simply never pass the gate until their quests are
 /// built.</para>
+///
+/// <para>Composed onto Chul alone (NPCs.csv 108, map 2518, "Chul Smith"): NpcAbilities.csv narrows the
+/// <c>SmithNpc</c> row's entry to him, <c>nagnang_tall_shield@108</c>, so "shield" said to any other smith
+/// falls through to ordinary chat.</para>
 /// </summary>
 public sealed class NagnangTallShieldAbility : INpcAbility, INpcSayHandler
 {
@@ -272,7 +272,6 @@ public sealed class NagnangTallShieldAbility : INpcAbility, INpcSayHandler
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         if (speech != "shield") return false;
-        if (ctx.Def.Id != NagnangShieldQuest.ChulNpcId) return false;   // not Chul -> falls through to chat
         if (ctx.KarmaTooLow()) return true;                            // RTK Tools.checkKarma
 
         int path = ctx.BaseClass;

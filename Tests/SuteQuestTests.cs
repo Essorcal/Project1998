@@ -49,28 +49,27 @@ public class SuteQuestTests
     }
 
     /// <summary>NINE NPCs share the <c>MageTrainerNpc</c> identifier — Eldritch, Kugnae's Haedu, Wand, and
-    /// six subpath masters — so composing the ability onto that identifier hands it to all nine. Only
-    /// Eldritch may actually answer: the dialog is his in the first person ("Eldritch's face looks grim",
+    /// six subpath masters — and composing the ability onto the whole identifier would hand it to all nine.
+    /// Only Eldritch may answer: the dialog is his in the first person ("Eldritch's face looks grim",
     /// "I sealed Sute…"), and both period sources send the player specifically to the Buya Mage Guild
-    /// master. This pins the in-ability gate that RTK does not have.</summary>
+    /// master. NpcAbilities.csv narrows the ability to him (<c>sute@39</c>), which is a narrowing RTK does not
+    /// have; the ability no longer checks for itself, so this pins the row.</summary>
     [Fact]
     public void OnlyTheBuyaGuildMasterAnswers()
     {
         EnsureLoaded();
 
         var trainers = Content.Npcs.Where(n => n.Key == "MageTrainerNpc").ToList();
-        Assert.True(trainers.Count > 1, "expected the identifier to be shared — the gate below is why");
-        Assert.Contains(trainers, n => n.Id == SuteQuest.GuildMasterNpcId);
+        Assert.True(trainers.Count > 1, "expected the identifier to be shared — the narrowing below is why");
 
-        // Every one of them CARRIES the ability (there is no per-NPC composition key) …
+        var eldritch = trainers.Single(n => n.Id == 39);
+        Assert.Equal("Eldritch", eldritch.Name);
+
+        // Eldritch carries the ability, and no other mage trainer does, so "sute" said to any of them falls
+        // through to ordinary chat.
         foreach (var t in trainers)
-            Assert.Contains(NpcScripts.For(t), a => a is SuteQuestAbility);
-
-        // … and every one of them EXCEPT Eldritch declines the word, so it falls through to normal chat.
-        foreach (var t in trainers.Where(n => n.Id != SuteQuest.GuildMasterNpcId))
-            Assert.False(SuteQuestAbility.AnswersFor(t), $"{t.Name} (npc {t.Id}) answers to \"sute\" but should not");
-
-        Assert.True(SuteQuestAbility.AnswersFor(trainers.Single(n => n.Id == SuteQuest.GuildMasterNpcId)));
+            Assert.True(ReferenceEquals(t, eldritch) == NpcScripts.For(t).Any(a => a is SuteQuestAbility),
+                        $"{t.Name} (npc {t.Id}) {(ReferenceEquals(t, eldritch) ? "lost" : "carries")} the Sute quest");
     }
 
     /// <summary>The cave mouth has to be STEPPABLE, or the trigger never runs and the quest dead-ends with

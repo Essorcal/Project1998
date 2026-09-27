@@ -215,7 +215,7 @@ public static partial class Content
             TrapSpells = LoadTrapSpells(T(Spec(TableId.Traps)));
             (MorphSpells, MorphDispatchSpells) = LoadMorphs(T(Spec(TableId.Morphs)));
             (RageAmount, EnchantSpells) = LoadSpellMods(T(Spec(TableId.SpellMods)));
-            NpcCompositions = LoadNpcCompositions(T(Spec(TableId.NpcAbilities)));
+            NpcCompositions = LoadNpcCompositions(T(Spec(TableId.NpcAbilities)), npcs, maps);   // validates narrowings against both
             PathGrowth = LoadPathGrowth(T(Spec(TableId.PathGrowth)));
             (DoorSwaps, DoorDeltas, DoorDefaultOpen) = LoadDoorObjects(T(Spec(TableId.DoorObjects)));
             snapshotBuilder.Doors = LoadDoors(T(Spec(TableId.Doors)));

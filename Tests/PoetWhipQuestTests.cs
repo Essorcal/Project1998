@@ -27,16 +27,26 @@ public class PoetWhipQuestTests
         }
     }
 
+    /// <summary>The NPCs the PoetTrainerNpc row composes the chain onto: its <c>poet_whip@…</c> narrowing in
+    /// NpcAbilities.csv, which is the whole of "who is Staff" now that the ability does not check.</summary>
+    private static int[] Staffs()
+    {
+        EnsureLoaded();
+        var entry = Content.NpcCompositions["PoetTrainerNpc"].Single(r => r.Name == "poet_whip");
+        Assert.True(entry.NpcIds is not null, "poet_whip is on every poet trainer — it must be narrowed to the Staffs");
+        return entry.NpcIds!.OrderBy(id => id).ToArray();
+    }
+
     /// <summary>The composition row IS the quest's reachability: without it Staff still stands there with the
     /// ordinary trainer menu and "Welcome Stranger" simply never appears, with nothing anywhere to say why.
-    /// Nine NPCs share the PoetTrainerNpc identifier the row is keyed by, so the in-code narrowing is
-    /// load-bearing too — this pins both halves, for every Staff an aligned Poet might actually meet.</summary>
+    /// Nine NPCs share the PoetTrainerNpc identifier the row is keyed by, so the row's narrowing to the Staffs
+    /// is load-bearing too — this pins both halves, for every Staff an aligned Poet might actually meet.</summary>
     [Fact]
     public void EveryStaffCarriesTheQuestAndTheOtherPoetTrainersDoNot()
     {
         EnsureLoaded();
 
-        foreach (int id in PoetWhipQuest.Everyone)
+        foreach (int id in Staffs())
         {
             var npc = Content.Npcs.FirstOrDefault(n => n.Id == id);
             Assert.True(npc is not null, $"NPC {id} is not in the world — that Staff cannot give the quest");
@@ -45,13 +55,16 @@ public class PoetWhipQuestTests
             Assert.Contains(NpcScripts.For(npc), a => a is PoetWhipQuestAbility);
         }
 
-        // The other poet trainers carry the ABILITY (the row is per identifier) but not the quest.
-        Assert.True(Content.Npcs.Count(n => n.Key == "PoetTrainerNpc") > PoetWhipQuest.Everyone.Length,
-                    "the identifier is no longer shared — the in-code Staff gate may now be dead weight");
+        // The other poet trainers do not carry it: the ability no longer checks, so the row's narrowing is the
+        // only thing keeping "Welcome Stranger" off Jinsun, Song and their copies.
+        var others = Content.Npcs.Where(n => n.Key == "PoetTrainerNpc" && !Staffs().Contains(n.Id)).ToList();
+        Assert.NotEmpty(others);
+        foreach (var npc in others)
+            Assert.DoesNotContain(NpcScripts.For(npc), a => a is PoetWhipQuestAbility);
     }
 
-    /// <summary>The gate is a hardcoded id set, so a Staff added later would go missing in the one way this
-    /// project calls characteristic: no error, no log, the menu option just never appears. An ALIGNED Poet is
+    /// <summary>The narrowing is a hand-written id set in NpcAbilities.csv, so a Staff added later would go
+    /// missing in the one way this project calls characteristic: no error, no log, the menu option just never appears. An ALIGNED Poet is
     /// routed by <c>TryPathHallWarp</c> to his own sanctum and never meets NPC 137 at all, which is exactly
     /// how the first cut of this quest hid itself from three quarters of the path.</summary>
     [Fact]
@@ -63,7 +76,7 @@ public class PoetWhipQuestTests
             .Where(n => n.Key == "PoetTrainerNpc" && n.Name.EndsWith("Staff", System.StringComparison.Ordinal))
             .Select(n => n.Id).OrderBy(id => id).ToList();
 
-        Assert.Equal(PoetWhipQuest.Everyone.OrderBy(id => id).ToList(), byName);
+        Assert.Equal(Staffs().ToList(), byName);
     }
 
     /// <summary>The four items the chain moves between hands. A rename anywhere here is invisible: the pipe
@@ -246,7 +259,7 @@ public class PoetWhipQuestTests
     {
         EnsureLoaded();
 
-        foreach (int id in PoetWhipQuest.Everyone)
+        foreach (int id in Staffs())
         {
             var staff = Content.Npcs.Single(n => n.Id == id);
             Assert.True(Content.TryMap(staff.Map, out var room),

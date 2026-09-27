@@ -80,7 +80,9 @@ public static class MythicAlliance
     public const byte LegendIcon = 5;
     public const byte LegendColor = 128;
 
-    /// <summary>The alliance whose chamber this NPC stands in, or null for any other NPC.</summary>
+    /// <summary>The alliance whose chamber this NPC stands in, or null for any other NPC. The ability is
+    /// composed onto exactly the NpcIds of these rows (NpcAbilities.csv, <c>mythic_alliance@120;…</c>), and
+    /// NpcAbilityNarrowingTests holds the two sets equal.</summary>
     public static MythicAllianceDef? ByNpc(int npcId)
     {
         foreach (var a in Content.MythicAlliances) if (a.NpcId == npcId) return a;

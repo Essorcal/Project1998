@@ -58,24 +58,26 @@ public class ForgottenPastQuestTests
             Assert.Equal(name, npc.Name);
             Assert.Equal(map, npc.Map);
             Assert.Contains(NpcScripts.For(npc), a => a is ForgottenPastAbility);
-            Assert.True(ForgottenPastQuest.AnswersFor(npc), $"{name} carries the ability but is gated out of it");
         }
     }
 
-    /// <summary>Both shared identifiers carry the row, so nineteen smiths and ten shamans get the ability and
-    /// only four NPCs may act on it. Without the id gate a player could forge metal at any smith in the
+    /// <summary>Both shared identifiers carry the row, and only three of their NPCs may act on it: the rows
+    /// are narrowed (<c>forgotten_past@142;196</c> on SmithNpc, <c>@64</c> on ShamanNpc) and the ability no
+    /// longer checks the id itself. Without the narrowing a player could forge metal at any smith in the
     /// world, in the wrong kingdom, and never walk to Sanhae at all.</summary>
     [Fact]
     public void TheOtherSmithsAndShamansAreGatedOut()
     {
         EnsureLoaded();
 
+        var inChain = new[] { ForgottenPastQuest.StormShamanNpcId, ForgottenPastQuest.SanhaeSmithNpcId,
+                              ForgottenPastQuest.ThaneNpcId };
         var sharers = Content.Npcs.Where(n => n.Key is "SmithNpc" or "ShamanNpc").ToList();
-        Assert.True(sharers.Count > ForgottenPastQuest.Everyone.Length,
-                    "the identifiers are no longer shared — the in-code id gate may now be dead weight");
+        Assert.True(sharers.Count > inChain.Length,
+                    "the identifiers are no longer shared — the narrowing may now be dead weight");
 
-        foreach (var npc in sharers.Where(n => !ForgottenPastQuest.Everyone.Contains(n.Id)))
-            Assert.False(ForgottenPastQuest.AnswersFor(npc),
+        foreach (var npc in sharers.Where(n => !inChain.Contains(n.Id)))
+            Assert.False(NpcScripts.For(npc).Any(a => a is ForgottenPastAbility),
                          $"{npc.Name} (npc {npc.Id}) answers for the orb chain but should not");
     }
 

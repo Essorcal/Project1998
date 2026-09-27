@@ -54,22 +54,22 @@ public static class NpcScripts
         ["mythic_alliance"] = MythicAllianceAbility.Instance,
         ["alignment"] = AlignmentAbility.Instance,
         ["summit"] = SummitAbility.Instance,
+        // A single-giver quest is one QuestAbility per QuestDef; its giver lists it first in its row.
+        ["tutorial_quest"] = new QuestAbility(TutorialQuest.Def),
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via
     /// Content.NpcCompositions) if listed, else derived from its data flags (so simple shops/banks work with no
-    /// row). Unknown ability names in the CSV are skipped (logged once at load).</summary>
+    /// row). A row's ability that is narrowed to other NPC ids or maps of the same identifier is left off
+    /// (<see cref="NpcAbilityRef.AppliesTo"/>), so the ability never sees an NPC it is not for. An ability name
+    /// with no registration here is skipped without a word at run time; NpcAbilityNarrowingTests fails on one.</summary>
     public static INpcAbility[] For(NpcDef def)
     {
         var list = new List<INpcAbility>();
-        // Any NPC that gives quests gets the quest menu first — including data-driven NPCs (like the two
-        // MainTutorialNpc givers, which share an identifier but differ by id) that have no composition row.
-        if (Quests.ForNpc(def.Id).Count > 0) list.Add(QuestAbility.Instance);
-
-        if (Content.NpcCompositions.TryGetValue(def.Key, out var names))
+        if (Content.NpcCompositions.TryGetValue(def.Key, out var refs))
         {
-            foreach (var n in names)
-                if (AbilityByName.TryGetValue(n, out var a)) list.Add(a);
+            foreach (var r in refs)
+                if (r.AppliesTo(def) && AbilityByName.TryGetValue(r.Name, out var a)) list.Add(a);
         }
         else
         {
@@ -83,4 +83,25 @@ public static class NpcScripts
         list.Add(InfoAbility.Instance);
         return list.ToArray();
     }
+
+    /// <summary>Whether an ability name has an implementation — what every name in the CSV must have.</summary>
+    internal static bool IsRegistered(string name) => AbilityByName.ContainsKey(name);
+}
+
+/// <summary>
+/// One ability in an NpcAbilities.csv row, and which of the NPCs sharing the row's identifier it is composed
+/// onto. <see cref="NpcIds"/> and <see cref="MapIds"/> are both null for the whole identifier (a plain
+/// <c>name</c>); a <c>name@39</c> token fills <see cref="NpcIds"/>, a <c>name@map:324;325</c> token fills
+/// <see cref="MapIds"/>. The header of game-data/NpcAbilities.csv is the reference for the syntax.
+///
+/// <para>This is where an ability that belongs to SOME of the NPCs sharing an identifier says which. Nine NPCs
+/// are <c>MageTrainerNpc</c>, and only Eldritch tells the Sute story. Before the CSV could say so, each such
+/// ability was composed onto all nine and refused the other eight itself, from a private id table, on every
+/// word spoken near any of them.</para>
+/// </summary>
+public sealed record NpcAbilityRef(string Name, IReadOnlySet<int>? NpcIds = null, IReadOnlySet<int>? MapIds = null)
+{
+    /// <summary>Is this ability part of <paramref name="def"/>? Always, unless narrowed away from it.</summary>
+    public bool AppliesTo(NpcDef def) =>
+        (NpcIds is null || NpcIds.Contains(def.Id)) && (MapIds is null || MapIds.Contains(def.Map));
 }

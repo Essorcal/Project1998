@@ -83,20 +83,6 @@ public static class SuteQuest
     // hatchet glyph but nothing in either source names the index.
     public const byte LegendIcon = 5, LegendColor = 16;
 
-    /// <summary>Eldritch of the Eldritch Sanctum (NPCs.csv 39, map 367) — the Buya Mage Guild master, and
-    /// the only NPC who runs this quest.
-    ///
-    /// <para>This gate is a DELIBERATE narrowing of RTK. Its quest lives in <c>mage_trainer.lua</c>, which is
-    /// the script for the <c>MageTrainerNpc</c> identifier, and nine NPCs share that identifier: Eldritch,
-    /// <b>Haedu</b> (the Kugnae guild master), <b>Wand</b>, and six subpath masters. RTK therefore lets you
-    /// say "sute" to any of them and hear Eldritch's own words in the first person — "Eldritch's face looks
-    /// grim", "I sealed Sute and his creations in the cave" — out of a stranger's mouth in the wrong kingdom.
-    /// Both period sources name one place and one man: tswolf's instruction is "Go to the Buya Mage Guild …
-    /// say 'Sute' near the merchant", and Atlas's is "visit Buya Mage Guild and say the name 'Sute' to the
-    /// Guild Master". So the ability is still composed onto the shared identifier (there is no per-NPC
-    /// composition key), and the narrowing happens here.</para></summary>
-    public const int GuildMasterNpcId = 39;
-
     // ---- cave-mouth geometry (onScriptedTilesQuest.lua) ------------------------------------------
     /// <summary>Buya. The mouth is the pair of tiles on the north edge — tswolf: "Go to North Gate, then
     /// East, until you see a blue Cave."</summary>
@@ -118,9 +104,15 @@ public static class SuteQuest
 /// thing off <c>onSayClick</c>, and tswolf's instruction is "Go inside and say 'Sute'", so it adds no menu
 /// entry and clicking him shows the ordinary mage-trainer menu.
 ///
-/// <para>Composed onto <c>MageTrainerNpc</c> (NpcAbilities.csv) because that is the only handle the
-/// composition table offers, but it answers for exactly one NPC — see
-/// <see cref="SuteQuest.GuildMasterNpcId"/> for why the other eight mage trainers must not.</para>
+/// <para><b>Eldritch alone</b> (NPCs.csv 39, map 367, the Buya Mage Guild master): NpcAbilities.csv composes
+/// it onto him only, <c>sute@39</c>. This is a DELIBERATE narrowing of RTK. Its quest lives in
+/// <c>mage_trainer.lua</c>, which is the script for the <c>MageTrainerNpc</c> identifier, and nine NPCs share
+/// that identifier: Eldritch, <b>Haedu</b> (the Kugnae guild master), <b>Wand</b>, and six subpath masters. RTK
+/// therefore lets you say "sute" to any of them and hear Eldritch's own words in the first person —
+/// "Eldritch's face looks grim", "I sealed Sute and his creations in the cave" — out of a stranger's mouth in
+/// the wrong kingdom. Both period sources name one place and one man: tswolf's instruction is "Go to the Buya
+/// Mage Guild … say 'Sute' near the merchant", and Atlas's is "visit Buya Mage Guild and say the name 'Sute'
+/// to the Guild Master".</para>
 /// </summary>
 public sealed class SuteQuestAbility : INpcAbility, INpcSayHandler
 {
@@ -128,11 +120,6 @@ public sealed class SuteQuestAbility : INpcAbility, INpcSayHandler
 
     /// <summary>No click entry — the quest is heard, not read off a menu.</summary>
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
-
-    /// <summary>Whether this NPC is the one who runs the quest. Every mage trainer carries the ability
-    /// (the composition table is keyed by identifier, and nine NPCs share this one), so this is what keeps
-    /// Eldritch's first-person story in Eldritch's mouth — see <see cref="SuteQuest.GuildMasterNpcId"/>.</summary>
-    public static bool AnswersFor(NpcDef def) => def.Id == SuteQuest.GuildMasterNpcId;
 
     // Eldritch's tale, transcribed from the tswolf screenshots (sute2..sute15). The typos are the client's.
     private static readonly string[] Tale =
@@ -163,8 +150,6 @@ public sealed class SuteQuestAbility : INpcAbility, INpcSayHandler
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         if (speech != "sute") return false;
-        // Not Eldritch -> not his story to tell; the word falls through to ordinary chat.
-        if (!AnswersFor(ctx.Def)) return false;
         if (ctx.KarmaTooLow()) return true;              // RTK Tools.checkKarma
 
         // Turn-in first, exactly as the Lua orders it: the key in hand and no mark yet ends the quest, and
