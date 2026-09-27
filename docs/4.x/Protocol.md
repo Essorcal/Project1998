@@ -1221,6 +1221,12 @@ Creation is two login-channel packets:
    `0x02`. (Before this, the name check answered "available" unconditionally and `0x04` did a
    load-then-overwrite, so re-"creating" an existing name reset that character's password.)
 2. **`0x04` CreateAppearance** — **5 bytes**: `[0]=face [1]=sex [2]=nation [3]=totem [4]=hair`.
+   **It carries no name.** The character is created under the name `0x02` checked, and `0x04` re-runs the
+   name gate on that name before anything is written. With no `0x02` first the name is empty, and the
+   gate's message box reads "Please enter a name." Until 2026-09-27 the server read `[0]` as a name
+   length, so a face of 1 to 4 became a 1-to-4-byte name and the gate refused it. Nothing on record
+   shows the 5.33 client sending a name here either, and both login ports run the one handler
+   (`LoginSession.HandleCreate`).
    Field ORDER confirmed against the real RTK char-server source (`RTK-Server/rtk/src/char/logif.c`,
    `logif_parse_newchar`): its call `char_db_newchar(name, pass, totem=RFIFOB(39), sex=RFIFOB(37)%2,
    country=RFIFOB(38), face=RFIFOB(36), hair=RFIFOB(40), faceColor=RFIFOB(42), hairColor=RFIFOB(41))`
