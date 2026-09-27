@@ -974,10 +974,14 @@ public sealed partial class Session
     /// each ending in one database write), writes the row, and latches <c>_replaced</c>, so anything later is
     /// refused. The caller's load then sees every write that won the race, and none can land after it.</para>
     ///
-    /// <para>A departed kick that THROWS is logged and the arrival carries on with the row as it stands. The
-    /// only route to a throw is a character the serializer rejects, whose teardown save already threw and was
-    /// logged as lost; letting it escape would refuse this login, which the same logout without the fence
-    /// lets in. A live kick's throw still propagates, as it always has.</para>
+    /// <para>A kick that THROWS, live or departed, is logged as a LOST save and the arrival carries on with the
+    /// row as it stands. The only route to a throw is the old session's capture (a character the serializer
+    /// rejects), and <see cref="KickForReplacement"/> still finishes the kick around it: the old session is
+    /// latched, told and closed, so nothing from it writes afterwards and nothing is left connected. For a
+    /// departed session the teardown save already threw and was logged as lost; for a live one, what it had not
+    /// yet written is lost with this save. Letting the throw escape refused this login and left it holding the
+    /// slot without entering the world (#298 review, pre-existing 2), where the same account without the old
+    /// session gets in.</para>
     ///
     /// <para>The key the slot was claimed under is kept (<see cref="_claimedKey"/>), so that if the arrival throws
     /// before it enters the world, its teardown can give the slot back (<see cref="TearDownWorldState"/>).</para></summary>
@@ -988,18 +992,14 @@ public sealed partial class Session
         _claimedKey = key;
         if (oldSession is null) return;
         ArrivalFenceProbeForTest?.Invoke(oldSession);   // null except under test; see the field
-        if (!departed)
-        {
-            Log.Info($"   -> ARRIVAL: '{user}' already online — kicking previous session");
-            oldSession.KickForReplacement();
-            return;
-        }
-        Log.Info($"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load");
+        Log.Info(departed
+            ? $"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load"
+            : $"   -> ARRIVAL: '{user}' already online — kicking previous session");
         try { oldSession.KickForReplacement(); }
         catch (Exception e)
         {
-            Log.Error($"   -> ARRIVAL: the departed session's final write for '{user}' threw — its save is LOST; " +
-                      "loading the row as it stands", e);
+            Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' threw — " +
+                      "its save is LOST; loading the row as it stands", e);
         }
     }
 

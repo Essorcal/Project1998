@@ -29,6 +29,10 @@ namespace Tests;
 /// dead session as a live duplicate. The facts drive the real arrival (a 0x10 frame with a minted handoff
 /// token) and throw from <c>Session.ArrivalClaimedProbeForTest</c>, which stands for anything in that span.</para>
 ///
+/// <para><b>A live kick whose write throws</b> was the route the review named for that: the old session's capture
+/// threw out of <c>ClaimAccountSlot</c>'s live branch and out of the arrival. The kick now finishes around the
+/// throw and the arrival carries on with the row as it stands, as the departed branch already did.</para>
+///
 /// <para>Driven through the read loop's real exit (<c>Session.EndReadLoopAsync</c>) on socket-free sessions.
 /// Nothing here waits on a clock.</para>
 /// </summary>
@@ -36,7 +40,7 @@ namespace Tests;
 public sealed class TeardownSlotLeakTests
 {
     /// <summary>Content-free map ids; no other class stands here.</summary>
-    private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743;
+    private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744;
 
     /// <summary>What the arrival probe throws, so the handler guard's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
@@ -265,6 +269,77 @@ public sealed class TeardownSlotLeakTests
             online.Unregister(key, later);
             _fx.World.LeaveMap(later, NewerOwnerMap);
         }
+    }
+
+    /// <summary>
+    /// Item 3. A second login for an account whose session is live, and whose state cannot be captured (a value
+    /// the serializer rejects, the PR #282 route: NaN karma). The kick's write throws. The kick still finishes:
+    /// the old session is latched, told "You have logged in from another location." and closed. The lost save is
+    /// logged as LOST, as the departed branch logs its own, and the new login loads the row as it stands — the
+    /// old session's last good save — and enters the world.
+    ///
+    /// <para>On master the throw left <c>HandleArrival</c> through the handler guard: the old session was
+    /// latched but neither told nor closed, and the new login never entered, holding the slot with
+    /// <c>_enteredWorld</c> false (the review's pre-existing 2).</para>
+    /// </summary>
+    [Fact]
+    public void ALiveKickWhoseWriteThrowsStillKicksAndTheNewLoginEnters()
+    {
+        const string name = "SlkKicked";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        var (old, oldOut, oldChar) = _fx.PlayerWith(name, c => c.Coins = 300, KickMap, 5, 5);
+        var (fresh, _) = Arriving(name, "new");
+
+        try
+        {
+            online.Register(key, old, out _);
+            old.WithState(old.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(old, "autosave"));   // the last good save: 300 coins
+            Assert.Equal(300u, LoadOk(name).Coins);
+            old.WithState(() =>
+            {
+                oldChar.Coins = 999;              // progress since that save ...
+                oldChar.Karma = double.NaN;       // ... in a state that cannot be serialized: the capture throws
+                old.MarkDirty();
+            });
+
+            using (var sink = LogLineSink.Acquire())
+            {
+                fresh.Receive(ArrivalFrame(name));
+                _out.WriteLine($"[state] {name}: old replaced={old.IsReplaced}, told={MiniTexts(oldOut).Contains(KickedText)}, " +
+                               $"closed={oldOut.Closed}; new holds slot={online.HoldsSlotForTest(key, fresh)}, " +
+                               $"on map={_fx.World.Online.All().Contains(fresh)}");
+
+                Assert.True(old.IsReplaced);
+                Assert.Contains(KickedText, MiniTexts(oldOut));
+                Assert.True(oldOut.Closed, "the old connection was left open");
+                Assert.True(online.HoldsSlotForTest(key, fresh));
+                Assert.Contains(fresh, _fx.World.Online.All());
+                Assert.Equal(300u, fresh.CharCoins);             // the row as it stands: the last good save
+
+                sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
+                var lost = sink.EntryContaining($"the previous session's final write for '{name}' threw — its save is LOST");
+                Assert.Equal(LogLevel.Error, lost.Level);
+                Assert.False(sink.Has("handler for opcode 0x10 threw"), "the kick's throw escaped the arrival");
+            }
+            Assert.Equal(300u, LoadOk(name).Coins);                // and nothing wrote over it
+        }
+        finally
+        {
+            oldChar.Karma = 0;
+            online.Unregister(key, fresh);
+            online.Unregister(key, old);
+            _fx.World.LeaveMap(old, KickMap);
+            _fx.World.LeaveMap(fresh, KickMap);
+        }
+    }
+
+    private Character LoadOk(string name)
+    {
+        var load = _fx.Store.Load(name);
+        Assert.Equal(CharacterLoadStatus.Ok, load.Status);
+        return Assert.IsType<Character>(load.Character);
     }
 
     /// <summary>Deliver a real arrival for <paramref name="name"/> to <paramref name="s"/>, throwing from the probe

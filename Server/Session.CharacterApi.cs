@@ -321,7 +321,9 @@ public sealed partial class Session
     /// <para><b>Why the write comes before the latch.</b> The latch refuses writes at the chokepoint, including
     /// this one; latched first, the kick itself could not write. It is in a <c>finally</c> so a capture that
     /// throws still latches: the exception leaves here as it always did, and nothing from this session writes
-    /// afterwards.</para>
+    /// afterwards. The notice and the close are in the same <c>finally</c>, after the latch, so a throwing
+    /// capture still finishes the kick: the old connection is told and closed rather than left open on a session
+    /// that will never write again (#298 review, pre-existing 2). The caller logs the lost save.</para>
     ///
     /// <para>Safe to call from the NEW session's thread. The state monitor taken here is what serializes
     /// against anything this (old) session's own thread, a late group share or a late death is doing: they
@@ -339,9 +341,9 @@ public sealed partial class Session
         finally
         {
             Volatile.Write(ref _replaced, 1);
+            SendMiniText("You have logged in from another location.");
+            CloseConnection("replaced by new login");
         }
-        SendMiniText("You have logged in from another location.");
-        CloseConnection("replaced by new login");
     }
 
     // ===== quests (see Server/Quests.cs, NpcContext quest helpers) ================================
