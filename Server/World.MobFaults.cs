@@ -220,7 +220,7 @@ public sealed partial class World
         if (repeats is not null) Log.Error(repeats.ToString());
         if (rowRepeats is null) return;
 
-        var sb = new StringBuilder("spawn rows still throwing — each skipped this beat with no stack (each fault's stack is logged at its first throw): ");
+        var sb = new StringBuilder("world tick phase spawn rows still throwing — each skipped this beat with no stack (each fault's stack is logged at its first throw): ");
         for (int i = 0; i < rowRepeats.Count; i++)
         {
             var (f, k, n) = rowRepeats[i];
