@@ -82,7 +82,7 @@ public static class TigerMailQuest
 
     /// <summary>Claw, the immortal tiger of Chonsa Den (NPCs.csv 148, map 3041 at 5/4). The identifier
     /// <c>ClawNpc</c> is his alone, so the ability's composition row is the whole gate — unlike the Sute
-    /// quest's, which has to narrow a shared identifier (see <see cref="SuteQuest.GuildMasterNpcId"/>).</summary>
+    /// quest's, whose row has to narrow a shared identifier (see <see cref="SuteQuestAbility"/>).</summary>
     public const int ClawNpcId = 148;
     public const ushort ChonsaDenMap = 3041;
 
