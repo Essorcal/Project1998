@@ -7,6 +7,28 @@ namespace Shared;
 /// </summary>
 public static class CharacterFactory
 {
+    /// <summary>
+    /// The character a <c>0x04</c> CreateAppearance writes, before it is placed in the world. The name is
+    /// <paramref name="checkedName"/>, the one the <c>0x02</c> name check carried, and <paramref name="body"/>
+    /// is appearance only: the whole body becomes <see cref="Character.CreationBlob"/>, face first.
+    ///
+    /// <para><c>0x04</c> carries no name. The login server used to read <c>body[0]</c> as a name length, but
+    /// on 4.95 that byte is the FACE (docs/4.x/Protocol.md §9), so a face of 1 to 4 turned 1 to 4 appearance
+    /// bytes into the "name" and the name gate refused a name the player never typed. No source shows the
+    /// 5.33 client sending a name there either, so both clients take the name from <c>0x02</c>.</para>
+    ///
+    /// <para>This does not gate the name. The caller must run its name gate on the returned character's
+    /// <see cref="Character.Name"/> before anything is written.</para>
+    /// </summary>
+    public static Character FromCreate(string checkedName, byte[] body)
+    {
+        var c = new Character { SchemaVersion = Character.CurrentSchemaVersion };
+        c.Name = checkedName;      // stored with the player's chosen CASING; logins match case-insensitively
+        c.CreationBlob = body;     // keep the raw body for future re-decoding if the mapping changes
+        ApplyAppearance(c);        // decode gender/face/nation/totem/hair
+        return c;
+    }
+
     // Map the raw 0x04 creation body onto Character fields.
     //
     // Layout confirmed against the REAL RTK char-server source (RTK-Server/rtk/src/char/logif.c

@@ -212,30 +212,28 @@ public sealed class LoginSession
         return null;
     }
 
-    // Create step 2 (0x04): the client sends the chosen name + appearance (gender, etc.) after the
-    // availability check. Persist it so world entry uses the player's real choices instead of the
-    // hardcoded spawn. The appearance decode + home-city placement live in Shared/CharacterFactory so the
-    // game server (which re-derives them at world entry) stays in lock-step with what we write here.
+    // Create step 2 (0x04): the client sends the chosen appearance after the availability check. Persist it
+    // so world entry uses the player's real choices instead of the hardcoded spawn. The appearance decode +
+    // home-city placement live in Shared/CharacterFactory so the game server (which re-derives them at world
+    // entry) stays in lock-step with what we write here.
+    //
+    // 0x04 carries NO name: its body is the appearance, face first (Protocol.md §9). The name is the one 0x02
+    // checked, _pendingName. This handler used to read body[0] as a name length, so a face of 1 to 4 made
+    // 1 to 4 appearance bytes the "name" and the gate below refused a name the player never typed.
     private void HandleCreate(byte[] dec)
     {
         Log.Info($"   -> CREATE raw({dec.Length}B): {Log.Hex(dec)}");
 
-        string name = _pendingName;
-        try
-        {
-            int nlen = dec.Length > 0 ? dec[0] : 0;
-            if (nlen > 0 && 1 + nlen <= dec.Length)
-                name = Encoding.ASCII.GetString(dec, 1, nlen);
-        }
-        catch { /* fall back to _pendingName */ }
-        if (string.IsNullOrEmpty(name)) name = _pendingName;
+        var c = CharacterFactory.FromCreate(_pendingName, dec);
 
-        // Re-run the name gate here, not just at the availability check: 0x04 is a separate packet and a
-        // hand-rolled client can send it without ever asking 0x02. Refusing a TAKEN name is what stops the
-        // old load-then-overwrite path from resetting an existing character's password (account takeover).
-        if (NameProblem(name) is { } why)
+        // Re-run the name gate here, not just at the availability check, on the name that will be written:
+        // 0x04 is a separate packet and a hand-rolled client can send it without ever asking 0x02. With no
+        // 0x02, _pendingName is empty and this refuses it ("Please enter a name."). Refusing a TAKEN name is
+        // what stops the old load-then-overwrite path from resetting an existing character's password
+        // (account takeover).
+        if (NameProblem(c.Name) is { } why)
         {
-            Log.Info($"   -> CREATE REJECTED ('{name}'): {why}");
+            Log.Info($"   -> CREATE REJECTED ('{c.Name}'): {why}");
             SendMessage(why);
             return;
         }
@@ -245,24 +243,20 @@ public sealed class LoginSession
         // ride along here: this is the one place a password is chosen.
         if (PasswordProblem(_pendingPass) is { } pwWhy)
         {
-            Log.Info($"   -> CREATE REJECTED ('{name}'): password ({_pendingPass.Length} chars) — {pwWhy}");
+            Log.Info($"   -> CREATE REJECTED ('{c.Name}'): password ({_pendingPass.Length} chars) — {pwWhy}");
             SendMessage(pwWhy);
             return;
         }
 
-        var c = new Character { SchemaVersion = Character.CurrentSchemaVersion };
-        c.Name = name;             // stored with the player's chosen CASING; logins match case-insensitively
-        c.CreationBlob = dec;      // keep the raw body for future re-decoding if the mapping changes
-        CharacterFactory.ApplyAppearance(c);        // decode gender/face/nation/totem/hair
         CharacterFactory.PlaceNewCharacter(c);      // home city for the picked nation
         if (!_store.Save(c))
         {
-            Log.Info($"   -> CREATE FAILED to persist '{name}' — not registering the account");
+            Log.Info($"   -> CREATE FAILED to persist '{c.Name}' — not registering the account");
             SendMessage("Could not create the character. Try again.");
             return;
         }
-        Accounts.SetPassword(name, Auth.Hash(_pendingPass));
-        Log.Info($"   -> CREATE persisted '{name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
+        Accounts.SetPassword(c.Name, Auth.Hash(_pendingPass));
+        Log.Info($"   -> CREATE persisted '{c.Name}' (sex={c.Sex} face={c.Face} nation={Character.NationName(c.Nation)} totem={c.Totem}) -> {_store.Directory}");
         // Success is sub-type 0x00 — the same "OK" code as the name-availability reply — with the text
         // riding along, NOT the 0x0F message box: 0x0F renders the text but leaves the creation UI up.
         // Form and text are RTK's create-ack (rtk/src/login/intif.c intif_parse_2002 ->
