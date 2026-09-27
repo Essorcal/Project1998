@@ -54,6 +54,8 @@ public static class NpcScripts
         ["mythic_alliance"] = MythicAllianceAbility.Instance,
         ["alignment"] = AlignmentAbility.Instance,
         ["summit"] = SummitAbility.Instance,
+        // A single-giver quest is one QuestAbility per QuestDef; its giver lists it first in its row.
+        ["tutorial_quest"] = new QuestAbility(TutorialQuest.Def),
     };
 
     /// <summary>The abilities that make up an NPC: its explicit composition (NpcAbilities.csv via
@@ -64,10 +66,6 @@ public static class NpcScripts
     public static INpcAbility[] For(NpcDef def)
     {
         var list = new List<INpcAbility>();
-        // Any NPC that gives quests gets the quest menu first — including data-driven NPCs (like the two
-        // MainTutorialNpc givers, which share an identifier but differ by id) that have no composition row.
-        if (Quests.ForNpc(def.Id).Count > 0) list.Add(QuestAbility.Instance);
-
         if (Content.NpcCompositions.TryGetValue(def.Key, out var refs))
         {
             foreach (var r in refs)

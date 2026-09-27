@@ -98,7 +98,7 @@ public sealed class NpcContext
     /// <summary>Spoken "what have i deposited?": bubble the vault's coin + item contents out loud.</summary>
     public void ShowVault() => _s.ShowBankContents(_npc);
 
-    // ---- quest helpers (used by QuestDef.Talk scripts; see Server/Quests.cs) ---------------------
+    // ---- quest helpers (used by QuestDef.Talk scripts; see QuestDef below) ------------------------
     /// <summary>This player's stage for a quest (0 = not started; a quest defines the rest).</summary>
     public int  Stage(string questKey) => _s.QuestStage(questKey);
     /// <summary>Set this player's stage for a quest (persists).</summary>
@@ -1530,22 +1530,45 @@ public sealed class ReviveAbility : INpcAbility
     }
 }
 
-/// <summary>Surfaces this NPC's quests (from <see cref="Quests.ForNpc"/>) as menu entries — one per quest,
-/// its label reflecting the player's progress — and runs the quest's <see cref="QuestDef.Talk"/> script when
-/// picked. Added automatically to any NPC that has quests (see <see cref="NpcScripts.For"/>), so a quest is
-/// wired end to end just by listing it under a giver in <see cref="Quests.ByNpc"/>.</summary>
+/// <summary>
+/// A single-giver quest: its identity plus the NPC conversation that offers / nudges / turns it in. The whole
+/// quest reads as linear script through <see cref="NpcContext"/> (menu/say + the quest helpers on it),
+/// branching on the player's stage — a plain int the quest owns the meaning of (the tutorial chain runs 0..14).
+/// Stages persist in <see cref="Shared.Character.Quests"/>. A quest reaches its giver as a
+/// <see cref="QuestAbility"/>: registered by name in <see cref="NpcScripts"/> and listed FIRST in the giver's
+/// game-data/NpcAbilities.csv row.
+///
+/// This models a per-NPC stage-machine quest (like the RTK tutorial chain). Self-contained multi-entry quests
+/// that don't fit one <c>Talk</c> — e.g. the repeatable minor-quest (request/complete) — are their own ability
+/// instead; see <see cref="MinorQuestAbility"/>.
+/// </summary>
+public sealed class QuestDef
+{
+    /// <summary>Unique quest id + the base key for its progress state (never shown to the player).</summary>
+    public required string Key { get; init; }
+    /// <summary>Display name for the NPC menu entry.</summary>
+    public required string Name { get; init; }
+    /// <summary>The whole conversation: greet / offer / in-progress nudge / turn-in / closing, branching on the
+    /// player's current stage. Runs when the player picks this quest at its giver NPC.</summary>
+    public required Func<NpcContext, Task> Talk { get; init; }
+}
+
+/// <summary>One <see cref="QuestDef"/> as a click-menu entry: the quest's name, running its
+/// <see cref="QuestDef.Talk"/> script when picked. One instance per quest, registered by name in
+/// <see cref="NpcScripts"/> (<c>tutorial_quest</c> is <see cref="TutorialQuest.Def"/>) and composed onto its
+/// givers in game-data/NpcAbilities.csv, first in the row so the quest is the first entry — and, at a giver
+/// with nothing else to click, the only one, which makes a click go straight into the conversation.</summary>
 public sealed class QuestAbility : INpcAbility
 {
-    public static readonly QuestAbility Instance = new();
+    private readonly QuestDef _quest;
+
+    public QuestAbility(QuestDef quest) => _quest = quest;
+
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        foreach (var q in Quests.ForNpc(ctx.Def.Id))
-        {
-            var quest = q;   // capture per-iteration for the closure
-            // Label is just the quest name — a quest owns its own stage meaning (the tutorial runs 0..14, not
-            // the 0/1/2 convention), so a generic "in progress/done" suffix here would be wrong.
-            yield return (quest.Name, c => quest.Talk(c));
-        }
+        // Label is just the quest name — a quest owns its own stage meaning (the tutorial runs 0..14, not
+        // the 0/1/2 convention), so a generic "in progress/done" suffix here would be wrong.
+        yield return (_quest.Name, c => _quest.Talk(c));
     }
 }
 

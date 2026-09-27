@@ -21,7 +21,7 @@ InnNpc,shop|bank
 InnNpc2,
 FishNpc,fish
 LibrarianNpc,librarian
-MainTutorialNpc,stars_hint
+MainTutorialNpc,tutorial_quest|stars_hint
 WarriorTrainerNpc,warrior_trainer|minor_quest|armor_quest@36;41|nagnang_shield@91
 RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe@42;162;163;164|armor_quest@37;42|dagger_uniform
 MageTrainerNpc,mage_trainer|minor_quest|sute@39|armor_quest@35;39|mage_stone@133
