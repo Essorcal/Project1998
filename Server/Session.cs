@@ -104,8 +104,9 @@ public sealed partial class Session
                $"queued-casts {_queuedCasts.Count}, awaiting-dialog-reply {(_dlgReply is not null ? "YES" : "no")}, " +
                $"trade {(_trade is not null ? "OPEN" : "none")}, dirty {_dirty}";
     }
-    // Set once a newer login for the same account superseded this session (World.OnlineRegistry.Register,
-    // Session.KickForReplacement). Gates the disconnect save, so a slow OLD session never clobbers the NEW one.
+    // Set once a newer login supersedes this session (ClaimAccountSlot -> World.Online.RegisterArrival).
+    // KickForReplacement latches it in a finally after its own write; CaptureAndWrite then refuses every later
+    // single-session write, and the teardown skips its disconnect save, so OLD never clobbers NEW.
     private int _replaced;
     internal bool IsReplaced => Volatile.Read(ref _replaced) != 0;   // no monitor: read under World._lock (#183)
     // Serializes the DATABASE WRITE for this session, and nothing else (#29). It used to be _saveGate and it

@@ -310,7 +310,7 @@ public sealed partial class World
                 if (!mob.Flees && (mob.OwnerId == 0 || Content.IsPvpMap(mapId)))
                     foreach (var p in m.Players)
                     {
-                        if (p.IsDead || p.PlayerId == mob.OwnerId) continue;
+                        if (p.IsDead || p.PlayerId == mob.OwnerId || p.IsReplaced) continue;
                         int bdx = p.PlayerX - mob.X, bdy = p.PlayerY - mob.Y;
                         if ((bdx == 0 && Math.Abs(bdy) == 1) || (bdy == 0 && Math.Abs(bdx) == 1)) { reach = p; break; }
                     }

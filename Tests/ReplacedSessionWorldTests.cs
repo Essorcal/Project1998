@@ -192,6 +192,54 @@ public class ReplacedSessionWorldTests
     // The creature's own reads (World.MobAiTick).
     // =====================================================================================================
 
+    /// <summary>A blind creature reads the map's player list directly. The replaced session entered first and
+    /// stands directly south; a live bystander stands east. The old session must be skipped, so the queued swing
+    /// reaches the live bystander exactly as it does once teardown has removed the old session.</summary>
+    [Fact]
+    public void ABlindCreatureSkipsAReplacedSessionForTheNextLivePlayer()
+    {
+        const ushort map = 65318;
+        var c = new Cleanup(_fx);
+        try
+        {
+            var old = Account(c, "RswBlindOld", Shape.Replaced, map, 5, 6);
+            var live = Bystander(c, "RswBlindBystander", map, 6, 5);
+            var mob = c.Add(Creature(5, 5, "RswBlindMob"), map);
+            mob.BlindUntil = long.MaxValue;
+            mob.AttackTime = 1;
+
+            var hit = Assert.Single(Beat(map, mob).Hits);
+
+            Assert.Same(mob, hit.mob);
+            Assert.Same(live, hit.target);
+            Assert.NotSame(old, hit.target);
+        }
+        finally { c.Run(); }
+    }
+
+    /// <summary>The live control for the blind scan. An ordinary session entered first and stands directly south;
+    /// a second live player stands east. The queued swing still reaches that first adjacent session.</summary>
+    [Fact]
+    public void ABlindCreatureStillSwingsAtTheFirstAdjacentLiveSession()
+    {
+        const ushort map = 65319;
+        var c = new Cleanup(_fx);
+        try
+        {
+            var first = Account(c, "RswBlindLive", Shape.Live, map, 5, 6);
+            _ = Bystander(c, "RswBlindLiveBystander", map, 6, 5);
+            var mob = c.Add(Creature(5, 5, "RswBlindLiveMob"), map);
+            mob.BlindUntil = long.MaxValue;
+            mob.AttackTime = 1;
+
+            var hit = Assert.Single(Beat(map, mob).Hits);
+
+            Assert.Same(mob, hit.mob);
+            Assert.Same(first, hit.target);
+        }
+        finally { c.Run(); }
+    }
+
     /// <summary>The chase-and-swing read. A creature fighting the old session, which stands in arm's reach. Live:
     /// it keeps the target and swings (today's behaviour). Replaced: it drops the target and queues nothing, which
     /// is exactly what it does once the old session has left.</summary>
