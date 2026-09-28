@@ -33,6 +33,10 @@ namespace Tests;
 /// threw out of <c>ClaimAccountSlot</c>'s live branch and out of the arrival. The kick now finishes around the
 /// throw and the arrival carries on with the row as it stands, as the departed branch already did.</para>
 ///
+/// <para><b>A kick whose write fails without throwing</b> (the #303 re-check's pre-existing 1): the database
+/// refuses the kick's write, so it takes a sequence number and stamps nothing. It now fences the way a throwing
+/// capture does, and the lost write is logged as LOST. The facts refuse the write on a database of their own.</para>
+///
 /// <para>Driven through the read loop's real exit (<c>Session.EndReadLoopAsync</c>) on socket-free sessions.
 /// Nothing here waits on a clock.</para>
 /// </summary>
@@ -41,7 +45,8 @@ public sealed class TeardownSlotLeakTests
 {
     /// <summary>Content-free map ids; no other class stands here.</summary>
     private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744,
-                         SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747;
+                         SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747, FailedKickMap = 61748,
+                         FailedDepartedKickMap = 61749;
 
     /// <summary>What the arrival probe throws, so the handler guard's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
@@ -593,6 +598,221 @@ public sealed class TeardownSlotLeakTests
             _fx.World.LeaveMap(old, StuckWriteMap);
             _fx.World.LeaveMap(fresh, StuckWriteMap);
         }
+    }
+
+    /// <summary>
+    /// The #303 re-check's pre-existing 1, live branch: a kick whose write FAILS without throwing. An autosave
+    /// sweep has captured the old session (350 coins over a landed 300) and its write is on the way to the write
+    /// gate when the account logs in again. The kick captures (999, a state that serializes fine) and takes a
+    /// newer sequence number, but the database refuses the write, so <c>SaveJson</c> returns false and nothing
+    /// is stamped. The kick must still fence: the sweep's older capture is dropped at the gate, so the row the
+    /// new login loaded (300) is the row that stays, and the new session's next write erases nothing. The lost
+    /// write is logged as LOST, as a throwing kick's is.
+    ///
+    /// <para>The refusal is this fact's own database (<see cref="RefuseWrites"/>): <c>SaveJson</c> catches the
+    /// abort the way it catches a busy database past its timeout, and returns false. The order capture, kick,
+    /// gate check is forced the way <see cref="ALiveKickWhoseCaptureThrowsDropsASweepWriteCapturedBeforeIt"/>
+    /// forces it: the test thread holds the old session's write gate and runs the arrival itself.</para>
+    /// </summary>
+    [Fact]
+    public void ALiveKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkFailed";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        InstallWriteRefusal(db);
+        var oldChar = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = name,
+            Map = FailedKickMap, X = 5, Y = 5, Coins = 300,
+        };
+        var oldOut = new RecordingOutbound($"recorder:{name}");
+        var old = new Session(oldOut, 2005, db.Store, _fx.World, oldChar);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        _fx.World.EnterMap(old, FailedKickMap);
+        object gate = WriteGateOf(old);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, old, out _);
+            old.WithState(old.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(old, "autosave"));   // the last landed row: 300
+            Assert.Equal(300u, LoadOk(db.Store, name).Coins);
+            old.WithState(() => { oldChar.Coins = 350; old.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            bool lostLogged, lostAtError, guardLogged;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(old, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the old session's write gate");
+                Assert.Contains("dirty False", old.DiagState());               // it has captured 350
+                old.WithState(() => { oldChar.Coins = 999; old.MarkDirty(); });   // serializable: the kick's capture succeeds
+
+                RefuseWrites(db, true);
+                using (var sink = LogLineSink.Acquire())
+                {
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
+                    lostLogged = sink.Has($"the previous session's final write for '{name}' failed — its save is LOST");
+                    lostAtError = lostLogged &&
+                        sink.EntryContaining($"the previous session's final write for '{name}' failed").Level == LogLevel.Error;
+                    guardLogged = sink.Has("handler for opcode 0x10 threw");
+                }
+                RefuseWrites(db, false);
+                Assert.True(old.IsReplaced);
+                Assert.True(oldOut.Closed);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(db.Store, name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(db.Store, name).Coins;
+            fresh.WithState(fresh.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(fresh, "autosave"));   // the new session's next write
+            uint rowAfterNext = LoadOk(db.Store, name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write=" +
+                           $"{rowAfterSweep}, row after the new session's next write={rowAfterNext}, LOST logged={lostLogged}");
+
+            Assert.Equal(300u, loaded);
+            Assert.Equal(300u, rowAtLoad);
+            Assert.True(sweepReturned);                     // refused at the gate, not failed
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+            Assert.Equal(loaded, rowAfterNext);
+            Assert.True(lostLogged, "the kick's failed write was not logged as LOST");
+            Assert.True(lostAtError, "the LOST line was not at Error");
+            Assert.False(guardLogged, "the arrival threw");
+        }
+        finally
+        {
+            RefuseWrites(db, false);
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, old);
+            _fx.World.LeaveMap(old, FailedKickMap);
+            _fx.World.LeaveMap(fresh, FailedKickMap);
+        }
+    }
+
+    /// <summary>
+    /// The departed branch of the same. A sweep captured the session (350 over a landed 100) and its write is on
+    /// the way to the gate; the database then refuses writes and the session logs out, so its teardown save fails
+    /// and it is parked for the next login's fence. A fast re-login fences it, and that kick's write fails too.
+    /// The fence must still drop the sweep's older capture: the row the new login loaded (100) stays. Forced the
+    /// same way: the test thread holds the departed session's write gate across the logout and the arrival.
+    /// </summary>
+    [Fact]
+    public void ADepartedKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkFailedGone";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        InstallWriteRefusal(db);
+        var ch = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = name,
+            Map = FailedDepartedKickMap, X = 5, Y = 5, Coins = 100,
+        };
+        var departed = new Session(new RecordingOutbound($"recorder:{name}"), 2005, db.Store, _fx.World, ch);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        _fx.World.EnterMap(departed, FailedDepartedKickMap);
+        object gate = WriteGateOf(departed);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, departed, out _);
+            departed.WithState(departed.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(departed, "autosave"));   // the last landed row: 100
+            Assert.Equal(100u, LoadOk(db.Store, name).Coins);
+            departed.WithState(() => { ch.Coins = 350; departed.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            bool lostLogged;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the session's write gate");
+                Assert.Contains("dirty False", departed.DiagState());          // it has captured 350
+                departed.WithState(() => { ch.Coins = 999; departed.MarkDirty(); });
+
+                RefuseWrites(db, true);
+                using (var sink = LogLineSink.Acquire())
+                {
+                    // The logout: the teardown's save fails (returns false) and the slot is parked (#168).
+                    // EndReadLoopAsync runs synchronously to the end here, still on this thread and inside the
+                    // gate: its only await is on an already-completed writer.
+                    Assert.True(departed.EndReadLoopAsync(Task.CompletedTask).IsCompletedSuccessfully,
+                                "the logout did not run to its end on this thread");
+                    Assert.True(online.HoldsDepartedForTest(key, departed));
+
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.LineContaining($"ARRIVAL: '{name}' left moments ago — fencing");
+                    lostLogged = sink.Has($"the departed session's final write for '{name}' failed — its save is LOST");
+                }
+                RefuseWrites(db, false);
+                Assert.True(departed.IsReplaced);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(db.Store, name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(db.Store, name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write={rowAfterSweep}, " +
+                           $"LOST logged={lostLogged}");
+
+            Assert.Equal(100u, loaded);
+            Assert.Equal(100u, rowAtLoad);
+            Assert.True(sweepReturned);
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+            Assert.True(lostLogged, "the departed kick's failed write was not logged as LOST");
+        }
+        finally
+        {
+            RefuseWrites(db, false);
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, departed);
+            _fx.World.LeaveMap(departed, FailedDepartedKickMap);
+            _fx.World.LeaveMap(fresh, FailedDepartedKickMap);
+        }
+    }
+
+    /// <summary>Give <paramref name="db"/> a switch that makes it refuse every character write: a BEFORE INSERT
+    /// and a BEFORE UPDATE trigger that abort the statement while <c>refuse_writes</c> has a row. Reads are
+    /// untouched. <c>CharacterStore.SaveJson</c> catches the abort the way it catches any database fault (a busy
+    /// database past its timeout, a full disk): it logs "Save(...) failed" and returns false.</summary>
+    private static void InstallWriteRefusal(IsolatedDatabase db)
+    {
+        using var cn = db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText =
+            "CREATE TABLE refuse_writes(flag INTEGER NOT NULL);" +
+            "CREATE TRIGGER refuse_insert BEFORE INSERT ON characters WHEN EXISTS (SELECT 1 FROM refuse_writes) " +
+            "BEGIN SELECT RAISE(ABORT, 'test database refuses the write'); END;" +
+            "CREATE TRIGGER refuse_update BEFORE UPDATE ON characters WHEN EXISTS (SELECT 1 FROM refuse_writes) " +
+            "BEGIN SELECT RAISE(ABORT, 'test database refuses the write'); END;";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Turn <see cref="InstallWriteRefusal"/>'s switch on or off.</summary>
+    private static void RefuseWrites(IsolatedDatabase db, bool refuse)
+    {
+        using var cn = db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = refuse ? "INSERT INTO refuse_writes(flag) VALUES (1);" : "DELETE FROM refuse_writes;";
+        cmd.ExecuteNonQuery();
     }
 
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);

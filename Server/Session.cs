@@ -987,6 +987,11 @@ public sealed partial class Session
     /// slot without entering the world (#298 review, pre-existing 2), where the same account without the old
     /// session gets in.</para>
     ///
+    /// <para>A kick whose write FAILS without throwing (the database refused it: <c>KickForReplacement</c> returns
+    /// false) is logged the same way, "failed" for "threw", and is fenced the same way, so the row the caller
+    /// loads is final on that path too (#303 re-check, pre-existing 1). Before, it logged nothing past the store's
+    /// own warning, and an older in-flight write could land after the load.</para>
+    ///
     /// <para>The key the slot was claimed under is kept (<see cref="_claimedKey"/>), so that if the arrival throws
     /// before it enters the world, its teardown can give the slot back (<see cref="TearDownWorldState"/>).</para></summary>
     internal void ClaimAccountSlot(string user)
@@ -999,7 +1004,12 @@ public sealed partial class Session
         Log.Info(departed
             ? $"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load"
             : $"   -> ARRIVAL: '{user}' already online — kicking previous session");
-        try { oldSession.KickForReplacement(); }
+        try
+        {
+            if (!oldSession.KickForReplacement())
+                Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' failed — " +
+                          "its save is LOST; loading the row as it stands");
+        }
         catch (Exception e)
         {
             Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' threw — " +

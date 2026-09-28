@@ -325,11 +325,13 @@ public sealed partial class Session
     /// capture still finishes the kick: the old connection is told and closed rather than left open on a session
     /// that will never write again (#298 review, pre-existing 2). The caller logs the lost save.</para>
     ///
-    /// <para><b>A throwing capture still fences.</b> The unconditional write is what makes the kick a fence: its
-    /// newer sequence number drops at the write gate any capture taken before it. A capture that throws takes no
-    /// number, so the catch takes one and stamps it as written under <c>_writeGate</c> without writing. The row
-    /// the caller then loads is final on this path too: an older in-flight write is dropped, or, if it was
-    /// already past the gate, lands before the caller's load (#303 review, F1).</para>
+    /// <para><b>A throwing capture or a failed write still fences.</b> The unconditional write is what makes the
+    /// kick a fence: once it lands, its newer sequence number drops at the write gate any capture taken before it.
+    /// A capture that throws takes no number, and a write the database refuses (<c>SaveJson</c> returned false: a
+    /// busy database past its timeout) takes one but stamps nothing. On either path the kick takes a number of its
+    /// own and stamps it as written under <c>_writeGate</c> without writing. The row the caller then loads is
+    /// final on these paths too: an older in-flight write is dropped, or, if it was already past the gate, lands
+    /// before the caller's load (#303 review, F1; #303 re-check, pre-existing 1).</para>
     ///
     /// <para>Safe to call from the NEW session's thread. The state monitor taken here is what serializes
     /// against anything this (old) session's own thread, a late group share or a late death is doing: they
@@ -337,12 +339,22 @@ public sealed partial class Session
     /// orders the database writes. CloseConnection is idempotent, and so is the whole kick on a session that
     /// has already torn down (the departed-session fence in <c>HandleArrival</c>): its sends are dropped and
     /// its connection is already closed.</para></summary>
-    internal void KickForReplacement()
+    /// <returns>False when this session's final write failed without throwing, so its save is lost and the
+    /// caller logs it; true otherwise, including for a session that never entered the world and so writes
+    /// nothing. A capture that throws leaves as an exception, as it always did.</returns>
+    internal bool KickForReplacement()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         try
         {
-            if (_enteredWorld) CaptureAndWrite(dirtyGated: false);
+            if (!_enteredWorld || CaptureAndWrite(dirtyGated: false)) return true;
+            // The write failed without throwing: it took a sequence number but stamped nothing, so a capture older
+            // than this kick, still on its way to the gate, would pass the compare and land after the caller's
+            // load (#303 re-check, pre-existing 1). Fence exactly as the catch below does: a number of our own,
+            // stamped as written under the gate without writing, still under the monitor.
+            long failed = ++_saveSeq;
+            lock (_writeGate) _writtenSeq = failed;
+            return false;
         }
         catch
         {
