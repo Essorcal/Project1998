@@ -37,6 +37,12 @@ namespace Tests;
 /// refuses the kick's write, so it takes a sequence number and stamps nothing. It now fences the way a throwing
 /// capture does, and the lost write is logged as LOST. The facts refuse the write on a database of their own.</para>
 ///
+/// <para><b>The loading-screen close</b> (the #303 report's follow-up candidate 1). An arrival that throws after
+/// claiming the slot and before entering the world now has its connection closed there and then, instead of the
+/// handler guard keeping the session while the client sits on the loading screen. The slot is still given back by
+/// the teardown that follows. A throw in any other opcode's handler still drops the packet and keeps the
+/// session.</para>
+///
 /// <para>Driven through the read loop's real exit (<c>Session.EndReadLoopAsync</c>) on socket-free sessions.
 /// Nothing here waits on a clock.</para>
 /// </summary>
@@ -46,12 +52,22 @@ public sealed class TeardownSlotLeakTests
     /// <summary>Content-free map ids; no other class stands here.</summary>
     private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744,
                          SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747, FailedKickMap = 61748,
-                         FailedDepartedKickMap = 61749;
+                         FailedDepartedKickMap = 61749, CloseMap = 61750, OtherHandlerMap = 61751;
 
-    /// <summary>What the arrival probe throws, so the handler guard's log line can be matched to it.</summary>
+    /// <summary>What the arrival probe throws, so the arrival's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
 
     private const string KickedText = "You have logged in from another location.";
+
+    /// <summary>The arrival's own Error line for a throw between the claim and world entry, after the user name.</summary>
+    private const string ArrivalThrewLine =
+        "threw after claiming the account's slot, before entering the world — closing the connection";
+
+    /// <summary>The close's line, naming its cause.</summary>
+    private const string ArrivalCloseLine = "-> connection teardown (arrival threw before world entry)";
+
+    private const byte TurnIn = 0x11;    // ClientOp.Turn
+    private const byte TurnOut = 0x11;   // ServerOp.Turn, the turn handler's own side reply
 
     private const byte ExchangeIn = 0x4a;
     private const byte ExchangeOut = 0x42;
@@ -166,9 +182,9 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>
-    /// Item 2. An arrival claims the account's slot and then throws before it enters the world. The handler guard
-    /// in <c>Session.Handle</c> logs the throw and keeps the session, which now holds the slot with
-    /// <c>_enteredWorld</c> false. Its teardown gives the slot back (dropped, not parked), and a later login for
+    /// Item 2. An arrival claims the account's slot and then throws before it enters the world. The arrival logs
+    /// the throw and closes the connection (the loading-screen close), and the session holds the slot with
+    /// <c>_enteredWorld</c> false until its teardown. That gives the slot back (dropped, not parked), and a later login for
     /// the account is handed nobody: it neither kicks nor fences the dead session, and enters with the row as it
     /// stands. The session that never entered the world wrote nothing.
     ///
@@ -230,9 +246,10 @@ public sealed class TeardownSlotLeakTests
     /// <summary>
     /// The newer owner. The same stuck arrival, but a later login arrives BEFORE the stuck session's teardown:
     /// it takes the slot and kicks the stuck session as a live duplicate. The stuck session never entered the
-    /// world, so the kick writes nothing (its <c>_enteredWorld</c> gate), latches it, tells it and closes it —
-    /// which is all the next login's kick ever did to such a session, on master too. The stuck session's teardown
-    /// then runs and must leave the newer login's slot alone.
+    /// world, so the kick writes nothing (its <c>_enteredWorld</c> gate) and latches it; its notice and its close
+    /// find the connection already closed by the arrival's own throw (the loading-screen close). Before that close
+    /// the kick also told and closed it, which is all the next login's kick ever did to such a session. The stuck
+    /// session's teardown then runs and must leave the newer login's slot alone.
     ///
     /// <para>This is the case <c>Unregister</c>'s compare-and-remove exists for: a teardown that gave the slot
     /// back without asking who owns it would take it from the login that is now in the world.</para>
@@ -251,6 +268,7 @@ public sealed class TeardownSlotLeakTests
         {
             ArriveAndThrowAfterTheClaim(stuck, name);
             Assert.True(online.HoldsSlotForTest(key, stuck));
+            Assert.True(stuckOut.Closed);                       // by its own arrival's throw, before any teardown
 
             using (var sink = LogLineSink.Acquire())
             {
@@ -258,8 +276,6 @@ public sealed class TeardownSlotLeakTests
                 sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
             }
             Assert.True(stuck.IsReplaced);
-            Assert.True(stuckOut.Closed);
-            Assert.Contains(KickedText, MiniTexts(stuckOut));
             Assert.Equal(0L, stuck.LastSaveAtMsForTest);        // the kick wrote nothing for a session that never entered
             Assert.True(online.HoldsSlotForTest(key, later));
             Assert.Equal(200u, later.CharCoins);
@@ -329,7 +345,7 @@ public sealed class TeardownSlotLeakTests
                 sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
                 var lost = sink.EntryContaining($"the previous session's final write for '{name}' threw — its save is LOST");
                 Assert.Equal(LogLevel.Error, lost.Level);
-                Assert.False(sink.Has("handler for opcode 0x10 threw"), "the kick's throw escaped the arrival");
+                Assert.False(ArrivalThrew(sink, $"recorder:{name}:new"), "the kick's throw escaped the arrival");
             }
             Assert.Equal(300u, LoadOk(name).Coins);                // and nothing wrote over it
         }
@@ -617,7 +633,7 @@ public sealed class TeardownSlotLeakTests
     [Fact]
     public void ALiveKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
     {
-        const string name = "SlkFailed";
+        const string name = "SlkFail";
         string key = CharacterStore.Key(name);
         var online = _fx.World.Online;
         using var db = new IsolatedDatabase();
@@ -662,7 +678,7 @@ public sealed class TeardownSlotLeakTests
                     lostLogged = sink.Has($"the previous session's final write for '{name}' failed — its save is LOST");
                     lostAtError = lostLogged &&
                         sink.EntryContaining($"the previous session's final write for '{name}' failed").Level == LogLevel.Error;
-                    guardLogged = sink.Has("handler for opcode 0x10 threw");
+                    guardLogged = ArrivalThrew(sink, $"recorder:{name}:new");
                 }
                 RefuseWrites(db, false);
                 Assert.True(old.IsReplaced);
@@ -710,7 +726,7 @@ public sealed class TeardownSlotLeakTests
     [Fact]
     public void ADepartedKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
     {
-        const string name = "SlkFailedGone";
+        const string name = "SlkFGone";
         string key = CharacterStore.Key(name);
         var online = _fx.World.Online;
         using var db = new IsolatedDatabase();
@@ -789,6 +805,123 @@ public sealed class TeardownSlotLeakTests
         }
     }
 
+    /// <summary>
+    /// The loading-screen close (the #303 report's follow-up candidate 1). An arrival claims the account's slot
+    /// and then throws before it enters the world, so the client is left on the loading screen with nothing more
+    /// coming. The connection is closed there and then, with the cause in the log: the arrival's own Error line,
+    /// carrying the exception, and the close's "connection teardown" line naming it. The close does not give the
+    /// slot back. The teardown it brings about (the read loop's exit) does, through the claimed key as #303 made
+    /// it, and logs the CLOSE line.
+    ///
+    /// <para>Before, the handler guard caught the throw, logged "the packet is dropped, the session continues",
+    /// and the client sat on the loading screen until it disconnected.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnArrivalThatThrowsAfterClaimingTheSlotClosesTheConnection()
+    {
+        const string name = "SlkClose";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, CloseMap, coins: 100);
+        var (stuck, stuckOut) = Arriving(name, "stuck");
+
+        try
+        {
+            Session.ArrivalClaimedProbeForTest = arriving =>
+            {
+                if (ReferenceEquals(arriving, stuck)) throw new InvalidOperationException(ArrivalRefused);
+            };
+            bool holdsSlot;
+            using (var sink = LogLineSink.Acquire())
+            {
+                stuck.Receive(ArrivalFrame(name));
+                bool closed = stuckOut.Closed;
+                holdsSlot = online.HoldsSlotForTest(key, stuck);
+                bool guardLogged = sink.Has($"recorder:{name}:stuck handler for opcode 0x10 threw");
+                _out.WriteLine($"[state] {name}: after the arrival threw, closed={closed}, holds slot={holdsSlot}, " +
+                               $"on map={online.All().Contains(stuck)}, cause logged={sink.Has(ArrivalCloseLine)}, " +
+                               $"guard line (session kept)={guardLogged}");
+
+                Assert.True(closed, "the connection was left open on the loading screen");
+                sink.LineContaining(ArrivalCloseLine);
+                var thrown = sink.EntryContaining($"recorder:{name}:stuck arrival for '{name}' {ArrivalThrewLine}");
+                Assert.Equal(LogLevel.Error, thrown.Level);
+                Assert.Contains(ArrivalRefused, thrown.Line);                  // the exception, with its stack
+                Assert.False(guardLogged, "the handler guard logged the throw as one it keeps the session for");
+            }
+            Session.ArrivalClaimedProbeForTest = null;
+            Assert.True(holdsSlot, "the close gave the slot back itself; the teardown is what does that");
+            Assert.DoesNotContain(stuck, online.All());
+
+            Exception? error;
+            using (var sink = LogLineSink.Acquire())
+            {
+                error = await Record.ExceptionAsync(() => stuck.EndReadLoopAsync(Task.CompletedTask));
+                sink.LineContaining($"-- CLOSE recorder:{name}:stuck");
+            }
+            Assert.Null(error);
+            Assert.False(online.HoldsSlotForTest(key, stuck), "the teardown left the slot held");
+            Assert.False(online.HoldsDepartedForTest(key, stuck));
+            Assert.Equal(0L, stuck.LastSaveAtMsForTest);                        // it never entered, so it never wrote
+        }
+        finally
+        {
+            Session.ArrivalClaimedProbeForTest = null;
+            online.Unregister(key, stuck);
+        }
+    }
+
+    /// <summary>
+    /// The other side of the loading-screen close: it is the arrival's alone. A session that has entered the
+    /// world through a real arrival, and so has claimed its slot, gets a packet whose handler throws: the turn
+    /// handler, whose own 0x11 reply throws on a failing connection. The handler guard in <c>Session.Handle</c>
+    /// logs it and drops the packet, and the session carries on: the connection stays open, the slot stays held,
+    /// and the next turn is answered, exactly as before the close was added.
+    /// </summary>
+    [Fact]
+    public void AThrowInAnyOtherHandlerStillDropsThePacketAndKeepsTheSession()
+    {
+        const string name = "SlkOther";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, OtherHandlerMap, coins: 100);
+        var outbound = new FailingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, _fx.Store, _fx.World);
+
+        try
+        {
+            s.Receive(ArrivalFrame(name));
+            Assert.Contains(s, online.All());                                   // in the world, through a real claim
+            Assert.True(online.HoldsSlotForTest(key, s));
+
+            outbound.FailOn = TurnOut;                                          // the turn handler's own reply throws
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(SessionFixture.Frame(TurnIn, new byte[] { 2 }));
+                _out.WriteLine($"[state] {name}: after the turn handler threw, closed={outbound.Recorded.Closed}, " +
+                               $"holds slot={online.HoldsSlotForTest(key, s)}, on map={online.All().Contains(s)}");
+                var guard = sink.EntryContaining(
+                    $"recorder:{name} handler for opcode 0x{TurnIn:x2} threw — the packet is dropped, the session continues");
+                Assert.Equal(LogLevel.Error, guard.Level);
+                Assert.Contains(SendRefused, guard.Line);
+            }
+            Assert.False(outbound.Recorded.Closed, "a throw in the turn handler closed the connection");
+            Assert.True(online.HoldsSlotForTest(key, s));
+            Assert.Contains(s, online.All());
+
+            outbound.FailOn = -1;
+            int answered = outbound.Recorded.BodiesOf(TurnOut).Count;
+            s.Receive(SessionFixture.Frame(TurnIn, new byte[] { 1 }));
+            Assert.Equal(answered + 1, outbound.Recorded.BodiesOf(TurnOut).Count);   // the next packet is handled
+        }
+        finally
+        {
+            outbound.FailOn = -1;
+            online.Unregister(key, s);
+            _fx.World.LeaveMap(s, OtherHandlerMap);
+        }
+    }
+
     /// <summary>Give <paramref name="db"/> a switch that makes it refuse every character write: a BEFORE INSERT
     /// and a BEFORE UPDATE trigger that abort the statement while <c>refuse_writes</c> has a row. Reads are
     /// untouched. <c>CharacterStore.SaveJson</c> catches the abort the way it catches any database fault (a busy
@@ -851,8 +984,8 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>Deliver a real arrival for <paramref name="name"/> to <paramref name="s"/>, throwing from the probe
-    /// right after its slot claim. <c>Session.Handle</c>'s guard catches and logs the throw, as it would any
-    /// handler's, and the session carries on without having entered the world.</summary>
+    /// right after its slot claim. The arrival logs the throw and closes the connection (the loading-screen close);
+    /// the session holds the slot, without having entered the world, until its teardown gives it back.</summary>
     private static void ArriveAndThrowAfterTheClaim(Session s, string name)
     {
         Session.ArrivalClaimedProbeForTest = arriving =>
@@ -863,11 +996,16 @@ public sealed class TeardownSlotLeakTests
         {
             using var sink = LogLineSink.Acquire();
             s.Receive(ArrivalFrame(name));
-            var guard = sink.EntryContaining("handler for opcode 0x10 threw");
-            Assert.Contains(ArrivalRefused, guard.Line);
+            var thrown = sink.EntryContaining($"arrival for '{name}' {ArrivalThrewLine}");
+            Assert.Contains(ArrivalRefused, thrown.Line);
         }
         finally { Session.ArrivalClaimedProbeForTest = null; }
     }
+
+    /// <summary>Whether the arrival on <paramref name="remote"/> threw: the handler guard's line (a throw before the
+    /// claim or after world entry) or the arrival's own (a throw between the two, which closes the connection).</summary>
+    private static bool ArrivalThrew(LogLineSink sink, string remote) =>
+        sink.Has($"{remote} handler for opcode 0x10 threw") || sink.Has($"{remote} arrival for '");
 
     /// <summary>A stored row for <paramref name="name"/>, as the login server's character creation leaves one.</summary>
     private void SeedRow(string name, ushort map, uint coins)
@@ -887,7 +1025,12 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>The 0x10 arrival as the client sends it after the login server's handoff: the plaintext
-    /// <c>klen "NexonInc." ulen user token</c>, with a token minted for this user and the socket-free address.</summary>
+    /// <c>klen "NexonInc." ulen user token</c>, with a token minted for this user and the socket-free address.
+    ///
+    /// <para>The account names in this class are 9 letters or fewer, so each token keeps at least 2 nonce bytes. The
+    /// token table's primary key is the hash of the surviving bytes, and a name of 11 letters or more hashes an
+    /// empty prefix: its mint then fails on any other such name's row still in the table, and that arrival is
+    /// refused (a 13-letter name here broke <c>PersistenceTests</c>' 24-letter arrival that way).</para></summary>
     private static byte[] ArrivalFrame(string user)
     {
         var body = new List<byte> { 9 };
@@ -972,6 +1115,9 @@ public sealed class TeardownSlotLeakTests
             get => Volatile.Read(ref _failOn);
             set => Volatile.Write(ref _failOn, value);
         }
+
+        /// <summary>What went out, for a test that reads it back.</summary>
+        public RecordingOutbound Recorded => _inner;
 
         public string Remote => _inner.Remote;
         public int Capacity => _inner.Capacity;
