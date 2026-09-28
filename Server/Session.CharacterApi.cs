@@ -251,7 +251,9 @@ public sealed partial class Session
             // unconditional write, so the kick's write is the last one this session ever makes: nothing captured
             // after it can land, and anything captured before it carries an older sequence number and is dropped
             // at the gate below. True, not false: a refused write is not a failed one, and must not re-dirty.
-            // The trade finalizer's pair write does not come through here; FinalizeTradeLocked refuses for it.
+            // The trade finalizer's pair write does not come through here; FinalizeTradeLocked refuses for it. The
+            // parcel and mail claims' transactional write does not either; CaptureAndWriteWith, below, makes the
+            // same check for it.
             if (Volatile.Read(ref _replaced) != 0) return true;
             if (dirtyGated && !_dirty) return true;   // nothing pending
             // Cleared on BOTH paths (#88): whatever was pending is in the snapshot about to be taken, since
@@ -294,6 +296,52 @@ public sealed partial class Session
                                                  // failed spellbook/legend/profile edit is retried rather
                                                  // than lost until something else happens to dirty us
         return ok;
+    }
+
+    /// <summary>The claim-and-save sibling of <see cref="CaptureAndWrite"/>: run <paramref name="work"/> and
+    /// write this character's row in ONE transaction (<see cref="CharacterStore.SaveWith"/>), for the parcel and
+    /// mail claims, whose queue row and character row commit together or not at all. It keeps the rules every
+    /// other single-session write keeps (#298 review, pre-existing 4):
+    /// <list type="bullet">
+    /// <item>A session a newer login has replaced writes nothing (#168): refused before <paramref name="work"/>
+    /// runs.</item>
+    /// <item>It takes its sequence number under the monitor, like any capture.</item>
+    /// <item>The transaction runs under <c>_writeGate</c> with the stale-drop compare, and a commit stamps
+    /// <c>_writtenSeq</c>. A capture taken before the claim and still on its way to the gate (the autosave
+    /// sweep's, a flush's, a trade's pair write) is then dropped there, where it used to land on top of the
+    /// claim and roll the row back to before it with the parcel already gone from the queue.</item>
+    /// </list>
+    ///
+    /// <para>The monitor is held from the number to the commit, because the work gives to the character and the
+    /// store serializes it after the work. So no newer number can be taken meanwhile and this method's own
+    /// compare does not fire in production; it is here so the rule reads the same at every writer. Unlike
+    /// <see cref="CaptureAndWrite"/> this touches neither the dirty flag nor the autosave throttle: a claim never
+    /// did, and the give inside it marks the character dirty itself.</para>
+    ///
+    /// <para><b>Lock nesting</b> (docs/common/Locking.md): the state monitor (row 2), then this session's write
+    /// gate (row 4), then the database. That is the nesting a save reached from inside a handler, and
+    /// <see cref="KickForReplacement"/>, already take. <paramref name="work"/> runs under the gate and so must
+    /// take no lock of its own: <c>World._lock</c> is row 3, so a claim that drops goods at the player's feet
+    /// allocates the ground item's id after the commit, not inside the work.</para></summary>
+    /// <returns>True only when the claim and the row committed together. False when this session was replaced,
+    /// when its number was stale, when <paramref name="work"/> declined, or when the store refused or failed and
+    /// rolled back. In each case nothing committed, and the caller undoes its in-memory change
+    /// (<see cref="RestoreBag"/>) as it always has.</returns>
+    private bool CaptureAndWriteWith(
+        Func<Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite.SqliteTransaction, bool> work)
+    {
+        using (EnterState())
+        {
+            if (Volatile.Read(ref _replaced) != 0) return false;   // #168, as in CaptureAndWrite: nothing ran
+            long seq = ++_saveSeq;
+            lock (_writeGate)
+            {
+                if (seq < _writtenSeq) return false;   // a newer row already landed: commit nothing
+                if (!_store.SaveWith(_char, work)) return false;
+                _writtenSeq = seq;
+                return true;
+            }
+        }
     }
 
     /// <summary>When the last successful character write landed (<c>Environment.TickCount64</c>), the clock
