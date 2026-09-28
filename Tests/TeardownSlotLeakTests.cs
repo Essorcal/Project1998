@@ -52,7 +52,7 @@ public sealed class TeardownSlotLeakTests
     /// <summary>Content-free map ids; no other class stands here.</summary>
     private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744,
                          SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747, FailedKickMap = 61748,
-                         FailedDepartedKickMap = 61749, CloseMap = 61750, OtherHandlerMap = 61751;
+                         FailedDepartedKickMap = 61749, CloseMap = 61750, OtherHandlerMap = 61751, LateThrowMap = 61752;
 
     /// <summary>What the arrival probe throws, so the arrival's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
@@ -68,6 +68,7 @@ public sealed class TeardownSlotLeakTests
 
     private const byte TurnIn = 0x11;    // ClientOp.Turn
     private const byte TurnOut = 0x11;   // ServerOp.Turn, the turn handler's own side reply
+    private const byte MessageOut = 0x02;   // ServerOp.Message: an arrival's first one is the world trigger
 
     private const byte ExchangeIn = 0x4a;
     private const byte ExchangeOut = 0x42;
@@ -919,6 +920,48 @@ public sealed class TeardownSlotLeakTests
             outbound.FailOn = -1;
             online.Unregister(key, s);
             _fx.World.LeaveMap(s, OtherHandlerMap);
+        }
+    }
+
+    /// <summary>
+    /// The loading-screen close's other boundary: world entry. An arrival that throws after <c>_enteredWorld</c>
+    /// is set (here its first 0x02, the world trigger, on a failing connection) is not in the close's span. Such a
+    /// session gives its slot back the way an entered one does, parked and saved by its teardown, not through the
+    /// claimed key. Its throw goes on to the handler guard as before, which logs it and keeps the session. This
+    /// pins the close's scope, the span #303's give-back covers; it is not a judgement on this path.
+    /// </summary>
+    [Fact]
+    public void AnArrivalThatThrowsAfterWorldEntryStillGoesToTheHandlerGuard()
+    {
+        const string name = "SlkLate";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, LateThrowMap, coins: 100);
+        var outbound = new FailingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, _fx.Store, _fx.World);
+
+        try
+        {
+            outbound.FailOn = MessageOut;
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(ArrivalFrame(name));
+                _out.WriteLine($"[state] {name}: after the arrival threw past world entry, closed={outbound.Recorded.Closed}, " +
+                               $"holds slot={online.HoldsSlotForTest(key, s)}, arrival line={sink.Has($"recorder:{name} arrival for '")}");
+                sink.LineContaining($"ARRIVAL user='{name}' — loaded character");   // past the load, so past _enteredWorld
+                var guard = sink.EntryContaining(
+                    $"recorder:{name} handler for opcode 0x10 threw — the packet is dropped, the session continues");
+                Assert.Contains(SendRefused, guard.Line);
+                Assert.False(sink.Has($"recorder:{name} arrival for '"), "the close took an arrival that had entered the world");
+            }
+            Assert.False(outbound.Recorded.Closed, "an arrival that threw after world entry had its connection closed");
+            Assert.True(online.HoldsSlotForTest(key, s));
+        }
+        finally
+        {
+            outbound.FailOn = -1;
+            online.Unregister(key, s);
+            _fx.World.LeaveMap(s, LateThrowMap);
         }
     }
 
