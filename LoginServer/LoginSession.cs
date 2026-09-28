@@ -183,9 +183,10 @@ public sealed class LoginSession
     // normalization — otherwise "Bo b" and "Bob" would be the same account under two different display names.
     //
     // The shape is Shared/NameRules: 3 to 11 characters, LETTERS ONLY — no spaces, no digits, no punctuation.
-    // (It used to allow digits and _, which normalization would have folded together anyway.) The ceiling is
-    // HandoffTokens.MaxNameLength, the most the client's handoff field carries back whole. It used to be 12,
-    // and a 12-letter account was created but could never enter the world (#299).
+    // (It used to allow digits and _, which normalization would have folded together anyway.) The 11 comes from
+    // HandoffTokens.MaxNameLength, the most the client's handoff field carries back whole — not from the
+    // original game's limit, which is not recorded in this repository. It used to be 12, and a 12-letter
+    // account was created but could never enter the world (#299).
     private static string? NameProblem(string name)
     {
         if (NameRules.ShapeProblem(name) is { } why) return why;
