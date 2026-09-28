@@ -49,20 +49,21 @@ namespace Server;
 /// </summary>
 public static class NoviceQuest
 {
-    /// <summary>Quest key, also the progress registry key.</summary>
+    /// <summary>The chain's namespace and stage key (<see cref="QuestState"/>).</summary>
     public const string Key = "novice_quest";
     /// <summary>Stage at which the chain is finished and <see cref="TutorialQuest"/> may begin.</summary>
     public const int Done = 4;
 
     // Lifetime kill counts are compared against a snapshot taken when the stage is offered, so kills made
-    // before accepting don't count (same pattern as MinorQuest's KKillPfx).
-    private const string RabbitSnap   = "novice_quest1_rabbit_snapshot";
-    private const string SquirrelSnap = "novice_quest2_squirrel_snapshot";
-    private const string GaveGarb     = "novice_quest2_gave_garb";
+    // before accepting don't count (same pattern as MinorQuest's kill snapshots). Slots of Key; QuestState's
+    // alias table maps each to the key it has always been saved under.
+    private const string RabbitSnap   = "kills.rabbit";
+    private const string SquirrelSnap = "kills.squirrel";
+    private const string GaveGarb     = "flag.gave_garb";
     // Stages 1-2 send the player at the very creatures that drop acorns and rabbit meat, so by the time they
     // reach stage 3 they usually ALREADY hold the price. Without this flag the turn-in fires on the first
     // click and the offer is never seen. Same guard the RTK stages use with GaveGold / GaveMeat.
-    private const string AskedSoothe  = "novice_quest3_asked_soothe";
+    private const string AskedSoothe  = "flag.asked_soothe";
 
     private const int RabbitsWanted   = 5;
     private const int SquirrelsWanted = 5;
@@ -77,7 +78,7 @@ public static class NoviceQuest
     // the chain reaches <see cref="Done"/>.
     internal static async Task Run(NpcContext ctx)
     {
-        switch (ctx.Stage(Key))
+        switch (ctx.Quest(Key).Stage)
         {
             case 0:  await Intro(ctx);          break;
             case 1:  await SlayRabbits(ctx);    break;
@@ -91,8 +92,8 @@ public static class NoviceQuest
     private static async Task Intro(NpcContext ctx)
     {
         ctx.GiveItem("wooden_saber", 1);
-        ctx.SetReg(RabbitSnap, ctx.KillCount("rabbit"));
-        ctx.SetStage(Key, 1);
+        ctx.Quest(Key).Set(RabbitSnap, ctx.KillCount("rabbit"));
+        ctx.Quest(Key).SetStage(1);
 
         await ctx.Say("You have come into this world with nothing but your name, and a name will not " +
                       "keep the beasts off you.");
@@ -105,13 +106,13 @@ public static class NoviceQuest
     // stage 1 -> 2: slay 10 rabbits.
     private static async Task SlayRabbits(NpcContext ctx)
     {
-        int slain = ctx.KillCount("rabbit") - ctx.Reg(RabbitSnap);
+        int slain = ctx.KillCount("rabbit") - ctx.Quest(Key).Get(RabbitSnap);
         if (slain >= RabbitsWanted)
         {
             ctx.AwardExp(StageExp);
-            ctx.SetReg(SquirrelSnap, ctx.KillCount("squirrel"));
-            ctx.SetReg(GaveGarb, 0);
-            ctx.SetStage(Key, 2);
+            ctx.Quest(Key).Set(SquirrelSnap, ctx.KillCount("squirrel"));
+            ctx.Quest(Key).Set(GaveGarb, 0);
+            ctx.Quest(Key).SetStage(2);
             await ctx.Say("Your first hunt is a success! Mind that a blade grows dull with use, and may break — " +
                           "the blacksmith here in the city will keep it in good condition for you.");
             await ctx.Say(AnotherQuest);
@@ -125,12 +126,12 @@ public static class NoviceQuest
     // was given before the hunt it protects you through).
     private static async Task SlaySquirrels(NpcContext ctx)
     {
-        int slain = ctx.KillCount("squirrel") - ctx.Reg(SquirrelSnap);
-        if (ctx.Reg(GaveGarb) == 1 && slain >= SquirrelsWanted)
+        int slain = ctx.KillCount("squirrel") - ctx.Quest(Key).Get(SquirrelSnap);
+        if (ctx.Quest(Key).Get(GaveGarb) == 1 && slain >= SquirrelsWanted)
         {
             ctx.AwardExp(StageExp);
-            ctx.SetReg(AskedSoothe, 0);
-            ctx.SetStage(Key, 3);
+            ctx.Quest(Key).Set(AskedSoothe, 0);
+            ctx.Quest(Key).SetStage(3);
             await ctx.Say("Well, that was fast! You are well on your way to being a truly mighty fighter. " +
                           "Remember to keep your armor well maintained, as you do your weapon.");
             await ctx.Say("As you grow stronger, and gain more insight, you will be able to use better armor and " +
@@ -139,7 +140,7 @@ public static class NoviceQuest
             return;
         }
 
-        if (ctx.Reg(GaveGarb) == 1)
+        if (ctx.Quest(Key).Get(GaveGarb) == 1)
         {
             await ctx.SayLook(25, 9, "You have not yet slain the five squirrels. Return to me when it is done.");
             return;
@@ -148,7 +149,7 @@ public static class NoviceQuest
         // RTK's own armor stage picks the sex-appropriate item; the garb does the same ("tailored to fit your gender").
         string garb = ctx.Sex == 1 ? "spring_dress" : "spring_garb";
         ctx.GiveItem(garb, 1);
-        ctx.SetReg(GaveGarb, 1);
+        ctx.Quest(Key).Set(GaveGarb, 1);
 
         await ctx.Say("You have armed yourself well, but you are still in your rags.");
         await ctx.SayItem(garb, "Take this, like all armor in this kingdom it is tailored to fit your gender. " +
@@ -168,7 +169,7 @@ public static class NoviceQuest
     // stage 3 -> Done: 5 acorns + 5 rabbit meat, learn Soothe.
     private static async Task LearnSoothe(NpcContext ctx)
     {
-        if (ctx.Reg(AskedSoothe) == 1 && ctx.HasItem("acorn", 5) && ctx.HasItem("rabbit_meat", 5))
+        if (ctx.Quest(Key).Get(AskedSoothe) == 1 && ctx.HasItem("acorn", 5) && ctx.HasItem("rabbit_meat", 5))
         {
             var soothe = Content.SpellByKey("soothe");
             if (soothe is null || !ctx.LearnSpell(soothe))
@@ -180,7 +181,7 @@ public static class NoviceQuest
             ctx.TakeItem("acorn", 5);
             ctx.TakeItem("rabbit_meat", 5);
             ctx.AwardExp(StageExp);
-            ctx.SetStage(Key, Done);
+            ctx.Quest(Key).SetStage(Done);
 
             await ctx.Say("Thank you for the items! Now here is your spell, Soothe.");
             await ctx.Say("To see the list of spells you have, press the '+' key on the keypad on the right of " +
@@ -189,14 +190,14 @@ public static class NoviceQuest
             return;
         }
 
-        if (ctx.Reg(AskedSoothe) == 1)
+        if (ctx.Quest(Key).Get(AskedSoothe) == 1)
         {
             await ctx.SayItem("acorn", "I am still waiting on 5 acorns and 5 rabbit meats. Bring them to me and " +
                                        "the secret is yours.");
             return;
         }
 
-        ctx.SetReg(AskedSoothe, 1);
+        ctx.Quest(Key).Set(AskedSoothe, 1);
 
         await ctx.Say("You have a blade and you have armor, but steel is the crudest answer to the world. " +
                       "Magic, and its mastery, is the greatest challenge of the mind.");

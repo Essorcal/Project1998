@@ -115,8 +115,14 @@ public static class TigerMailQuest
     /// briefing on every click until the player has been to Chonsa Den. Keying that on
     /// <see cref="QuestKey"/> instead — which is what RTK effectively does — would strand a Warrior who found
     /// Claw but cannot yet afford an antler and a war platemail: they would have done everything the briefing
-    /// asked and still be blocked out of the tutor forever. Meeting him is the thing the briefing is FOR.</para></summary>
-    public const string MetClawReg = "tiger_essence_met_claw";
+    /// asked and still be blocked out of the tutor forever. Meeting him is the thing the briefing is FOR.</para>
+    ///
+    /// <para>A slot of <see cref="QuestKey"/>'s namespace (<see cref="QuestState"/>).</para></summary>
+    public const string MetClaw = "flag.met_claw";
+
+    /// <summary>The key <see cref="MetClaw"/> is saved under, for the one caller that still addresses it by
+    /// that key: the level-up push, <see cref="Session.PushTigerEssence"/>, which stamps it too.</summary>
+    public static readonly string MetClawReg = QuestState.Resolve(QuestKey, MetClaw);
 
     /// <summary>Claw's creature portrait (NPCs.csv 148 look/colour), for the pages where the voice from the
     /// cave answers instead of the tutor. <c>TigerMailQuestTests.TutorBriefingUsesClawsPortrait</c> pins it
@@ -242,7 +248,7 @@ public sealed class TigerMailAbility : INpcAbility, INpcSayHandler
                                     new[] { "Yes", "No" });
         if (choice != 1) return;
 
-        ctx.SetStage(TigerMailQuest.QuestKey, 0);
+        ctx.Quest(TigerMailQuest.QuestKey).SetStage(0);
         await ctx.Say("Ah, so we are going to begin again. Please say \"Chongun\" when you are ready to start again.");
     }
 
@@ -259,8 +265,8 @@ public sealed class TigerMailAbility : INpcAbility, INpcSayHandler
 
         // Reaching Claw is what the tutor's briefing asks for, so it is stamped here — before the level and
         // ingredient checks, because "come and see me" is satisfied by arriving, not by qualifying. It is what
-        // stops the tutor repeating the briefing at this player forever (see TigerMailQuest.MetClawReg).
-        ctx.SetReg(TigerMailQuest.MetClawReg, 1);
+        // stops the tutor repeating the briefing at this player forever (see TigerMailQuest.MetClaw).
+        ctx.Quest(TigerMailQuest.QuestKey).Set(TigerMailQuest.MetClaw, 1);
 
         // RTK opens with this every time, before any level or progress check — so a level-4 warrior and a
         // finished level-60 one both hear it. Kept: it is the only place the rules are stated ("Do NOT hand
@@ -274,7 +280,7 @@ public sealed class TigerMailAbility : INpcAbility, INpcSayHandler
         // ingredient for several rungs climbs them all in one conversation; that is preserved. What is NOT
         // preserved is the duplicate line the fall-through produces — RTK's grant ends on "Return when you
         // have reached level N" and then the next block immediately says it again.
-        int stage = ctx.Stage(TigerMailQuest.QuestKey);
+        int stage = ctx.Quest(TigerMailQuest.QuestKey).Stage;
         while (true)
         {
             var rung = TigerMailQuest.RungAt(stage);
@@ -327,7 +333,7 @@ public sealed class TigerMailAbility : INpcAbility, INpcSayHandler
             ctx.Notify($"{ctx.ItemName(rung.Armor(ctx.Sex))} — {paid:N0} experience sacrificed.");
 
             stage = rung.Next;
-            ctx.SetStage(TigerMailQuest.QuestKey, stage);
+            ctx.Quest(TigerMailQuest.QuestKey).SetStage(stage);
         }
     }
 

@@ -1105,11 +1105,12 @@ public sealed partial class Session
     {
         if (a.None)
         {
-            if (_char.Quests.Count == 0 && _char.QuestStrings.Count == 0)
+            var saved = QuestState.Saved(_char);
+            if (saved.Count == 0 && _char.QuestStrings.Count == 0)
             { Reply($"No quest keys set. ({Prefix}quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)"); return; }
-            ReplyList($"quests ({_char.Quests.Count}" +
+            ReplyList($"quests ({saved.Count}" +
                       $"{(_char.QuestStrings.Count > 0 ? $"+{_char.QuestStrings.Count} str" : "")})",
-                      _char.Quests.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"{e.Key} = {e.Value}")
+                      saved.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"{e.Key} = {e.Value}")
                         .Concat(_char.QuestStrings.OrderBy(e => e.Key, StringComparer.Ordinal)
                                                   .Select(e => $"{e.Key} = \"{e.Value}\"")));
             return;
@@ -1118,7 +1119,7 @@ public sealed partial class Session
         string key = a.Word(0);
         if (a.Count == 1)
         {
-            if (_char.Quests.TryGetValue(key, out int cur)) Reply($"{key} = {cur}");
+            if (QuestState.Saved(_char).TryGetValue(key, out int cur)) Reply($"{key} = {cur}");
             else if (_char.QuestStrings.TryGetValue(key, out var cs)) Reply($"{key} = \"{cs}\"");
             else Reply($"{key} is not set (reads as stage 0).");
             return;
@@ -1129,7 +1130,7 @@ public sealed partial class Session
         {
             if (stage == 0)
             {
-                bool had = _char.Quests.Remove(key) | _char.QuestStrings.Remove(key);
+                bool had = QuestState.Remove(_char, key) | _char.QuestStrings.Remove(key);
                 SaveChar();
                 Reply(had ? $"{key} cleared (was set; now reads as stage 0)." : $"{key} was not set — nothing to clear.");
             }
@@ -1172,12 +1173,12 @@ public sealed partial class Session
     // lifetime tally never blocks a replay, and "@killtrack clear" already owns the eight-slot track.
     private void QuestResetCmd(CommandArgs a)
     {
-        int stages = _char.Quests.Count;
+        int stages = QuestState.Saved(_char).Count;
         int strings = _char.QuestStrings.Count;
         int marks = _char.Legends.RemoveAll(l => l.Name.Length > 0 && !NonQuestLegends.Contains(l.Name));
         if (stages + strings + marks == 0) { Reply("Nothing to reset."); return; }
 
-        _char.Quests.Clear();
+        QuestState.Clear(_char);
         _char.QuestStrings.Clear();
         SaveChar();
 

@@ -133,7 +133,7 @@ public sealed class AncientLeviathanAbility : INpcAbility
 
         if (ctx.HasLegend(LeviathanQuest.LegendFreed)) { await ThankedAlready(ctx); return; }
 
-        switch (ctx.Stage(LeviathanQuest.Key))
+        switch (ctx.Quest(LeviathanQuest.Key).Stage)
         {
             case LeviathanQuest.StageAsked:
                 await ctx.Say("Please go save my kindred with the talisman I gave you.");
@@ -204,7 +204,7 @@ public sealed class AncientLeviathanAbility : INpcAbility
         }
         if (choice != 1) return;   // closed the box — no talisman, no legend, ask again later
 
-        ctx.SetStage(LeviathanQuest.Key, LeviathanQuest.StageAsked);
+        ctx.Quest(LeviathanQuest.Key).SetStage(LeviathanQuest.StageAsked);
         ctx.GiveItem(LeviathanQuest.Talisman);
         // RTK's line here is "You must step next to my captured kind. The talisman will then break the
         // spell…" — instructions for ITS mechanic, the step-on-the-door-row tile trigger. On our map the cage
@@ -251,7 +251,7 @@ public sealed class BorderPatrolAbility : INpcAbility, INpcHandItemHandler
 
     private static async Task Talk(NpcContext ctx)
     {
-        if (ctx.Stage(LeviathanQuest.Key) == 0)
+        if (ctx.Quest(LeviathanQuest.Key).Stage == 0)
         {
             await ctx.Say("Just doin' my job here. Keep yer nose clean and I won't have to do my job on you.");
             return;
@@ -269,7 +269,7 @@ public sealed class BorderPatrolAbility : INpcAbility, INpcHandItemHandler
     public async Task<bool> OnHandItem(NpcContext ctx, ItemDef item, int amount)
     {
         if (item.Key != LeviathanQuest.Pelt) return false;
-        if (ctx.Stage(LeviathanQuest.Key) == 0) return false;
+        if (ctx.Quest(LeviathanQuest.Key).Stage == 0) return false;
         if (!ctx.TakeItem(LeviathanQuest.Pelt, 1)) return false;
 
         await ctx.Say("Well thank you kindly! Now be on your way and I don't know you. Oh, and look out for those tricky Fox spirits. They enjoy their little games.");
@@ -296,7 +296,7 @@ public sealed class HermitAbility : INpcAbility, INpcSayHandler
 
     private static async Task Shop(NpcContext ctx)
     {
-        if (ctx.Stage(LeviathanQuest.Key) < LeviathanQuest.StageTrusted)
+        if (ctx.Quest(LeviathanQuest.Key).Stage < LeviathanQuest.StageTrusted)
         {
             await ctx.Say("Who let you in here? Go away! I don't like strangers.");
             ctx.Warp(LeviathanQuest.DoorMap, LeviathanQuest.EjectX, LeviathanQuest.EjectY);
@@ -308,7 +308,7 @@ public sealed class HermitAbility : INpcAbility, INpcSayHandler
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         // RTK only listens for the password while the quest is unfinished; afterwards the word is just chat.
-        if (speech != "dae-whan" || ctx.Stage(LeviathanQuest.Key) >= LeviathanQuest.StageTrusted) return false;
+        if (speech != "dae-whan" || ctx.Quest(LeviathanQuest.Key).Stage >= LeviathanQuest.StageTrusted) return false;
 
         await ctx.Say(
             "Eh? So you are a friend of those big green guys to the south? Nice, peaceful folk they are. Leave me alone, and I leave them alone as well.",
@@ -316,7 +316,7 @@ public sealed class HermitAbility : INpcAbility, INpcSayHandler
             "They scattered my creations among monsters as deadly as the dark relics they now protect. I do not have the strength to reclaim them. I salvaged only the weakest of my designs, tainted and inferior.",
             "Still, even those may prove useful to you. The Leviathans took me in when no one else would. You helped them, so I will help you in return. Be wary. Wielding these items comes at a cost.");
 
-        ctx.SetStage(LeviathanQuest.Key, LeviathanQuest.StageTrusted);
+        ctx.Quest(LeviathanQuest.Key).SetStage(LeviathanQuest.StageTrusted);
         await ctx.Buy();
         return true;
     }

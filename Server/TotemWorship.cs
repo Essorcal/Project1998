@@ -42,12 +42,16 @@ public static class TotemWorship
         [391] = 0,   // Ju jak      (map 1411)
     };
 
+    /// <summary>The namespace of the three slots below (<see cref="QuestState"/>). No stage; each slot is
+    /// saved under RTK's registry name: <c>totem_worship_daily_timer</c>, <c>totem_worship_karma_force</c>,
+    /// <c>totem_total_worships</c>.</summary>
+    public const string Key = "totem_worship";
     /// <summary>Unix seconds before which no shrine will accept another offering.</summary>
-    public const string TimerReg = "totem_worship_daily_timer";
+    public const string Timer = "timer.daily";
     /// <summary>Consecutive worships that missed the karma roll; the fifth is granted outright.</summary>
-    public const string PityReg = "totem_worship_karma_force";
+    public const string Pity = "count.karma_misses";
     /// <summary>Lifetime worships, for a future "devout" check. RTK keeps the same tally.</summary>
-    public const string CountReg = "totem_total_worships";
+    public const string Worships = "count.worships";
 
     public const long CooldownSeconds = 75600;   // 21 real hours
 
@@ -68,9 +72,10 @@ public static class TotemWorship
     /// on being a poet mid-chain would silently punish a poet who worshipped before starting Sun.</summary>
     internal static void NoteWorship(NpcContext ctx, int totem)
     {
-        int done = ctx.Reg(ArmorQuest.TotemStepReg);
+        var sun = ctx.Quest(ArmorQuest.SunKey);
+        int done = sun.Get(ArmorQuest.TotemSteps);
         if (done >= 0 && done < PoetSunOrder.Length && PoetSunOrder[done] == totem)
-            ctx.SetReg(ArmorQuest.TotemStepReg, done + 1);
+            sun.Set(ArmorQuest.TotemSteps, done + 1);
     }
 }
 
@@ -88,8 +93,9 @@ public sealed class TotemWorshipAbility : INpcAbility
     private static async Task Worship(NpcContext ctx, int totem)
     {
         string name = Content.TotemName(totem);
+        var worship = ctx.Quest(TotemWorship.Key);
 
-        if (ctx.NowUnix < ctx.Reg(TotemWorship.TimerReg))
+        if (ctx.NowUnix < worship.Get(TotemWorship.Timer))
         { await ctx.Say("You have worshipped a totem animal within the last 7 days ((21 hours))."); return; }
 
         if (await ctx.Menu($"Do you wish to worship {name}?", new[] { "Yes", "No" }) != 1)
@@ -115,16 +121,16 @@ public sealed class TotemWorshipAbility : INpcAbility
         { await ctx.Say($"Return when you have the {(count > 1 ? $"{count} {ctx.ItemName(item)}s" : ctx.ItemName(item))}."); return; }
 
         ctx.TakeItem(item, count);
-        ctx.SetReg(TotemWorship.TimerReg, (int)(ctx.NowUnix + TotemWorship.CooldownSeconds));
+        worship.Set(TotemWorship.Timer, (int)(ctx.NowUnix + TotemWorship.CooldownSeconds));
 
         // RTK's 1-in-5, with the pity counter that guarantees it on the fifth consecutive miss.
-        if (ctx.Random(5) == 1 || ctx.Reg(TotemWorship.PityReg) >= 5)
-        { ctx.AddKarma(karma); ctx.SetReg(TotemWorship.PityReg, 0); }
-        else ctx.SetReg(TotemWorship.PityReg, ctx.Reg(TotemWorship.PityReg) + 1);
+        if (ctx.Random(5) == 1 || worship.Get(TotemWorship.Pity) >= 5)
+        { ctx.AddKarma(karma); worship.Set(TotemWorship.Pity, 0); }
+        else worship.Set(TotemWorship.Pity, worship.Get(TotemWorship.Pity) + 1);
 
         TotemWorship.NoteWorship(ctx, totem);
         ctx.SetTotem(totem);
-        ctx.SetReg(TotemWorship.CountReg, ctx.Reg(TotemWorship.CountReg) + 1);
+        worship.Set(TotemWorship.Worships, worship.Get(TotemWorship.Worships) + 1);
         ctx.Notify($"You worship the mighty {name}.");
         await ctx.Say($"{name} accepts your devotion.");
     }

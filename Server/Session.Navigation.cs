@@ -560,10 +560,11 @@ public sealed partial class Session
     {
         if (_char.Map != MageStoneQuest.CryptMap) return;
         if (IsDead || DialogBusy) return;
-        if (QuestStage(MageStoneQuest.ZapReg + "void_mouse") != 1) return;
-        if (QuestStage(MageStoneQuest.GhostReg) != 0) return;
+        var stone = Quest(MageStoneQuest.StageReg);
+        if (stone.Get(MageStoneQuest.Zapped("void_mouse")) != 1) return;
+        if (stone.Get(MageStoneQuest.MetGhost) != 0) return;
 
-        SetQuestStage(MageStoneQuest.GhostReg, 1);
+        stone.Set(MageStoneQuest.MetGhost, 1);
         Notify("A spirit appears!");
         _ = ShowMageStoneSpiritAsync();
     }
@@ -723,22 +724,22 @@ public sealed partial class Session
         // keeps the powder — with the usual echo of what the seal would have done.
         if (_gm.WaiveWarpGate)
         {
-            SendMiniText(QuestCounter(SuteQuest.DyeReg) == 1
+            SendMiniText(Quest(SuteQuest.Key).Get(SuteQuest.Dye) == 1
                 ? "[anywarp] Sute's seal waived — passed without spending the powder."
                 : "[anywarp] Sute's seal waived — would have said: You are missing something.");
-            Log.Info($"   -> SUTE cave mouth WAIVED (@anywarp) for {_char.Name} (coated={QuestCounter(SuteQuest.DyeReg) == 1})");
+            Log.Info($"   -> SUTE cave mouth WAIVED (@anywarp) for {_char.Name} (coated={Quest(SuteQuest.Key).Get(SuteQuest.Dye) == 1})");
             return Warp(SuteQuest.WelcomeMap,
                         (ushort)(QuestRandom(2) == 1 ? SuteQuest.LandX0 : SuteQuest.LandX1), SuteQuest.LandY);
         }
 
-        if (QuestCounter(SuteQuest.DyeReg) != 1)
+        if (Quest(SuteQuest.Key).Get(SuteQuest.Dye) != 1)
         {
             Notify("You are missing something.");
             return Warp(_char.Map, (ushort)_char.X, SuteQuest.MouthPushToY);
         }
 
         SetArmorColor(0);                                   // the powder is spent (also clears the war-paint slot)
-        SetQuestStage(SuteQuest.DyeReg, 0);
+        Quest(SuteQuest.Key).Set(SuteQuest.Dye, 0);
         Notify("The powder disappears as you pass the portal.");
         return Warp(SuteQuest.WelcomeMap,
                     (ushort)(QuestRandom(2) == 1 ? SuteQuest.LandX0 : SuteQuest.LandX1), SuteQuest.LandY);
@@ -759,8 +760,9 @@ public sealed partial class Session
         if (_char.Map != NagnangShieldQuest.NagnangMap || _char.Y != NagnangShieldQuest.MouthY) return false;
         if (!NagnangShieldQuest.MouthX.Contains(_char.X)) return false;
 
+        var trial = Quest(NagnangShieldQuest.StageReg);
         bool onTrial = CharBasePathId == NagnangShieldQuest.WarriorPath
-                       && QuestStage(NagnangShieldQuest.StageReg) >= 1
+                       && trial.Stage >= 1
                        && !HasLegend(NagnangShieldQuest.Legend);
         ushort dest = NagnangShieldQuest.EntranceFor(_char.Level);
 
@@ -771,14 +773,14 @@ public sealed partial class Session
             if (!_gm.WaiveWarpGate)
             {
                 Log.Info($"   -> GAUNTLET mouth REFUSED for {_char.Name} (path {CharBasePathId} level {_char.Level} " +
-                         $"stage {QuestStage(NagnangShieldQuest.StageReg)} done={HasLegend(NagnangShieldQuest.Legend)})");
+                         $"stage {trial.Stage} done={HasLegend(NagnangShieldQuest.Legend)})");
                 return Warp(_char.Map, (ushort)_char.X, NagnangShieldQuest.MouthPushToY);
             }
             SendMiniText("[anywarp] Gauntlet entry requirement waived — the trial would not have let you in.");
             if (dest == 0) dest = NagnangShieldQuest.Tiers[0].Map;
         }
 
-        SetQuestStage(NagnangShieldQuest.KillSnapshotReg, ForbiddenGauntletKills());
+        trial.Set(NagnangShieldQuest.KillSnapshot, ForbiddenGauntletKills());
         Log.Info($"   -> GAUNTLET entrance -> map {dest} for {_char.Name} (level {_char.Level})");
         return Warp(dest, (ushort)(QuestRandom(2) == 1 ? NagnangShieldQuest.LandX0 : NagnangShieldQuest.LandX1),
                     NagnangShieldQuest.LandY);
@@ -807,7 +809,8 @@ public sealed partial class Session
         if (HasLegend(NagnangShieldQuest.Legend)) return false;   // already won — it is stone again
         if (IsDead || DialogBusy) return false;
 
-        if (ForbiddenGauntletKills() > QuestCounter(NagnangShieldQuest.KillSnapshotReg))
+        var trial = Quest(NagnangShieldQuest.StageReg);
+        if (ForbiddenGauntletKills() > trial.Get(NagnangShieldQuest.KillSnapshot))
         {
             foreach (var line in NagnangShieldQuest.StatueRefusal) SendMiniText(line);
             Log.Info($"   -> GAUNTLET altar REFUSED {_char.Name} — killed a forbidden creature on this run");
@@ -821,7 +824,7 @@ public sealed partial class Session
             SendMiniText("There is no room in your pack for the shield.");
             return true;
         }
-        SetQuestStage(NagnangShieldQuest.StageReg, 0);
+        trial.SetStage(0);
         AddLegend($"Completed the Nagnang Warrior Trial ({Character.GameDate})", NagnangShieldQuest.Legend,
                   NagnangShieldQuest.LegendIcon, NagnangShieldQuest.LegendColor);
         Log.Info($"   -> GAUNTLET altar PAID {_char.Name} the Nagnang shield");
@@ -1164,7 +1167,7 @@ public sealed partial class Session
         // (A stray 0x3A with no pending awaiter is a no-op; see HandleNpcDialog.)
         var icon = DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
 
-        if (_char.Quests.GetValueOrDefault("chu_rua_tiger_gone") != 1)
+        if (Quest(QuestState.Registry).Get("chu_rua_tiger_gone") != 1)
         {
             SendScriptMessageP(_char.Id, "You see a strange root in the rocks here. But with the tiger nearby, " +
                                          "it is too dangerous to try to climb up to it.",
@@ -1300,9 +1303,9 @@ public sealed partial class Session
         var (fx, fy) = FrontTile();
         var mob = _world.MobAt(_char.Map, (ushort)fx, (ushort)fy);
         Log.Info($"   -> SACRED WATER dropped by {_char.Name} at ({_char.X},{_char.Y}) facing ({fx},{fy}): " +
-                 $"target={mob?.Key ?? "NOTHING"}, stage={QuestStage(PoetWhipQuest.Key)}");
+                 $"target={mob?.Key ?? "NOTHING"}, stage={Quest(PoetWhipQuest.Key).Stage}");
 
-        if (QuestStage(PoetWhipQuest.Key) != PoetWhipQuest.StageWater)
+        if (Quest(PoetWhipQuest.Key).Stage != PoetWhipQuest.StageWater)
         { Notify("The water lies still in your hands."); return true; }
         if (mob is null || mob.Key != PoetWhipQuest.InfectedMob)
         { Notify("You must stand NEXT to the infected creature, and FACE it."); return true; }
@@ -1311,7 +1314,7 @@ public sealed partial class Session
 
         NpcBubble(mob, "NUUUGHHH! I shall be reborn...");   // NpcBubble prefixes the speaker's own name, as RTK's talk does
         _world.DespawnMob(_char.Map, mob);
-        SetQuestStage(PoetWhipQuest.InfectedReg, 1);
+        Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.Infected, 1);
         Log.Info($"   -> INFECTED destroyed by {_char.Name} — return to Staff for the whip");
         return true;
     }

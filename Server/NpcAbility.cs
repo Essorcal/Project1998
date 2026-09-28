@@ -98,13 +98,12 @@ public sealed class NpcContext
     /// <summary>Spoken "what have i deposited?": bubble the vault's coin + item contents out loud.</summary>
     public void ShowVault() => _s.ShowBankContents(_npc);
 
-    // ---- quest helpers (used by QuestDef.Talk scripts; see QuestDef below) ------------------------
-    /// <summary>This player's stage for a quest (0 = not started; a quest defines the rest).</summary>
-    public int  Stage(string questKey) => _s.QuestStage(questKey);
-    /// <summary>Set this player's stage for a quest (persists).</summary>
-    public void SetStage(string questKey, int stage) => _s.SetQuestStage(questKey, stage);
-    /// <summary>A quest progress counter (e.g. "trial_of_iron.kills"); 0 if unset.</summary>
-    public int  Counter(string counterKey) => _s.QuestCounter(counterKey);
+    // ---- quest state (used by QuestDef.Talk scripts; see QuestDef below) ---------------------------
+    /// <summary>This player's state for one quest: <c>ctx.Quest(LeviathanQuest.Key).Stage</c>,
+    /// <c>.Get("flag.gave_gold")</c>, <c>.Set(...)</c>. The one quest accessor — stage, flag, counter,
+    /// snapshot and timer are all slots of it. <see cref="QuestState.Registry"/> is RTK's flat registry, the
+    /// slot being the saved key (what the Lua <c>stage</c>/<c>reg</c> verbs read). Writes persist.</summary>
+    public QuestState Quest(string name) => _s.Quest(name);
 
     /// <summary>Award experience (updates the HUD + persists).</summary>
     /// <summary><paramref name="totemTime"/> opts the grant into the +5% totem-time bonus, which quest
@@ -136,11 +135,6 @@ public sealed class NpcContext
     /// <summary>Lifetime kills of ANY mob, for a quest that cares what ELSE you killed (the Old dog's
     /// "do NOT kill anything else along the way"). Compare a snapshot delta, same as KillCount.</summary>
     public int  TotalKills => _s.TotalKills;
-
-    /// <summary>An int-valued quest registry entry (RTK registry), 0 if unset. General store for quest
-    /// bookkeeping (counters, snapshots, timers) — distinct from <see cref="Stage"/>'s quest-stage meaning.</summary>
-    public int  Reg(string key) => _s.QuestCounter(key);
-    public void SetReg(string key, int value) => _s.SetQuestStage(key, value);
 
     /// <summary>A string-valued quest registry entry (RTK registryString), "" if unset.</summary>
     public string QuestStr(string key) => _s.QuestStr(key);
@@ -642,7 +636,7 @@ public sealed class FishAbility : INpcAbility, INpcSayHandler
 
         if (caught)
         {
-            ctx.SetReg("learned_to_fish", 1);
+            ctx.Quest(TutorialQuest.Key).Set(TutorialQuest.LearnedToFish, 1);
             ctx.GiveItem("minnow", 1);
             await ctx.Say("You caught a fish!");
         }
@@ -948,7 +942,8 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
 
     private static async Task Talk(NpcContext ctx)
     {
-        if (ctx.Stage("tutorial_quest") == 5 && ctx.Reg("talked_to_tutor") != 1)
+        var tutorial = ctx.Quest(TutorialQuest.Key);
+        if (tutorial.Stage == 5 && tutorial.Get(TutorialQuest.TalkedToTutor) != 1)
         {
             await ctx.Say(
                 "Hello there, I see you have met my friend the Tutor. I hope he is doing well these days.",
@@ -959,7 +954,7 @@ public sealed class LibrarianAbility : INpcAbility, INpcSayHandler
                 "... or better yet... make your own legend to be told in the scroll!",
                 "Ah, what dreams, what wonders. Well, I must get back to work now. See you around, I hope to hear tales of your adventures soon.",
                 "You should go back to the tutor now, and continue to learn more, he has so much to teach you.");
-            ctx.SetReg("talked_to_tutor", 1);
+            tutorial.Set(TutorialQuest.TalkedToTutor, 1);
         }
         else
         {
@@ -1534,7 +1529,7 @@ public sealed class ReviveAbility : INpcAbility
 /// A single-giver quest: its identity plus the NPC conversation that offers / nudges / turns it in. The whole
 /// quest reads as linear script through <see cref="NpcContext"/> (menu/say + the quest helpers on it),
 /// branching on the player's stage — a plain int the quest owns the meaning of (the tutorial chain runs 0..14).
-/// Stages persist in <see cref="Shared.Character.Quests"/>. A quest reaches its giver as a
+/// Stages persist through <see cref="QuestState"/>. A quest reaches its giver as a
 /// <see cref="QuestAbility"/>: registered by name in <see cref="NpcScripts"/> and listed FIRST in the giver's
 /// game-data/NpcAbilities.csv row.
 ///

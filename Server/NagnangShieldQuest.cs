@@ -50,13 +50,15 @@ namespace Server;
 public static class NagnangShieldQuest
 {
     /// <summary>RTK <c>quest["nagnang_warrior_trial"]</c>: 0 = not started, 1 = pelt paid and sent into the
-    /// Gauntlet. Cleared back to 0 on completion, exactly as RTK does — the legend is what marks it done.</summary>
+    /// Gauntlet. Cleared back to 0 on completion, exactly as RTK does — the legend is what marks it done.
+    /// Also the quest's namespace (<see cref="QuestState"/>).</summary>
     public const string StageReg = "nagnang_warrior_trial";
 
     /// <summary>Forbidden kills counted at the moment the player enters the cave. The trial is a DELTA
     /// against this, which is how a lifetime <see cref="Session.KillCount"/> answers "on this run" — RTK
-    /// instead flushes the six counters, which we have no equivalent of and do not need.</summary>
-    public const string KillSnapshotReg = "nagnang_trial_kills";
+    /// instead flushes the six counters, which we have no equivalent of and do not need. A slot of
+    /// <see cref="StageReg"/>'s namespace, saved as <c>nagnang_trial_kills</c>.</summary>
+    public const string KillSnapshot = "kills.forbidden";
 
     /// <summary>Legend name. Same string as <see cref="StageReg"/> (RTK reuses it); different namespace.</summary>
     public const string Legend = "nagnang_warrior_trial";
@@ -212,7 +214,7 @@ public sealed class NagnangShieldAbility : INpcAbility
     private static async Task Talk(NpcContext ctx)
     {
         // Already sent. One page, not the briefing again.
-        if (ctx.Stage(NagnangShieldQuest.StageReg) != 0)
+        if (ctx.Quest(NagnangShieldQuest.StageReg).Stage != 0)
         {
             await ctx.Say(NagnangShieldQuest.Reminder);
             return;
@@ -230,7 +232,7 @@ public sealed class NagnangShieldAbility : INpcAbility
         // his first line says so ("I see that you dare to kill the green squirrels to the South"). He never
         // takes it. RTK's removeItem here is wrong, and it matters — the pelt is also what the Nagnang
         // border patrol wants, so eating it would cost the player a second hunt for no reason.
-        ctx.SetStage(NagnangShieldQuest.StageReg, 1);
+        ctx.Quest(NagnangShieldQuest.StageReg).SetStage(1);
         await ctx.Say(NagnangShieldQuest.Briefing);
     }
 }

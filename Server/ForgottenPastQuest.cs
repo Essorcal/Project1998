@@ -329,20 +329,20 @@ public sealed class ForgottenPastAbility : INpcAbility, INpcSayHandler
         }
 
         await ctx.Say(ForgottenPastQuest.Opening);
-        if (ctx.Stage(ForgottenPastQuest.StageReg) == ForgottenPastQuest.NotStarted)
-            ctx.SetStage(ForgottenPastQuest.StageReg, ForgottenPastQuest.Asked);
+        if (ctx.Quest(ForgottenPastQuest.StageReg).Stage == ForgottenPastQuest.NotStarted)
+            ctx.Quest(ForgottenPastQuest.StageReg).SetStage(ForgottenPastQuest.Asked);
     }
 
     public async Task<bool> OnSay(NpcContext ctx, string speech)
     {
         if (ctx.HasLegend(ForgottenPastQuest.Legend)) return false;   // done forever — nothing here listens
 
-        int stage = ctx.Stage(ForgottenPastQuest.StageReg);
+        int stage = ctx.Quest(ForgottenPastQuest.StageReg).Stage;
 
         // The linear half: one table lookup, then say it and move on.
         if (ForgottenPastQuest.Advance(ctx.Def.Id, speech, stage) is { } step)
         {
-            ctx.SetStage(ForgottenPastQuest.StageReg, step.To);
+            ctx.Quest(ForgottenPastQuest.StageReg).SetStage(step.To);
             await ctx.Say(step.Pages);
             return true;
         }
@@ -388,7 +388,7 @@ public sealed class ForgottenPastAbility : INpcAbility, INpcSayHandler
             }
 
         foreach (var (key, count) in ForgottenPastQuest.OreToll) ctx.TakeItem(key, count);
-        ctx.SetStage(ForgottenPastQuest.StageReg, ForgottenPastQuest.HasStrangeMetal);
+        ctx.Quest(ForgottenPastQuest.StageReg).SetStage(ForgottenPastQuest.HasStrangeMetal);
         // Nothing is handed over: "The special metal is in invisible mark on your character... Its not an
         // actual item" (Atlas). The stage IS the metal.
         await ctx.Say("Thanks, here you can have this strange metal. Good luck!");
@@ -416,7 +416,7 @@ public sealed class ForgottenPastAbility : INpcAbility, INpcSayHandler
             }
         }
 
-        ctx.SetStage(ForgottenPastQuest.StageReg, ForgottenPastQuest.Examined);
+        ctx.Quest(ForgottenPastQuest.StageReg).SetStage(ForgottenPastQuest.Examined);
         await ctx.Say("Correct!");
     }
 
@@ -456,6 +456,6 @@ public sealed class ForgottenPastAbility : INpcAbility, INpcSayHandler
         // ONLY record that this happened is a mark that persists with the character.
         ctx.AddLegend($"Forged an orb of {orb.Title} ({Character.GameDate})", ForgottenPastQuest.Legend,
                       ForgottenPastQuest.LegendIcon, ForgottenPastQuest.LegendColor);
-        ctx.SetStage(ForgottenPastQuest.StageReg, ForgottenPastQuest.NotStarted);
+        ctx.Quest(ForgottenPastQuest.StageReg).SetStage(ForgottenPastQuest.NotStarted);
     }
 }

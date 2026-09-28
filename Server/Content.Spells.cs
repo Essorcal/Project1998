@@ -496,8 +496,8 @@ public static partial class Content
     public static bool CanLearnDogSpells(int pathId) => IsBaseClass(pathId) || IsNpcSubpath(pathId);
 
     /// <summary>Quest-registry key for the Dog flag — set when the Spotted dog finishes the bark/woof/grrowl
-    /// chain, and the gate on saying "secret" to your own class's Dog. Lives in the flat
-    /// <c>Character.Quests</c> map like every other quest flag, so no schema change.</summary>
+    /// chain, and the gate on saying "secret" to your own class's Dog. Lives in the flat registry
+    /// (<see cref="QuestState.Registry"/>) like every other quest flag, so no schema change.</summary>
     public const string DogFlagReg = "dog_flag";
 
     /// <summary>The two Dog spells each BASE class may hold, in teach order, with the level each is pinned

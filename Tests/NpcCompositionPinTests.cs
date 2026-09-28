@@ -51,7 +51,7 @@ public class NpcCompositionPinTests
         _ when name.StartsWith("fp") => c =>
         {
             c.Level = 99; c.ClassName = "Mage";
-            c.Quests[ForgottenPastQuest.StageReg] = int.Parse(name[2..]);
+            QuestState.Over(c, ForgottenPastQuest.StageReg).SetStage(int.Parse(name[2..]));
         },
         _ => throw new ArgumentException($"no profile '{name}'"),
     };

@@ -144,7 +144,7 @@ public sealed class MythicAllianceAbility : INpcAbility, INpcSayHandler
             return true;
         }
 
-        if (ctx.Stage(mine.QuestKey) == 1) await TurnIn(ctx, mine, foe);
+        if (ctx.Quest(mine.QuestKey).Stage == 1) await TurnIn(ctx, mine, foe);
         else                               await Offer(ctx, mine, foe);
         return true;
     }
@@ -186,7 +186,7 @@ public sealed class MythicAllianceAbility : INpcAbility, INpcSayHandler
             return;
 
         ctx.ClearKillTrack();
-        ctx.SetStage(mine.QuestKey, 1);
+        ctx.Quest(mine.QuestKey).SetStage(1);
 
         await ctx.Say(
             $"A wise choice. We do well in our eternal struggle against the vile {foe.Animal}. " +
@@ -227,7 +227,7 @@ public sealed class MythicAllianceAbility : INpcAbility, INpcSayHandler
         ctx.AwardExp(mine.Exp);
         ctx.AddLegend($"Lesser alliance with the {mine.Animal} ({Character.GameDate})",
             mine.LegendKey, MythicAlliance.LegendIcon, MythicAlliance.LegendColor);
-        ctx.SetStage(mine.QuestKey, 0);
+        ctx.Quest(mine.QuestKey).SetStage(0);
 
         await ctx.Say($"You have proven yourself worthy! Consider yourself an ally of the {mine.Animal}!");
     }

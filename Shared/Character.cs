@@ -112,7 +112,9 @@ public sealed class Character
     // Quest progress. Key = a quest id ("trial_of_iron"); value = its stage (0 = not started, 1 = active,
     // 2 = done — quests define their own meaning). Objective counters live under composite keys
     // ("trial_of_iron.kills"), so one flat map holds both stage machine and progress tallies. Persisted in
-    // the character JSON, so an accepted quest and its progress survive a relog. See Server/Quests.cs.
+    // the character JSON, so an accepted quest and its progress survive a relog. Read and written through
+    // Server/QuestState.cs, which names each key by quest and slot and maps it to the key saved here
+    // (Tests/QuestStateTests.cs fails on any other access; its allowlist names the one left, #307).
     public Dictionary<string, int> Quests = new();
 
     // String-valued quest registry (RTK's registryString): e.g. the active minor-quest key. Kept separate

@@ -45,21 +45,24 @@ namespace Server;
 /// its scripts, not anything a 2001 client printed.</item>
 /// </list>
 ///
-/// <para>State is four registry ints (three <see cref="ZapReg"/> flags written by the mob AI, plus
-/// <see cref="GhostReg"/>) and one stage, all cleared on turn-in, plus the legend. Nothing new is persisted.
+/// <para>State is four registry ints (three <see cref="Zapped"/> flags written by the mob AI, plus
+/// <see cref="MetGhost"/>) and one stage, all cleared on turn-in, plus the legend. Nothing new is persisted.
 /// RTK's own crypt trigger is broken here and the fix is kept: it TESTS <c>mage_stone_met_ghost</c> and SETS
 /// <c>mage_ward_met_ghost</c>, so its spirit re-fires on every step forever. One name, tested and set.</para>
 /// </summary>
 public static class MageStoneQuest
 {
-    /// <summary>Prefix of the per-mouse flag the mob AI sets (<c>zapped_yin_mouse</c>, …). Written by
-    /// game-data/mob_ai.lua when the mouse is struck WHILE CURSED; read here and by the prophets' script.</summary>
-    public const string ZapReg = "zapped_";
+    /// <summary>The per-mouse flag the mob AI sets, a slot of <see cref="StageReg"/>'s namespace. Saved as
+    /// <c>zapped_&lt;mouse&gt;</c> (<c>zapped_yin_mouse</c>, …), the name game-data/mob_ai.lua writes when the
+    /// mouse is struck WHILE CURSED; read here, by the crypt spirit and by the prophets' script.</summary>
+    public static string Zapped(string mouse) => "flag.zapped." + mouse;
     public static readonly string[] Mice = { "yin_mouse", "yang_mouse", "void_mouse" };
 
-    /// <summary>Set by the crypt spirit. RTK's intended name — see the class doc for the bug it fixes.</summary>
-    public const string GhostReg = "mage_stone_met_ghost";
-    /// <summary>0 = Wand has not sent you; 1 = the three tasks are open (RTK <c>registry["mage_ward"]</c>).</summary>
+    /// <summary>Set by the crypt spirit; a slot of <see cref="StageReg"/>'s namespace, saved as
+    /// <c>mage_stone_met_ghost</c>, RTK's intended name — see the class doc for the bug it fixes.</summary>
+    public const string MetGhost = "flag.met_ghost";
+    /// <summary>0 = Wand has not sent you; 1 = the three tasks are open (RTK <c>registry["mage_ward"]</c>).
+    /// Also the quest's namespace (<see cref="QuestState"/>).</summary>
     public const string StageReg = "mage_stone";
 
     public const string Legend = "family_nangen_mages";
@@ -96,8 +99,8 @@ public static class MageStoneQuest
     /// <summary>Has this character done everything the three prophets asked? The two components have to be in
     /// hand at the same time, which is what makes the Ore a fetch and not a kill count.</summary>
     public static bool TasksComplete(NpcContext ctx) =>
-        Mice.All(m => ctx.Reg(ZapReg + m) == 1)
-        && ctx.Reg(GhostReg) == 1
+        Mice.All(m => ctx.Quest(StageReg).Get(Zapped(m)) == 1)
+        && ctx.Quest(StageReg).Get(MetGhost) == 1
         && ctx.HasItem(RoseItem)
         && ctx.HasItem(OreItem);
 }
@@ -136,7 +139,7 @@ public sealed class MageStoneAbility : INpcAbility
         }
 
         // Already sent: this click is the turn-in (RTK checks the open-quest branch first, same order).
-        if (ctx.Reg(MageStoneQuest.StageReg) == 1) { await TurnIn(ctx); return; }
+        if (ctx.Quest(MageStoneQuest.StageReg).Stage == 1) { await TurnIn(ctx); return; }
 
         await ctx.Say("Ah, I see that you have come for the knowledge of the Mages of Nagnang.");
 
@@ -158,7 +161,7 @@ public sealed class MageStoneAbility : INpcAbility
             "Take care to curse only ONE creature before entering each room. If you curse more, the wise men will not speak with you and you will need to return to me.",
             "I also implore you, listen to ALL of them and all they have to say. If you do not, I will not grant you the stone.");
 
-        ctx.SetReg(MageStoneQuest.StageReg, 1);
+        ctx.Quest(MageStoneQuest.StageReg).SetStage(1);
         ctx.Notify("Good luck.");
     }
 
@@ -183,9 +186,10 @@ public sealed class MageStoneAbility : INpcAbility
         ctx.AddLegend($"Family to the Nangen Mages ({Character.GameDate})", MageStoneQuest.Legend,
                       MageStoneQuest.LegendIcon, MageStoneQuest.LegendColor);
 
-        foreach (var m in MageStoneQuest.Mice) ctx.SetReg(MageStoneQuest.ZapReg + m, 0);
-        ctx.SetReg(MageStoneQuest.GhostReg, 0);
-        ctx.SetReg(MageStoneQuest.StageReg, 0);
+        var stone = ctx.Quest(MageStoneQuest.StageReg);
+        foreach (var m in MageStoneQuest.Mice) stone.Set(MageStoneQuest.Zapped(m), 0);
+        stone.Set(MageStoneQuest.MetGhost, 0);
+        stone.SetStage(0);
 
         await ctx.Say(
             "You have learned well and earned the regard of the Nangen Mages. Take this stone, cut long ago by the same prophets who instructed you in our ways.",

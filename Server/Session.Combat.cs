@@ -385,9 +385,10 @@ public sealed partial class Session
         // RTK resets the counter in onEquip/onUnequip. We have no equip hooks, so the equivalent is to notice
         // the worn INSTANCE changed: taking the gun off returns it to the bag and re-equipping builds a fresh
         // InvItem, so a different reference means a fresh equip and the ramp restarts at 1.
-        if (!ReferenceEquals(_shotgunWorn, worn)) { _shotgunWorn = worn; LuaSetReg("damage_shotgun", 0); }
-        int dam = LuaReg("damage_shotgun") + 1;
-        LuaSetReg("damage_shotgun", dam);
+        var registry = Quest(QuestState.Registry);
+        if (!ReferenceEquals(_shotgunWorn, worn)) { _shotgunWorn = worn; registry.Set("damage_shotgun", 0); }
+        int dam = registry.Get("damage_shotgun") + 1;
+        registry.Set("damage_shotgun", dam);
 
         int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 };
         int dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
