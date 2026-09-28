@@ -38,9 +38,18 @@ public sealed class TotalsPeerReadTests
     /// <summary>Long enough that nothing under test expires on its own.</summary>
     private const int Forever = 10 * 60 * 1000;
 
-    /// <summary>Wall clock each side of a race fact runs for. Both threads run to it, so neither can finish
-    /// while the other is still warming up.</summary>
+    /// <summary>The shortest a race fact runs for. It runs on past this until the overlap is real (see
+    /// <see cref="MinCycles"/>), so a thread the scheduler starved cannot turn into a pass or a false fail.</summary>
     private const int RaceMs = 500;
+
+    /// <summary>Owner changes and peer reads a race must have made, and both end states the peer must have
+    /// seen, before it may stop.</summary>
+    private const int MinCycles = 1_000;
+    private const int MinReads = 1_000;
+
+    /// <summary>The backstop: a race that has still not covered its minimum stops here and fails as one that
+    /// never got going.</summary>
+    private const int RaceCapMs = 20_000;
 
     /// <summary>Peer reads taken per entry into the caster's monitor. A caster's handler reads a peer's totals
     /// while holding its OWN monitor, so the reader does too; batching keeps the monitor traffic from being
@@ -106,7 +115,7 @@ public sealed class TotalsPeerReadTests
             owner.WithState(() => { add(plateWorn); add(bandWorn); invalidate(); });
             owner.WithState(() => { remove(plateWorn); remove(bandWorn); invalidate(); });
             ownerOut.Clear();
-        });
+        }, none, both);
 
         AssertOnlyPublishedStates(result, new[] { none, both }, none, both, "gear");
         // Last cycle took both off. A peer that cached what it summed mid-change would leave the owner's own
@@ -152,7 +161,7 @@ public sealed class TotalsPeerReadTests
             });
             owner.WithState(clear);
             ownerOut.Clear();
-        });
+        }, prefixes[0], prefixes[3]);
 
         AssertOnlyPublishedStates(result, prefixes, prefixes[0], prefixes[3], "buff");
     }
@@ -342,36 +351,39 @@ public sealed class TotalsPeerReadTests
         Dictionary<string, long> ReadFaults, Exception? FirstReadFault, Exception? OwnerFault);
 
     /// <summary>The owner runs <paramref name="ownerCycle"/> and the peer runs <paramref name="read"/> under
-    /// the caster's monitor, both to the same wall clock. A read that throws is counted by exception type and
-    /// the peer keeps reading, so one run reports both ways a read can go wrong: an exception, and a number.</summary>
-    private static RaceResult Race(Session caster, Func<(int, int)> read, Action ownerCycle)
+    /// the caster's monitor until both the minimum time and the minimum overlap have passed: enough owner
+    /// changes and peer reads, and a read of both <paramref name="first"/> and <paramref name="last"/>. A read
+    /// that throws is counted by exception type and the peer keeps reading, so one run reports both ways a read
+    /// can go wrong: an exception, and a number.</summary>
+    private static RaceResult Race(Session caster, Func<(int, int)> read, Action ownerCycle, (int, int) first, (int, int) last)
     {
         var start = new ManualResetEventSlim();
+        var done = new ManualResetEventSlim();
         var progress = new StallWatch.RoundCounter();
         var seen = new Dictionary<(int, int), long>();
         var readFaults = new Dictionary<string, long>();
         Exception? firstReadFault = null, ownerFault = null;
-        long reads = 0, cycles = 0, until = 0;
+        long reads = 0, cycles = 0, until = 0, cap = 0;
 
         var ownerThread = new Thread(() =>
         {
             start.Wait();
             try
             {
-                while (Environment.TickCount64 < until)
+                while (!done.IsSet)
                 {
                     ownerCycle();
-                    cycles++;
+                    Interlocked.Increment(ref cycles);
                     progress.Bump();
                 }
             }
-            catch (Exception e) { ownerFault = e; }
+            catch (Exception e) { ownerFault = e; done.Set(); }
         });
 
         var peerThread = new Thread(() =>
         {
             start.Wait();
-            while (Environment.TickCount64 < until)
+            while (!done.IsSet)
             {
                 caster.WithState(() =>
                 {
@@ -392,20 +404,25 @@ public sealed class TotalsPeerReadTests
                     }
                 });
                 progress.Bump();
+                long now = Environment.TickCount64;
+                bool covered = Interlocked.Read(ref cycles) >= MinCycles && reads >= MinReads
+                               && seen.ContainsKey(first) && seen.ContainsKey(last);
+                if ((covered && now >= until) || now >= cap) done.Set();
             }
         });
 
         ownerThread.Start();
         peerThread.Start();
         until = Environment.TickCount64 + RaceMs;   // published to both threads by the Set/Wait pair below
+        cap = until - RaceMs + RaceCapMs;
         start.Set();
         StallWatch.RunUntilDoneOrStalled(new[] { ownerThread, peerThread }, () => progress.Rounds,
             StallWatch.StallQuiet, StallWatch.StallCap, "the totals owner and its peer reader");
-        return new RaceResult(reads, cycles, seen, readFaults, firstReadFault, ownerFault);
+        return new RaceResult(reads, Interlocked.Read(ref cycles), seen, readFaults, firstReadFault, ownerFault);
     }
 
     /// <summary>Fails on any read that threw, any read of a state outside <paramref name="published"/>, and a
-    /// race that never overlapped (the owner barely cycled, or the peer never saw both ends).</summary>
+    /// race that never overlapped (the cap came first: too few changes or reads, or an end state never seen).</summary>
     private void AssertOnlyPublishedStates(RaceResult r, (int, int)[] published, (int, int) first, (int, int) last,
         string what)
     {
@@ -420,7 +437,7 @@ public sealed class TotalsPeerReadTests
         _out.WriteLine(summary);
         Assert.True(r.OwnerFault is null, $"the owner's {what} change threw ({summary}): {r.OwnerFault}");
         Assert.True(unpublished == 0 && threw == 0, $"torn or half-made peer reads ({summary}); first throw: {r.FirstReadFault}");
-        Assert.True(r.Cycles > 50 && r.Seen.ContainsKey(first) && r.Seen.ContainsKey(last),
+        Assert.True(r.Cycles >= MinCycles && r.Reads >= MinReads && r.Seen.ContainsKey(first) && r.Seen.ContainsKey(last),
             $"the race never got going: {summary}");
     }
 
