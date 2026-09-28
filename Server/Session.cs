@@ -1064,6 +1064,17 @@ public sealed partial class Session
         }
     }
 
+    /// <summary>One of the arrival's refusals gives the account's slot back itself: <c>Unregister</c>'s
+    /// compare-and-remove under the key the claim was made under, then the key is cleared, so the teardown has
+    /// nothing left to return (<see cref="TearDownWorldState"/>). The key is <c>CharacterStore.Key(_user)</c> by
+    /// construction, since <see cref="ClaimAccountSlot"/> is handed <c>_user</c>, and it is always set by the time a
+    /// refusal runs.</summary>
+    private void GiveBackClaimedSlot()
+    {
+        if (_claimedKey is { } key) _world.Online.Unregister(key, this);
+        _claimedKey = null;
+    }
+
     private void HandleArrival(TkPacket pkt)
     {
         // plaintext body: <klen> "NexonInc." <ulen> "<user>" <token>
@@ -1138,24 +1149,21 @@ public sealed partial class Session
         if (load.Status == CharacterLoadStatus.NotFound)
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
-            _claimedKey = null;   // given back here, so the teardown has nothing to return (TearDownWorldState)
+            GiveBackClaimedSlot();   // give back the online slot we just claimed
             CloseConnection("arrival rejected (no character record)");
             return;
         }
         if (load.Status == CharacterLoadStatus.Unreadable)
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);
-            _claimedKey = null;
+            GiveBackClaimedSlot();
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
         if (load.Status == CharacterLoadStatus.StorageError)
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);
-            _claimedKey = null;
+            GiveBackClaimedSlot();
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }

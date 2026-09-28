@@ -84,6 +84,8 @@ public sealed class TeardownSlotLeakTests
         typeof(Session).GetField("_party", BindingFlags.NonPublic | BindingFlags.Instance)!;
     private static readonly FieldInfo WriteGateField =
         typeof(Session).GetField("_writeGate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo ClaimedKeyField =
+        typeof(Session).GetField("_claimedKey", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     private readonly SessionFixture _fx;
     private readonly ITestOutputHelper _out;
@@ -962,6 +964,70 @@ public sealed class TeardownSlotLeakTests
             outbound.FailOn = -1;
             online.Unregister(key, s);
             _fx.World.LeaveMap(s, LateThrowMap);
+        }
+    }
+
+    /// <summary>
+    /// The arrival's three refusals after the slot claim: no character record, an unreadable record, a storage
+    /// error. Each gives the slot back itself and clears the claimed key, so the teardown after it has nothing
+    /// to give back. Read right after the refusal, before any teardown: the connection is closed with the
+    /// refusal's own reason, the slot is neither held nor parked, and the key is null. The teardown then runs,
+    /// and the slot stays free. This is the behaviour the refusals' shared give-back helper (the #303 report's
+    /// follow-up candidate 3) must keep unchanged.
+    ///
+    /// <para>Each case has a database of its own: no row, a row that does not parse, and a missing table,
+    /// which makes the read itself fail.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(CharacterLoadStatus.NotFound, "arrival rejected (no character record)")]
+    [InlineData(CharacterLoadStatus.Unreadable, "arrival rejected (unreadable character record)")]
+    [InlineData(CharacterLoadStatus.StorageError, "arrival rejected (character storage unavailable)")]
+    public async Task EachArrivalRefusalGivesTheSlotBackItselfAndClearsTheKey(CharacterLoadStatus status, string reason)
+    {
+        string name = $"SlkRef{(int)status}";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        if (status == CharacterLoadStatus.Unreadable)
+        {
+            using var cn = db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "INSERT INTO characters(username, json, updated_utc) VALUES($u, '{broken', 1);";
+            cmd.Parameters.AddWithValue("$u", key);
+            cmd.ExecuteNonQuery();
+        }
+        else if (status == CharacterLoadStatus.StorageError)
+        {
+            using var cn = db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "ALTER TABLE characters RENAME TO characters_gone;";
+            cmd.ExecuteNonQuery();
+        }
+        var outbound = new RecordingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, db.Store, _fx.World);
+
+        try
+        {
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(ArrivalFrame(name));
+                _out.WriteLine($"[state] {name} ({status}): closed={outbound.Closed}, holds slot={online.HoldsSlotForTest(key, s)}, " +
+                               $"parked={online.HoldsDepartedForTest(key, s)}, claimed key={ClaimedKeyField.GetValue(s) ?? "null"}");
+                sink.LineContaining($"-> connection teardown ({reason})");
+            }
+            Assert.True(outbound.Closed);
+            Assert.False(online.HoldsSlotForTest(key, s), "the refusal left the slot held");
+            Assert.False(online.HoldsDepartedForTest(key, s), "the refusal parked the slot");
+            Assert.Null(ClaimedKeyField.GetValue(s));           // given back already: the teardown has nothing to return
+
+            var error = await Record.ExceptionAsync(() => s.EndReadLoopAsync(Task.CompletedTask));
+            Assert.Null(error);
+            Assert.False(online.HoldsSlotForTest(key, s));
+            Assert.False(online.HoldsDepartedForTest(key, s));
+        }
+        finally
+        {
+            online.Unregister(key, s);
         }
     }
 
