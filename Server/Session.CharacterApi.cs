@@ -453,10 +453,25 @@ public sealed partial class Session
 
             // Each eligible character owns its own state monitor. This is re-entrant for the killer (whose
             // packet handler already holds it) and takes a peer's monitor before touching that peer's tally.
-            foreach (var m in eligible) m.WithState(() => m.TallyKill(mobKey));
-
-            if (reward == 0) return;
-            if (eligible.Count <= 1) { AwardExp(reward, killExp: true); return; }   // solo, or nobody else in range
+            //
+            // ONE ENTRY PER MEMBER: the tally and the payout are one critical section on that member (#298
+            // review, pre-existing 3). They were two, and a newer login's kick (KickForReplacement, which runs
+            // under the member's monitor) could land between them: it wrote the row with the tally in it and
+            // latched _replaced, and the payout's write was then refused, so the login loaded the kill credit
+            // without the exp it is credit for. In one section the kick waits for the payout, and the row it
+            // writes has both. No number the payout uses reads the tally (kill counts feed quests only), so doing
+            // each member's tally beside its payout, instead of every tally first, changes no share.
+            if (reward == 0)
+            {
+                foreach (var m in eligible) m.WithState(() => m.TallyKill(mobKey));   // credit only, nothing to pay
+                return;
+            }
+            if (eligible.Count <= 1)   // solo, or nobody else in range: the killer's own monitor, held above
+            {
+                TallyKill(mobKey);
+                AwardExp(reward, killExp: true);
+                return;
+            }
 
             long highest = eligible.Max(Eff);
             if (highest <= 0) highest = 1;
@@ -481,12 +496,22 @@ public sealed partial class Session
             foreach (var m in eligible)
             {
                 uint share = (uint)Math.Ceiling(amount * (double)Eff(m) / highest);
-                m.WithState(() => m.AwardExp(share, killExp: true, totemTime: anyTotem));
+                m.WithState(() =>
+                {
+                    m.TallyKill(mobKey);
+                    KillExpGapProbeForTest?.Invoke(m);   // null except under test; see the field
+                    m.AwardExp(share, killExp: true, totemTime: anyTotem);
+                });
             }
             Log.Info($"   -> group exp: {reward} -> {amount} x{eligible.Count} members " +
                      $"(highest eff {highest}{(anyTotem ? ", TOTEM TIME" : "")})");
         });
     }
+
+    /// <summary>Test seam: called on the killer's thread with each member of a group kill, between that member's
+    /// kill tally and its payout, inside the one critical section they share. A fact starts a newer login there
+    /// to show it cannot land between the two. Null outside the test host.</summary>
+    internal static Action<Session>? KillExpGapProbeForTest;
 
     /// <summary>How far from the corpse a group member may stand and still be paid, on each axis
     /// (RTK <c>distanceSquare(..., 12)</c>). Comfortably more than a screen, so the whole group gets paid
