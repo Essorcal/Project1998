@@ -28,11 +28,11 @@ namespace Tests;
 /// the arrival loaded.</para>
 /// </summary>
 [Collection("world")]
-public sealed class KillExpPayoutSectionTests
+public sealed class PartyKillExpSectionTests
 {
     private readonly SessionFixture _fx;
 
-    public KillExpPayoutSectionTests(SessionFixture fx) => _fx = fx;
+    public PartyKillExpSectionTests(SessionFixture fx) => _fx = fx;
 
     /// <summary>A newer login that kicks a member between its tally and its payout loads a row that has both
     /// or neither. With one section per member it has both: the kick waits for the payout, writes the row, and
