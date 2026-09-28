@@ -97,24 +97,24 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
     // =============================================================================================
     private static async Task Run(NpcContext ctx, ArmorChain chain)
     {
-        int stage = Math.Clamp(ctx.Stage(chain.StageKey), 0, chain.Steps.Length - 1);
+        var quest = ctx.Quest(chain.StageKey);
+        int stage = Math.Clamp(quest.Stage, 0, chain.Steps.Length - 1);
         var step = chain.Steps[stage];
-        string pfx = $"aq_{chain.Tier}_{stage}_";
 
         // The chain's opening lines play whenever you are still on its first step — RTK speaks them on
         // every visit to step 1 too, and they read as the guildmaster restating why you are here.
         if (stage == 0 && chain.Intro.Length > 0) await ctx.Say(chain.Intro);
 
-        OpenStep(ctx, step, pfx);
+        OpenStep(ctx, quest, step, stage);
         await SpeakAsk(ctx, chain, step);
 
         // ---- kills you should NOT have made ------------------------------------------------------
         // Both of these restart the step's count from now rather than failing it forever. That is the
         // gentler of the two readings — Atlas's is "you will have to start from step 1" — and it is the
         // only one that leaves a poisoned counter recoverable.
-        if (step.Forbid.Any(m => ctx.KillCount(m) > ctx.Reg(pfx + m)))
+        if (step.Forbid.Any(m => ctx.KillCount(m) > quest.Get(Kills(stage, m))))
         {
-            Resnapshot(ctx, step, pfx);
+            Resnapshot(ctx, quest, step, stage);
             await ctx.Say(step.Spoiled);
             return;
         }
@@ -124,10 +124,10 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         // permanently one ahead of the rabbit delta and the step can never be passed.
         if (step.Pure)
         {
-            int allowed = Watched(step).Sum(m => ctx.KillCount(m) - ctx.Reg(pfx + m));
-            if (ctx.TotalKills - ctx.Reg(pfx + "@") > allowed)
+            int allowed = Watched(step).Sum(m => ctx.KillCount(m) - quest.Get(Kills(stage, m)));
+            if (ctx.TotalKills - quest.Get(TotalKills(stage)) > allowed)
             {
-                Resnapshot(ctx, step, pfx);
+                Resnapshot(ctx, quest, step, stage);
                 await ctx.Say(step.Spoiled);
                 return;
             }
@@ -136,7 +136,7 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         // ---- kills -----------------------------------------------------------------------------
         (string Mob, int Count)[]? met = null;
         foreach (var group in step.Kills)
-            if (group.All(r => ctx.KillCount(r.Mob) - ctx.Reg(pfx + r.Mob) >= r.Count)) { met = group; break; }
+            if (group.All(r => ctx.KillCount(r.Mob) - quest.Get(Kills(stage, r.Mob)) >= r.Count)) { met = group; break; }
 
         if (step.Kills.Length > 0 && met is null) { await ctx.Say(step.Unmet); return; }
 
@@ -200,7 +200,7 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
 
         if (!step.IsFinal)
         {
-            ctx.SetStage(chain.StageKey, stage + 1);
+            quest.SetStage(stage + 1);
             await ctx.Say(step.Done);
             return;
         }
@@ -210,8 +210,8 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         ctx.GiveItem(armor, 1);                                     // bonded on the way in (ItemDef.Bonded)
         ctx.AddLegend($"{chain.LegendText} ({Character.GameDate})", chain.Legend,
                       ArmorQuest.LegendIcon, ArmorQuest.LegendColor);
-        ctx.SetStage(chain.StageKey, 0);
-        ClearMarkers(ctx, chain);
+        quest.SetStage(0);
+        ClearMarkers(quest, chain);
         await ctx.Say("It is yours.");
     }
 
@@ -265,19 +265,25 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
         };
     }
 
+    // A step's markers: slots of the chain's namespace (its stage key), saved per TIER as aq_<tier>_<n>_!,
+    // aq_<tier>_<n>_@ and aq_<tier>_<n>_<mob> — QuestState's "{tier}_armor" alias families.
+    private static string Opened(int step) => $"step.{step}.opened";
+    private static string TotalKills(int step) => $"step.{step}.total_kills";
+    private static string Kills(int step, string mob) => $"step.{step}.kills.{mob}";
+
     /// <summary>Snapshot this step's kill counts the first time the player reaches it, so its requirement
     /// counts only what happens after the guildmaster asks.</summary>
-    private static void OpenStep(NpcContext ctx, ArmorStep step, string pfx)
+    private static void OpenStep(NpcContext ctx, QuestState quest, ArmorStep step, int stage)
     {
-        if (ctx.Reg(pfx + "!") != 0) return;
-        ctx.SetReg(pfx + "!", 1);
-        Resnapshot(ctx, step, pfx);
+        if (quest.Get(Opened(stage)) != 0) return;
+        quest.Set(Opened(stage), 1);
+        Resnapshot(ctx, quest, step, stage);
     }
 
-    private static void Resnapshot(NpcContext ctx, ArmorStep step, string pfx)
+    private static void Resnapshot(NpcContext ctx, QuestState quest, ArmorStep step, int stage)
     {
-        ctx.SetReg(pfx + "@", ctx.TotalKills);
-        foreach (var mob in Watched(step)) ctx.SetReg(pfx + mob, ctx.KillCount(mob));
+        quest.Set(TotalKills(stage), ctx.TotalKills);
+        foreach (var mob in Watched(step)) quest.Set(Kills(stage, mob), ctx.KillCount(mob));
     }
 
     private static IEnumerable<string> Watched(ArmorStep step) =>
@@ -285,14 +291,13 @@ public sealed class ArmorQuestAbility : INpcAbility, INpcSayHandler
 
     /// <summary>Wipe every per-step marker for a finished chain, so a character who somehow runs it again
     /// (a GM stripping the legend, say) starts from clean snapshots rather than stale ones.</summary>
-    private static void ClearMarkers(NpcContext ctx, ArmorChain chain)
+    private static void ClearMarkers(QuestState quest, ArmorChain chain)
     {
         for (int i = 0; i < chain.Steps.Length; i++)
         {
-            string pfx = $"aq_{chain.Tier}_{i}_";
-            ctx.SetReg(pfx + "!", 0);
-            ctx.SetReg(pfx + "@", 0);
-            foreach (var mob in Watched(chain.Steps[i])) ctx.SetReg(pfx + mob, 0);
+            quest.Set(Opened(i), 0);
+            quest.Set(TotalKills(i), 0);
+            foreach (var mob in Watched(chain.Steps[i])) quest.Set(Kills(i, mob), 0);
         }
     }
 

@@ -109,10 +109,11 @@ public sealed class SpellContext
     public void message(string msg)     => _s.LuaMessage(msg);
 
     // ---- primitives for COMPOSED / stateful verbs (Baekho's Cunning) ----
-    /// <summary>Read a transient per-caster integer registry value (0 if unset). Resets on relog.</summary>
-    public int  reg(string key)                       => _s.LuaReg(key);
-    /// <summary>Set a transient per-caster integer registry value.</summary>
-    public void setReg(string key, double v)          => _s.LuaSetReg(key, (int)v);
+    /// <summary>Read a per-caster integer registry value (RTK <c>player.registry</c>,
+    /// <see cref="QuestState.Registry"/>; 0 if unset). Persisted: see the registry note in Session.Spells.cs.</summary>
+    public int  reg(string key)                       => _s.Quest(QuestState.Registry).Get(key);
+    /// <summary>Set a per-caster integer registry value (persists).</summary>
+    public void setReg(string key, double v)          => _s.Quest(QuestState.Registry).Set(key, (int)v);
     /// <summary>Is a named duration (RTK setDuration) still running? One namespace shared with the item
     /// verbs, so a spell sees a potion's ward — which is how the five warrior strikes read the Black Potion's
     /// <c>chin_baek_ho_ryung</c>, exactly as RTK's scripts do.</summary>

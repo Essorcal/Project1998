@@ -34,7 +34,7 @@ namespace Server;
 /// evil in check; killing one after the water is issued makes Staff refuse the turn-in. RTK enforces this with
 /// <c>killCount</c>/<c>flushKills</c>, a resettable per-quest counter we do not have — so this measures a
 /// DELTA against a baseline snapshotted when the water is handed over
-/// (<see cref="PoetWhipQuest.RabbitBaselineReg"/>), the same idiom the armor chains use for their kill steps.
+/// (<see cref="PoetWhipQuest.RabbitBaseline"/>), the same idiom the armor chains use for their kill steps.
 /// Kills banked before the water do not count against you, and taking a fresh vial re-snapshots, which is also
 /// the only way to clear the debt: neither period source describes the totem-forgiveness rite well enough to
 /// build it (nexusatlas: "seek forgiveness from the Shamans at the Wilderness Totem Shrines"), and it is the
@@ -59,21 +59,22 @@ public static class PoetWhipQuest
 {
     /// <summary>RTK <c>player.quest["nangen_acolyte"]</c> — 0 not started (or finished), 1 owes the branch,
     /// 2 acolyte, water errand live. Same name as the legend below, in a different store; that is RTK's own
-    /// collision and is kept so imported characters land on the right step.</summary>
+    /// collision and is kept so imported characters land on the right step. Also the quest's namespace
+    /// (<see cref="QuestState"/>); the slots below are saved under the RTK names each one quotes.</summary>
     public const string Key = "nangen_acolyte";
     public const int StageBranch = 1;   // accepted the service, owes a Forever branch
     public const int StageWater  = 2;   // acolyte: the sacred-water errand is live
 
     /// <summary>RTK <c>gave_sonhi_pipe</c> — the pipe is taken once, before the offer, so refusing and coming
     /// back does not cost a second pipe.</summary>
-    public const string PipeGivenReg = "gave_sonhi_pipe";
+    public const string PipeGiven = "flag.gave_pipe";
     /// <summary>RTK <c>sacred_water_timer</c> — unix seconds; a new vial is refused until then.</summary>
-    public const string WaterTimerReg = "sacred_water_timer";
+    public const string WaterTimer = "timer.water";
     /// <summary>RTK <c>destroyed_infected</c> — set by the drop rite, read by the turn-in.</summary>
-    public const string InfectedReg = "destroyed_infected";
-    /// <summary>Ours, not RTK's: lifetime magic-rabbit kills at the moment the water was handed over. See the
-    /// class doc on why this replaces RTK's <c>flushKills</c>.</summary>
-    public const string RabbitBaselineReg = "nangen_rabbit_base";
+    public const string Infected = "flag.destroyed_infected";
+    /// <summary>Ours, not RTK's (saved as <c>nangen_rabbit_base</c>): lifetime magic-rabbit kills at the
+    /// moment the water was handed over. See the class doc on why this replaces RTK's <c>flushKills</c>.</summary>
+    public const string RabbitBaseline = "kills." + RabbitMob;
 
     public const string LegendAcolyte   = "nangen_acolyte";
     public const string LegendDestroyed = "destroyed_nagnang_evil";
@@ -186,21 +187,21 @@ public sealed class PoetWhipQuestAbility : INpcAbility
     /// branch falls straight through into the water errand in the same conversation.</summary>
     private static async Task Talk(NpcContext ctx)
     {
-        if (ctx.Stage(PoetWhipQuest.Key) == PoetWhipQuest.StageBranch && !await TurnInBranch(ctx)) return;
-        if (ctx.Stage(PoetWhipQuest.Key) == PoetWhipQuest.StageWater) { await Errand(ctx); return; }
+        if (ctx.Quest(PoetWhipQuest.Key).Stage == PoetWhipQuest.StageBranch && !await TurnInBranch(ctx)) return;
+        if (ctx.Quest(PoetWhipQuest.Key).Stage == PoetWhipQuest.StageWater) { await Errand(ctx); return; }
         await Begin(ctx);
     }
 
     // ---- step 1: the pipe, and the offer ---------------------------------------------------------
     private static async Task Begin(NpcContext ctx)
     {
-        if (ctx.Reg(PoetWhipQuest.PipeGivenReg) == 0)
+        if (ctx.Quest(PoetWhipQuest.Key).Get(PoetWhipQuest.PipeGiven) == 0)
         {
             // RTK sendMinitext — the status box, not a dialog. It is deliberately incurious: he has no idea
             // who you are until the pipe is in his hand.
             if (!ctx.HasItem(PoetWhipQuest.Pipe)) { ctx.Notify("Hmmm, what? Oh hello, Stranger"); return; }
             if (!ctx.TakeItem(PoetWhipQuest.Pipe, 1)) return;
-            ctx.SetReg(PoetWhipQuest.PipeGivenReg, 1);
+            ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.PipeGiven, 1);
         }
 
         await ctx.Say(
@@ -221,7 +222,7 @@ public sealed class PoetWhipQuestAbility : INpcAbility
             return;   // the pipe stays spent: come back and he picks up from here
         }
 
-        ctx.SetStage(PoetWhipQuest.Key, PoetWhipQuest.StageBranch);
+        ctx.Quest(PoetWhipQuest.Key).SetStage(PoetWhipQuest.StageBranch);
         await ctx.Say(
             "Well then, you will still need to become an initiate of the Staff before we can allow you to know our secrets. You must quest to find a shard of wood that will last forever.",
             "Bring it back to me as a gift and I will allow you to be an initiate of the Staff. Note - it MUST be you who picks up the branch from the tree.");
@@ -235,7 +236,7 @@ public sealed class PoetWhipQuestAbility : INpcAbility
         { await ctx.Say("I am still waiting for you to bring me a branch from the Forever tree."); return false; }
 
         if (!ctx.TakeItem(PoetWhipQuest.Branch, 1)) return false;
-        ctx.SetStage(PoetWhipQuest.Key, PoetWhipQuest.StageWater);
+        ctx.Quest(PoetWhipQuest.Key).SetStage(PoetWhipQuest.StageWater);
 
         if (!ctx.HasLegend(PoetWhipQuest.LegendAcolyte))
             ctx.AddLegend($"Became Nangen Acolyte ({Character.GameDate})", PoetWhipQuest.LegendAcolyte,
@@ -248,14 +249,14 @@ public sealed class PoetWhipQuestAbility : INpcAbility
     // ---- steps 3 and 5: the water errand, and the reward ------------------------------------------
     private static async Task Errand(NpcContext ctx)
     {
-        if (ctx.KillCount(PoetWhipQuest.RabbitMob) > ctx.Reg(PoetWhipQuest.RabbitBaselineReg))
+        if (ctx.KillCount(PoetWhipQuest.RabbitMob) > ctx.Quest(PoetWhipQuest.Key).Get(PoetWhipQuest.RabbitBaseline))
         {
             await ctx.SayLook(PoetWhipQuest.RabbitLook, PoetWhipQuest.RabbitColor,
                 "You killed one of our rabbits! You must cleanse yourself by asking for forgiveness from all of the Totem Animals.");
             return;
         }
 
-        if (ctx.Reg(PoetWhipQuest.InfectedReg) == 1) { await Reward(ctx); return; }
+        if (ctx.Quest(PoetWhipQuest.Key).Get(PoetWhipQuest.Infected) == 1) { await Reward(ctx); return; }
 
         await ctx.Say(
             "Now for the story of our service. A long time ago, a great evil presence grew here. It began to affect the townsfolk, turning them into a warlike people.",
@@ -264,17 +265,17 @@ public sealed class PoetWhipQuestAbility : INpcAbility
             "To keep the evil in check, we created magical rabbits to keep the evil balanced. But now it is out of our control once again.",
             "It has begun to pour all of its energy into one of itself, deep in a hidden pocket of Oblivion. If the power increases too much, a hole will tear into this realm and the evil will be free once again.");
 
-        if (ctx.NowUnix <= ctx.Reg(PoetWhipQuest.WaterTimerReg))
+        if (ctx.NowUnix <= ctx.Quest(PoetWhipQuest.Key).Get(PoetWhipQuest.WaterTimer))
         { await ctx.Say("You must wait 24 hours before I give you another sacred water."); return; }
 
-        ctx.SetReg(PoetWhipQuest.WaterTimerReg, (int)(ctx.NowUnix + PoetWhipQuest.WaterCooldown));
+        ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.WaterTimer, (int)(ctx.NowUnix + PoetWhipQuest.WaterCooldown));
 
         await ctx.SayItem(PoetWhipQuest.Water,
             "You need to take this sacred water into the realm and drop it next to the ugly green infected creature. The water will destroy it and balance will be restored once again.");
         ctx.GiveItem(PoetWhipQuest.Water, 1);
 
         // RTK's flushKills("magic_rabbit"): from here on, only rabbits killed with the water in hand count.
-        ctx.SetReg(PoetWhipQuest.RabbitBaselineReg, ctx.KillCount(PoetWhipQuest.RabbitMob));
+        ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.RabbitBaseline, ctx.KillCount(PoetWhipQuest.RabbitMob));
 
         await ctx.SayLook(PoetWhipQuest.InfectedLook, PoetWhipQuest.InfectedColor,
             "Note! You need to be NEXT to the creature and FACING it in order for the magic water to work! Do not lose or give this water away. That would be disrespectful.");
@@ -296,9 +297,9 @@ public sealed class PoetWhipQuestAbility : INpcAbility
         ctx.GiveItem(PoetWhipQuest.Whip, 1);
 
         // Back to a clean slate, as RTK does — from here the legend is what makes it once per character.
-        ctx.SetStage(PoetWhipQuest.Key, 0);
-        ctx.SetReg(PoetWhipQuest.InfectedReg, 0);
-        ctx.SetReg(PoetWhipQuest.WaterTimerReg, 0);
-        ctx.SetReg(PoetWhipQuest.PipeGivenReg, 0);
+        ctx.Quest(PoetWhipQuest.Key).SetStage(0);
+        ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.Infected, 0);
+        ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.WaterTimer, 0);
+        ctx.Quest(PoetWhipQuest.Key).Set(PoetWhipQuest.PipeGiven, 0);
     }
 }

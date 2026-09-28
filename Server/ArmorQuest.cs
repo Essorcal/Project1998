@@ -61,13 +61,19 @@ public static class ArmorQuest
     public const byte LegendIcon = 5, LegendColor = 128;
 
     // ---- registry keys other systems write, that these chains read -------------------------------
+    // Flat registry keys (QuestState.Registry: the name is the saved key), because other features own them.
     /// <summary>Completed mentorships (<see cref="Session.RunMentorAsync"/>). Poet Moon wants three.</summary>
     public const string MentoredReg = "mentored";
     /// <summary>Carnage victories, recorded by a GM with <c>@carnage</c>. Warrior Sun wants two.</summary>
     public const string CarnageWinsReg = "carnage_wins";
+
+    /// <summary>The Sun chains' stage key (<see cref="ArmorChain.StageKey"/> of every "sun" chain), and so the
+    /// namespace <see cref="TotemSteps"/> lives in.</summary>
+    public const string SunKey = "sun_armor";
     /// <summary>How far along the Poet Sun four-totem sequence the player is (0..4), advanced only by
-    /// worshipping the right totem in the right order — see <see cref="TotemWorshipAbility"/>.</summary>
-    public const string TotemStepReg = "sun_armor_totem";
+    /// worshipping the right totem in the right order — see <see cref="TotemWorshipAbility"/>. A slot of
+    /// <see cref="SunKey"/>, saved as <c>sun_armor_totem</c>.</summary>
+    public const string TotemSteps = "count.totems";
 
     /// <summary>Crafting skill-point registry keys, one per manufacturing skill, and the point total each
     /// needs to read as <b>Adept</b> (RTK <c>crafting.skillPointsPerLevel</c>, rank 4 of 11).
@@ -218,7 +224,7 @@ public static class ArmorQuest
                 new ArmorStep
                 {
                     Ask = new[] { "Prove your combat expertise. Win at least two Carnages." },
-                    Extra = c => c.Reg(CarnageWinsReg) >= 2,
+                    Extra = c => c.Quest(QuestState.Registry).Get(CarnageWinsReg) >= 2,
                     Unmet = "You are missing the two required carnage victories that you need.",
                 },
                 new ArmorStep
@@ -595,7 +601,7 @@ public static class ArmorQuest
                 new ArmorStep
                 {
                     Ask = new[] { "For this next task, I will ask that you show me another example of commitment, mentoring 3 others." },
-                    Extra = c => c.Reg(MentoredReg) >= 3,
+                    Extra = c => c.Quest(QuestState.Registry).Get(MentoredReg) >= 3,
                     Unmet = "Return to me when you have mentored at least 3 others.",
                 },
                 Final(will: 2, karma: 2),
@@ -635,15 +641,15 @@ public static class ArmorQuest
                         "First I would like you to worship Chung ryong, then Baekho, then Ju Jak, and finally Hyun moo.",
                         "You do not need to return to me after you worship each totem, only when you have worshipped all four totems.",
                     },
-                    Extra = c => c.Reg(TotemStepReg) >= 4,
+                    Extra = c => c.Quest(SunKey).Get(TotemSteps) >= 4,
                     Unmet = "You have yet to worship all four totems, please return to me when you have done so.",
-                    OnPay = c => c.SetReg(TotemStepReg, 0),
+                    OnPay = c => c.Quest(SunKey).Set(TotemSteps, 0),
                 },
                 // The hard stop. See ManufactureSkills: the gate is real, and nothing fills it yet.
                 new ArmorStep
                 {
                     Ask = new[] { "Next I would like to see your devotion to the crafts. You will need to be the level of Adept or higher in either Tailoring, Smithing, or Carpentry." },
-                    Extra = c => ManufactureSkills.Any(s => c.Reg(s.Reg) >= s.Adept),
+                    Extra = c => ManufactureSkills.Any(s => c.Quest(QuestState.Registry).Get(s.Reg) >= s.Adept),
                     Unmet = "Return to me when you have achieved Adept status in Tailoring, Smithing, or Carpentry.",
                     Done = "You have shown your devotion to the crafts.",
                 },

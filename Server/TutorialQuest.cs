@@ -26,19 +26,26 @@ namespace Server;
 /// </summary>
 public static class TutorialQuest
 {
-    // sub-flags (RTK player.quest[...] booleans), kept in the int registry alongside the main stage.
-    private const string Stage      = "tutorial_quest";
-    private const string GaveGold   = "tutorial_quest1_gave_gold";
-    private const string GaveMeat   = "tutorial_quest2_gave_meat";
-    private const string GaveSword  = "tutorial_quest8_gave_sword";
+    /// <summary>The chain's namespace and stage key (<see cref="QuestState"/>).</summary>
+    internal const string Key = "tutorial_quest";
+    // sub-flags (RTK player.quest[...] booleans): slots of Key, each mapped to the key it has always been saved
+    // under by QuestState's alias table.
+    private  const string GaveGold      = "flag.gave_gold";
+    private  const string GaveMeat      = "flag.gave_meat";
+    private  const string GaveSword     = "flag.gave_sword";
+    internal const string LearnedToFish = "flag.learned_to_fish";   // set by the fishing ability (NpcAbility.cs)
+    internal const string TalkedToTutor = "flag.talked_to_tutor";   // set by the librarian (NpcAbility.cs)
+    private  const string HelpedHaguru  = "flag.helped_haguru";     // set by npc_dialog.lua
+    private  const string VisitedYon    = "flag.visited_yon_and_weaved";
     // Tiger-essence bookkeeping. The briefing itself needs none — it repeats until the player has been to
-    // Chonsa Den, and TigerMailQuest.MetClawReg (stamped by Claw) is what ends it. This is only for the
-    // upgrade nudge, which must not re-fire every click while the player stands on a rung's level.
-    private const string NudgedAt   = "tiger_essence_nudged_level";  // the level the upgrade nudge last fired at
+    // Chonsa Den, and TigerMailQuest.MetClaw (stamped by Claw) is what ends it. This is only for the
+    // upgrade nudge, which must not re-fire every click while the player stands on a rung's level. A slot of
+    // TigerMailQuest.QuestKey's namespace: the level the upgrade nudge last fired at.
+    private const string NudgedAt = "level.nudged";
 
     public static readonly QuestDef Def = new()
     {
-        Key  = Stage,
+        Key  = TutorialQuest.Key,
         Name = "Continue my training",
         Talk = Run,
     };
@@ -61,7 +68,7 @@ public static class TutorialQuest
         // choice and before the tutorial chain. See TigerEssence for the one thing it does differently.
         if (await TigerEssence(ctx)) return;
 
-        int stage = ctx.Stage(Stage);
+        int stage = ctx.Quest(Key).Stage;
 
         // This chain's own greeting still opens the whole conversation — it ends on "Click on me to learn...",
         // which is exactly the invitation to start the first-steps chain. So stage 0 runs before anything else.
@@ -78,7 +85,7 @@ public static class TutorialQuest
         // handed the saber, the garb and Soothe out there. Before it the area doesn't exist and the tutor is
         // the only place they can come from. Exactly one of the pair is ever live (Era.TutorNoviceChain
         // retires the day Era.NewbieArea arrives), and the tutor himself is present in every era either way.
-        if (Era.Has(Era.TutorNoviceChain) && ctx.Stage(NoviceQuest.Key) < NoviceQuest.Done)
+        if (Era.Has(Era.TutorNoviceChain) && ctx.Quest(NoviceQuest.Key).Stage < NoviceQuest.Done)
         {
             await NoviceQuest.Run(ctx);
             return;
@@ -190,7 +197,7 @@ public static class TutorialQuest
     /// <c>quest["tiger_armor"] == 0</c>, which only clears once the first rung is actually claimed — so a
     /// Warrior who walked to Claw, heard him, and could not yet afford an antler and a war platemail would
     /// have done everything the briefing asked and still be locked out of their own tutor indefinitely. The
-    /// gate here is <see cref="TigerMailQuest.MetClawReg"/>, which Claw stamps the moment he engages, so the
+    /// gate here is <see cref="TigerMailQuest.MetClaw"/>, which Claw stamps the moment he engages, so the
     /// block releases on the trip rather than on the purchase.</para>
     ///
     /// <para>The level gate is <see cref="TigerMailQuest.MinLevel"/>, NOT the literal 5 the Lua carries. RTK
@@ -209,7 +216,8 @@ public static class TutorialQuest
     {
         if (ctx.BasePathId != TigerMailQuest.WarriorPathId || ctx.Level < TigerMailQuest.MinLevel) return false;
 
-        if (ctx.Reg(TigerMailQuest.MetClawReg) != 1)
+        var tigerMail = ctx.Quest(TigerMailQuest.QuestKey);
+        if (tigerMail.Get(TigerMailQuest.MetClaw) != 1)
         {
             // Two portraits, as in the Lua: the tutor's own for his lines, and Claw's creature look for the
             // voice from the cave.
@@ -225,9 +233,9 @@ public static class TutorialQuest
         // so this is "you have just reached the level your next tiger armor needs". Once per rung: without the
         // NudgedAt guard this would also block, and unlike the briefing there is nothing the player can do to
         // clear it except out-level their own armour.
-        if (ctx.Stage(TigerMailQuest.QuestKey) == ctx.Level && ctx.Reg(NudgedAt) != ctx.Level)
+        if (tigerMail.Stage == ctx.Level && tigerMail.Get(NudgedAt) != ctx.Level)
         {
-            ctx.SetReg(NudgedAt, ctx.Level);
+            tigerMail.Set(NudgedAt, ctx.Level);
             await ctx.Say("Your tiger armor looks outdated. Go visit my friend Claw again to see about an upgrade.");
             return true;
         }
@@ -238,7 +246,7 @@ public static class TutorialQuest
     // stage 0 -> 1 (only reachable once NoviceQuest is finished — see the dispatch at the top of Run).
     private static async Task Intro(NpcContext ctx)
     {
-        ctx.SetStage(Stage, 1);
+        ctx.Quest(Key).SetStage(1);
         await ctx.Say("Greetings and welcome to my home. I see you are eager to get on with your adventure. " +
                       "Before you do however, there is much more you need to learn. Click on me to learn... ");
     }
@@ -253,14 +261,14 @@ public static class TutorialQuest
         if (ctx.HasItem(armor) || ctx.HasEquipped(armor))
         {
             ctx.AwardExp(100);
-            ctx.SetReg(GaveGold, 0);
-            ctx.SetStage(Stage, 2);
+            ctx.Quest(Key).Set(GaveGold, 0);
+            ctx.Quest(Key).SetStage(2);
             await ctx.Say("You've done well. Keep the armor. It will serve you well against your first foe... later. Press <u> to wear it.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
         }
 
-        if (ctx.Reg(GaveGold) == 1)
+        if (ctx.Quest(Key).Get(GaveGold) == 1)
         {
             await ctx.SayItem(armor, $"I am still waiting for that {armorName}. Please go visit the blacksmith.");
             return;
@@ -271,7 +279,7 @@ public static class TutorialQuest
                       "You need to understand how to buy and sell items. First, you need to buy something...");
         await ctx.Say("You've gained some of this old warrior's trust. Here's some money for some armor.");
         ctx.AwardGold(20);
-        ctx.SetReg(GaveGold, 1);
+        ctx.Quest(Key).Set(GaveGold, 1);
         await ctx.SayItem(armor, $"Go to the blacksmith, get a {armorName}, and bring it back. You'll find it listed under <Peasant's Clothes>");
         await ctx.SayLook(6, 13, "You can find the blacksmith in Buya, at the location 18,103, or in Kugnae, 60,122. If you forget, you can check on the mini map by pressing 'm'.");
         await ctx.SayLook(6, 13, "Just try clicking on the old man, he's got a one track mind. He'll try to sell you something.");
@@ -285,15 +293,15 @@ public static class TutorialQuest
         {
             ctx.TakeItem("meat_scrap", 1);
             ctx.AwardExp(100);
-            ctx.SetStage(Stage, 3);
-            ctx.SetReg(GaveMeat, 0);
+            ctx.Quest(Key).SetStage(3);
+            ctx.Quest(Key).Set(GaveMeat, 0);
             await ctx.Say("You're a lot better than that last apprentice. He was...well, I'll not go on about that.");
             await ctx.Say("Keep it up and you might find yourself getting referred to as a Hero sometime... or a merchant at any rate.");
             await ctx.Say("If you would like another quest, let me know. I have plenty to teach a young one like yourself.");
             return;
         }
 
-        if (ctx.Reg(GaveMeat) == 1)
+        if (ctx.Quest(Key).Get(GaveMeat) == 1)
         {
             await ctx.SayItem("meat_scrap", "I've already given you the rabbit meat. Buy a meat scrap while you are at the butcher.");
             return;
@@ -301,7 +309,7 @@ public static class TutorialQuest
 
         await ctx.Say("Money doesn't make a man, but it does mend a sword. You can take some of the animal flesh to the butcher.");
         await ctx.SayLook(11, 3, "She's stingy... but it's a way to get some money. Anyway, if you're going to the butcher, learn to sell.");
-        ctx.SetReg(GaveMeat, 1);
+        ctx.Quest(Key).Set(GaveMeat, 1);
         ctx.GiveItem("rabbit_meat", 5);
         await ctx.SayItem("rabbit_meat", "Here's five rabbit corpses. Whew! they do start to stink. Take these to the butcher's shop.");
         await ctx.SayLook(11, 3, "You can find the butcher in Buya, at the location 39,129, or in Kugnae 41,131. If you forget, you can check on the mini map by pressing 'm'.");
@@ -317,7 +325,7 @@ public static class TutorialQuest
             ctx.TakeItem("chestnut", 5);
             ctx.TakeItem("rose", 1);
             ctx.AwardExp(150);
-            ctx.SetStage(Stage, 4);
+            ctx.Quest(Key).SetStage(4);
             await ctx.Say("Perfect! A Rose for my love, and some Chestnuts to eat. Thank you for getting these items for me.",
                           "Remember that there are other ways to get some items to sell to the merchants, or to other citizens.");
             await ctx.Say("If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
@@ -336,12 +344,12 @@ public static class TutorialQuest
     // FishAbility; the catch is the normal 25% roll here as everywhere else, so this takes a few casts).
     private static async Task Fishing(NpcContext ctx)
     {
-        if (ctx.HasItem("minnow", 1) && ctx.Reg("learned_to_fish") == 1)
+        if (ctx.HasItem("minnow", 1) && ctx.Quest(Key).Get(LearnedToFish) == 1)
         {
             ctx.TakeItem("minnow", 1);
             ctx.AwardExp(50);
             ctx.AwardGold(5);
-            ctx.SetStage(Stage, 5);
+            ctx.Quest(Key).SetStage(5);
             await ctx.Say("Thanks for the fish! That wasn't so hard was it?",
                           "I've heard stores about people finding pretty strange things while fishing.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
@@ -356,11 +364,11 @@ public static class TutorialQuest
     // stage 5: exploration (needs the talked_to_tutor legend from the kingdom greeter/librarian — not in yet).
     private static async Task Exploration(NpcContext ctx)
     {
-        if (ctx.Reg("talked_to_tutor") == 1)
+        if (ctx.Quest(Key).Get(TalkedToTutor) == 1)
         {
             ctx.AwardExp(150);
-            ctx.SetStage(Stage, 6);
-            ctx.SetReg("talked_to_tutor", 0);
+            ctx.Quest(Key).SetStage(6);
+            ctx.Quest(Key).Set(TalkedToTutor, 0);
             await ctx.Say("I am glad to see you have discovered our kingdoms heart, and I hope you enjoyed looking around inside the safety of the kingdoms walls.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
@@ -379,7 +387,7 @@ public static class TutorialQuest
         if (ctx.HasItem("ogre_cider", 1))
         {
             ctx.AwardExp(150);
-            ctx.SetStage(Stage, 7);
+            ctx.Quest(Key).SetStage(7);
             ctx.TakeItem("ogre_cider", 1);
             await ctx.Say("Terrific, you have some Ogre cider! Nothing like some cider to wash down a meal.",
                           "If you want to be successful, you'll have to explore many places outside of the cozy towns.",
@@ -403,7 +411,7 @@ public static class TutorialQuest
     {
         if (ctx.HasLegend("aided_chu_rua"))
         {
-            ctx.SetStage(Stage, 8);
+            ctx.Quest(Key).SetStage(8);
             await ctx.Say("The Dragon King shall fare better because of you.");
             return;
         }
@@ -430,7 +438,7 @@ public static class TutorialQuest
         {
             ctx.TakeItem("antler", 3);
             ctx.AwardExp(200);
-            ctx.SetStage(Stage, 9);
+            ctx.Quest(Key).SetStage(9);
             // RTK also casts sanctuary (a protective blessing) here; not modelled.
             await ctx.Say("You are a great fighter, that has learnt well. I hope you fought well and defended your other members well.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
@@ -450,10 +458,10 @@ public static class TutorialQuest
         // off entirely every feature is on, new characters still spawn into 4711 (CharacterFactory.StartFor)
         // and still pass the guard — the gate out of 4717 is HIS act, so the quiz can't be skipped — which
         // makes "the area exists" the accurate reading of "they already have one" in that case too.
-        if (!Era.Has(Era.NewbieArea) && ctx.Reg(GaveSword) == 0)
+        if (!Era.Has(Era.NewbieArea) && ctx.Quest(Key).Get(GaveSword) == 0)
         {
             ctx.GiveItem("novice_sword", 1);
-            ctx.SetReg(GaveSword, 1);
+            ctx.Quest(Key).Set(GaveSword, 1);
             await ctx.SayItem("novice_sword", "Before you go — that saber has served you, but it was cut for rabbits. Take this novice sword.");
         }
 
@@ -475,7 +483,7 @@ public static class TutorialQuest
         if (ctx.HasItem("mica", 1))
         {
             ctx.TakeItem("mica", 1);
-            ctx.SetStage(Stage, 10);
+            ctx.Quest(Key).SetStage(10);
             ctx.GiveItem("blue_potion", 1);
             ctx.AwardExp(500);
             await ctx.SayItem("mica", "A Mica! Just what I needed.");
@@ -514,7 +522,7 @@ public static class TutorialQuest
         if (ctx.Mounted)
         {
             ctx.AwardExp(150);
-            ctx.SetStage(Stage, 11);
+            ctx.Quest(Key).SetStage(11);
             await ctx.SayLook(17, 3, "What a great steed you have there. Very impressive indeed, I love to watch horses.",
                                      "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
@@ -532,11 +540,11 @@ public static class TutorialQuest
     // Northern Pass, before the Arctic gate, and Haguru is the only NPC on it.
     private static async Task FindBrother(NpcContext ctx)
     {
-        if (ctx.Reg("helped_haguru") == 1)
+        if (ctx.Quest(Key).Get(HelpedHaguru) == 1)
         {
             ctx.AwardExp(500);
-            ctx.SetReg("helped_haguru", 0);
-            ctx.SetStage(Stage, 12);
+            ctx.Quest(Key).Set(HelpedHaguru, 0);
+            ctx.Quest(Key).SetStage(12);
             await ctx.Say("Oh thank you so much for finding my brother! It is such a burden off my mind. He is such a noble one trying to help that town like that.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
@@ -564,7 +572,7 @@ public static class TutorialQuest
     {
         if (ctx.HasLegend("defeated_ice_beast"))
         {
-            ctx.SetStage(Stage, 13);
+            ctx.Quest(Key).SetStage(13);
             await ctx.Say("Well done, I see you have upgraded yourself to a better weapon. I hope it works out for you.",
                           "If you would like another quest, let me know, I have plenty to teach a young one like yourself.");
             return;
@@ -582,13 +590,13 @@ public static class TutorialQuest
         if (ctx.HasItem("student_cap", 1) || ctx.HasEquipped("student_cap"))
         {
             ctx.AwardExp(2000);
-            ctx.SetStage(Stage, 14);
-            ctx.SetReg("visited_yon_and_weaved", 0);
+            ctx.Quest(Key).SetStage(14);
+            ctx.Quest(Key).Set(VisitedYon, 0);
             await ctx.Say("I have taught you all that I can, young one. The time has now come for you to venture out into the Kingdoms and create your own legends.");
             return;
         }
 
-        if (ctx.Reg("visited_yon_and_weaved") == 1 && ctx.HasItem("cloth", 1))
+        if (ctx.Quest(Key).Get(VisitedYon) == 1 && ctx.HasItem("cloth", 1))
         {
             await ctx.Say("Ah, I see you have visited Yon.. how was she?",
                           "Now that you have the cloth, you must visit the museum Caretaker, whom resides in the museum north of Dae Shore. He is the only one who can make your Student Cap.");

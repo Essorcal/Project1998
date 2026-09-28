@@ -176,7 +176,7 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx)
     {
-        int stage = ctx.Stage(DaggerUniformQuest.Key);
+        int stage = ctx.Quest(DaggerUniformQuest.Key).Stage;
 
         if (ctx.Def.Id == DaggerUniformQuest.CrowNpcId)
         {
@@ -211,26 +211,26 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
     {
         if (ctx.KarmaTooLow()) return;
 
-        switch (ctx.Stage(DaggerUniformQuest.Key))
+        switch (ctx.Quest(DaggerUniformQuest.Key).Stage)
         {
             case DaggerUniformQuest.Stage.Unmet:
                 ctx.Notify("I shall not speak with you Ever.");
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.TappedOnce);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.TappedOnce);
                 return;
 
             case DaggerUniformQuest.Stage.TappedOnce:
                 ctx.Notify("Bother me again, and you shall die seeing what hides in the shadows.");
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.TappedTwice);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.TappedTwice);
                 return;
 
             case DaggerUniformQuest.Stage.TappedTwice:
                 ctx.Notify("This is what you get for your annoyance. Attack!");
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.Assaulted);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.Assaulted);
                 ctx.SpawnAmbush(DaggerUniformQuest.AssassinMob, DaggerUniformQuest.AssassinSeconds);
                 return;
 
             default:   // Assaulted — and you came back
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.WatchForRooster);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.WatchForRooster);
                 await ctx.Say("So, you still return to me even after the assault. You have a glimmer of promise... or stupidity. Return when you see a Blue Rooster.");
                 return;
         }
@@ -241,14 +241,14 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
     {
         if (ctx.KarmaTooLow()) return;
 
-        switch (ctx.Stage(DaggerUniformQuest.Key))
+        switch (ctx.Quest(DaggerUniformQuest.Key).Stage)
         {
             case DaggerUniformQuest.Stage.WatchForRooster:
                 await ctx.Say("Return to me when you see a Blue Rooster.");
                 return;
 
             case DaggerUniformQuest.Stage.SeenRooster:
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.StealAcorn);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.StealAcorn);
                 await ctx.Say(
                     "Ah, seen the Blue Rooster have you? That is good that you came at my summoning.",
                     "I have decided that many of you Strangers may make very good additions to my little clan. Perhaps the ways of the Night will not be lost.",
@@ -276,7 +276,7 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
 
                 ctx.TakeItem(DaggerUniformQuest.ReturnedAcorn, 1);
                 ctx.GiveItem(DaggerUniformQuest.Scroll, 1);   // the acorn's slot just freed, so this fits
-                ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.PlantScroll);
+                ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.PlantScroll);
                 await ctx.Say(
                     "So you have managed to capture the acorn from that fool, Maro, eh? Good for you. Now it is time for you to pull the wool over Maso's eyes in Buya.",
                     "I'll take that acorn and place it somewhere safe. Take this scroll and slide it into Maso's pocket. It is easy to be a pickpocket, a bit harder to be a put-pocket.",
@@ -299,7 +299,7 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
 
         ctx.AddLegend($"Member of Dagger's guild ({Character.GameDate})", DaggerUniformQuest.Legend,
                       DaggerUniformQuest.LegendIcon, DaggerUniformQuest.LegendColor);
-        ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.Done);
+        ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.Done);
 
         // RTK's opening and closing lines, verbatim. Its middle two name the round buckler it hands over,
         // which is not this quest's reward (see the class doc) — the line between them is authored, and says
@@ -331,9 +331,9 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
     // corrections a reader would make are guesses about what the 2001 client printed.
     private static async Task Crow(NpcContext ctx)
     {
-        if (ctx.Stage(DaggerUniformQuest.Key) == DaggerUniformQuest.Stage.CrowTookIt)
+        if (ctx.Quest(DaggerUniformQuest.Key).Stage == DaggerUniformQuest.Stage.CrowTookIt)
         {
-            ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.CrowSpoke);
+            ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.CrowSpoke);
             await ctx.Say(
                 "The crow sits there watching you approach. When you get close enough it squawks, \"Please don't harm me!\"",
                 "\"I am actually a small boy who once thought he was smarter than a Tiger,\" the crow says. \"But the Tiger turned out to be an evil spirit.\"",
@@ -364,10 +364,10 @@ public sealed class DaggerUniformAbility : INpcAbility, INpcHandItemHandler
     {
         if (ctx.Def.Id != DaggerUniformQuest.MasoNpcId) return false;
         if (item.Key != DaggerUniformQuest.Scroll) return false;
-        if (ctx.Stage(DaggerUniformQuest.Key) != DaggerUniformQuest.Stage.PlantScroll) return false;
+        if (ctx.Quest(DaggerUniformQuest.Key).Stage != DaggerUniformQuest.Stage.PlantScroll) return false;
         if (!ctx.TakeItem(DaggerUniformQuest.Scroll, 1)) return false;
 
-        ctx.SetStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.ScrollPlanted);
+        ctx.Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.ScrollPlanted);
         await ctx.Say(
             "\".....Eh? What is this?....\"",
             "\"That arrogant fool! Does Maro really believe that he can destroy me?!!! I will have to take some actions against him...\"");

@@ -321,24 +321,25 @@ public class TigerMailQuestTests
     }
 
     /// <summary>The tutor blocks until the player has BEEN to Claw — not until they have claimed a rung. The
-    /// distinction is the whole reason <see cref="TigerMailQuest.MetClawReg"/> exists: keying the block on
+    /// distinction is the whole reason <see cref="TigerMailQuest.MetClaw"/> exists: keying the block on
     /// quest progress (which is what RTK does) strands a Warrior who reached Claw but cannot yet afford the
     /// first rung's ingredients, locked out of their own tutor with nothing left to do about it.</summary>
     [Fact]
     public void TutorBlockReleasesOnMeetingClawNotOnProgress()
     {
         var tutor = System.IO.File.ReadAllText(RepoFile("Server/TutorialQuest.cs"));
-        Assert.Contains("TigerMailQuest.MetClawReg", tutor);
+        Assert.Contains("Get(TigerMailQuest.MetClaw) != 1", tutor);
         // The block must NOT be keyed on the quest stage — that is RTK's condition and the one that strands.
-        Assert.DoesNotContain("ctx.Stage(TigerMailQuest.QuestKey) == 0", tutor);
+        Assert.DoesNotContain("Quest(TigerMailQuest.QuestKey).Stage == 0", tutor);
+        Assert.DoesNotContain("tigerMail.Stage == 0", tutor);
 
         // Claw stamps it BEFORE his level/ingredient checks, so arriving is enough. Pinned by position:
         // the flag has to be set ahead of the first gate that can return early.
         var claw = System.IO.File.ReadAllText(RepoFile("Server/TigerMailQuest.cs"));
-        int stamp = claw.IndexOf("SetReg(TigerMailQuest.MetClawReg, 1)", System.StringComparison.Ordinal);
+        int stamp = claw.IndexOf("Set(TigerMailQuest.MetClaw, 1)", System.StringComparison.Ordinal);
         int levelGate = claw.IndexOf("Return when you have reached level", System.StringComparison.Ordinal);
         Assert.True(stamp > 0 && levelGate > stamp,
-                    "Claw must stamp MetClawReg before the level gate, or a too-young Warrior never clears the tutor block");
+                    "Claw must stamp MetClaw before the level gate, or a too-young Warrior never clears the tutor block");
     }
 
     /// <summary>The tutor's briefing is the quest's advertised entry point, and it draws the voice from the

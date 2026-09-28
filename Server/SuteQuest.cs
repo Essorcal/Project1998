@@ -60,10 +60,13 @@ namespace Server;
 /// </summary>
 public static class SuteQuest
 {
+    /// <summary>The quest's namespace (<see cref="QuestState"/>). It has no stage; its two slots are saved
+    /// under RTK's registry names, <c>sute_quest_dye</c> and <c>sute_quest_timer</c>.</summary>
+    public const string Key = "sute_quest";
     /// <summary>RTK <c>registry["sute_quest_dye"]</c> — 1 while the powder is on and unspent.</summary>
-    public const string DyeReg = "sute_quest_dye";
+    public const string Dye = "flag.dye";
     /// <summary>RTK <c>registry["sute_quest_timer"]</c> — unix seconds; the earliest next coating.</summary>
-    public const string TimerReg = "sute_quest_timer";
+    public const string Timer = "timer.recoat";
 
     public const string Legend   = "slew_mighty_sute";
     public const string KeyItem  = "sutes_key";
@@ -159,13 +162,13 @@ public sealed class SuteQuestAbility : INpcAbility, INpcSayHandler
             ctx.TakeItem(SuteQuest.KeyItem, 1);
             ctx.AddLegend($"Slew the mighty Sute ({Character.GameDate})", SuteQuest.Legend,
                           SuteQuest.LegendIcon, SuteQuest.LegendColor);
-            ctx.SetReg(SuteQuest.DyeReg, 0);
-            ctx.SetReg(SuteQuest.TimerReg, 0);
+            ctx.Quest(SuteQuest.Key).Set(SuteQuest.Dye, 0);
+            ctx.Quest(SuteQuest.Key).Set(SuteQuest.Timer, 0);
             await ctx.Say("You have done well and all will know of your efforts. Unfortunately, I have learned that his spirit is not yet at rest. Sute will soon be reborn.");
             return true;
         }
 
-        if (ctx.NowUnix < ctx.Reg(SuteQuest.TimerReg))
+        if (ctx.NowUnix < ctx.Quest(SuteQuest.Key).Get(SuteQuest.Timer))
         {
             await ctx.Say("Not enough time has passed. If I apply more powder now, it will kill you. Return later.");
             return true;
@@ -200,8 +203,8 @@ public sealed class SuteQuestAbility : INpcAbility, INpcSayHandler
         }
 
         ctx.SpendGold(SuteQuest.PowderCost);
-        ctx.SetReg(SuteQuest.DyeReg, 1);
-        ctx.SetReg(SuteQuest.TimerReg, (int)(ctx.NowUnix + SuteQuest.RecoatSeconds));
+        ctx.Quest(SuteQuest.Key).Set(SuteQuest.Dye, 1);
+        ctx.Quest(SuteQuest.Key).Set(SuteQuest.Timer, (int)(ctx.NowUnix + SuteQuest.RecoatSeconds));
         ctx.SetArmorColor(SuteQuest.DyeColor);            // persists + redraws self and peers
         await ctx.Say("The powder turns your clothing a strange color.",
                       "If you manage to kill Sute, return to me and I will see that your efforts are acknowledged.");

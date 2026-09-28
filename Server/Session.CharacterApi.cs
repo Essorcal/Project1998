@@ -364,11 +364,11 @@ public sealed partial class Session
         }
     }
 
-    // ===== quests (see Server/Quests.cs, NpcContext quest helpers) ================================
-    // Quest state lives in _char.Quests (a flat key->int map, persisted): a quest's stage under its key, its
-    // progress tallies under composite counter keys. These internal helpers are the whole surface the quest
-    // scripts (via NpcContext) and the kill hook touch, so quest logic never reaches into session internals.
-    internal int  QuestStage(string questKey) => _char.Quests.GetValueOrDefault(questKey);
+    // ===== quests (see Server/QuestState.cs; the conversations are QuestDef, Server/NpcAbility.cs) =====
+    // _char.Quests (a flat key->int map, persisted) goes through QuestState (SetNation's clear is #307). Quest
+    // code names its state via Quest(name); QuestStage/SetQuestStage/QuestCounter are the flat primitives under it.
+    internal QuestState Quest(string name) => new(this, name);
+    internal int  QuestStage(string questKey) => QuestState.Read(_char, questKey);
 
     /// <summary>Has this character finished the Dog Linguist chain? Set by the Spotted dog (npc_dialog.lua
     /// <c>npcs_say.DogLinguistNpc</c>) or by <c>@dog</c>; it is what lets you say "secret" to your own class's
@@ -378,10 +378,10 @@ public sealed partial class Session
     internal void SetQuestStage(string questKey, int stage)
     {
         using var _ = EnterState();   // #29: a GM command sets a quest stage on ANOTHER player's session
-        _char.Quests[questKey] = stage;
+        QuestState.Write(_char, questKey, stage);
         SaveChar();
     }
-    internal int  QuestCounter(string counterKey) => _char.Quests.GetValueOrDefault(counterKey);
+    internal int  QuestCounter(string counterKey) => QuestState.Read(_char, counterKey);
 
     // ===== group experience (RTK Scripts/exp.lua onGetExp) =======================================
     // Per-head share by group size. The whole group is worth MORE than a solo kill — two people take

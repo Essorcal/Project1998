@@ -205,10 +205,12 @@ public static class NpcScript
             // page states both figures, "50,000,000 experience (52,500,000 at totem time)".
             case "awardExp":   ctx.AwardExp((uint)Math.Max(0, Int(t, "n")), t.Get("totem").CastToBool()); return DynValue.Nil;
             case "awardGold":  ctx.AwardGold((uint)Math.Max(0, Int(t, "n")));    return DynValue.Nil;
-            case "stage":      return DynValue.NewNumber(ctx.Stage(Str(t, "key")));
-            case "setStage":   ctx.SetStage(Str(t, "key"), Int(t, "n"));         return DynValue.Nil;
-            case "reg":        return DynValue.NewNumber(ctx.Reg(Str(t, "key")));
-            case "setReg":     ctx.SetReg(Str(t, "key"), Int(t, "n"));           return DynValue.Nil;
+            // The four quest verbs name SAVED keys (RTK's flat registry), so all four read QuestState.Registry:
+            // stage and reg are the same map read, as they always were.
+            case "stage":      return DynValue.NewNumber(ctx.Quest(QuestState.Registry).Get(Str(t, "key")));
+            case "setStage":   ctx.Quest(QuestState.Registry).Set(Str(t, "key"), Int(t, "n")); return DynValue.Nil;
+            case "reg":        return DynValue.NewNumber(ctx.Quest(QuestState.Registry).Get(Str(t, "key")));
+            case "setReg":     ctx.Quest(QuestState.Registry).Set(Str(t, "key"), Int(t, "n")); return DynValue.Nil;
             // Karma (Server/Karma.cs). addKarma/removeKarma take FRACTIONS — RTK hands out 0.1 and 0.25 as
             // readily as whole points. karmaCheck takes a tier NAME ("rabbit", "ox", "tiger"), which is the
             // only form RTK's gates are ever written in.

@@ -1134,16 +1134,14 @@ public sealed partial class Session
     // combines a rage multiplier + deduction + positional stances) — a verb holds its own int state without
     // any bespoke C# handler.
     //
-    // THIS IS RTK's `player.registry` AND IT IS PERSISTED, in the same _char.Quests store the NPC side calls
+    // THIS IS RTK's `player.registry` AND IT IS PERSISTED: QuestState.Registry, the same store the NPC side calls
     // registry. It used to be a session-only dictionary on the premise that spell/combat state should reset on
     // relog. That premise is wrong twice over. RTK's registry is character state — chung_ryongs_rage and
     // baekhos_cunning both write it, and both carry a `recast` hook whose entire job is rebuilding the tier
     // from it on relog. And it does not even reset consistently here: the run's DURATION and every effect it
     // armed (rage, deduction, stances) already survive a relog through Session.TimedEffects, so dropping only
     // the tier left Cunning at full Cunning-5 power reading as tier 0 — the next cast charged 3000 for
-    // "Cunning 1" and DOWNGRADED the rage multiplier from 8 back to 4.
-    internal int  LuaReg(string key)                 => QuestCounter(key);
-    internal void LuaSetReg(string key, int v)       => SetQuestStage(key, v);
+    // "Cunning 1" and DOWNGRADED the rage multiplier from 8 back to 4. The verbs reach it as SpellContext.reg/setReg.
 
     // setDuration/hasDuration are RTK's ONE named-timer namespace, and the spell side and the item side both
     // live in it: black_potion sets `chin_baek_ho_ryung` and five warrior strike SCRIPTS read it. This used to

@@ -43,7 +43,8 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
 {
     public static readonly WhiteMoonAxeAbility Instance = new();
 
-    /// <summary>RTK <c>player.quest["white_moon_axe"]</c>, so imported characters keep their place.</summary>
+    /// <summary>RTK <c>player.quest["white_moon_axe"]</c>, so imported characters keep their place. Also the
+    /// quest's namespace (<see cref="QuestState"/>).</summary>
     public const string Key = "white_moon_axe";
     public const int StageBracelet = 1, StageScorpions = 2, StageJu = 3, StagePay = 4;
 
@@ -57,9 +58,10 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
     public const string ScorpionMob = "pale_scorpion";
     public const string JuMob = "skeleton_ju";
 
-    // Kill-count snapshots taken at each ask; a step counts only kills made after it.
-    public const string ScorpionBaseReg = "wma_scorpion_base";
-    public const string JuBaseReg = "wma_ju_base";
+    // Kill-count snapshots taken at each ask; a step counts only kills made after it. Slots of Key's namespace
+    // (QuestState), saved as wma_scorpion_base and wma_ju_base.
+    public const string ScorpionBase = "kills." + ScorpionMob;
+    public const string JuBase = "kills." + JuMob;
 
     public IEnumerable<(string, Func<NpcContext, Task>)> Entries(NpcContext ctx) => NoClickMenu.None;
 
@@ -73,7 +75,7 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
             "Under a white moon I slew a powerful man, of the family Ju, that owed me much money",
             "Yet, still I am not satisfied.");
 
-        int stage = ctx.Stage(Key);
+        int stage = ctx.Quest(Key).Stage;
         if (stage == 0)
         {
             int pick = await ctx.Menu("Are you willing to make such a commitment?",
@@ -83,7 +85,7 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
                 if (pick == 2) await ctx.Say("Then you were not the right person for this task.");
                 return true;
             }
-            ctx.SetStage(Key, stage = StageBracelet);
+            ctx.Quest(Key).SetStage(stage = StageBracelet);
         }
 
         switch (stage)
@@ -91,22 +93,22 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
             case StageBracelet:
                 if (ctx.CountReady(Bracelet) < 1)
                 { await ctx.Say("Your hands are empty! Had you a Whisper bracelet, perhaps I could trust you would survive."); break; }
-                ctx.SetReg(ScorpionBaseReg, ctx.KillCount(ScorpionMob));
-                ctx.SetStage(Key, StageScorpions);
+                ctx.Quest(Key).Set(ScorpionBase, ctx.KillCount(ScorpionMob));
+                ctx.Quest(Key).SetStage(StageScorpions);
                 await ctx.Say("If you knew what venom and speed combined were, perhaps I would consider you.");
                 break;
 
             case StageScorpions:
-                if (ctx.KillCount(ScorpionMob) - ctx.Reg(ScorpionBaseReg) < Scorpions)
+                if (ctx.KillCount(ScorpionMob) - ctx.Quest(Key).Get(ScorpionBase) < Scorpions)
                 { await ctx.Say("Had you slain at least five pale scorpions, you would know."); break; }
-                ctx.SetReg(JuBaseReg, ctx.KillCount(JuMob));
-                ctx.SetStage(Key, StageJu);
+                ctx.Quest(Key).Set(JuBase, ctx.KillCount(JuMob));
+                ctx.Quest(Key).SetStage(StageJu);
                 await AskForJu(ctx);
                 break;
 
             case StageJu:
-                if (ctx.KillCount(JuMob) - ctx.Reg(JuBaseReg) < 1) { await AskForJu(ctx); break; }
-                ctx.SetStage(Key, StagePay);
+                if (ctx.KillCount(JuMob) - ctx.Quest(Key).Get(JuBase) < 1) { await AskForJu(ctx); break; }
+                ctx.Quest(Key).SetStage(StagePay);
                 await Pay(ctx);
                 break;
 
@@ -147,9 +149,9 @@ public sealed class WhiteMoonAxeAbility : INpcAbility, INpcSayHandler
 
         ctx.SpendGold(Price);
         ctx.GiveItem(Axe);
-        ctx.SetStage(Key, 0);   // repeatable, as in RTK
-        ctx.SetReg(ScorpionBaseReg, 0);
-        ctx.SetReg(JuBaseReg, 0);
+        ctx.Quest(Key).SetStage(0);   // repeatable, as in RTK
+        ctx.Quest(Key).Set(ScorpionBase, 0);
+        ctx.Quest(Key).Set(JuBase, 0);
 
         await ctx.Say("There you are rogue. May it inspire you as it has me.",
                       "The moon is white, He's been desecrated. I have a moment of peace.");
