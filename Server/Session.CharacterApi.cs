@@ -321,7 +321,15 @@ public sealed partial class Session
     /// <para><b>Why the write comes before the latch.</b> The latch refuses writes at the chokepoint, including
     /// this one; latched first, the kick itself could not write. It is in a <c>finally</c> so a capture that
     /// throws still latches: the exception leaves here as it always did, and nothing from this session writes
-    /// afterwards.</para>
+    /// afterwards. The notice and the close are in the same <c>finally</c>, after the latch, so a throwing
+    /// capture still finishes the kick: the old connection is told and closed rather than left open on a session
+    /// that will never write again (#298 review, pre-existing 2). The caller logs the lost save.</para>
+    ///
+    /// <para><b>A throwing capture still fences.</b> The unconditional write is what makes the kick a fence: its
+    /// newer sequence number drops at the write gate any capture taken before it. A capture that throws takes no
+    /// number, so the catch takes one and stamps it as written under <c>_writeGate</c> without writing. The row
+    /// the caller then loads is final on this path too: an older in-flight write is dropped, or, if it was
+    /// already past the gate, lands before the caller's load (#303 review, F1).</para>
     ///
     /// <para>Safe to call from the NEW session's thread. The state monitor taken here is what serializes
     /// against anything this (old) session's own thread, a late group share or a late death is doing: they
@@ -336,12 +344,24 @@ public sealed partial class Session
         {
             if (_enteredWorld) CaptureAndWrite(dirtyGated: false);
         }
+        catch
+        {
+            // The capture threw before it took a sequence number, so the gate has nothing newer to drop an
+            // older capture with: a sweep or a late share captured before this kick, still on its way to the
+            // gate, would land after the caller's load (#303 review, F1). Take the number the write would have
+            // taken and stamp it as written, under the gate, without writing. A capture older than the kick is
+            // dropped at the gate, and a write already past it finishes before this returns, so the row the
+            // caller loads is final. The same _writeGate-under-the-monitor nesting as the write above.
+            long fence = ++_saveSeq;
+            lock (_writeGate) _writtenSeq = fence;
+            throw;
+        }
         finally
         {
             Volatile.Write(ref _replaced, 1);
+            SendMiniText("You have logged in from another location.");
+            CloseConnection("replaced by new login");
         }
-        SendMiniText("You have logged in from another location.");
-        CloseConnection("replaced by new login");
     }
 
     // ===== quests (see Server/Quests.cs, NpcContext quest helpers) ================================

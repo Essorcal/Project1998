@@ -198,7 +198,8 @@ public sealed partial class World
         /// a compare-and-remove so a session that was already kicked/replaced (Register overwrote its
         /// slot with the newer session) can't accidentally evict the session that replaced it when its own
         /// (now-stale) teardown finally runs. The arrival's own refusals give their slot back through here: a
-        /// session that never loaded a character has nothing to fence.</summary>
+        /// session that never loaded a character has nothing to fence. So does the teardown of an arrival that
+        /// threw after claiming the slot and before entering the world (<c>Session.TearDownWorldState</c>).</summary>
         internal void Unregister(string key, Session s)
         {
             lock (world._lock)

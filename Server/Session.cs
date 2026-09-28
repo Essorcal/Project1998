@@ -393,10 +393,11 @@ public sealed partial class Session
     ///
     /// <para><b>The close is in a <c>finally</c> of its own (#168).</b> Anything the teardown throws used to leave
     /// this method before <c>CloseConnection</c>: the socket stayed open on our side, a client whose read loop
-    /// ended on our own exception stayed connected to a session nobody reads, and no CLOSE line was logged. The
+    /// ended on our own exception stayed connected to a session nobody reads, and no CLOSE line was logged. An
     /// exception still leaves (TkAcceptor logs it and releases the admission slot, as before), but only after
-    /// the connection is closed and the CLOSE line is written. The teardown's own save is fenced inside it, so
-    /// a character the serializer rejects no longer reaches here at all.</para></summary>
+    /// the connection is closed and the CLOSE line is written. The teardown fences its own steps that can throw
+    /// — ending the trade, leaving the party and the final save — and logs each one's fault itself, so a
+    /// character the serializer rejects, or a peer whose send throws, no longer reaches here at all.</para></summary>
     internal async Task EndReadLoopAsync(Task writer)
     {
         try
@@ -421,7 +422,22 @@ public sealed partial class Session
     /// as one critical section (see <see cref="EndReadLoopAsync"/>). In order: the leaving latch (#173), the
     /// trade and the party, the map, the account slot — parked for the next login's fence rather than dropped
     /// (#168) — and the final save, which is fenced so a capture that throws is logged as a lost save instead
-    /// of escaping (#168).</summary>
+    /// of escaping (#168).
+    ///
+    /// <para><b>A step that throws does not stop the steps after it.</b> Ending the trade and leaving the party
+    /// reach into other sessions — their monitors, their sends — with nothing isolating one peer's fault from
+    /// us, so each is fenced: a throw is logged with its stack and the teardown carries on, in the same order,
+    /// to the map, the slot and the save. Unfenced, such a throw left the session standing on its map holding
+    /// the account's slot with its row unwritten, until the next login kicked it as a live duplicate (#298
+    /// review, pre-existing 1). The fault is not rethrown: once the rest of the teardown has run there is
+    /// nothing left for it to stop, and TkAcceptor would only log it a second time, without the character's
+    /// name. The map and the slot are not fenced: <c>World.LeaveMap</c> isolates each peer's despawn itself,
+    /// and what is left of it and of the slot is dictionary work under <c>World._lock</c>.</para>
+    ///
+    /// <para><b>A session that claimed the slot but never entered the world</b> — its arrival threw between
+    /// <see cref="ClaimAccountSlot"/> and world entry — gives the slot back at the slot's step, if it still owns
+    /// it. It drops the slot where an entered session parks it: nothing from it can write the row, so the next
+    /// login has nothing to fence.</para></summary>
     private void TearDownWorldState()
     {
         _leaving = true;   // first, before anything below can drop the monitor: TryStartTrade refuses from here on (#173)
@@ -429,8 +445,24 @@ public sealed partial class Session
         // (RTK: a dropped exchange partner's session simply vanishes from map_id2sd, which is exactly what a
         // disconnect does here too — the difference is we also close the survivor's exchange window with
         // RTK's own "Exchange cancelled." box rather than leaving it open on a ghost).
-        if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
-        if (_party is { } party) RemoveFromParty(this, party);   // read under our own monitor: this runs inside WithState
+        if (_trade is not null)
+        {
+            try { EndTrade(_trade, "Exchange cancelled."); }
+            catch (Exception e)
+            {
+                Log.Error($"{_remote} teardown of '{_char.Name}': ending the trade threw — the map, the slot and the " +
+                          "save still run", e);
+            }
+        }
+        if (_party is { } party)   // read under our own monitor: this runs inside WithState
+        {
+            try { RemoveFromParty(this, party); }
+            catch (Exception e)
+            {
+                Log.Error($"{_remote} teardown of '{_char.Name}': leaving the party threw — the map, the slot and the " +
+                          "save still run", e);
+            }
+        }
 
         // Leave the shared world: despawn us for the other players on our map. World mobs persist
         // (they belong to the map, not this session), so they keep wandering for whoever remains.
@@ -441,6 +473,13 @@ public sealed partial class Session
         // monitor — a group share decided before this teardown, a mob swing queued before it — lands before
         // that login loads the row, and nothing from us lands after.
         if (_enteredWorld) _world.Online.Depart(UserKey, this, Environment.TickCount64);
+        // An arrival that claimed the slot and then threw before entering the world gives it back here, and only
+        // if it still owns it: Unregister's compare-and-remove, so a newer login that has taken the slot since
+        // keeps it. Dropped, not parked. Every writer is gated on _enteredWorld, so nothing from this session can
+        // land on the row and there is nothing for the next login to fence; the arrival's own refusals drop the
+        // slot for the same reason, and clear the key when they do, so a refused login's teardown takes nothing
+        // here. Held until the next login kicked it before (#298 review, pre-existing 2).
+        else if (_claimedKey is { } claimed) _world.Online.Unregister(claimed, this);
         // Persist the last state (position/stats) only for a session that actually entered the world
         // AND wasn't superseded by a newer login for the same account (KickForReplacement already
         // wrote the freshest state; saving again here from this now-stale session would clobber it —
@@ -937,27 +976,34 @@ public sealed partial class Session
     /// each ending in one database write), writes the row, and latches <c>_replaced</c>, so anything later is
     /// refused. The caller's load then sees every write that won the race, and none can land after it.</para>
     ///
-    /// <para>A departed kick that THROWS is logged and the arrival carries on with the row as it stands. The
-    /// only route to a throw is a character the serializer rejects, whose teardown save already threw and was
-    /// logged as lost; letting it escape would refuse this login, which the same logout without the fence
-    /// lets in. A live kick's throw still propagates, as it always has.</para></summary>
+    /// <para>A kick that THROWS, live or departed, is logged as a LOST save and the arrival carries on with the
+    /// row as it stands. The only route to a throw is the old session's capture (a character the serializer
+    /// rejects), and <see cref="KickForReplacement"/> still finishes the kick around it: the old session is
+    /// latched, told and closed, and a write it captured before the kick is dropped at its write gate (or, if
+    /// already past the gate, lands first), so the row the caller loads is final and nothing is left connected
+    /// (#303 review, F1). For a
+    /// departed session the teardown save already threw and was logged as lost; for a live one, what it had not
+    /// yet written is lost with this save. Letting the throw escape refused this login and left it holding the
+    /// slot without entering the world (#298 review, pre-existing 2), where the same account without the old
+    /// session gets in.</para>
+    ///
+    /// <para>The key the slot was claimed under is kept (<see cref="_claimedKey"/>), so that if the arrival throws
+    /// before it enters the world, its teardown can give the slot back (<see cref="TearDownWorldState"/>).</para></summary>
     internal void ClaimAccountSlot(string user)
     {
-        _world.Online.RegisterArrival(CharacterStore.Key(user), this, out var oldSession, out bool departed);
+        string key = CharacterStore.Key(user);
+        _world.Online.RegisterArrival(key, this, out var oldSession, out bool departed);
+        _claimedKey = key;
         if (oldSession is null) return;
         ArrivalFenceProbeForTest?.Invoke(oldSession);   // null except under test; see the field
-        if (!departed)
-        {
-            Log.Info($"   -> ARRIVAL: '{user}' already online — kicking previous session");
-            oldSession.KickForReplacement();
-            return;
-        }
-        Log.Info($"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load");
+        Log.Info(departed
+            ? $"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load"
+            : $"   -> ARRIVAL: '{user}' already online — kicking previous session");
         try { oldSession.KickForReplacement(); }
         catch (Exception e)
         {
-            Log.Error($"   -> ARRIVAL: the departed session's final write for '{user}' threw — its save is LOST; " +
-                      "loading the row as it stands", e);
+            Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' threw — " +
+                      "its save is LOST; loading the row as it stands", e);
         }
     }
 
@@ -965,6 +1011,20 @@ public sealed partial class Session
     /// after the registry handed it back and before the kick enters its monitor. A fence fact uses it to know
     /// the arrival has reached the fence without timing anything. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalFenceProbeForTest;
+
+    /// <summary>The account key this session's arrival claimed the online slot under, set by
+    /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then, and null again once one of the
+    /// arrival's refusals has given the slot back itself. Read only by the teardown of a session that never
+    /// entered the world, which gives the slot back under it. A session that did enter parks
+    /// the slot under its character's key (<c>UserKey</c>), as it always has. Written and read under this
+    /// session's monitor: the arrival and the teardown both run inside it.</summary>
+    private string? _claimedKey;
+
+    /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right after
+    /// <see cref="ClaimAccountSlot"/> returns, before the row is loaded. A fact throws from it to stand for any
+    /// throw between the claim and world entry (the row load, the restores after it), which leaves the session
+    /// holding the account's slot with <c>_enteredWorld</c> false. Null outside the test host.</summary>
+    internal static Action<Session>? ArrivalClaimedProbeForTest;
 
     private void HandleArrival(TkPacket pkt)
     {
@@ -1029,6 +1089,7 @@ public sealed partial class Session
         // kicked session's flush (if any) is visible to our own load. Since #168 the same kick also fences a
         // session for this account that tore down moments ago; see ClaimAccountSlot.
         ClaimAccountSlot(_user);
+        ArrivalClaimedProbeForTest?.Invoke(this);   // null except under test; see the field
 
         // Load the persisted character (created on the login channel, or saved at last logout). There is NO
         // fallback spawn any more: world entry never invents a character. A missing record here means the
@@ -1040,6 +1101,7 @@ public sealed partial class Session
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
             _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
+            _claimedKey = null;   // given back here, so the teardown has nothing to return (TearDownWorldState)
             CloseConnection("arrival rejected (no character record)");
             return;
         }
@@ -1047,6 +1109,7 @@ public sealed partial class Session
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
             _world.Online.Unregister(CharacterStore.Key(_user), this);
+            _claimedKey = null;
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
@@ -1054,6 +1117,7 @@ public sealed partial class Session
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
             _world.Online.Unregister(CharacterStore.Key(_user), this);
+            _claimedKey = null;
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }
