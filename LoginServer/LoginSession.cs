@@ -28,7 +28,8 @@ public sealed class LoginSession
     // that stops reading is dropped rather than waited on. OutboundOptions.Login carries this channel's numbers.
     private readonly TcpOutbound _out;
     private string _user = "?";
-    private string _pendingName = "";   // name from the availability check, fallback for creation
+    private string _pendingName = "";   // name from the availability check; 0x04 carries no name on 4.95, so
+                                         // this is what creation keys off (see HandleCreate below)
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
 
     // Slow-loris defense (the login port is the internet-facing front door): the budget for a connection's
@@ -129,8 +130,9 @@ public sealed class LoginSession
     }
 
     // Create step 1 (0x02): the client asks whether a name is free. Body is the length-prefixed name
-    // (plus the chosen password — see the protocol doc §9). We stash both so creation (0x04) can key the
-    // record even if that packet omits the name.
+    // (plus the chosen password — see the protocol doc §9). We stash both because creation (0x04) carries no
+    // name at all on 4.95 (see HandleCreate below) — _pendingName is the name creation keys off, not a
+    // fallback for one it might otherwise have.
     //
     // This check is now REAL. It used to answer "available" unconditionally, which meant re-creating an
     // existing name walked straight into HandleCreate's load-then-overwrite path and RESET that character's
