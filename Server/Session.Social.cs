@@ -916,7 +916,9 @@ public sealed partial class Session
             // materializing it inside a transaction that then rolls back would leave the goods on the floor
             // AND the attachment still unclaimed.
             GroundItem? pendingDrop = null;
-            bool committed = _store.SaveWith(_char, (cn, tx) =>
+            // Through CaptureAndWriteWith, not the store directly: it refuses a replaced session and orders the
+            // claim's row against the session's other writes (Session.CharacterApi.cs).
+            bool committed = CaptureAndWriteWith((cn, tx) =>
             {
                 var claim = Mail.ClaimItemIn(cn, tx, _char.Name, position);
                 if (claim is not (int itemId, int amount, int dura)) return false;   // no attachment, or already claimed
@@ -925,8 +927,8 @@ public sealed partial class Session
                 if (def is null) return true;   // consume it; an unresolvable item id isn't deliverable
 
                 bool gotIt = GiveItem(def, amount, (ushort)Math.Max(0, dura), "");
-                if (!gotIt)
-                    pendingDrop = new GroundItem { Id = _world.AllocateItemId(), ItemId = itemId,
+                if (!gotIt)   // its Id is allocated after the commit: World._lock may not be taken under the write gate
+                    pendingDrop = new GroundItem { ItemId = itemId,
                         X = _char.X, Y = _char.Y, Amount = amount, Dura = (ushort)Math.Max(0, dura), Graphic = def.Icon };
                 note = gotIt ? $" [Parcel: {def.Name} x{amount} added to your bag]"
                              : $" [Parcel: {def.Name} x{amount} — your bag was full, dropped at your feet]";
@@ -935,11 +937,15 @@ public sealed partial class Session
 
             if (committed)
             {
-                if (pendingDrop is not null) _world.DropItem(_char.Map, pendingDrop);
+                if (pendingDrop is not null)
+                {
+                    pendingDrop.Id = _world.AllocateItemId();
+                    _world.DropItem(_char.Map, pendingDrop);
+                }
                 attachNote = note ?? "";
                 SendStats();
             }
-            else RestoreBag(snapshot);   // already claimed, or the write failed — either way undo the give
+            else RestoreBag(snapshot);   // already claimed, or the write failed or was refused — either way undo the give
         }
 
         // type=5/buttons=3/nmailFlag=1 are RTK's nmail read-view values (map/intif.c intif_parse_readpost:

@@ -316,6 +316,10 @@ public sealed class CharacterStore
     ///
     /// <para>Returns false if anything threw, with the transaction rolled back. The CALLER is responsible
     /// for undoing its own in-memory change on false — this method cannot do that for it.</para>
+    ///
+    /// <para>The game server reaches this only through <c>Session.CaptureAndWriteWith</c>, which refuses a
+    /// session a newer login has replaced and orders this write against that session's other writes of the
+    /// same row (its sequence number and write gate). A session calling it directly would have neither.</para>
     /// </summary>
     public bool SaveWith(Character c, Func<SqliteConnection, SqliteTransaction, bool> work)
     {

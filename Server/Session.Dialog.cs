@@ -897,7 +897,9 @@ public sealed partial class Session
             // inside the transaction and then failing to commit would leave the item lying there AND the
             // parcel still claimable — the exact duplication this whole path exists to prevent.
             GroundItem? pendingDrop = null;
-            bool committed = _store.SaveWith(_char, (cn, tx) =>
+            // Through CaptureAndWriteWith, not the store directly: it refuses a replaced session and orders the
+            // claim's row against the session's other writes (Session.CharacterApi.cs).
+            bool committed = CaptureAndWriteWith((cn, tx) =>
             {
                 got = Parcel.ClaimIn(cn, tx, _char.Name, p.Position);
                 if (got is null) return false;                  // already taken by another path — re-list
@@ -917,8 +919,8 @@ public sealed partial class Session
                 }
 
                 bool gotIt = GiveItem(def, got.Amount, (ushort)Math.Max(0, got.Dura), got.Engrave, owner: got.Owner);
-                if (!gotIt)
-                    pendingDrop = new GroundItem { Id = _world.AllocateItemId(), ItemId = def.Id,
+                if (!gotIt)   // its Id is allocated after the commit: World._lock may not be taken under the write gate
+                    pendingDrop = new GroundItem { ItemId = def.Id,
                         X = _char.X, Y = _char.Y, Amount = got.Amount, Dura = (ushort)Math.Max(0, got.Dura), Graphic = def.Icon,
                         Owner = got.Owner };
                 say = gotIt
@@ -934,13 +936,20 @@ public sealed partial class Session
                 // COMMIT failed, and leaving that standing would let the next autosave persist an item whose
                 // parcel row is still in the queue — a dupe.
                 RestoreBag(snapshot);
-                if (got is null) continue;
+                // A replaced session's claim is refused before the claim runs, so got is null there too, and
+                // re-listing would find the same parcel and try again for ever. Its connection is closed; the
+                // parcel stays queued for the session that replaced it.
+                if (got is null && !IsReplaced) continue;
                 await DlgSay(npc, "I couldn't hand that over just now — try me again in a moment.");
                 Log.Warn($"parcel claim FAILED for '{_char.Name}' pos={p.Position} — rolled back, parcel kept");
                 return;
             }
 
-            if (pendingDrop is not null) _world.DropItem(_char.Map, pendingDrop);   // committed — safe to materialize
+            if (pendingDrop is not null)   // committed — safe to materialize
+            {
+                pendingDrop.Id = _world.AllocateItemId();
+                _world.DropItem(_char.Map, pendingDrop);
+            }
             SendStats();
             if (say is not null) await DlgSay(npc, say);
 
