@@ -33,6 +33,16 @@ namespace Tests;
 /// threw out of <c>ClaimAccountSlot</c>'s live branch and out of the arrival. The kick now finishes around the
 /// throw and the arrival carries on with the row as it stands, as the departed branch already did.</para>
 ///
+/// <para><b>A kick whose write fails without throwing</b> (the #303 re-check's pre-existing 1): the database
+/// refuses the kick's write, so it takes a sequence number and stamps nothing. It now fences the way a throwing
+/// capture does, and the lost write is logged as LOST. The facts refuse the write on a database of their own.</para>
+///
+/// <para><b>The loading-screen close</b> (the #303 report's follow-up candidate 1). An arrival that throws after
+/// claiming the slot and before entering the world now has its connection closed there and then, instead of the
+/// handler guard keeping the session while the client sits on the loading screen. The slot is still given back by
+/// the teardown that follows. A throw in any other opcode's handler still drops the packet and keeps the
+/// session.</para>
+///
 /// <para>Driven through the read loop's real exit (<c>Session.EndReadLoopAsync</c>) on socket-free sessions.
 /// Nothing here waits on a clock.</para>
 /// </summary>
@@ -41,12 +51,24 @@ public sealed class TeardownSlotLeakTests
 {
     /// <summary>Content-free map ids; no other class stands here.</summary>
     private const ushort TradeMap = 61740, PartyMap = 61741, ArrivalMap = 61742, NewerOwnerMap = 61743, KickMap = 61744,
-                         SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747;
+                         SweepDropMap = 61745, DepartedDropMap = 61746, StuckWriteMap = 61747, FailedKickMap = 61748,
+                         FailedDepartedKickMap = 61749, CloseMap = 61750, OtherHandlerMap = 61751, LateThrowMap = 61752;
 
-    /// <summary>What the arrival probe throws, so the handler guard's log line can be matched to it.</summary>
+    /// <summary>What the arrival probe throws, so the arrival's log line can be matched to it.</summary>
     private const string ArrivalRefused = "test probe threw after the slot was claimed";
 
     private const string KickedText = "You have logged in from another location.";
+
+    /// <summary>The arrival's own Error line for a throw between the claim and world entry, after the user name.</summary>
+    private const string ArrivalThrewLine =
+        "threw after claiming the account's slot, before entering the world — closing the connection";
+
+    /// <summary>The close's line, naming its cause.</summary>
+    private const string ArrivalCloseLine = "-> connection teardown (arrival threw before world entry)";
+
+    private const byte TurnIn = 0x11;    // ClientOp.Turn
+    private const byte TurnOut = 0x11;   // ServerOp.Turn, the turn handler's own side reply
+    private const byte MessageOut = 0x02;   // ServerOp.Message: an arrival's first one is the world trigger
 
     private const byte ExchangeIn = 0x4a;
     private const byte ExchangeOut = 0x42;
@@ -62,6 +84,8 @@ public sealed class TeardownSlotLeakTests
         typeof(Session).GetField("_party", BindingFlags.NonPublic | BindingFlags.Instance)!;
     private static readonly FieldInfo WriteGateField =
         typeof(Session).GetField("_writeGate", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo ClaimedKeyField =
+        typeof(Session).GetField("_claimedKey", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     private readonly SessionFixture _fx;
     private readonly ITestOutputHelper _out;
@@ -161,9 +185,9 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>
-    /// Item 2. An arrival claims the account's slot and then throws before it enters the world. The handler guard
-    /// in <c>Session.Handle</c> logs the throw and keeps the session, which now holds the slot with
-    /// <c>_enteredWorld</c> false. Its teardown gives the slot back (dropped, not parked), and a later login for
+    /// Item 2. An arrival claims the account's slot and then throws before it enters the world. The arrival logs
+    /// the throw and closes the connection (the loading-screen close), and the session holds the slot with
+    /// <c>_enteredWorld</c> false until its teardown. That gives the slot back (dropped, not parked), and a later login for
     /// the account is handed nobody: it neither kicks nor fences the dead session, and enters with the row as it
     /// stands. The session that never entered the world wrote nothing.
     ///
@@ -225,9 +249,10 @@ public sealed class TeardownSlotLeakTests
     /// <summary>
     /// The newer owner. The same stuck arrival, but a later login arrives BEFORE the stuck session's teardown:
     /// it takes the slot and kicks the stuck session as a live duplicate. The stuck session never entered the
-    /// world, so the kick writes nothing (its <c>_enteredWorld</c> gate), latches it, tells it and closes it —
-    /// which is all the next login's kick ever did to such a session, on master too. The stuck session's teardown
-    /// then runs and must leave the newer login's slot alone.
+    /// world, so the kick writes nothing (its <c>_enteredWorld</c> gate) and latches it; its notice and its close
+    /// find the connection already closed by the arrival's own throw (the loading-screen close). Before that close
+    /// the kick also told and closed it, which is all the next login's kick ever did to such a session. The stuck
+    /// session's teardown then runs and must leave the newer login's slot alone.
     ///
     /// <para>This is the case <c>Unregister</c>'s compare-and-remove exists for: a teardown that gave the slot
     /// back without asking who owns it would take it from the login that is now in the world.</para>
@@ -246,6 +271,7 @@ public sealed class TeardownSlotLeakTests
         {
             ArriveAndThrowAfterTheClaim(stuck, name);
             Assert.True(online.HoldsSlotForTest(key, stuck));
+            Assert.True(stuckOut.Closed);                       // by its own arrival's throw, before any teardown
 
             using (var sink = LogLineSink.Acquire())
             {
@@ -253,8 +279,6 @@ public sealed class TeardownSlotLeakTests
                 sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
             }
             Assert.True(stuck.IsReplaced);
-            Assert.True(stuckOut.Closed);
-            Assert.Contains(KickedText, MiniTexts(stuckOut));
             Assert.Equal(0L, stuck.LastSaveAtMsForTest);        // the kick wrote nothing for a session that never entered
             Assert.True(online.HoldsSlotForTest(key, later));
             Assert.Equal(200u, later.CharCoins);
@@ -324,7 +348,7 @@ public sealed class TeardownSlotLeakTests
                 sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
                 var lost = sink.EntryContaining($"the previous session's final write for '{name}' threw — its save is LOST");
                 Assert.Equal(LogLevel.Error, lost.Level);
-                Assert.False(sink.Has("handler for opcode 0x10 threw"), "the kick's throw escaped the arrival");
+                Assert.False(ArrivalThrew(sink, $"recorder:{name}:new"), "the kick's throw escaped the arrival");
             }
             Assert.Equal(300u, LoadOk(name).Coins);                // and nothing wrote over it
         }
@@ -595,6 +619,444 @@ public sealed class TeardownSlotLeakTests
         }
     }
 
+    /// <summary>
+    /// The #303 re-check's pre-existing 1, live branch: a kick whose write FAILS without throwing. An autosave
+    /// sweep has captured the old session (350 coins over a landed 300) and its write is on the way to the write
+    /// gate when the account logs in again. The kick captures (999, a state that serializes fine) and takes a
+    /// newer sequence number, but the database refuses the write, so <c>SaveJson</c> returns false and nothing
+    /// is stamped. The kick must still fence: the sweep's older capture is dropped at the gate, so the row the
+    /// new login loaded (300) is the row that stays, and the new session's next write erases nothing. The lost
+    /// write is logged as LOST, as a throwing kick's is.
+    ///
+    /// <para>The refusal is this fact's own database (<see cref="RefuseWrites"/>): <c>SaveJson</c> catches the
+    /// abort the way it catches a busy database past its timeout, and returns false. The order capture, kick,
+    /// gate check is forced the way <see cref="ALiveKickWhoseCaptureThrowsDropsASweepWriteCapturedBeforeIt"/>
+    /// forces it: the test thread holds the old session's write gate and runs the arrival itself.</para>
+    /// </summary>
+    [Fact]
+    public void ALiveKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkFail";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        InstallWriteRefusal(db);
+        var oldChar = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = name,
+            Map = FailedKickMap, X = 5, Y = 5, Coins = 300,
+        };
+        var oldOut = new RecordingOutbound($"recorder:{name}");
+        var old = new Session(oldOut, 2005, db.Store, _fx.World, oldChar);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        _fx.World.EnterMap(old, FailedKickMap);
+        object gate = WriteGateOf(old);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, old, out _);
+            old.WithState(old.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(old, "autosave"));   // the last landed row: 300
+            Assert.Equal(300u, LoadOk(db.Store, name).Coins);
+            old.WithState(() => { oldChar.Coins = 350; old.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            bool lostLogged, lostAtError, guardLogged;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(old, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the old session's write gate");
+                Assert.Contains("dirty False", old.DiagState());               // it has captured 350
+                old.WithState(() => { oldChar.Coins = 999; old.MarkDirty(); });   // serializable: the kick's capture succeeds
+
+                RefuseWrites(db, true);
+                using (var sink = LogLineSink.Acquire())
+                {
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.LineContaining($"ARRIVAL: '{name}' already online — kicking previous session");
+                    lostLogged = sink.Has($"the previous session's final write for '{name}' failed — its save is LOST");
+                    lostAtError = lostLogged &&
+                        sink.EntryContaining($"the previous session's final write for '{name}' failed").Level == LogLevel.Error;
+                    guardLogged = ArrivalThrew(sink, $"recorder:{name}:new");
+                }
+                RefuseWrites(db, false);
+                Assert.True(old.IsReplaced);
+                Assert.True(oldOut.Closed);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(db.Store, name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(db.Store, name).Coins;
+            fresh.WithState(fresh.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(fresh, "autosave"));   // the new session's next write
+            uint rowAfterNext = LoadOk(db.Store, name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write=" +
+                           $"{rowAfterSweep}, row after the new session's next write={rowAfterNext}, LOST logged={lostLogged}");
+
+            Assert.Equal(300u, loaded);
+            Assert.Equal(300u, rowAtLoad);
+            Assert.True(sweepReturned);                     // refused at the gate, not failed
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+            Assert.Equal(loaded, rowAfterNext);
+            Assert.True(lostLogged, "the kick's failed write was not logged as LOST");
+            Assert.True(lostAtError, "the LOST line was not at Error");
+            Assert.False(guardLogged, "the arrival threw");
+        }
+        finally
+        {
+            RefuseWrites(db, false);
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, old);
+            _fx.World.LeaveMap(old, FailedKickMap);
+            _fx.World.LeaveMap(fresh, FailedKickMap);
+        }
+    }
+
+    /// <summary>
+    /// The departed branch of the same. A sweep captured the session (350 over a landed 100) and its write is on
+    /// the way to the gate; the database then refuses writes and the session logs out, so its teardown save fails
+    /// and it is parked for the next login's fence. A fast re-login fences it, and that kick's write fails too.
+    /// The fence must still drop the sweep's older capture: the row the new login loaded (100) stays. Forced the
+    /// same way: the test thread holds the departed session's write gate across the logout and the arrival.
+    /// </summary>
+    [Fact]
+    public void ADepartedKickWhoseWriteFailsDropsASweepWriteCapturedBeforeIt()
+    {
+        const string name = "SlkFGone";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        InstallWriteRefusal(db);
+        var ch = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = name,
+            Map = FailedDepartedKickMap, X = 5, Y = 5, Coins = 100,
+        };
+        var departed = new Session(new RecordingOutbound($"recorder:{name}"), 2005, db.Store, _fx.World, ch);
+        var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
+        _fx.World.EnterMap(departed, FailedDepartedKickMap);
+        object gate = WriteGateOf(departed);
+        bool sweepReturned = false;
+        Thread? sweep = null;
+
+        try
+        {
+            online.Register(key, departed, out _);
+            departed.WithState(departed.MarkDirty);
+            Assert.True(World.AutoSaveLoop.FlushIsolated(departed, "autosave"));   // the last landed row: 100
+            Assert.Equal(100u, LoadOk(db.Store, name).Coins);
+            departed.WithState(() => { ch.Coins = 350; departed.MarkDirty(); });
+
+            uint loaded, rowAtLoad;
+            bool lostLogged;
+            lock (gate)
+            {
+                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
+                    { IsBackground = true, Name = "sweep-write" };
+                sweep.Start();
+                WaitBlocked(sweep, "the sweep's write, on the session's write gate");
+                Assert.Contains("dirty False", departed.DiagState());          // it has captured 350
+                departed.WithState(() => { ch.Coins = 999; departed.MarkDirty(); });
+
+                RefuseWrites(db, true);
+                using (var sink = LogLineSink.Acquire())
+                {
+                    // The logout: the teardown's save fails (returns false) and the slot is parked (#168).
+                    // EndReadLoopAsync runs synchronously to the end here, still on this thread and inside the
+                    // gate: its only await is on an already-completed writer.
+                    Assert.True(departed.EndReadLoopAsync(Task.CompletedTask).IsCompletedSuccessfully,
+                                "the logout did not run to its end on this thread");
+                    Assert.True(online.HoldsDepartedForTest(key, departed));
+
+                    fresh.Receive(ArrivalFrame(name));
+                    sink.LineContaining($"ARRIVAL: '{name}' left moments ago — fencing");
+                    lostLogged = sink.Has($"the departed session's final write for '{name}' failed — its save is LOST");
+                }
+                RefuseWrites(db, false);
+                Assert.True(departed.IsReplaced);
+                Assert.Contains(fresh, _fx.World.Online.All());
+                loaded = fresh.CharCoins;
+                rowAtLoad = LoadOk(db.Store, name).Coins;
+            }
+
+            Assert.True(sweep.Join(Bound), "the sweep's write never finished");
+            uint rowAfterSweep = LoadOk(db.Store, name).Coins;
+            _out.WriteLine($"[state] {name}: loaded={loaded}, row at load={rowAtLoad}, row after the sweep's write={rowAfterSweep}, " +
+                           $"LOST logged={lostLogged}");
+
+            Assert.Equal(100u, loaded);
+            Assert.Equal(100u, rowAtLoad);
+            Assert.True(sweepReturned);
+            Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
+            Assert.True(lostLogged, "the departed kick's failed write was not logged as LOST");
+        }
+        finally
+        {
+            RefuseWrites(db, false);
+            sweep?.Join(Bound);
+            online.Unregister(key, fresh);
+            online.Unregister(key, departed);
+            _fx.World.LeaveMap(departed, FailedDepartedKickMap);
+            _fx.World.LeaveMap(fresh, FailedDepartedKickMap);
+        }
+    }
+
+    /// <summary>
+    /// The loading-screen close (the #303 report's follow-up candidate 1). An arrival claims the account's slot
+    /// and then throws before it enters the world, so the client is left on the loading screen with nothing more
+    /// coming. The connection is closed there and then, with the cause in the log: the arrival's own Error line,
+    /// carrying the exception, and the close's "connection teardown" line naming it. The close does not give the
+    /// slot back. The teardown it brings about (the read loop's exit) does, through the claimed key as #303 made
+    /// it, and logs the CLOSE line.
+    ///
+    /// <para>Before, the handler guard caught the throw, logged "the packet is dropped, the session continues",
+    /// and the client sat on the loading screen until it disconnected.</para>
+    /// </summary>
+    [Fact]
+    public async Task AnArrivalThatThrowsAfterClaimingTheSlotClosesTheConnection()
+    {
+        const string name = "SlkClose";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, CloseMap, coins: 100);
+        var (stuck, stuckOut) = Arriving(name, "stuck");
+
+        try
+        {
+            Session.ArrivalClaimedProbeForTest = arriving =>
+            {
+                if (ReferenceEquals(arriving, stuck)) throw new InvalidOperationException(ArrivalRefused);
+            };
+            bool holdsSlot;
+            using (var sink = LogLineSink.Acquire())
+            {
+                stuck.Receive(ArrivalFrame(name));
+                bool closed = stuckOut.Closed;
+                holdsSlot = online.HoldsSlotForTest(key, stuck);
+                bool guardLogged = sink.Has($"recorder:{name}:stuck handler for opcode 0x10 threw");
+                _out.WriteLine($"[state] {name}: after the arrival threw, closed={closed}, holds slot={holdsSlot}, " +
+                               $"on map={online.All().Contains(stuck)}, cause logged={sink.Has(ArrivalCloseLine)}, " +
+                               $"guard line (session kept)={guardLogged}");
+
+                Assert.True(closed, "the connection was left open on the loading screen");
+                sink.LineContaining(ArrivalCloseLine);
+                var thrown = sink.EntryContaining($"recorder:{name}:stuck arrival for '{name}' {ArrivalThrewLine}");
+                Assert.Equal(LogLevel.Error, thrown.Level);
+                Assert.Contains(ArrivalRefused, thrown.Line);                  // the exception, with its stack
+                Assert.False(guardLogged, "the handler guard logged the throw as one it keeps the session for");
+            }
+            Session.ArrivalClaimedProbeForTest = null;
+            Assert.True(holdsSlot, "the close gave the slot back itself; the teardown is what does that");
+            Assert.DoesNotContain(stuck, online.All());
+
+            Exception? error;
+            using (var sink = LogLineSink.Acquire())
+            {
+                error = await Record.ExceptionAsync(() => stuck.EndReadLoopAsync(Task.CompletedTask));
+                sink.LineContaining($"-- CLOSE recorder:{name}:stuck");
+            }
+            Assert.Null(error);
+            Assert.False(online.HoldsSlotForTest(key, stuck), "the teardown left the slot held");
+            Assert.False(online.HoldsDepartedForTest(key, stuck));
+            Assert.Equal(0L, stuck.LastSaveAtMsForTest);                        // it never entered, so it never wrote
+        }
+        finally
+        {
+            Session.ArrivalClaimedProbeForTest = null;
+            online.Unregister(key, stuck);
+        }
+    }
+
+    /// <summary>
+    /// The other side of the loading-screen close: it is the arrival's alone. A session that has entered the
+    /// world through a real arrival, and so has claimed its slot, gets a packet whose handler throws: the turn
+    /// handler, whose own 0x11 reply throws on a failing connection. The handler guard in <c>Session.Handle</c>
+    /// logs it and drops the packet, and the session carries on: the connection stays open, the slot stays held,
+    /// and the next turn is answered, exactly as before the close was added.
+    /// </summary>
+    [Fact]
+    public void AThrowInAnyOtherHandlerStillDropsThePacketAndKeepsTheSession()
+    {
+        const string name = "SlkOther";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, OtherHandlerMap, coins: 100);
+        var outbound = new FailingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, _fx.Store, _fx.World);
+
+        try
+        {
+            s.Receive(ArrivalFrame(name));
+            Assert.Contains(s, online.All());                                   // in the world, through a real claim
+            Assert.True(online.HoldsSlotForTest(key, s));
+
+            outbound.FailOn = TurnOut;                                          // the turn handler's own reply throws
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(SessionFixture.Frame(TurnIn, new byte[] { 2 }));
+                _out.WriteLine($"[state] {name}: after the turn handler threw, closed={outbound.Recorded.Closed}, " +
+                               $"holds slot={online.HoldsSlotForTest(key, s)}, on map={online.All().Contains(s)}");
+                var guard = sink.EntryContaining(
+                    $"recorder:{name} handler for opcode 0x{TurnIn:x2} threw — the packet is dropped, the session continues");
+                Assert.Equal(LogLevel.Error, guard.Level);
+                Assert.Contains(SendRefused, guard.Line);
+            }
+            Assert.False(outbound.Recorded.Closed, "a throw in the turn handler closed the connection");
+            Assert.True(online.HoldsSlotForTest(key, s));
+            Assert.Contains(s, online.All());
+
+            outbound.FailOn = -1;
+            int answered = outbound.Recorded.BodiesOf(TurnOut).Count;
+            s.Receive(SessionFixture.Frame(TurnIn, new byte[] { 1 }));
+            Assert.Equal(answered + 1, outbound.Recorded.BodiesOf(TurnOut).Count);   // the next packet is handled
+        }
+        finally
+        {
+            outbound.FailOn = -1;
+            online.Unregister(key, s);
+            _fx.World.LeaveMap(s, OtherHandlerMap);
+        }
+    }
+
+    /// <summary>
+    /// The loading-screen close's other boundary: world entry. An arrival that throws after <c>_enteredWorld</c>
+    /// is set (here its first 0x02, the world trigger, on a failing connection) is not in the close's span. Such a
+    /// session gives its slot back the way an entered one does, parked and saved by its teardown, not through the
+    /// claimed key. Its throw goes on to the handler guard as before, which logs it and keeps the session. This
+    /// pins the close's scope, the span #303's give-back covers; it is not a judgement on this path.
+    /// </summary>
+    [Fact]
+    public void AnArrivalThatThrowsAfterWorldEntryStillGoesToTheHandlerGuard()
+    {
+        const string name = "SlkLate";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        SeedRow(name, LateThrowMap, coins: 100);
+        var outbound = new FailingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, _fx.Store, _fx.World);
+
+        try
+        {
+            outbound.FailOn = MessageOut;
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(ArrivalFrame(name));
+                _out.WriteLine($"[state] {name}: after the arrival threw past world entry, closed={outbound.Recorded.Closed}, " +
+                               $"holds slot={online.HoldsSlotForTest(key, s)}, arrival line={sink.Has($"recorder:{name} arrival for '")}");
+                sink.LineContaining($"ARRIVAL user='{name}' — loaded character");   // past the load, so past _enteredWorld
+                var guard = sink.EntryContaining(
+                    $"recorder:{name} handler for opcode 0x10 threw — the packet is dropped, the session continues");
+                Assert.Contains(SendRefused, guard.Line);
+                Assert.False(sink.Has($"recorder:{name} arrival for '"), "the close took an arrival that had entered the world");
+            }
+            Assert.False(outbound.Recorded.Closed, "an arrival that threw after world entry had its connection closed");
+            Assert.True(online.HoldsSlotForTest(key, s));
+        }
+        finally
+        {
+            outbound.FailOn = -1;
+            online.Unregister(key, s);
+            _fx.World.LeaveMap(s, LateThrowMap);
+        }
+    }
+
+    /// <summary>
+    /// The arrival's three refusals after the slot claim: no character record, an unreadable record, a storage
+    /// error. Each gives the slot back itself and clears the claimed key, so the teardown after it has nothing
+    /// to give back. Read right after the refusal, before any teardown: the connection is closed with the
+    /// refusal's own reason, the slot is neither held nor parked, and the key is null. The teardown then runs,
+    /// and the slot stays free. This is the behaviour the refusals' shared give-back helper (the #303 report's
+    /// follow-up candidate 3) must keep unchanged.
+    ///
+    /// <para>Each case has a database of its own: no row, a row that does not parse, and a missing table,
+    /// which makes the read itself fail.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(CharacterLoadStatus.NotFound, "arrival rejected (no character record)")]
+    [InlineData(CharacterLoadStatus.Unreadable, "arrival rejected (unreadable character record)")]
+    [InlineData(CharacterLoadStatus.StorageError, "arrival rejected (character storage unavailable)")]
+    public async Task EachArrivalRefusalGivesTheSlotBackItselfAndClearsTheKey(CharacterLoadStatus status, string reason)
+    {
+        string name = $"SlkRef{(int)status}";
+        string key = CharacterStore.Key(name);
+        var online = _fx.World.Online;
+        using var db = new IsolatedDatabase();
+        if (status == CharacterLoadStatus.Unreadable)
+        {
+            using var cn = db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "INSERT INTO characters(username, json, updated_utc) VALUES($u, '{broken', 1);";
+            cmd.Parameters.AddWithValue("$u", key);
+            cmd.ExecuteNonQuery();
+        }
+        else if (status == CharacterLoadStatus.StorageError)
+        {
+            using var cn = db.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = "ALTER TABLE characters RENAME TO characters_gone;";
+            cmd.ExecuteNonQuery();
+        }
+        var outbound = new RecordingOutbound($"recorder:{name}");
+        var s = new Session(outbound, 2005, db.Store, _fx.World);
+
+        try
+        {
+            using (var sink = LogLineSink.Acquire())
+            {
+                s.Receive(ArrivalFrame(name));
+                _out.WriteLine($"[state] {name} ({status}): closed={outbound.Closed}, holds slot={online.HoldsSlotForTest(key, s)}, " +
+                               $"parked={online.HoldsDepartedForTest(key, s)}, claimed key={ClaimedKeyField.GetValue(s) ?? "null"}");
+                sink.LineContaining($"-> connection teardown ({reason})");
+            }
+            Assert.True(outbound.Closed);
+            Assert.False(online.HoldsSlotForTest(key, s), "the refusal left the slot held");
+            Assert.False(online.HoldsDepartedForTest(key, s), "the refusal parked the slot");
+            Assert.Null(ClaimedKeyField.GetValue(s));           // given back already: the teardown has nothing to return
+
+            var error = await Record.ExceptionAsync(() => s.EndReadLoopAsync(Task.CompletedTask));
+            Assert.Null(error);
+            Assert.False(online.HoldsSlotForTest(key, s));
+            Assert.False(online.HoldsDepartedForTest(key, s));
+        }
+        finally
+        {
+            online.Unregister(key, s);
+        }
+    }
+
+    /// <summary>Give <paramref name="db"/> a switch that makes it refuse every character write: a BEFORE INSERT
+    /// and a BEFORE UPDATE trigger that abort the statement while <c>refuse_writes</c> has a row. Reads are
+    /// untouched. <c>CharacterStore.SaveJson</c> catches the abort the way it catches any database fault (a busy
+    /// database past its timeout, a full disk): it logs "Save(...) failed" and returns false.</summary>
+    private static void InstallWriteRefusal(IsolatedDatabase db)
+    {
+        using var cn = db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText =
+            "CREATE TABLE refuse_writes(flag INTEGER NOT NULL);" +
+            "CREATE TRIGGER refuse_insert BEFORE INSERT ON characters WHEN EXISTS (SELECT 1 FROM refuse_writes) " +
+            "BEGIN SELECT RAISE(ABORT, 'test database refuses the write'); END;" +
+            "CREATE TRIGGER refuse_update BEFORE UPDATE ON characters WHEN EXISTS (SELECT 1 FROM refuse_writes) " +
+            "BEGIN SELECT RAISE(ABORT, 'test database refuses the write'); END;";
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Turn <see cref="InstallWriteRefusal"/>'s switch on or off.</summary>
+    private static void RefuseWrites(IsolatedDatabase db, bool refuse)
+    {
+        using var cn = db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = refuse ? "INSERT INTO refuse_writes(flag) VALUES (1);" : "DELETE FROM refuse_writes;";
+        cmd.ExecuteNonQuery();
+    }
+
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
     private static object WriteGateOf(Session s) => WriteGateField.GetValue(s)!;
@@ -631,8 +1093,8 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>Deliver a real arrival for <paramref name="name"/> to <paramref name="s"/>, throwing from the probe
-    /// right after its slot claim. <c>Session.Handle</c>'s guard catches and logs the throw, as it would any
-    /// handler's, and the session carries on without having entered the world.</summary>
+    /// right after its slot claim. The arrival logs the throw and closes the connection (the loading-screen close);
+    /// the session holds the slot, without having entered the world, until its teardown gives it back.</summary>
     private static void ArriveAndThrowAfterTheClaim(Session s, string name)
     {
         Session.ArrivalClaimedProbeForTest = arriving =>
@@ -643,11 +1105,16 @@ public sealed class TeardownSlotLeakTests
         {
             using var sink = LogLineSink.Acquire();
             s.Receive(ArrivalFrame(name));
-            var guard = sink.EntryContaining("handler for opcode 0x10 threw");
-            Assert.Contains(ArrivalRefused, guard.Line);
+            var thrown = sink.EntryContaining($"arrival for '{name}' {ArrivalThrewLine}");
+            Assert.Contains(ArrivalRefused, thrown.Line);
         }
         finally { Session.ArrivalClaimedProbeForTest = null; }
     }
+
+    /// <summary>Whether the arrival on <paramref name="remote"/> threw: the handler guard's line (a throw before the
+    /// claim or after world entry) or the arrival's own (a throw between the two, which closes the connection).</summary>
+    private static bool ArrivalThrew(LogLineSink sink, string remote) =>
+        sink.Has($"{remote} handler for opcode 0x10 threw") || sink.Has($"{remote} arrival for '");
 
     /// <summary>A stored row for <paramref name="name"/>, as the login server's character creation leaves one.</summary>
     private void SeedRow(string name, ushort map, uint coins)
@@ -667,7 +1134,12 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>The 0x10 arrival as the client sends it after the login server's handoff: the plaintext
-    /// <c>klen "NexonInc." ulen user token</c>, with a token minted for this user and the socket-free address.</summary>
+    /// <c>klen "NexonInc." ulen user token</c>, with a token minted for this user and the socket-free address.
+    ///
+    /// <para>The account names in this class are 9 letters or fewer, so each token keeps at least 2 nonce bytes. The
+    /// token table's primary key is the hash of the surviving bytes, and a name of 11 letters or more hashes an
+    /// empty prefix: its mint then fails on any other such name's row still in the table, and that arrival is
+    /// refused (a 13-letter name here broke <c>PersistenceTests</c>' 24-letter arrival that way).</para></summary>
     private static byte[] ArrivalFrame(string user)
     {
         var body = new List<byte> { 9 };
@@ -752,6 +1224,9 @@ public sealed class TeardownSlotLeakTests
             get => Volatile.Read(ref _failOn);
             set => Volatile.Write(ref _failOn, value);
         }
+
+        /// <summary>What went out, for a test that reads it back.</summary>
+        public RecordingOutbound Recorded => _inner;
 
         public string Remote => _inner.Remote;
         public int Capacity => _inner.Capacity;

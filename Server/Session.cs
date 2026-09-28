@@ -664,6 +664,9 @@ public sealed partial class Session
         // CONTENDED cast is two critical sections with a gap, not one — the alternative was a deadlock, and
         // the gap is still strictly better than the nothing that guarded this before. Everything else, and
         // the uncontended cast, really is atomic.
+        //
+        // An arrival that throws between its slot claim and world entry does not reach this guard: its client is
+        // on the loading screen with nothing more coming, so ArriveOrClose closes the connection instead.
         try { WithState(() => Dispatch(pkt, dec)); }
         catch (Exception e)
         {
@@ -681,7 +684,7 @@ public sealed partial class Session
 
         switch (pkt.Opcode)
         {
-            case ClientOp.Arrival:          HandleArrival(pkt); break;
+            case ClientOp.Arrival:          ArriveOrClose(pkt); break;
             // 0x0B = "I just left the world for the select screen" (Alt+X). Answer it by sending the client
             // BACK to the login server, which is what RTK does and the only reason account creation from
             // that screen can work at all: NameCheck (0x02) and CreateAppearance (0x04) are handled by the
@@ -987,6 +990,11 @@ public sealed partial class Session
     /// slot without entering the world (#298 review, pre-existing 2), where the same account without the old
     /// session gets in.</para>
     ///
+    /// <para>A kick whose write FAILS without throwing (the database refused it: <c>KickForReplacement</c> returns
+    /// false) is logged the same way, "failed" for "threw", and is fenced the same way, so the row the caller
+    /// loads is final on that path too (#303 re-check, pre-existing 1). Before, it logged nothing past the store's
+    /// own warning, and an older in-flight write could land after the load.</para>
+    ///
     /// <para>The key the slot was claimed under is kept (<see cref="_claimedKey"/>), so that if the arrival throws
     /// before it enters the world, its teardown can give the slot back (<see cref="TearDownWorldState"/>).</para></summary>
     internal void ClaimAccountSlot(string user)
@@ -999,7 +1007,12 @@ public sealed partial class Session
         Log.Info(departed
             ? $"   -> ARRIVAL: '{user}' left moments ago — fencing that session's last write before the load"
             : $"   -> ARRIVAL: '{user}' already online — kicking previous session");
-        try { oldSession.KickForReplacement(); }
+        try
+        {
+            if (!oldSession.KickForReplacement())
+                Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' failed — " +
+                          "its save is LOST; loading the row as it stands");
+        }
         catch (Exception e)
         {
             Log.Error($"   -> ARRIVAL: the {(departed ? "departed" : "previous")} session's final write for '{user}' threw — " +
@@ -1014,8 +1027,9 @@ public sealed partial class Session
 
     /// <summary>The account key this session's arrival claimed the online slot under, set by
     /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then, and null again once one of the
-    /// arrival's refusals has given the slot back itself. Read only by the teardown of a session that never
-    /// entered the world, which gives the slot back under it. A session that did enter parks
+    /// arrival's refusals has given the slot back itself. Read by the teardown of a session that never entered
+    /// the world, which gives the slot back under it, and by <see cref="ArriveOrClose"/>, which closes the
+    /// connection of an arrival that threw after its claim. A session that did enter parks
     /// the slot under its character's key (<c>UserKey</c>), as it always has. Written and read under this
     /// session's monitor: the arrival and the teardown both run inside it.</summary>
     private string? _claimedKey;
@@ -1025,6 +1039,41 @@ public sealed partial class Session
     /// throw between the claim and world entry (the row load, the restores after it), which leaves the session
     /// holding the account's slot with <c>_enteredWorld</c> false. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalClaimedProbeForTest;
+
+    /// <summary>The arrival, and the one throw of it that closes the connection. An arrival that throws after
+    /// <see cref="ClaimAccountSlot"/> and before world entry (<c>_enteredWorld</c>) leaves its client on the
+    /// loading screen with nothing more coming, so the connection is closed here and the cause logged. The read
+    /// loop then ends, and its teardown gives the slot back through <see cref="_claimedKey"/>
+    /// (<see cref="TearDownWorldState"/>), as it already did once the client disconnected by itself. Before, the
+    /// throw reached the handler guard in <see cref="Handle"/>, which keeps the session, and the client sat on the
+    /// loading screen until it gave up (#303 report, follow-up candidate 1).
+    ///
+    /// <para>Every other throw goes on to that guard exactly as before: an arrival's before its claim or after
+    /// <c>_enteredWorld</c> is set, and any other opcode's handler. This runs inside <c>Handle</c>'s
+    /// <c>WithState</c>, under the monitor both fields are written under; the close is the same CloseConnection the
+    /// arrival's refusals already make there, and takes no lock of docs/common/Locking.md.</para></summary>
+    private void ArriveOrClose(TkPacket pkt)
+    {
+        try { HandleArrival(pkt); }
+        catch (Exception e)
+        {
+            if (_claimedKey is null || _enteredWorld) throw;
+            Log.Error($"{_remote} arrival for '{_user}' threw after claiming the account's slot, before entering the world — " +
+                      $"closing the connection; its teardown gives the slot back; {DiagState()}", e);
+            CloseConnection("arrival threw before world entry");
+        }
+    }
+
+    /// <summary>One of the arrival's refusals gives the account's slot back itself: <c>Unregister</c>'s
+    /// compare-and-remove under the key the claim was made under, then the key is cleared, so the teardown has
+    /// nothing left to return (<see cref="TearDownWorldState"/>). The key is <c>CharacterStore.Key(_user)</c> by
+    /// construction, since <see cref="ClaimAccountSlot"/> is handed <c>_user</c>, and it is always set by the time a
+    /// refusal runs.</summary>
+    private void GiveBackClaimedSlot()
+    {
+        if (_claimedKey is { } key) _world.Online.Unregister(key, this);
+        _claimedKey = null;
+    }
 
     private void HandleArrival(TkPacket pkt)
     {
@@ -1100,24 +1149,21 @@ public sealed partial class Session
         if (load.Status == CharacterLoadStatus.NotFound)
         {
             Log.Info($"   -> ARRIVAL REJECTED: no character record for user='{_user}' — closing connection");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);   // give back the online slot we just claimed
-            _claimedKey = null;   // given back here, so the teardown has nothing to return (TearDownWorldState)
+            GiveBackClaimedSlot();   // give back the online slot we just claimed
             CloseConnection("arrival rejected (no character record)");
             return;
         }
         if (load.Status == CharacterLoadStatus.Unreadable)
         {
             SendMessage("Your character record could not be loaded. Please contact an administrator.");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);
-            _claimedKey = null;
+            GiveBackClaimedSlot();
             CloseConnection("arrival rejected (unreadable character record)", drain: true);
             return;
         }
         if (load.Status == CharacterLoadStatus.StorageError)
         {
             SendMessage("Character storage is temporarily unavailable. Please try again.");
-            _world.Online.Unregister(CharacterStore.Key(_user), this);
-            _claimedKey = null;
+            GiveBackClaimedSlot();
             CloseConnection("arrival rejected (character storage unavailable)", drain: true);
             return;
         }
