@@ -153,6 +153,14 @@ public class CreateFaceByteTests : IDisposable
         Assert.DoesNotMatch(@"\bc\.Name\s*=[^=]", body);
         Assert.DoesNotContain("new Character", body);
 
+        // #304 F1: the line check above only pins the ONE `var c = ...FromCreate(...)` it expects; it would
+        // stay green even if a second, ungated `c = CharacterFactory.FromCreate(...)` were added later in the
+        // body, or if `c` were reassigned some other way after the gate below runs. Tighten it directly:
+        // FromCreate( appears exactly once in this body, and `c` is never reassigned after its initial
+        // `var c =` declaration.
+        Assert.Single(Regex.Matches(body, Regex.Escape("FromCreate(")));
+        Assert.Empty(Regex.Matches(body, @"(?<!var )\bc\s*=(?!=)"));
+
         // The gate refuses on the name that is written, and it runs before the character and account rows.
         var gate = Regex.Match(body, @"if \(NameProblem\(c\.Name\) is \{ \} why\)\s*\{(?:\s*Log\.Info\([^\n]*\);)?\s*SendMessage\(why\);\s*return;\s*\}");
         Assert.True(gate.Success, "HandleCreate must refuse through NameProblem(c.Name) and return");

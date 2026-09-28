@@ -6,7 +6,7 @@
 #   name@39           only on NPC 39 of it (NPCs.csv NpcId); several ids are ;-separated: name@35;39
 #   name@map:324;325  only on the NPCs of it standing on those maps
 # The narrowing is for that one entry, never the row, so the row's order holds for every NPC. It is how an
-# ability that belongs to SOME of the NPCs sharing an identifier says which: nine NPCs are MageTrainerNpc,
+# ability that belongs to SOME of the NPCs sharing an identifier says which: twelve NPCs are MageTrainerNpc,
 # and only Eldritch (39) tells the Sute story. An id that names no NPC of the identifier is logged at load,
 # and the entry then reaches nobody.
 #
@@ -23,7 +23,7 @@ FishNpc,fish
 LibrarianNpc,librarian
 MainTutorialNpc,tutorial_quest|stars_hint
 WarriorTrainerNpc,warrior_trainer|minor_quest|armor_quest@36;41|nagnang_shield@91
-RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe@42;162;163;164|armor_quest@37;42|dagger_uniform
+RogueTrainerNpc,rogue_trainer|minor_quest|white_moon_axe@42;162;163;164|armor_quest@37;42|dagger_uniform@37;42;138
 MageTrainerNpc,mage_trainer|minor_quest|sute@39|armor_quest@35;39|mage_stone@133
 PoetTrainerNpc,poet_trainer|minor_quest|armor_quest@38;40|poet_whip@137;408;409;410
 BloodNpc,forget_secret

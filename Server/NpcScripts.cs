@@ -94,10 +94,10 @@ public static class NpcScripts
 /// <c>name</c>); a <c>name@39</c> token fills <see cref="NpcIds"/>, a <c>name@map:324;325</c> token fills
 /// <see cref="MapIds"/>. The header of game-data/NpcAbilities.csv is the reference for the syntax.
 ///
-/// <para>This is where an ability that belongs to SOME of the NPCs sharing an identifier says which. Nine NPCs
-/// are <c>MageTrainerNpc</c>, and only Eldritch tells the Sute story. Before the CSV could say so, each such
-/// ability was composed onto all nine and refused the other eight itself, from a private id table, on every
-/// word spoken near any of them.</para>
+/// <para>This is where an ability that belongs to SOME of the NPCs sharing an identifier says which. Twelve
+/// NPCs are <c>MageTrainerNpc</c>, and only Eldritch tells the Sute story. Before the CSV could say so, each
+/// such ability was composed onto all twelve and refused the other eleven itself, from a private id table, on
+/// every word spoken near any of them.</para>
 /// </summary>
 public sealed record NpcAbilityRef(string Name, IReadOnlySet<int>? NpcIds = null, IReadOnlySet<int>? MapIds = null)
 {

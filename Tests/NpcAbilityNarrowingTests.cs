@@ -117,6 +117,42 @@ public class NpcAbilityNarrowingTests
         Assert.Equal(AlignmentAbility.Shrines.Count, Carriers("alignment").Length);
     }
 
+    /// <summary>dagger_uniform (#302 F3) shipped with no CSV narrowing on the RogueTrainerNpc row at all:
+    /// every RogueTrainerNpc — not just Dagger, Maro and Maso — carried the ability and refused the other
+    /// eleven itself from inside DaggerUniformAbility. The CSV now says which three. Two of them, Dagger
+    /// (138) and Maro (37), are the ids <see cref="DaggerUniformAbility.Entries"/> checks by id
+    /// (DaggerUniformQuest.cs:193, :199); the third, Maso (42), is reached with the 'h' gesture and is
+    /// checked instead in <c>DaggerUniformAbility.OnHandItem</c> (DaggerUniformQuest.cs:365). All three are
+    /// the ability's own per-NPC checks, split across its two dispatch methods, so the narrowing must equal
+    /// all three or one of them silently stops being offered.
+    ///
+    /// <para>This does NOT use <see cref="CsvNpcIds"/>/<see cref="Carriers"/> as the other four facts do:
+    /// <c>dagger_uniform</c> also has a second, deliberately un-narrowed row on <c>BlackbirdNpc</c> (the
+    /// crow, NPCs.csv 139 — its own identifier has only him, so a plain entry there already narrows to one
+    /// NPC without an explicit id list). This fact is scoped to the RogueTrainerNpc row alone.</para></summary>
+    [Fact]
+    public void DaggerUniformNamesExactlyTheThreeSpeakingRogueMasters()
+    {
+        EnsureLoaded();
+        var table = Sorted(new[]
+        {
+            DaggerUniformQuest.DaggerNpcId,
+            DaggerUniformQuest.MaroNpcId,
+            DaggerUniformQuest.MasoNpcId,
+        });
+
+        var rogueEntry = Entries().Single(e => e.Key == "RogueTrainerNpc" && e.Ref.Name == "dagger_uniform");
+        Assert.True(rogueEntry.Ref.NpcIds is not null, "RogueTrainerNpc's dagger_uniform is not narrowed to NpcIds");
+        Assert.Equal(table, Sorted(rogueEntry.Ref.NpcIds!));
+
+        var rogueCarriers = Content.Npcs
+            .Where(n => n.Key == "RogueTrainerNpc"
+                        && Content.NpcCompositions.TryGetValue(n.Key, out var refs)
+                        && refs.Any(r => r.Name == "dagger_uniform" && r.AppliesTo(n)))
+            .Select(n => n.Id);
+        Assert.Equal(table, Sorted(rogueCarriers));
+    }
+
     // ---- item 3: the smoke test ----------------------------------------------------------------------
 
     /// <summary>Every NpcId the CSV narrows to is a loaded NPC (NPCs.csv, not dropped at load), and one of the

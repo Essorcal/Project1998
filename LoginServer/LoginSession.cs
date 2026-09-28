@@ -28,7 +28,8 @@ public sealed class LoginSession
     // that stops reading is dropped rather than waited on. OutboundOptions.Login carries this channel's numbers.
     private readonly TcpOutbound _out;
     private string _user = "?";
-    private string _pendingName = "";   // name from the availability check, fallback for creation
+    private string _pendingName = "";   // name from the availability check; 0x04 carries no name on 4.95, so
+                                         // this is what creation keys off (see HandleCreate below)
     private string _pendingPass = "";   // password from the availability check (0x02), used at creation (0x04)
 
     // Slow-loris defense (the login port is the internet-facing front door): the budget for a connection's
@@ -129,8 +130,9 @@ public sealed class LoginSession
     }
 
     // Create step 1 (0x02): the client asks whether a name is free. Body is the length-prefixed name
-    // (plus the chosen password — see the protocol doc §9). We stash both so creation (0x04) can key the
-    // record even if that packet omits the name.
+    // (plus the chosen password — see the protocol doc §9). We stash both because creation (0x04) carries no
+    // name at all on 4.95 (see HandleCreate below) — _pendingName is the name creation keys off, not a
+    // fallback for one it might otherwise have.
     //
     // This check is now REAL. It used to answer "available" unconditionally, which meant re-creating an
     // existing name walked straight into HandleCreate's load-then-overwrite path and RESET that character's
@@ -183,9 +185,10 @@ public sealed class LoginSession
     // normalization — otherwise "Bo b" and "Bob" would be the same account under two different display names.
     //
     // The shape is Shared/NameRules: 3 to 11 characters, LETTERS ONLY — no spaces, no digits, no punctuation.
-    // (It used to allow digits and _, which normalization would have folded together anyway.) The ceiling is
-    // HandoffTokens.MaxNameLength, the most the client's handoff field carries back whole. It used to be 12,
-    // and a 12-letter account was created but could never enter the world (#299).
+    // (It used to allow digits and _, which normalization would have folded together anyway.) The 11 comes from
+    // HandoffTokens.MaxNameLength, the most the client's handoff field carries back whole — not from the
+    // original game's limit, which is not recorded in this repository. It used to be 12, and a 12-letter
+    // account was created but could never enter the world (#299).
     private static string? NameProblem(string name)
     {
         if (NameRules.ShapeProblem(name) is { } why) return why;

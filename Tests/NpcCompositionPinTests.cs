@@ -121,15 +121,17 @@ public class NpcCompositionPinTests
     [InlineData(41,  "warrior_trainer|MinorQuestAbility|ArmorQuestAbility|InfoAbility")]
     [InlineData(91,  "warrior_trainer|MinorQuestAbility|NagnangShieldAbility|InfoAbility")]
     [InlineData(153, "warrior_trainer|MinorQuestAbility|InfoAbility")]
-    // RogueTrainerNpc: White Moon Axe (the four Masos), the armor chains (Maro, Maso). Dagger uniform is not
-    // narrowed: its per-NPC ids are the quest's own data (who plays which part), not a filter.
+    // RogueTrainerNpc: White Moon Axe (the four Masos), the armor chains (Maro, Maso). Dagger uniform (#302
+    // F3) is now narrowed in the CSV to Maro, Maso and Dagger himself (37, 42, 138); the other rogue trainers
+    // below lose it from this list with nothing else changing, since their own id gate inside
+    // DaggerUniformAbility already refused it (see NpcAbilityNarrowingTests.DaggerUniformNamesExactlyThe...).
     [InlineData(37,  "rogue_trainer|MinorQuestAbility|ArmorQuestAbility|DaggerUniformAbility|InfoAbility")]
     [InlineData(42,  "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|ArmorQuestAbility|DaggerUniformAbility|InfoAbility")]
     [InlineData(138, "rogue_trainer|MinorQuestAbility|DaggerUniformAbility|InfoAbility")]
-    [InlineData(159, "rogue_trainer|MinorQuestAbility|DaggerUniformAbility|InfoAbility")]
-    [InlineData(162, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|DaggerUniformAbility|InfoAbility")]
-    [InlineData(163, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|DaggerUniformAbility|InfoAbility")]
-    [InlineData(164, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|DaggerUniformAbility|InfoAbility")]
+    [InlineData(159, "rogue_trainer|MinorQuestAbility|InfoAbility")]
+    [InlineData(162, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|InfoAbility")]
+    [InlineData(163, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|InfoAbility")]
+    [InlineData(164, "rogue_trainer|MinorQuestAbility|WhiteMoonAxeAbility|InfoAbility")]
     // PoetTrainerNpc: the armor chains (Jinsun, Song), Poet's whip (the four Staffs).
     [InlineData(38,  "poet_trainer|MinorQuestAbility|ArmorQuestAbility|InfoAbility")]
     [InlineData(40,  "poet_trainer|MinorQuestAbility|ArmorQuestAbility|InfoAbility")]
