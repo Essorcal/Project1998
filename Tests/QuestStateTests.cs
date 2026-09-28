@@ -131,6 +131,30 @@ public class QuestStateTests
         Assert.Equal(targets.Count, targets.Distinct(StringComparer.Ordinal).Count());
     }
 
+    /// <summary>The quests name their slots by constants (public or private) rather than by the literals
+    /// pinned above, so a typo in one of THOSE would only surface as a throw the first time a player reached
+    /// that line. Every slot-shaped constant in the server has to be a slot the table knows.</summary>
+    [Fact]
+    public void EverySlotConstantInTheServerIsInTheTable()
+    {
+        var shaped = new Regex(@"^(flag|kills|timer|count|level|step)\.[^.]+(\.[^.]+)*$|^tier$", RegexOptions.CultureInvariant);
+        var known = new HashSet<string>(QuestState.Aliases.Keys.Select(k => k.Slot), StringComparer.Ordinal);
+        var found = new List<string>();
+        foreach (var type in typeof(QuestState).Assembly.GetTypes())
+            foreach (var f in type.GetFields(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public |
+                                             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                if (!f.IsLiteral || f.FieldType != typeof(string)) continue;
+                if (f.GetRawConstantValue() is not string value || !shaped.IsMatch(value)) continue;
+                found.Add($"{type.Name}.{f.Name}");
+                Assert.True(known.Contains(value), $"{type.Name}.{f.Name} = \"{value}\" is not a slot in QuestState's alias table");
+            }
+        // The sweep has to be looking at the quests at all: these are a few of the constants it must see.
+        Assert.Contains("TutorialQuest.GaveGold", found);
+        Assert.Contains("TotemWorship.Pity", found);
+        Assert.Contains("MinorQuestAbility.KTimer", found);
+    }
+
     /// <summary>A slot the table does not list must fail loudly, not start a fresh counter at 0 under a key no
     /// character has — which is exactly what a typo would otherwise do.</summary>
     [Fact]
