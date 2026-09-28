@@ -566,11 +566,77 @@ public sealed partial class Session
     // stats (those stay in _char.*); the effective values the client sees are base + these, recomputed on
     // every SendStats / profile / attack. That keeps a relog — which reloads Equipment and redraws it via
     // RefreshInventory — from drifting or double-counting, since nothing was ever baked into the base.
-    // Cached so the ~10-slot sum isn't recomputed on every SendStats / RegenTick / ApplyMobHit (×3) / Lua stat
-    // read. Equipment changes rarely; InvalidateEquipTotals() clears it at each mutation site (equip/unequip/
-    // break). NOT keyed on durability — EquipTotals sums def stat lines, which dura decay never touches.
-    private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam)? _equipTotals;
-    private void InvalidateEquipTotals() => _equipTotals = null;
+    // Kept so the ~10-slot sum isn't recomputed on every SendStats / RegenTick / ApplyMobHit (×3) / Lua stat
+    // read. NOT keyed on durability — EquipTotals sums def stat lines, which dura decay never touches.
+    //
+    // PUBLISHED, NOT JUST CACHED (PR #286 review F2). The gear sum and a copy of the timed buffs live in ONE
+    // immutable TotalsSnapshot, built by this session under its own monitor and published with one reference
+    // write: InvalidateEquipTotals() at each gear mutation site (equip/unequip/break/strip) re-sums the gear,
+    // and the four _buffs writers below re-copy the buffs. Every read is one reference read plus the buff sum
+    // at the reader's clock: this session's own (Totals) and a PEER's (PeerTotals: the PvP swing, the
+    // player-target spell, divination). A peer never walks this session's lists and never takes its monitor;
+    // it sees nothing or one whole published state. Locking.md, "Deliberately outside all of this".
+    private TotalsSnapshot? _equipTotals;
+
+    /// <summary>Gear changed: re-sum it and publish, keeping the buff half. The name and the call sites are the
+    /// ones it had when it only dropped a cache; every caller holds this session's monitor.</summary>
+    private void InvalidateEquipTotals() =>
+        PublishTotals(EquipTotals(), Volatile.Read(ref _equipTotals)?.Buffs ?? CopyBuffs());
+
+    /// <summary>A <c>_buffs</c> writer changed the list: copy it and publish, keeping the gear half. Called by
+    /// the four writers only, under the monitor they assert.</summary>
+    private void PublishBuffTotals() =>
+        PublishTotals(Volatile.Read(ref _equipTotals)?.Equip ?? EquipTotals(), CopyBuffs());
+
+    private void PublishTotals((int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) equip,
+        BuffTerm[] buffs) => Volatile.Write(ref _equipTotals, new TotalsSnapshot(equip, buffs));
+
+    /// <summary>The live buff list as the snapshot keeps it: the three fields a total reads, copied, so nothing
+    /// a peer reads is an object this session's list still holds. The list is a handful of entries.</summary>
+    private BuffTerm[] CopyBuffs()
+    {
+        if (_buffs.Count == 0) return Array.Empty<BuffTerm>();
+        var terms = new BuffTerm[_buffs.Count];
+        for (int i = 0; i < terms.Length; i++) { var b = _buffs[i]; terms[i] = new BuffTerm(b.Stat, b.Amount, b.Expires); }
+        return terms;
+    }
+
+    private readonly record struct BuffTerm(string Stat, int Amount, long Expires);
+
+    /// <summary>One published state of this session's gear and timed buffs. Immutable: built whole by the owner
+    /// under its monitor, published by one reference write (<see cref="PublishTotals"/>), never changed after.</summary>
+    private sealed class TotalsSnapshot
+    {
+        public readonly (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) Equip;
+        public readonly BuffTerm[] Buffs;
+
+        public TotalsSnapshot((int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) equip,
+            BuffTerm[] buffs)
+        {
+            Equip = equip;
+            Buffs = buffs;
+        }
+
+        /// <summary>Gear + every buff still running at <paramref name="now"/>. Don't drop expired buffs here —
+        /// Session.ExpireBuffs (RegenTick) is the single removal point (so the fade line fires exactly once);
+        /// a lapsed buff it has not swept yet is just skipped, as the list walk always skipped it.</summary>
+        public (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) At(long now)
+        {
+            var (hp, mp, mt, wl, gr, ar, ht, dm) = Equip;
+            foreach (var b in Buffs) { if (b.Expires <= now) continue; switch (b.Stat)
+            {
+                case "hp": case "maxhp": hp += b.Amount; break;
+                case "mp": case "maxmp": mp += b.Amount; break;
+                case "might": mt += b.Amount; break;
+                case "will":  wl += b.Amount; break;
+                case "grace": gr += b.Amount; break;
+                case "armor": ar += b.Amount; break;
+                case "hit":   ht += b.Amount; break;
+                case "dam":   dm += b.Amount; break;
+            } }
+            return (hp, mp, mt, wl, gr, ar, ht, dm);
+        }
+    }
 
     // ARMOR SIGN — the one field in this tuple where "more" is WORSE. Every other slot is a straight bonus
     // (more might is more might); `armor` is an AC DELTA, and AC works the other way round: damage taken is
@@ -579,9 +645,11 @@ public sealed partial class Session
     // (wedding dress +30 — you wear it for the ceremony, not the fight). Gear, buffs (SpellParams.csv's
     // `armor` stat: bolster -4, pestilence +5) and mobs (mobs.csv MobArmor) all speak these same units, and
     // every consumer just ADDS this to _char.Ac. Nothing anywhere negates.
+    //
+    // Walks this session's own equipment list, so it runs only where the snapshot is built: under this session's
+    // monitor at a publish, or on its own first read (Totals).
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) EquipTotals()
     {
-        if (_equipTotals is { } cached) return cached;
         int hp = 0, mp = 0, mt = 0, wl = 0, gr = 0, ar = 0, ht = 0, dm = 0;
         foreach (var e in _char.Equipment)
         {
@@ -589,9 +657,7 @@ public sealed partial class Session
             hp += def.Vita; mp += def.Mana; mt += def.Might; wl += def.Will; gr += def.Grace;
             ar += def.Armor; ht += def.Hit; dm += def.Dam;
         }
-        var t = (hp, mp, mt, wl, gr, ar, ht, dm);
-        _equipTotals = t;
-        return t;
+        return (hp, mp, mt, wl, gr, ar, ht, dm);
     }
 
     // A weapon's real swing range, summed across worn gear like EquipTotals (RTK pc_calcstat sums
@@ -910,13 +976,17 @@ public sealed partial class Session
     // formula below (no parallel PvP copy to drift). grace/level feed the hit+crit roll; Ac + ArmorFloor the
     // armor mitigation (mob floor -95 = RTK minimumArmor for a mob; player floor -80 = RTK's human floor, same
     // as ApplyMobHit); X/Y/Dir the positional rear-x2. Of(Session) folds in the target's gear/buff armor+grace
-    // exactly as ApplyMobHit computes a player's effective defense.
+    // exactly as ApplyMobHit computes a player's effective defense, from ONE published snapshot (PeerTotals):
+    // the swing runs on the attacker's thread, which does not hold the target's monitor.
     private readonly record struct SwingTarget(int Ac, int ArmorFloor, int Grace, int Level, int X, int Y, byte Dir)
     {
         public static SwingTarget Of(Mob m) => new(m.Ac, -95, m.Grace, m.Level, m.X, m.Y, m.Dir);
-        public static SwingTarget Of(Session s) => new(
-            s._char.Ac + s.Totals().armor, -80, s._char.Grace + s.Totals().grace, s._char.Level,
-            s._char.X, s._char.Y, (byte)(s._facing & 3));
+        public static SwingTarget Of(Session s)
+        {
+            var t = s.PeerTotals();
+            return new(s._char.Ac + t.armor, -80, s._char.Grace + t.grace, s._char.Level,
+                       s._char.X, s._char.Y, (byte)(s._facing & 3));
+        }
     }
 
     private (int dmg, bool crit) PlayerSwingDamage(SwingTarget target, double reach = 1.0)
@@ -1061,16 +1131,18 @@ public sealed partial class Session
     // (CaptureTimedEffects). Every write funnels through these four so a Debug build fails loudly on any
     // path that reaches them without the state monitor, instead of losing an entry in silence. READS are
     // deliberately not funnelled — a torn read of a list of value-ish records shows a stale total for one
-    // frame, where a torn write loses a buff for good.
+    // frame, where a torn write loses a buff for good. A PEER's read of the totals does not touch this list at
+    // all: it reads the snapshot these writers publish (PR #286 review F2).
     //
-    // Each of the four also refreshes _nextBuffExpiry, and that is the funnel earning its keep a second
-    // time: because every write goes through here, an exact hint costs four call sites and no new writer
-    // can forget it without also skipping the guard.
+    // Each of the four also refreshes _nextBuffExpiry and republishes the totals snapshot, and that is the
+    // funnel earning its keep again: because every write goes through here, an exact hint and a current
+    // snapshot cost four call sites each, and no new writer can forget them without also skipping the guard.
     private void BuffAdd(ActiveBuff b)
     {
         AssertStateHeld("_buffs");
         _buffs.Add(b);
         RecomputeNextBuffExpiry();
+        PublishBuffTotals();
     }
 
     private int BuffRemoveAll(Predicate<ActiveBuff> match)
@@ -1078,6 +1150,7 @@ public sealed partial class Session
         AssertStateHeld("_buffs");
         int n = _buffs.RemoveAll(match);
         RecomputeNextBuffExpiry();
+        PublishBuffTotals();
         return n;
     }
 
@@ -1086,6 +1159,7 @@ public sealed partial class Session
         AssertStateHeld("_buffs");
         _buffs.RemoveAt(index);
         RecomputeNextBuffExpiry();
+        PublishBuffTotals();
     }
 
     private void BuffClear()
@@ -1093,6 +1167,7 @@ public sealed partial class Session
         AssertStateHeld("_buffs");
         _buffs.Clear();
         RecomputeNextBuffExpiry();
+        PublishBuffTotals();
     }
 
     // ---- the only writers of the worn-gear list (#29) ------------------------------------------------
@@ -1116,43 +1191,51 @@ public sealed partial class Session
     {
         AssertStateHeld("_char.Equipment");
         _char.Equipment.Clear();
-        InvalidateEquipTotals();   // #206: the cached gear sum must go with the gear, or its bonuses outlive it
-    }
-
-    private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) BuffTotals()
-    {
-        long now = Environment.TickCount64;
-        int hp = 0, mp = 0, mt = 0, wl = 0, gr = 0, ar = 0, ht = 0, dm = 0;
-        // Don't remove expired buffs here — Session.ExpireBuffs (RegenTick) is the single removal point (so the
-        // fade line fires exactly once); just skip any that have lapsed but aren't swept yet.
-        foreach (var b in _buffs) { if (b.Expires <= now) continue; switch (b.Stat)
-        {
-            case "hp": case "maxhp": hp += b.Amount; break;
-            case "mp": case "maxmp": mp += b.Amount; break;
-            case "might": mt += b.Amount; break;
-            case "will":  wl += b.Amount; break;
-            case "grace": gr += b.Amount; break;
-            case "armor": ar += b.Amount; break;
-            case "hit":   ht += b.Amount; break;
-            case "dam":   dm += b.Amount; break;
-        } }
-        return (hp, mp, mt, wl, gr, ar, ht, dm);
+        InvalidateEquipTotals();   // #206: the gear sum must go with the gear, or its bonuses outlive it
     }
 
     // Gear + active timed buffs: the full bonus layered on the character's base stats. Everything the client
     // sees (HUD, profile) and every derived calc (heals, melee) reads through this so buffs are reflected live.
+    // THIS session's read: the published snapshot, summed now. Nothing is published until the first gear or
+    // buff change or this first read (a login's first SendStats, before EnterMap makes the session targetable),
+    // so that read sums the lists itself and publishes the result, exactly when the old cache filled. The
+    // compare-exchange lets a publish that landed while it was summing win.
     private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) Totals()
     {
-        var e = EquipTotals(); var b = BuffTotals();
-        return (e.hp + b.hp, e.mp + b.mp, e.might + b.might, e.will + b.will,
-                e.grace + b.grace, e.armor + b.armor, e.hit + b.hit, e.dam + b.dam);
+        var s = Volatile.Read(ref _equipTotals);
+        if (s is null)
+        {
+            var first = new TotalsSnapshot(EquipTotals(), CopyBuffs());
+            s = Interlocked.CompareExchange(ref _equipTotals, first, null) ?? first;
+        }
+        return s.At(Environment.TickCount64);
+    }
+
+    /// <summary>ANOTHER session's read of this one's totals: the PvP swing (<see cref="SwingTarget.Of(Session)"/>),
+    /// the player-target spell's armor and divination (Session.Spells.cs). One reference read of what this
+    /// session last published, summed at the reader's clock. It never walks this session's lists and never
+    /// takes its monitor: the caller holds its own, and a second session monitor there is an order Locking.md
+    /// does not have.
+    /// <para>Nothing published yet: the owner's own read when this thread already holds its monitor (a
+    /// self-target), otherwise zero gear and buffs and a log line. A session on a map cannot be in that state
+    /// (see <see cref="Totals"/>), so the line means that stopped being true.</para></summary>
+    private (int hp, int mp, int might, int will, int grace, int armor, int hit, int dam) PeerTotals()
+    {
+        var s = Volatile.Read(ref _equipTotals);
+        if (s is not null) return s.At(Environment.TickCount64);
+        if (StateHeld) return Totals();
+        Log.Warn($"totals: a peer read '{_char.Name}' with no published totals yet; read as zero gear and buffs");
+        return default;
     }
 
     // Effective (base + gear + buffs) caps/attributes used by the HUD, heals and melee. AC is signed and LOWER
     // is better in TK; gear/buff armor is an AC delta in those same units, so it simply ADDS (see EquipTotals).
     private uint EffMaxHp => (uint)Math.Max(1, (int)_char.MaxHp + Totals().hp);
     private uint EffMaxMp => (uint)Math.Max(0, (int)_char.MaxMp + Totals().mp);
-    private int  EffMight => Math.Clamp(_char.Might + Totals().might, 0, 255);
+    private int  EffMight => MightCap(_char.Might + Totals().might);
+
+    /// <summary>Effective might's clamp, shared with divination's read of a peer so the two cannot drift.</summary>
+    private static int MightCap(int might) => Math.Clamp(might, 0, 255);
 
     /// <summary>Path/class + subpath-rank restriction on USING an item at all — worn or swallowed (RTK
     /// <c>pc_useitem</c>, pc.c:1998).
