@@ -2177,7 +2177,7 @@ public sealed partial class Session
     internal bool LuaTargetIsDead  => _pcSpellTarget?.IsDead ?? false;
     internal bool LuaTargetIsSelf  => _pcSpellTarget is not null && ReferenceEquals(_pcSpellTarget, this);
     internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
-    internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.Totals().armor;  // effective AC (lower=better)
+    internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.PeerTotals().armor;  // effective AC (lower=better)
     internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
     internal void LuaSetTargetMana(int n)
     {
@@ -2386,9 +2386,10 @@ public sealed partial class Session
         var text = new System.Text.StringBuilder();
         text.Append(ClassTitleOf(tc)).Append(' ').Append(tc.Name).Append("     Level ").Append(tc.Level).Append('\n');
         text.Append(tc.Title ?? "").Append('\n');
-        text.Append("Might: ").Append(target.EffMight)
-            .Append(" Will: ").Append(tc.Will + target.Totals().will)
-            .Append(" Grace: ").Append(tc.Grace + target.Totals().grace).Append('\n');
+        var tt = target.PeerTotals();   // one published snapshot for all three, never the target's lists
+        text.Append("Might: ").Append(MightCap(tc.Might + tt.might))
+            .Append(" Will: ").Append(tc.Will + tt.will)
+            .Append(" Grace: ").Append(tc.Grace + tt.grace).Append('\n');
         if (showInventory)
         {
             text.Append("Items: ");
