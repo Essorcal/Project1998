@@ -349,7 +349,7 @@ public class HandoffTokenTests : IDisposable
         Assert.False(ConsumeAt(db.Open, echoA, b, T0), "A's token entered as B, who has no token");
         var echoB = MintAt(db.Open, b, T0, OtherIp);
         Assert.False(ConsumeAt(db.Open, echoA, b, T0), "A's token entered as B, whose token is bound to another address");
-        Assert.True(ConsumeAt(db.Open, echoA, a, T0));
+        Assert.True(ConsumeAt(db.Open, echoA, a, T0), "A's own token was refused after B minted");
         Assert.True(ConsumeAt(db.Open, echoB, b, T0, OtherIp), "consuming A's token consumed B's");
         Assert.False(ConsumeAt(db.Open, echoA, a, T0), "A's arrival replayed");
     }
@@ -430,7 +430,8 @@ public class HandoffTokenTests : IDisposable
         foreach (int length in new[] { 7, 10, 11 })
         {
             var user = Fresh(length);   // this login server mints, the previous game server consumes
-            Assert.Equal(1, PreviousConsume(db.Open, user, MintAt(db.Open, user, T0), T0));
+            Assert.True(PreviousConsume(db.Open, user, MintAt(db.Open, user, T0), T0) == 1,
+                $"the previous game server refused a {length}-letter token this login server minted");
 
             var other = Fresh(length);  // the previous login server mints, this game server consumes
             var echo = ClientEcho(other, PreviousNonce);
@@ -445,8 +446,8 @@ public class HandoffTokenTests : IDisposable
         var theirs = Fresh(11);
         var theirEcho = ClientEcho(theirs, PreviousNonce);
         Assert.Equal(1, PreviousMint(db.Open, theirs, theirEcho, expires: T0 + 61));
-        Assert.True(ConsumeAt(db.Open, theirEcho, theirs, T0 + 1));
-        Assert.True(ConsumeAt(db.Open, ourEcho, ours, T0 + 1));
+        Assert.True(ConsumeAt(db.Open, theirEcho, theirs, T0 + 1), "the previous login server's in-flight token was refused");
+        Assert.True(ConsumeAt(db.Open, ourEcho, ours, T0 + 1), "this login server's in-flight token was refused");
     }
 
     /// <summary>Migration 4 on the database a deployment has today: the old key, with a live token, a
@@ -487,12 +488,12 @@ PRAGMA user_version = 3;";
         Assert.Equal(1, PreviousMint(open, live, liveEcho, expires: now + 60));
         Exec(open, $"INSERT INTO handoff_tokens VALUES('{new string('A', 64)}', '{spent}', {now + 60}, 1, '{Ip}');");
         Exec(open, $"INSERT INTO handoff_tokens VALUES('{new string('B', 64)}', '{expired}', {now - 1}, 0, '{Ip}');");
-        Assert.False(PrimaryKeyIsUserThenHash(open));
+        Assert.False(PrimaryKeyIsUserThenHash(open), "the legacy table already had the new key");
         using var running = open();   // the process that has not restarted: its connection predates the rebuild
 
         Db.InitializeDatabase(path);
 
-        Assert.True(PrimaryKeyIsUserThenHash(open));
+        Assert.True(PrimaryKeyIsUserThenHash(open), "migration 4 did not rekey the table");
         Assert.Equal(Db.CurrentSchemaVersion, Scalar(open, "PRAGMA user_version;"));
         Assert.Equal(1, Rows(open));
         var another = Fresh(11);   // the same hash as the live row, another account: collided before
@@ -501,11 +502,11 @@ PRAGMA user_version = 3;";
         var thirdEcho = ClientEcho(third, PreviousNonce);
         Assert.Equal(1, PreviousMint(running, third, thirdEcho, expires: now + 60));
         Assert.True(ConsumeAt(open, liveEcho, live, now), "a token minted before the migration was lost");
-        Assert.True(ConsumeAt(open, anotherEcho, another, now));
+        Assert.True(ConsumeAt(open, anotherEcho, another, now), "a mint after the migration was refused");
         Assert.Equal(1, PreviousConsume(running, third, thirdEcho, now));
 
         Db.InitializeDatabase(path);
-        Assert.True(PrimaryKeyIsUserThenHash(open));
+        Assert.True(PrimaryKeyIsUserThenHash(open), "a second run changed the key");
         Assert.Equal(Db.CurrentSchemaVersion, Scalar(open, "PRAGMA user_version;"));
     }
 
