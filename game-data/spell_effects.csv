@@ -246,10 +246,10 @@ cotw_wild_monkey_poet,poet,Utility,10,,,,,,,,,,-1,22,6,
 kwisin_fighter_poet,poet,Utility,10,,,,,,,,,,-1,22,6,
 mingken_fighter_poet,poet,Utility,10,,,,,,,,,,-1,22,6,
 ohaeng_fighter_poet,poet,Utility,10,,,,,,,,,,-1,22,6,
-cotw_wind_dancer_poet,poet,Utility,10,,,,,,,,,,-1,22,6,480000
-kwisin_champion_poet,poet,Utility,10,,,,,,,,,,-1,22,6,480000
-mingken_champion_poet,poet,Utility,10,,,,,,,,,,-1,22,6,480000
-ohaeng_champion_poet,poet,Utility,10,,,,,,,,,,-1,22,6,480000
+cotw_wind_dancer_poet,poet,Utility,0,,,,,,,,,,-1,22,6,480000
+kwisin_champion_poet,poet,Utility,0,,,,,,,,,,-1,22,6,480000
+mingken_champion_poet,poet,Utility,0,,,,,,,,,,-1,22,6,480000
+ohaeng_champion_poet,poet,Utility,0,,,,,,,,,,-1,22,6,480000
 cotw_wind_warrior_poet,poet,Utility,,,,,,,,,,,-1,22,6,
 kwisin_avatar_poet,poet,Utility,,,,,,,,,,,-1,22,6,
 mingken_avatar_poet,poet,Utility,,,,,,,,,,,-1,22,6,
