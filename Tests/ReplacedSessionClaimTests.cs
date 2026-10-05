@@ -124,7 +124,10 @@ public sealed class ReplacedSessionClaimTests
     /// refusing fails this fact rather than hanging the run.
     ///
     /// <para>Falsified (see the persist-gate report) by deleting the <c>_replaced</c> check from
-    /// <c>CaptureAndWriteWith</c>: red on the row, which took the claim after the new login loaded.</para></summary>
+    /// <c>CaptureAndWriteWith</c>: red on the row, which took the claim after the new login loaded. The parcel loop
+    /// no longer tests <c>IsReplaced</c>; it lists again only for a claim step that found its parcel gone, which a
+    /// refused claim never reaches. Falsified (see the w2-parcel-refusal report) by letting the loop list again for
+    /// a replaced session: red on the parcel case, "the claim never returned".</para></summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
