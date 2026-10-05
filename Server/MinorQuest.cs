@@ -12,22 +12,23 @@ namespace Server;
 /// — 24, i.e. ONE COMPLETED QUEST PER REAL DAY. That completion cooldown is the one deliberate departure from
 /// the Lua, which rate-limits only abandonment and so left the rewarded path unlimited.
 ///
-/// State (RTK registry) maps to the character store: the active quest key -> <c>QuestStr("minor_quest")</c>;
-/// tier / per-mob kill snapshots / cooldown timer / completed count -> the int quest registry
-/// (<c>Reg</c>/<c>SetReg</c>); the two legends by internal name. Faithful to the Lua except the experience
-/// curve (RTK's engine <c>getXPforLevel</c> isn't in the scripts, so the reward uses a documented
-/// approximation) and karma (not modelled here).
+/// State (RTK registry) maps to the character store through the <c>minor_quest</c> namespace
+/// (<see cref="QuestState"/>): the active quest key -> the text slot <c>text.target</c> (RTK's
+/// <c>registryString["minor_quest"]</c>, saved under that name in the string registry); tier / per-mob kill
+/// snapshots / cooldown timer / completed count -> int slots (saved under RTK's registry names); the two legends
+/// by internal name. Faithful to the Lua except the experience curve (RTK's engine <c>getXPforLevel</c> isn't in
+/// the scripts, so the reward uses a documented approximation) and karma (not modelled here).
 /// </summary>
 public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
 {
     public static readonly MinorQuestAbility Instance = new();
 
-    // string registry + legend names (verbatim from the Lua)
-    private const string KActive    = "minor_quest";                 // string registry: active quest key
+    // legend names (verbatim from the Lua)
     private const string KInfo      = "minor_quest_info";            // legend name: "On a quest to slay the X"
     private const string KCompleted = "minor_quests_completed";      // legend name: lifetime count
-    // int state: slots of the "minor_quest" namespace (QuestState), each saved under the Lua's registry name
-    private const string KQuest     = "minor_quest";                 // the namespace (the int map, not KActive's)
+    // state: slots of the "minor_quest" namespace (QuestState), each saved under the Lua's registry name
+    private const string KQuest     = "minor_quest";                 // the namespace
+    private const string KTarget    = "text.target";                 // active quest key (string registry "minor_quest")
     private const string KKills     = "kills.";                      // + mob: kill snapshot (minor_quest_kill_count_<mob>)
     private const string KTier      = "tier";                        // 1 Minor / 2 Major / 3 Epic (minor_quest_tier)
     private const string KTimer     = "timer.cooldown";              // unix seconds cooldown ends (minor_quest_timer)
@@ -67,7 +68,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     // "quest": start one, or resolve the one you're already on.
     private async Task Ask(NpcContext ctx)
     {
-        if (ctx.QuestStr(KActive) == "") { await Quest(ctx); return; }   // nothing active -> offer one
+        if (ctx.Quest(KQuest).GetText(KTarget) == "") { await Quest(ctx); return; }   // nothing active -> offer one
         if (await TryComplete(ctx)) return;                             // kill made -> turn it in
         await AbandonMenu(ctx);                                         // still hunting -> "you are already on…"
     }
@@ -87,7 +88,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
             return;
         }
 
-        if (ctx.QuestStr(KActive) != "")
+        if (ctx.Quest(KQuest).GetText(KTarget) != "")
         {
             await AbandonMenu(ctx);
             return;
@@ -125,7 +126,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
         var quest = qualifying[ctx.Random(qualifying.Count) - 1];
 
         foreach (var mob in quest.Mobs) ctx.Quest(KQuest).Set(KKills + mob, ctx.KillCount(mob));   // snapshot
-        ctx.SetQuestStr(KActive, quest.Key);
+        ctx.Quest(KQuest).SetText(KTarget, quest.Key);
         ctx.Quest(KQuest).Set(KTier, tier);
         ctx.AddLegend($"On a quest to slay the {quest.DisplayName}", KInfo, 5, 128);
 
@@ -137,7 +138,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     // ---- complete the active quest --------------------------------------------------------------
     private async Task Complete(NpcContext ctx)
     {
-        if (ctx.QuestStr(KActive) == "")
+        if (ctx.Quest(KQuest).GetText(KTarget) == "")
         {
             await ctx.Say("You must begin a quest before you can complete it.");
             return;
@@ -151,7 +152,7 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     private async Task<bool> TryComplete(NpcContext ctx)
     {
         int tier = ctx.Quest(KQuest).Get(KTier);
-        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.QuestStr(KActive));
+        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.Quest(KQuest).GetText(KTarget));
         if (quest is null) { ClearQuest(ctx, tier, abandoned: false); return true; }   // stale key — reset cleanly
 
         if (!quest.Mobs.Any(mob => ctx.KillCount(mob) > ctx.Quest(KQuest).Get(KKills + mob))) return false;
@@ -162,12 +163,12 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     }
 
     private static string ActiveName(NpcContext ctx) =>
-        Find(Tiers[Math.Clamp(ctx.Quest(KQuest).Get(KTier), 1, 3)].Label, ctx.QuestStr(KActive))?.DisplayName ?? "creature";
+        Find(Tiers[Math.Clamp(ctx.Quest(KQuest).Get(KTier), 1, 3)].Label, ctx.Quest(KQuest).GetText(KTarget))?.DisplayName ?? "creature";
 
     private async Task AbandonMenu(NpcContext ctx)
     {
         int tier = ctx.Quest(KQuest).Get(KTier);
-        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.QuestStr(KActive));
+        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.Quest(KQuest).GetText(KTarget));
         string name = quest?.DisplayName ?? "creature";
         int hours = Tiers[Math.Clamp(tier, 1, 3)].AbandonHours;
 
@@ -187,10 +188,10 @@ public sealed class MinorQuestAbility : INpcAbility, INpcSayHandler
     // count legend.
     private static void ClearQuest(NpcContext ctx, int tier, bool abandoned)
     {
-        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.QuestStr(KActive));
+        var quest = Find(Tiers[Math.Clamp(tier, 1, 3)].Label, ctx.Quest(KQuest).GetText(KTarget));
         if (quest is not null) foreach (var mob in quest.Mobs) ctx.Quest(KQuest).Set(KKills + mob, 0);
 
-        ctx.SetQuestStr(KActive, "");
+        ctx.Quest(KQuest).SetText(KTarget, "");
         ctx.Quest(KQuest).Set(KTier, 0);
         ctx.RemoveLegend(KInfo);
 

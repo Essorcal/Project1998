@@ -375,8 +375,9 @@ All three are documented at their constants in `TigerMailQuest`; this is the sho
 * **The tutor's block releases on MEETING Claw, not on quest progress.** RTK's condition is
   `quest["tiger_armor"] == 0`, which only clears when the first rung is actually claimed — so a Warrior who
   walked to Chonsa Den, heard Claw out, and could not yet afford an antler and a war platemail would have
-  done everything the briefing asked and still be locked out of their own tutor. `TigerMailQuest.MetClawReg`
-  is stamped the moment Claw engages, ahead of his own level and ingredient checks. **The block itself is
+  done everything the briefing asked and still be locked out of their own tutor. `TigerMailQuest.MetClaw`
+  (saved as `tiger_essence_met_claw`) is stamped the moment Claw engages, ahead of his own level and ingredient
+  checks. **The block itself is
   kept** — the briefing repeats on every click until you have been. The branch also reads
   `TigerMailQuest.MinLevel` rather than the Lua's literal 5: RTK's briefing level was only right because
   RTK's quest also started at 5, and briefing below the quest gate sends the player across Buya to be

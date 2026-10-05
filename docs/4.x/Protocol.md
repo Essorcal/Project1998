@@ -3764,8 +3764,9 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     calculateDamage(35000)`, where RTK's `calculateDamage` armor-deduction formula turned out to be
     IDENTICAL to this codebase's existing `Combat.ApplyArmor` (both `1 + max(armor,floor)/100`), so it's
     reused verbatim rather than reimplemented — capped to leave at least 1 HP (a trap tripped mid-walk has no
-    death-flow of its own to hook, same "self-cost, never actually lethal" precedent as
-    `CastSacrificeStrike`). Level 99, 1520 mana, 125s cooldown, the decoy auto-expires 21s after placement if
+    death-flow of its own to hook, same "self-cost, never actually lethal" precedent as the sacrifice strikes'
+    own HP cost, which `verbs.sacrifice` sets through `ctx:setHp`, and that never takes a living caster below
+    1). Level 99, 1520 mana, 125s cooldown, the decoy auto-expires 21s after placement if
     never triggered (`Trap.ExpiresAt`, swept silently in `World.Tick` — traps have no ground graphic, so no
     broadcast is needed either way). **NOT ported:** the Lua's NPC heartbeat implies a 5000-mana/tick
     owner-upkeep drain while the decoy is alive — the exact drain/early-deletion formula wasn't in the

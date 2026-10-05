@@ -76,7 +76,7 @@ public sealed partial class Session
         // ...and the Sage rung they paid for, which is path-independent (every class buys the same ladder
         // from the same NPC), so unlike the Dog spells there is nothing to check but the registry.
         var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag,
-                                          QuestCounter(Content.SageRungReg));
+                                          Quest(QuestState.Registry).Get(Content.SageRungReg));
 
         ClearSpellbook();
         bool capped = want.Count > SpellBookCap;
@@ -363,7 +363,7 @@ public sealed partial class Session
     // re/extract_spell_formulas.py). We dispatch on the archetype — Damage/Heal evaluate the actual per-spell
     // formula, Buff applies a timed stat mod, Debuff freezes a mob, ManaBattery trades HP↔MP, Cure clears our
     // debuffs; Utility/Summon/Teleport/Dialog degrade to "spend mana + acknowledge". A spell with no export row
-    // falls back to the keyword classifier (ApplyCastGeneric).
+    // falls back to the keyword classifier (the `generic` verb), unless it is an enchant (Spirit Blade).
     private bool ApplyCast(SpellDef sp, uint? targetId, string? answer = null)
     {
         // Data-driven Lua verb path (game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
@@ -423,7 +423,19 @@ public sealed partial class Session
         if (arch == "ManaBattery" || Content.BaseKey(sp) is "invoke" or "spirits_power" or "life_force" or "gather_magic")
             return Lua(CastUtilArch("mana_battery", sp, null), sp);
 
-        if (fx is null) return Lua(CastUtilArch("generic", sp, targetId), sp);   // no export row — keyword classifier fallback
+        // No export row: the keyword classifier fallback, with one exception. An enchant (Content.EnchantFor) takes
+        // its multiplier and mana from SpellMods.csv, not from an export row, and Spirit Blade is the one enchant
+        // the export never gave a row. This fallback used to take it before the enchant dispatch below could, so
+        // a cast charged generic's 5 mana, answered "You cast Spirit blade." and armed nothing. It now arms the
+        // enchant here exactly as that dispatch would: the same stance verb, mana and multiplier. (stance_enchant
+        // reads nothing from the row it is handed; the effect it plays over the caster is looked up from the
+        // export row, so Spirit Blade arms without one. The cast pose is HandleCast's and still plays.)
+        if (fx is null)
+        {
+            if (Content.EnchantFor(sp) is (double rowlessAmt, int rowlessMana))
+                return Lua(CastStanceArch("stance_enchant", sp, null, rowlessMana, rowlessAmt), sp);
+            return Lua(CastUtilArch("generic", sp, targetId), sp);
+        }
 
         // Cooldown (RTK "aether"), if this spell has one and it's still ticking.
         if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait))
@@ -529,13 +541,6 @@ public sealed partial class Session
         if (Content.AreaSpellFor(sp) is (string areaVerb, int areaMana))
             return Lua(CastArch(areaVerb, sp, fx, null, areaMana), sp);
 
-        // The dog 5-way (Fissure / Lava Surge). Same reason for intercepting here as the 4-way above: their
-        // export rows are perfectly good Damage rows, so they reached the single-target archetype and hit
-        // exactly one thing instead of five. Their mana IS correct in the export (120 / 210), so unlike the
-        // 4-way family there is no side table — `mana` as computed above is right.
-        if (Content.IsTargetAreaZap(sp))
-            return Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp);
-
         // Read the pool BEFORE the archetype spends anything: the post-cast drain below is a fraction of what
         // you were holding when you cast, not of what's left after the row's own mana cost came out (RTK
         // hellfire.lua computes its manaTaken on the line above its global_zap call, for exactly that reason).
@@ -544,8 +549,18 @@ public sealed partial class Session
         // Archetype dispatch — every archetype now runs its `arch_<name>` verb in spell_verbs.lua. There is no
         // C# handler behind any of them any more: the whole spell system is scriptable and hot-reloadable, and
         // Lua() turns "no such verb" into a visible failed cast rather than a silent fallthrough.
+        //
+        // The 5-way fire goes first (Content.IsTargetAreaZap: the dog pair, Volcanic Blast, and the Inferno and
+        // Earthquake ladders). Same reason for intercepting as the 4-way above: their export rows are perfectly
+        // good Damage rows, so arch_damage hit exactly one thing instead of five. Unlike the 4-way, the 5-way
+        // stays inside this dispatch instead of returning ahead of it, so it shares the tail below, gated on its
+        // verb's verdict like every archetype. The tail is where the Inferno ladder's whole-pool drain and 70 s
+        // aether live, and returning first skipped both (Caleb, 2026-09-29). The rest of the family has no drain
+        // entry and no aether, so the tail does nothing for them. `mana` is the row's: 120 / 210 for the dog
+        // pair, and 5 for the Inferno ladder, whose row says 0 and whose drain then takes the rest.
         bool ok = arch switch
         {
+            _ when Content.IsTargetAreaZap(sp) => Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp),
             "Damage"     => Lua(CastArch("arch_damage", sp, fx, targetId, mana), sp),
             "Heal"       => Lua(CastArch("arch_heal", sp, fx, targetId, mana), sp),
             "Buff"       => Lua(CastArch("arch_buff", sp, fx, null, mana), sp),
@@ -559,8 +574,8 @@ public sealed partial class Session
         // Overhead cast shout for the strikes that run the generic Damage archetype rather than the sacrifice
         // verb — Assault and its reskins ("Assault~!"). The sacrifice four shout at their own dispatch above.
         if (ok && Content.OverheadShoutFor(sp) is string archShout) Shout(archShout);
-        // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for Inferno/Dooms Fire and the
-        // Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
+        // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for the Inferno ladder, Dooms Fire and
+        // the Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
         // heal is computed, from the SAME pre-cast reading the amount came from. Which is the point: these
         // scale off the pool at both ends, so taking the cost first would quietly halve the effect. Floors at
         // zero rather than underflowing, matching RTK's own guard.
@@ -609,8 +624,9 @@ public sealed partial class Session
     // the cast via Lua() below, same as CastArch — no C# handler remains. The C# classifier has already picked
     // the spell + its RTK numbers, passed via ctx: `amount`
     // carries the rage/enchant multiplier (0 for the flag-only stealth/backstab/flank), `mana` the resolved cost,
-    // and `fx` the export row (ctx.durationMs). No per-spell formula to evaluate (unlike CastArch's amountExpr).
-    private bool? CastStanceArch(string verb, SpellDef sp, SpellFx fx, int mana, double amount)
+    // and `fx` the export row (ctx.durationMs), null for an enchant that has none (Spirit Blade). No per-spell
+    // formula to evaluate (unlike CastArch's amountExpr).
+    private bool? CastStanceArch(string verb, SpellDef sp, SpellFx? fx, int mana, double amount)
     {
         if (!SpellScript.HasVerb(verb)) return null;
         return SpellScript.Run(verb, new SpellContext(this, sp, null, null, amount, mana, fx));
@@ -2572,8 +2588,9 @@ public sealed partial class Session
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
     // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the
-    // overkill backflow/overflow, and (ambush) the leap + swing. Mirror the logic the removed CastSacrificeStrike/
-    // CastAmbush handlers used to own (neither remains). A single stash holds the resolved target for the rest of the cast.
+    // overkill backflow/overflow, and (ambush) the leap + swing. Their only callers are verbs.sacrifice and
+    // verbs.ambush (game-data/spell_verbs.lua); no C# handler sits behind either. A single stash holds the
+    // resolved target for the rest of the cast.
     private Mob? _frontStrikeMob;
     private Session? _frontStrikePc;
     private int  _frontStrikeX, _frontStrikeY;
@@ -3263,7 +3280,8 @@ public sealed partial class Session
     /// Combat.ApplyArmor mirrors calculateDamage's identical deduction formula) — applied both to us and to
     /// every mob the facing cone catches. Capped here to leave at least 1 HP on OURSELVES only: a trap
     /// tripped mid-walk has no death-flow of its own to hook (unlike a real melee/spell kill), same
-    /// "self-cost, never actually lethal" precedent as CastSacrificeStrike. Returns the UNCAPPED value so the
+    /// "self-cost, never actually lethal" precedent as the sacrifice strikes' own HP cost (verbs.sacrifice
+    /// sets it through ctx:setHp, which never takes a living caster below 1). Returns the UNCAPPED value so the
     /// cone's mob targets take the real RTK number, not our clamped one.</summary>
     public int ApplyBladestormSelfDamage()
     {
@@ -3414,7 +3432,7 @@ public sealed partial class Session
     /// where neutrals live, so it has its own group (a clearing by Rotah, RTK <c>country == 0</c>). Only the
     /// nations with no tavern set of their own (Shilla/Jinhan/Paekjae/Kaya, none of them reachable in this
     /// era) fall back, and they fall back to Kugnae's.</para></summary>
-    private string HomeGroup() => QuestCounter(HomeReg) switch
+    private string HomeGroup() => Quest(QuestState.Registry).Get(HomeReg) switch
     {
         HomeSanhae  => "Sanhae",
         HomeHausson => "Hausson",
