@@ -10,9 +10,16 @@ using Xunit;
 namespace Tests;
 
 /// <summary>The HTTP status sniff runs before game framing. These loopback facts drive the real Session read
-/// loop so a split probe cannot pass by testing a copy of the hook while the production hook still drops it.</summary>
-[Collection("world")]
-public sealed class StatusProbePrefixTests(SessionFixture fixture)
+/// loop so a split probe cannot pass by testing a copy of the hook while the production hook still drops it.
+///
+/// <para>A <see cref="SessionFixture"/> of its own, not the <c>"world"</c> collection's. Nothing here reads
+/// or writes shared world state: a probe never logs in, and the status document is asserted only up to
+/// <c>"players":</c>. What the shared collection cost was time on the suite's critical path, because
+/// <c>"world"</c> runs its classes one at a time and the two handshake-watchdog facts below wait out
+/// <c>FrameReader.DefaultHandshakeMs</c> (15 s) each: 30 s of a 68 s Debug suite were these two waits
+/// (trx of 2026-10-05 at 9c00b98). Run beside the other collections, they overlap the rest of the
+/// suite instead of adding to it.</para></summary>
+public sealed class StatusProbePrefixTests(SessionFixture fixture) : IClassFixture<SessionFixture>
 {
     private static readonly byte[] Request = Encoding.ASCII.GetBytes("GET / HTTP/1.0\r\n\r\n");
 

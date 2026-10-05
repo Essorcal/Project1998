@@ -16,11 +16,13 @@ namespace Tests;
 /// lines an earlier test's sink collected. So this file pins the exact string, its level and its thread, and
 /// pins that the uninstall is real.</para>
 ///
-/// <para>No <c>[Collection]</c>: this touches no queue, no counter, no file and no writer thread — only the
-/// hook, which <see cref="LogLineSink.Acquire"/> makes exclusive on its own. Other tests logging into the
-/// sink during the window are expected and harmless; every assertion below is anchored on a per-run
-/// GUID.</para>
+/// <para>Collection <c>"log"</c>, which runs alone. This touches no queue, no counter, no file and no writer
+/// thread, only the hook, and every assertion below is anchored on a per-run GUID, so it was safe beside
+/// other tests too. It is here because the hook is one process-wide slot, and the rule
+/// <see cref="TestSeamCollectionTests"/> enforces is that whatever holds a process-wide slot holds it where
+/// nothing else is running (or in <c>"world"</c>, the one parallel collection allowed a capture).</para>
 /// </summary>
+[Collection("log")]
 public class LogLineSinkTests
 {
     /// <summary>The hook receives what the entry point formatted, byte for byte: the stamp

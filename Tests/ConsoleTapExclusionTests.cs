@@ -24,9 +24,13 @@ namespace Tests;
 /// race. What was missing was not the gate but this fact: nothing failed if a later edit dropped it, and the
 /// CI red it would cause is a different test, in a different collection, blaming its own production code.</para>
 ///
-/// <para>No <c>[Collection]</c>: the claim is exactly that this works ACROSS collections, and the tap's own
-/// gate is what keeps this test from disturbing anyone else's capture.</para>
+/// <para>Collection <c>"log"</c>. The gate's claim is that two captures on two threads serialise, whichever
+/// collections they come from; this fact makes them from two threads of one test, which needs no second
+/// collection. It used to have none so as to sit beside the other captures, but it holds the console for
+/// half a second, and the rule <see cref="TestSeamCollectionTests"/> enforces is that a capture runs in
+/// <c>"log"</c> (alone) or in <c>"world"</c>.</para>
 /// </summary>
+[Collection("log")]
 public class ConsoleTapExclusionTests
 {
     /// <summary>Two captures on two threads serialise: while the first holds the console the second is
