@@ -116,10 +116,12 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     /// holding its monitor, so the summon passes its checks and waits on the target. The target then disconnects:
     /// its logout ends the open exchange (with the idle partner) and takes it off its map.
     /// <para>The summon must refuse: "Fizzle.", nothing spent, the target on no map, the exchange closed for both.</para>
-    /// <para>Red on 72c6e13, by one of two routes. The logout's own exchange step drops the target's monitor for a
-    /// moment; if the waiting summon takes it there, it reaches the exchange itself, parks on the partner (held now
-    /// by the logout) and later moves the departed target: the F1 window, opened by the target's own thread. If
-    /// it does not, 72c6e13's check refuses the move but has already charged 30 and said "You cast Summon." (F3).</para>
+    /// <para>Red on 72c6e13 through the charge alone: its check refuses the move but has already taken 30 and said
+    /// "You cast Summon." (F3). It cannot leave a departed target on a map there: the logout sets <c>_leaving</c>
+    /// before its own exchange step drops the target's monitor, so a summon that slips in at that step refuses too.
+    /// With an idle partner, 72c6e13's ghost needs the caster's thread descheduled for a whole logout, between
+    /// dropping the target's monitor and taking the free partner's, inside <c>EnterState</c>; no test can force
+    /// that, and the fix's re-check covers it exactly as it covers the forced case above.</para>
     /// </summary>
     [Fact]
     public void ASummonWaitingOnATraderWhoLogsOutMovesNobodyAndCostsNothing()
