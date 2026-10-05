@@ -800,20 +800,22 @@ public sealed partial class Session
         if (target is null) return;
 
         // Read, write, tell — one critical section on the TARGET (#29 rule 2, Server/Session.State.cs). The
-        // read-modify-write really is one here: `now` is their carnage counter plus `add`, and QuestCounter is
-        // a bare `_char.Quests` lookup (Session.CharacterApi.cs:303) made from the operator's thread, so two
-        // GMs scoring the same player could both have read the old tally and the second write would lose the
-        // first. SetQuestStage takes the monitor for itself (Session.CharacterApi.cs) and is now the
-        // re-entrant case (rule 3). Their NAME is read in here too, for the same reason — it is their state,
-        // and @ckm parks a marker string in _char.Name for the length of one packet. The operator's own
-        // confirmation stays OUTSIDE, so we are not holding a peer's monitor while sending to ourselves.
+        // read-modify-write really is one here: `now` is their carnage counter plus `add`, and the registry read
+        // is a bare `_char.Quests` lookup with no monitor (QuestState.ISessionStore.Read, Session.CharacterApi.cs)
+        // made from the operator's thread, so two GMs scoring the same player could both have read the old tally
+        // and the second write would lose the first. The registry write takes the monitor for itself
+        // (QuestState.ISessionStore.Write, the same file) and is now the re-entrant case (rule 3). Their NAME is
+        // read in here too, for the same reason — it is their state, and @ckm parks a marker string in
+        // _char.Name for the length of one packet. The operator's own confirmation stays OUTSIDE, so we are not
+        // holding a peer's monitor while sending to ourselves.
         // Rule 1 holds: FindPlayer takes and releases World._lock inside itself (World.OnlineRegistry.cs:45-53).
         int now = 0;
         string them = "";
         target.WithState(() =>
         {
-            now = Math.Max(0, target.QuestCounter(ArmorQuest.CarnageWinsReg) + add);
-            target.SetQuestStage(ArmorQuest.CarnageWinsReg, now);
+            var registry = target.Quest(QuestState.Registry);
+            now = Math.Max(0, registry.Get(ArmorQuest.CarnageWinsReg) + add);
+            registry.Set(ArmorQuest.CarnageWinsReg, now);
             them = target._char.Name;
             // Addressed to the TARGET, so it is not a reply to the operator and does not go through Reply —
             // see the channel rule in Commands.cs. The operator's own confirmation is the next line.
@@ -1010,8 +1012,9 @@ public sealed partial class Session
         int p = Math.Max(0, CharClassId);
         bool want = a.Toggle(0, HasDogFlag);      // bare "@dog" toggles
 
-        SetQuestStage(Content.DogFlagReg, want ? 1 : 0);
-        SetQuestStage(DogChainReg, want ? DogChainDone : 0);
+        var registry = Quest(QuestState.Registry);
+        registry.Set(Content.DogFlagReg, want ? 1 : 0);
+        registry.Set(DogChainReg, want ? DogChainDone : 0);
         if (want) AddLegend($"Dog linguist ({Character.GameDate})", DogChainReg, 3, 128);
         else RemoveLegend(DogChainReg);
 
@@ -1044,12 +1047,13 @@ public sealed partial class Session
                           .Select((sp, i) => sp is not null && KnowsSpellId(sp.Id) ? i + 1 : 0)
                           .DefaultIfEmpty(0).Max();
         // A missing OR non-numeric rung reports, like bare "@dog" toggles: the read is the common case.
+        var registry = Quest(QuestState.Registry);
         if (!a.Int(0, out var asked))
         {
-            long left = QuestCounter(Content.SageTimerReg) - NowUnix;
+            long left = registry.Get(Content.SageTimerReg) - NowUnix;
             string name = Content.SageSpellForRung(held) is { } k && Content.SpellByKey(k) is { } s ? s.Name : "none";
             Reply($"Sage rung {held}/{Content.SageLadder.Length} ({name})" +
-                    $"; paid-for rung on record: {QuestCounter(Content.SageRungReg)}" +
+                    $"; paid-for rung on record: {registry.Get(Content.SageRungReg)}" +
                     (left > 0 ? $"; next upgrade in {left / 86400}d {left % 86400 / 3600}h." : "; no wait outstanding.") +
                     $"  {a.Usage()} to set it.");
             return;
@@ -1062,8 +1066,8 @@ public sealed partial class Session
             if (Content.SpellByKey(key) is { } sp && KnowsSpellId(sp.Id) && Content.SageRungOf(key) != rung)
                 ForgetOneSpell(sp.Id);
 
-        SetQuestStage(Content.SageRungReg, rung);
-        SetQuestStage(Content.SageTimerReg, 0);
+        registry.Set(Content.SageRungReg, rung);
+        registry.Set(Content.SageTimerReg, 0);
 
         if (rung == 0)
         {
@@ -1106,13 +1110,14 @@ public sealed partial class Session
         if (a.None)
         {
             var saved = QuestState.Saved(_char);
-            if (saved.Count == 0 && _char.QuestStrings.Count == 0)
+            var texts = QuestState.SavedText(_char);
+            if (saved.Count == 0 && texts.Count == 0)
             { Reply($"No quest keys set. ({Prefix}quest <key> <stage> to set one; see docs/common/Quest-Registry.md.)"); return; }
             ReplyList($"quests ({saved.Count}" +
-                      $"{(_char.QuestStrings.Count > 0 ? $"+{_char.QuestStrings.Count} str" : "")})",
+                      $"{(texts.Count > 0 ? $"+{texts.Count} str" : "")})",
                       saved.OrderBy(e => e.Key, StringComparer.Ordinal).Select(e => $"{e.Key} = {e.Value}")
-                        .Concat(_char.QuestStrings.OrderBy(e => e.Key, StringComparer.Ordinal)
-                                                  .Select(e => $"{e.Key} = \"{e.Value}\"")));
+                        .Concat(texts.OrderBy(e => e.Key, StringComparer.Ordinal)
+                                     .Select(e => $"{e.Key} = \"{e.Value}\"")));
             return;
         }
 
@@ -1120,7 +1125,7 @@ public sealed partial class Session
         if (a.Count == 1)
         {
             if (QuestState.Saved(_char).TryGetValue(key, out int cur)) Reply($"{key} = {cur}");
-            else if (_char.QuestStrings.TryGetValue(key, out var cs)) Reply($"{key} = \"{cs}\"");
+            else if (QuestState.SavedText(_char).TryGetValue(key, out var cs)) Reply($"{key} = \"{cs}\"");
             else Reply($"{key} is not set (reads as stage 0).");
             return;
         }
@@ -1130,20 +1135,19 @@ public sealed partial class Session
         {
             if (stage == 0)
             {
-                bool had = QuestState.Remove(_char, key) | _char.QuestStrings.Remove(key);
+                bool had = QuestState.Remove(_char, key) | QuestState.RemoveText(_char, key);
                 SaveChar();
                 Reply(had ? $"{key} cleared (was set; now reads as stage 0)." : $"{key} was not set — nothing to clear.");
             }
             else
             {
-                SetQuestStage(key, stage);
+                Quest(QuestState.Registry).Set(key, stage);
                 Reply($"{key} = {stage}.");
             }
         }
         else
         {
-            _char.QuestStrings[key] = val;
-            SaveChar();
+            Quest(QuestState.Registry).SetText(key, val);
             Reply($"{key} = \"{val}\" (string registry).");
         }
         Log.Info($"   -> @quest '{_char.Name}': {key} <- {val}");
@@ -1174,12 +1178,12 @@ public sealed partial class Session
     private void QuestResetCmd(CommandArgs a)
     {
         int stages = QuestState.Saved(_char).Count;
-        int strings = _char.QuestStrings.Count;
+        int strings = QuestState.SavedText(_char).Count;
         int marks = _char.Legends.RemoveAll(l => l.Name.Length > 0 && !NonQuestLegends.Contains(l.Name));
         if (stages + strings + marks == 0) { Reply("Nothing to reset."); return; }
 
         QuestState.Clear(_char);
-        _char.QuestStrings.Clear();
+        QuestState.ClearText(_char);
         SaveChar();
 
         // Kept short on purpose: Reply wraps at PaneWidth (30), so a sentence of prose here arrives as a

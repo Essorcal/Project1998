@@ -49,8 +49,10 @@ public static class NpcScript
         }
     }
 
-    /// <summary>Compile candidate dialogs without replacing the live Lua state.</summary>
-    internal static (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    /// <summary>Compile candidate dialogs without replacing the live Lua state. <c>Prepared</c> is null when this
+    /// file did not take; <c>Live</c> is whether the Lua NPC path is live afterwards, which stays true on a
+    /// rejected reload because the previous dialogs keep running. See <see cref="LuaVerbHost.PrepareReload"/>.</summary>
+    internal static (bool Live, PreparedReload? Prepared) PrepareReload(string? path)
     {
         using (Session.EnterScriptGate())
         {

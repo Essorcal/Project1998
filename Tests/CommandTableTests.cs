@@ -442,7 +442,7 @@ public sealed class CommandTableTests
 
         // Set up through the commands themselves rather than the internal setters: a packet is the atomic
         // unit of work against a session (#29) and the state monitor wraps Session.Handle, so calling
-        // SetQuestStr directly from here writes _char outside the monitor and trips its Debug.Fail.
+        // a text slot's SetText directly from here writes _char outside the monitor and trips its Debug.Fail.
         Run(session, "@quest poet_whip 3");
         Run(session, "@quest minor_quest squirrel");        // non-numeric -> the string registry
         Run(session, "@legend family_nangen_mages 7 128 Family to the Nangen Mages");
@@ -451,8 +451,8 @@ public sealed class CommandTableTests
         outbound.Clear();
         Run(session, "@questreset");
 
-        Assert.Equal(0, session.QuestStage("poet_whip"));            // stage: gone
-        Assert.Equal("", session.QuestStr("minor_quest"));           // string registry: gone
+        Assert.Equal(0, session.Quest(QuestState.Registry).Get("poet_whip"));             // stage: gone
+        Assert.Equal("", session.Quest(QuestState.Registry).GetText("minor_quest"));      // string registry: gone
         Assert.False(session.HasLegend("family_nangen_mages"));      // a quest mark: gone
         Assert.True(session.HasLegend("married"));                   // not a quest: spared
         Assert.True(session.HasLegend(""));                          // the unkeyed "Born in ..." seed: spared
@@ -841,13 +841,14 @@ public sealed class CommandTableTests
     /// construction (the pre-flush check before every word after the first guarantees it), so the only line
     /// <c>WrapForPane</c> ever lets overrun is a single unbreakable token, which that line-level rule
     /// explicitly exempts. Checking the token directly is the version of the rule that can actually fail —
-    /// and does, for real, pre-existing rows (see <see cref="KnownWideTokenRows"/>).
+    /// and did, for <c>@class</c> and <c>@align</c>, whose Args were each one <c>"&lt;A|B|C|...&gt;"</c>
+    /// token (33 and 37 chars) until their pipes were spaced. No row is exempt: a new row with a token wider
+    /// than the pane fails here.</para>
     ///
     /// <para>Row count is cross-checked two ways, kept from round 0: against <c>CommandTable</c>'s own
     /// length (so a reflection bug that silently found zero rows cannot pass by finding nothing to fail on)
     /// and against the live "@help" header's own "of N" count (so the two ways of counting a command — the
-    /// table and the paged command a player actually runs — cannot drift apart unnoticed). A row in
-    /// <see cref="KnownWideTokenRows"/> still counts toward both.</para></summary>
+    /// table and the paged command a player actually runs — cannot drift apart unnoticed).</para></summary>
     [Fact]
     public void EveryHelpRowFitsThePane()
     {
@@ -866,8 +867,6 @@ public sealed class CommandTableTests
         foreach (var (label, lines) in rows)
         {
             measured++;
-            if (KnownWideTokenRows.Contains(label)) continue;
-
             foreach (var raw in lines)
             {
                 string indent = raw[..(raw.Length - raw.TrimStart(' ').Length)];
@@ -882,22 +881,6 @@ public sealed class CommandTableTests
         }
         Assert.Equal(rows.Count, measured);
     }
-
-    /// <summary>Rows this sweep found ALREADY failing the token-width rule, on `upstream/master` before
-    /// this slice touched anything — not introduced by it. Both are the Args column's enum-style list
-    /// (<c>"&lt;A|B|C|...&gt;"</c>), which has no space for <c>WrapForPane</c> to break on, so the client
-    /// re-wraps it on its own exactly like a long pasted map/item key would (see
-    /// <see cref="Session.WrapForPane"/>'s doc — "half of a mangled token is no worse than half of a mangled
-    /// token"). Not reworded: Help/Args text is player-visible, and this slice's stop rule is explicit that
-    /// rewording it is Caleb's call, not this worker's. If Caleb wants these shortened, that is a follow-up,
-    /// not this test's job.
-    ///
-    /// <list type="bullet">
-    /// <item><c>@class &lt;Warrior|Rogue|Mage|Poet|Peasant&gt;</c> — the Args token is 33 chars (indent 0).</item>
-    /// <item><c>@align &lt;Unaligned|Kwisin|Mingken|Ohaeng|0-3&gt;</c> — the Args token is 37 chars (indent 0),
-    /// the widest in the table.</item>
-    /// </list></summary>
-    private static readonly HashSet<string> KnownWideTokenRows = new() { "@class", "@align" };
 
     /// <summary>Every <c>Session.CommandTable</c> row, rendered through the private <c>Session.HelpLines</c>
     /// exactly the way <c>ShowCommandHelp</c> does — reached by reflection because both stay private (see
