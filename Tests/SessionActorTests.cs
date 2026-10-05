@@ -48,10 +48,17 @@ public class SessionActorTests
     private const int MutationsPerRound = 24;
 
     /// <summary>A content-free map in the instance band for <see cref="LuaGateAgainstAPeerMonitorCannotDeadlock"/>'s
-    /// pair, so its heal broadcasts reach the pair and nobody else on the shared World. 62010 is in a range
-    /// no other class or content file uses: the ids tests claim stop at 61761 below 64000, and no game-data
-    /// map id lies between 58999 and 65001.</summary>
-    private const ushort LuaPairMap = 62010;
+    /// pair, so its heal broadcasts reach the pair and nobody else on the shared World.
+    ///
+    /// <para>The band is partitioned by hand, and two classes that pick the same id share a map on the one
+    /// fixture World, so the id was checked rather than assumed to be free. This pair's first id, 62010, became
+    /// <c>InfernoLadderSpellTests</c>' <c>LandedMap</c> in #322 while this change was open. 62040 was checked on
+    /// 2026-10-05 with <c>git grep</c> over every file at master 9512788 and over open PR #325's tests: nothing
+    /// else names it, and no class derives an id near it (the derived ranges are 60073-60079 in
+    /// <c>TickPhaseGuardTests</c>, 60260-60261 in <c>TickSweepSkipTests</c> and 65320-65329 in
+    /// <c>ReplacedSessionWorldTests</c>). No game-data map lies between 58999 and 65001. Check again before
+    /// reusing an id near it.</para></summary>
+    private const ushort LuaPairMap = 62040;
 
     // =====================================================================================================
     // The acceptance test the ticket asks for by name.
