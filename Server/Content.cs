@@ -48,7 +48,8 @@ public static partial class Content
             // input, and a rejected script is the loudest thing a reload can have to say.
             // "Loaded" means the candidate took, not that the host is live afterwards. A reload that rejects the
             // file keeps the previous program running, so the host is live either way; reading that answer kept
-            // a rejected edit out of RejectedScripts and the REJECTED banner (#113). With no previous program,
+            // a rejected edit out of RejectedScripts and the REJECTED banner (#113). A missing file did not take
+            // either: whoever deleted or misnamed it is still running the old script. With no previous program,
             // as at startup, the two answers agree, so a first load reports exactly what it always did.
             bool Script<T>(TableSpec spec, Func<string?, (bool Live, T? Prepared)> prepare,
                 Action<T> stage) where T : class

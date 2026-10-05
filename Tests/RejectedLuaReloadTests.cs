@@ -15,7 +15,12 @@ namespace Tests;
 /// <c>Content.Load</c>'s <c>Script</c> helper read the second as if it were the first. On a reload the previous
 /// program is always live, so a rejected file never reached <see cref="Content.RejectedScripts"/>, the load
 /// report counted it as loaded, and the REJECTED banner <see cref="Content.Reload"/> leads with never fired,
-/// while the host's own log line said "reload REJECTED". Only a first load, with nothing live, was named.</para>
+/// while the host's own log line said the candidate was refused: "reload REJECTED" for a compile error or a
+/// wrong global, "no file at ... keeping the previously-loaded ..." for a missing file. Only a first load,
+/// with nothing live, was named.</para>
+///
+/// <para><b>A missing file counts as rejected.</b> Whoever deleted or misnamed it is still running the
+/// previous program, which is what the banner says, and at startup a missing script was already named.</para>
 ///
 /// <para><b>Isolation.</b> Every fact here replaces process-wide content, so the class shares
 /// <c>"tile-translation"</c> with <see cref="ContentReloadTests"/> and <see cref="ContentSmokeTests"/> and holds
@@ -61,7 +66,11 @@ public class RejectedLuaReloadTests
         string KeepsPrevious,
         string NoPrevious,
         string WrongShape,
-        string Rejected);
+        string Rejected)
+    {
+        /// <summary>The file name, so an <c>Assert.All</c> failure names the host instead of printing every member.</summary>
+        public override string ToString() => File;
+    }
 
     private static HostCase Case(Host host) => host switch
     {
