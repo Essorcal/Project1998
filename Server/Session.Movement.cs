@@ -41,7 +41,7 @@ public sealed partial class Session
     {
         lockMsg = "";
         if (!Content.WarpQuestLocks.TryGetValue((_char.Map, destMap), out var wl)) return false;
-        if (QuestStage(wl.QuestKey) >= wl.MinStage) return false;
+        if (Quest(QuestState.Registry).Get(wl.QuestKey) >= wl.MinStage) return false;
         lockMsg = wl.Message;
         return true;
     }

@@ -314,8 +314,8 @@ public class SpawnDirectorTests
     }
 
     /// <summary>Every member on ground a creature may stand on — walkable, not a warp — and no two on one
-    /// tile. Does not test the watcher's tile: on map entry the room fills BEFORE the newcomer joins the
-    /// map's player list, which is the pre-existing order this PR keeps (#122, not a change here).</summary>
+    /// tile. Does not test the watcher's tile: that the fill on map entry leaves the newcomer's tile free
+    /// (#122) is <see cref="MapEntryPlacementTests"/>' fact.</summary>
     private static void AssertOnOpenGround(List<Mob> members)
     {
         var tiles = members.Select(m => ((int)m.X, (int)m.Y)).ToList();

@@ -965,7 +965,9 @@ public static partial class Content
     //     Baekho's Blade (rogue, Ee San) 1.5
     // Melalye's Dragon's Harness (Sam San) 8 and Chung Ryong's Wrath (Sa San) 10 do NOT exist in our 4.95
     // Spells.csv (later-era subpath content) so they are not added. spirit_blade was ADDED here — it existed
-    // in Spells.csv with no SpellMods row, i.e. it was silently INERT.
+    // in Spells.csv with no SpellMods row, i.e. it was silently INERT. The row alone did not wire it: having no
+    // spell_effects row either, it reached Session.ApplyCast's no-row fallback first, which now hands an enchant
+    // to the same stance verb as the rest of this table.
     // Klanx/Yari (also in the DM PDF) define `Ing` as 1 none | 3 Ingress | 4 "Il san NPC" | 5 "Ee san NPC",
     // agreeing on Ingress 3. Infuse 2 / Ingress 3 / Viper's Venom 4 are unanimous across all sources.
     // NOTE baekhos_blade_rogue 1.5 now EQUALS the free tigers_fortitude_rogue despite costing 6000 mana at
@@ -993,10 +995,11 @@ public static partial class Content
     // RTK rogue/lethal_strike.lua + desperate_attack.lua, warrior/berserk.lua + whirlwind.lua: a facing-tile
     // physical attack computed from the CASTER's OWN current HP/MP that costs the caster a big chunk of
     // their own HP the instant it lands. Each base identifier here is cast by ALL 4 of its alignment aliases
-    // (Kwisin/Ming-Ken/Ohaeng flavor names only — same mechanic, same formula); RTK picks the display name
-    // from the caster's OWN alignment stat, not from which alias identifier was actually granted/cast, so
-    // Session.CastSacrificeStrike keys off _char.Alignment rather than sp.Key for that (and for whirlwind's
-    // alignment-gated damage factor/HP cost).
+    // (Kwisin/Ming-Ken/Ohaeng flavor names only — same mechanic, same formula). RTK picks the display name, and
+    // the key it sets the aether under, from the caster's OWN alignment stat, not from which alias identifier
+    // was granted/cast. The `sacrifice` verb (game-data/spell_verbs.lua) does not: the name a cast shows and
+    // the cooldown it arms are the cast identifier's own (ctx.spellName, ctx.spellKey). Only Whirlwind's
+    // alignment-gated damage factor, HP cost and cooldown length read the caster's alignment (ctx.alignment).
     // FocusedBlow (Rogue Sam San) and Siege (Warrior Sam San) join the same family — both are "spend your own
     // vita for a big facing-tile hit". nexusatlas: Focused Blow "Takes 2/3 of current Vita in a Strong Attack.
     // The attack does 2 times current vitality in damage at 0 AC"; Siege "does a critical strike and leaves the
@@ -1009,8 +1012,8 @@ public static partial class Content
         ["focused_blow_rogue"] = SacrificeFamily.FocusedBlow,
 
         // Siege + its three alignment aliases (user-confirmed): Kwi-Sin "Soul's Freedom", Ming-Ken
-        // "Life's End", Ohaeng "Winter Chill". Same mechanic; CastSacrificeStrike picks the DISPLAYED name
-        // from the caster's own alignment, not from which alias was granted, exactly as the other families do.
+        // "Life's End", Ohaeng "Winter Chill". Same mechanic; as for every family here, a cast shows the name
+        // of the alias that was cast (the sacrifice verb's ctx.spellName), not one picked by the caster's alignment.
         ["siege_warrior"]        = SacrificeFamily.Siege,
         ["souls_freedom_warrior"] = SacrificeFamily.Siege,
         ["lifes_end_warrior"]     = SacrificeFamily.Siege,
@@ -1122,9 +1125,13 @@ public static partial class Content
     // 1.0 - "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San
     //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr
     //   reading player.magic, which computes the damage correctly but NEVER SPENT the pool - so before this
-    //   they were free, repeatable nukes scaling off a mana bar that never moved. Retribution and its three
-    //   reskins (RTK poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same
-    //   thing one tier down: "deals 34% of current mana to target", and it empties you doing it.
+    //   they were free, repeatable nukes scaling off a mana bar that never moved. Inferno's three alignment
+    //   reskins (Death's Door, Nature's Denial, Steel Storm) take the same entry: RTK mage/inferno.lua gives
+    //   all four one body, ending setAether(<key>, 70000) and `player.magic = 0`. (The four are 5-way zaps,
+    //   and ApplyCast's 5-way branch used to return ahead of this drain, so even Inferno's entry never applied
+    //   until that branch joined the archetype tail.) Retribution and its three reskins (RTK
+    //   poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same thing one tier
+    //   down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
     //   global_zap debits the 1000 it is handed (which is the only number the formula extractor could see, and
     //   so the only one in spell_effects.csv), and then the script itself subtracts a second
@@ -1139,6 +1146,8 @@ public static partial class Content
     private static readonly Dictionary<string, ManaDrain> PostCastManaDrain = new(StringComparer.OrdinalIgnoreCase)
     {
         ["inferno_mage"] = new(1.0, false), ["dooms_fire_mage"] = new(1.0, false),
+        ["deaths_door_mage"] = new(1.0, false), ["natures_denial_mage"] = new(1.0, false),
+        ["steel_storm_mage"] = new(1.0, false),
 
         ["hellfire_mage"] = new(0.7, false),     ["consume_soul_mage"] = new(0.7, false),
         ["flesh_eaters_mage"] = new(0.7, false), ["hurricane_mage"] = new(0.7, false),
@@ -1385,6 +1394,20 @@ public static partial class Content
     /// <summary>The cast delay, live-measured at exactly one second.</summary>
     public const int ZapCastDelayMs = 1000;
 
+    // The Rogue sacrifice reskins: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
+    // and The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack, under the other three
+    // alignments. RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
+    // desperate_attack.lua), and the sacrifice verb runs all eight alike, but the export gave the six reskins bare
+    // Utility rows where the originals have Damage rows, so the archetype test in CastDelayMs gave the reskins no
+    // delay at all. Caleb, 2026-09-29: they share the originals' 1s. Named key by key rather than by sacrifice
+    // family on purpose: the Warrior Berserk and Whirlwind reskins have Utility rows and the same gap, and no
+    // decision covers them yet.
+    private static readonly HashSet<string> RogueSacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "afterlifes_embrace_rogue", "mingkens_judgement_rogue", "calculating_blow_rogue",   // Lethal Strike's
+        "the_voids_measure_rogue", "beastly_frenzy_rogue", "tilting_the_balance_rogue",    // Desperate Attack's
+    };
+
     /// <summary>How long this spell occupies the shared cast/swing slot. 0 = no cast delay, so it neither
     /// waits on a swing nor blocks the next one (it still pays the ordinary 3/sec action budget).</summary>
     public static int CastDelayMs(SpellDef sp)
@@ -1407,6 +1430,9 @@ public static partial class Content
         // and shared with swinging, instead of the aether path's "Invisible isn't ready yet (0s)." -- a
         // message whose "(0s)" was always a sub-second remainder being floored, i.e. this same 1s.
         if (IsStealthSpell(sp)) return ZapCastDelayMs;
+
+        // The six Rogue sacrifice reskins (RogueSacrificeReskins, above) take their originals' 1s.
+        if (RogueSacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
 
         var fx = FxFor(sp);
         return fx is not null && fx.Archetype == "Damage" ? ZapCastDelayMs : 0;
@@ -1598,7 +1624,8 @@ public static partial class Content
     // only" (the established no-PvP-damage-path precedent everywhere else in this audit); the TRIGGER's own
     // self-damage IS kept when the trigger is a player (tripping a trap isn't "PvP" the way hitting another
     // player would be), but capped to leave at least 1 HP — same "self-cost, never actually lethal" precedent
-    // as CastSacrificeStrike, since a trap tripped mid-walk has no death-flow of its own to hook cleanly.
+    // as the sacrifice strikes' own HP cost (verbs.sacrifice sets it through ctx:setHp, which never takes a
+    // living caster below 1), since a trap tripped mid-walk has no death-flow of its own to hook cleanly.
     // Level 99, 1520 mana, 125s cooldown (RTK aether), the decoy auto-expires 21s after placement if never
     // triggered. NOT ported: the Lua's NPC heartbeat implies a 5000-mana/tick owner-upkeep drain while the
     // decoy is alive — the exact drain/early-deletion formula wasn't in the captured source, so this is a
@@ -1693,9 +1720,13 @@ public static partial class Content
     // anyway: it is the only cotw row in Spells.csv with SplActive=0 (all 14 summons are 1), so LoadSpells
     // skips it. Every
     // tier spawns a real MobDef (all 28 DO exist in mobs.csv, correctly statted) owned by the caster,
-    // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top "avatar" tier is the one
-    // real outlier: RTK charges GOLD (via requirements(), not mana) plus an 8-minute cooldown instead of the
-    // flat 10-mana every other tier uses (cotw_wind_warrior.lua has no `player.magic` check at all).
+    // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top two tiers, Wind dancer with
+    // the three Champions and Wind warrior with the three Avatars, cost no mana and have an 8-minute
+    // (480000 ms) cooldown; every lower tier costs a flat 10 mana with no cooldown. Source: Nexus Atlas's poet
+    // page (Sources.csv atlas-poet-spells). RTK agrees on the cooldown (cotw_wind_dancer.lua:6,
+    // cotw_wind_warrior.lua:5) but charges the dancer tier 10 mana (cotw_wind_dancer.lua:3); Caleb chose 0 on
+    // 2026-09-29. The gold in RTK's requirements() is the trainer's learn price (SpellLearnCosts.csv), which
+    // every tier has, not a cast cost.
     // Loaded from game-data/Pets.csv in Load() — see LoadPets.
     private static IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells
     {

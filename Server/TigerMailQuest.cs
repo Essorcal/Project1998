@@ -117,12 +117,9 @@ public static class TigerMailQuest
     /// Claw but cannot yet afford an antler and a war platemail: they would have done everything the briefing
     /// asked and still be blocked out of the tutor forever. Meeting him is the thing the briefing is FOR.</para>
     ///
-    /// <para>A slot of <see cref="QuestKey"/>'s namespace (<see cref="QuestState"/>).</para></summary>
+    /// <para>A slot of <see cref="QuestKey"/>'s namespace (<see cref="QuestState"/>). The level-up push
+    /// (<see cref="Session.PushTigerEssence"/>) stamps it too.</para></summary>
     public const string MetClaw = "flag.met_claw";
-
-    /// <summary>The key <see cref="MetClaw"/> is saved under, for the one caller that still addresses it by
-    /// that key: the level-up push, <see cref="Session.PushTigerEssence"/>, which stamps it too.</summary>
-    public static readonly string MetClawReg = QuestState.Resolve(QuestKey, MetClaw);
 
     /// <summary>Claw's creature portrait (NPCs.csv 148 look/colour), for the pages where the voice from the
     /// cave answers instead of the tutor. <c>TigerMailQuestTests.TutorBriefingUsesClawsPortrait</c> pins it

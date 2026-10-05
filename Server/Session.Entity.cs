@@ -283,7 +283,7 @@ public sealed partial class Session
 
     // When a timed buff in _buffs lapses by TIME, send its live "fade" line (Content.FadeTextFor, e.g. Might ->
     // "Your strength returns to normal.") to the player and drop it. This is the SINGLE place expired buffs are
-    // removed (BuffTotals/BuffBoxText only skip them in-place), so the fade line fires exactly once. A recast's
+    // removed (TotalsSnapshot.At/BuffBoxText only skip them in-place), so the fade line fires exactly once. A recast's
     // refresh (RemoveAll by Key) is a separate, silent removal — only genuine expiry narrates a fade. Morph
     // timers ride _buffs too but have no fade text and revert independently (World.Tick -> RevertMorph), so
     // dropping their marker here is harmless.

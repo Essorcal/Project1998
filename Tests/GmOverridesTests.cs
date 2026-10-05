@@ -32,6 +32,7 @@ namespace Tests;
 /// collection are the same choice. Without a <c>[Collection]</c> xunit gives the class its own, which is
 /// exactly what it wants: its own World, and parallel with everything else.</para>
 /// </summary>
+[Collection("log")]
 public sealed class GmOverridesTests : IClassFixture<SessionFixture>
 {
     /// <summary>The same roster name and the same file content <see cref="CommandTableTests"/> writes, on

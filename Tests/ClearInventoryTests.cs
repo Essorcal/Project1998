@@ -11,11 +11,12 @@ namespace Tests;
 /// <summary>
 /// <c>@clearinv</c> takes the worn gear's bonuses with it (#206).
 ///
-/// <para>The gear sum is cached (<c>Session._equipTotals</c>) and every equipment mutation site has to drop the
-/// cache. Equip, unequip and break did; the bulk clear behind <c>@clearinv</c> (<c>EquipClear</c>, whose only
-/// caller is the command) did not, so a character stripped of Cimmerian steel kept its +1000 vita and +8 might
-/// until something else happened to invalidate the cache. The test client's hunt suite hit it as HP 1006/1006
-/// with an empty equipment list (Essorcal/project1998-testclient#55).</para>
+/// <para>The gear sum is part of the session's one published totals snapshot (<c>Session._equipTotals</c>,
+/// PR #314), and every equipment mutation site has to call <c>InvalidateEquipTotals</c>, which re-sums and
+/// republishes it (before #314 it dropped a cache). Equip, unequip and break did; the bulk clear behind
+/// <c>@clearinv</c> (<c>EquipClear</c>, whose only caller is the command) did not, so a character stripped of
+/// Cimmerian steel kept its +1000 vita and +8 might until something else re-summed the gear. The test client's
+/// hunt suite hit it as HP 1006/1006 with an empty equipment list (Essorcal/project1998-testclient#55).</para>
 ///
 /// <para>Entered as a framed 0x0E chat packet, the way <see cref="GmExpCommandTests"/> enters, so the tier gate
 /// and the state monitor around <c>Session.Handle</c> are part of what runs.</para>
@@ -92,8 +93,9 @@ public sealed class ClearInventoryTests
     }
 
     /// <summary>A level-1 GM on base max HP 6 and might 3, wearing Cimmerian steel (+1000 vita, +8 might), with
-    /// the gear sum PRIMED: the precondition reads the effective stats once, which fills the cache, and pins
-    /// that the steel's bonuses were really counted before the clear.</summary>
+    /// the gear sum PRIMED: the precondition reads the effective stats once, which publishes the totals snapshot
+    /// (the session's first read does), and pins that the steel's bonuses were really counted before the
+    /// clear.</summary>
     private (Session session, RecordingOutbound outbound, Character character) SteelWearingGm()
     {
         var steel = Content.Items.First(i => i.Key == "cimmerian_steel");

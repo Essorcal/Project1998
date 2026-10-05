@@ -100,9 +100,10 @@ public sealed class NpcContext
 
     // ---- quest state (used by QuestDef.Talk scripts; see QuestDef below) ---------------------------
     /// <summary>This player's state for one quest: <c>ctx.Quest(LeviathanQuest.Key).Stage</c>,
-    /// <c>.Get("flag.gave_gold")</c>, <c>.Set(...)</c>. The one quest accessor — stage, flag, counter,
-    /// snapshot and timer are all slots of it. <see cref="QuestState.Registry"/> is RTK's flat registry, the
-    /// slot being the saved key (what the Lua <c>stage</c>/<c>reg</c> verbs read). Writes persist.</summary>
+    /// <c>.Get("flag.gave_gold")</c>, <c>.Set(...)</c>, and <c>.GetText("text.target")</c> for a value in the
+    /// string registry. The one quest accessor — stage, flag, counter, snapshot, timer and text are all slots of
+    /// it. <see cref="QuestState.Registry"/> is RTK's flat registry, the slot being the saved key (what the Lua
+    /// <c>stage</c>/<c>reg</c> verbs read). Writes persist.</summary>
     public QuestState Quest(string name) => _s.Quest(name);
 
     /// <summary>Award experience (updates the HUD + persists).</summary>
@@ -135,10 +136,6 @@ public sealed class NpcContext
     /// <summary>Lifetime kills of ANY mob, for a quest that cares what ELSE you killed (the Old dog's
     /// "do NOT kill anything else along the way"). Compare a snapshot delta, same as KillCount.</summary>
     public int  TotalKills => _s.TotalKills;
-
-    /// <summary>A string-valued quest registry entry (RTK registryString), "" if unset.</summary>
-    public string QuestStr(string key) => _s.QuestStr(key);
-    public void   SetQuestStr(string key, string value) => _s.SetQuestStr(key, value);
 
     /// <summary>Does the player have the legend with this internal name?</summary>
     public bool HasLegend(string name) => _s.HasLegend(name);

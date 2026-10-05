@@ -4,40 +4,46 @@ using Shared;
 namespace Server;
 
 /// <summary>
-/// One quest's view of <see cref="Character.Quests"/>, the flat string-to-int map every quest has always
-/// saved into. A <c>QuestState</c> owns a NAMESPACE (the quest's name, <c>leviathan</c>) and names each
-/// value in it by a SLOT: <c>stage</c>, <c>flag.gave_gold</c>, <c>kills.rabbit</c>, <c>timer.recoat</c>,
-/// <c>count.worships</c>. Quest code reads and writes through it — <c>ctx.Quest(Key).Stage</c>,
-/// <c>ctx.Quest(Key).Set("flag.gave_gold", 1)</c> — and never spells a saved key itself.
+/// One quest's view of the two maps every quest has always saved into: <see cref="Character.Quests"/>, the
+/// flat string-to-int map, and <see cref="Character.QuestStrings"/>, the string registry beside it (RTK
+/// <c>registryString</c>). A <c>QuestState</c> owns a NAMESPACE (the quest's name, <c>leviathan</c>) and names
+/// each value in it by a SLOT: <c>stage</c>, <c>flag.gave_gold</c>, <c>kills.rabbit</c>, <c>timer.recoat</c>,
+/// <c>count.worships</c>, and for a value in the string registry a TEXT slot, <c>text.target</c>. Quest code
+/// reads and writes through it — <c>ctx.Quest(Key).Stage</c>, <c>ctx.Quest(Key).Set("flag.gave_gold", 1)</c>,
+/// <c>ctx.Quest(Key).GetText("text.target")</c> — and never spells a saved key itself.
 ///
 /// <para><b>No storage migration.</b> Every name resolves to the key characters were ALREADY saved under, so
 /// a character loaded, played and saved through this type carries byte-identical quest keys and values
 /// (Tests/QuestStateTests.cs proves it against a real character blob). Resolution, in order:</para>
 /// <list type="number">
 /// <item><see cref="Registry"/>, the empty namespace, is RTK's flat <c>player.registry</c>: the slot IS the
-/// saved key. The Lua verbs (<c>stage</c>/<c>reg</c> in npc_dialog.lua, <c>reg</c> in the spell verbs,
-/// <c>actorQuest</c> in mob_ai.lua) and the registry globals several features share (<c>home</c>,
-/// <c>sage_rung</c>, <c>dog_flag</c>, <c>carnage_wins</c>, <c>mentored</c>, <c>damage_shotgun</c>…) live
-/// here, by the names RTK gave them.</item>
+/// saved key, in whichever map the call reads. The Lua verbs (<c>stage</c>/<c>reg</c> in npc_dialog.lua,
+/// <c>reg</c> in the spell verbs, <c>actorQuest</c> in mob_ai.lua), the registry globals several features share
+/// (<c>home</c>, <c>sage_rung</c>, <c>dog_flag</c>, <c>carnage_wins</c>, <c>mentored</c>,
+/// <c>damage_shotgun</c>…) and <c>@quest</c>'s raw keys live here, by the names RTK gave them.</item>
+/// <item>A slot that starts <see cref="TextPrefix"/> is a TEXT slot: it is saved in the string registry and is
+/// read and written only by <see cref="GetText"/>/<see cref="SetText"/>. Every other slot is saved in the int
+/// map and is read and written only by <see cref="Get"/>/<see cref="Set"/>. A slot asked of the other pair
+/// THROWS: the two maps are keyed independently (the minor quest's text target and its int stage would both be
+/// <c>minor_quest</c>), so the wrong map would read an unrelated value, or 0 or "", with nothing in the log.</item>
 /// <item><c>stage</c> is saved under the bare namespace. That is the scheme every quest already used, so a
 /// quest's namespace IS its stage key and a stage needs no alias.</item>
-/// <item>Every other slot is looked up in the alias table below: <see cref="Aliases"/> for fixed keys,
-/// <see cref="Families"/> for keys with a variable part (a mob, a tier, a step).</item>
+/// <item>Every other slot is looked up in the alias table below: <see cref="Aliases"/> for fixed keys, text
+/// slots included, and <see cref="Families"/> for keys with a variable part (a mob, a tier, a step).</item>
 /// <item>A slot in neither THROWS. A mistyped slot must not quietly start a fresh counter at 0 and lose a
 /// player's progress (AGENTS.md rule 3). A new slot is added to the table, mapped to its own dotted name
 /// (<c>("leviathan", "flag.x") = "leviathan.flag.x"</c>); no saved key has a dot in it, so a dotted key can
 /// never collide with an old one.</item>
 /// </list>
 ///
-/// <para><b>The only code that touches <see cref="Character.Quests"/></b> is the store section at the bottom
-/// of this file, bar one write <c>Session.SetNation</c> still makes (#307).
-/// <c>QuestStateTests.NothingButQuestStateTouchesTheQuestMap</c> fails the test run when anything else does.
-/// <see cref="Character.QuestStrings"/> (the string registry) is a separate store and is not covered here.</para>
+/// <para><b>The only code that touches <see cref="Character.Quests"/> or <see cref="Character.QuestStrings"/></b>
+/// is the store section at the bottom of this file. <c>QuestStateTests.NothingButQuestStateTouchesTheQuestMap</c>
+/// fails the test run when anything else does.</para>
 ///
 /// <para>A value type: two references and a name, made per call (<see cref="NpcContext.Quest"/>,
 /// <see cref="Session.Quest"/>) and held only in locals, never in a field. Bound to a session, a read sees its live
-/// character and a write takes the session monitor and saves (<see cref="Session.SetQuestStage"/>); over a
-/// bare character (<see cref="Over"/>) it does neither, which is what tests and offline tools want.</para>
+/// character and a write saves, through the session's <see cref="ISessionStore"/>; over a bare character
+/// (<see cref="Over"/>) it does neither, which is what tests and offline tools want.</para>
 /// </summary>
 public readonly struct QuestState
 {
@@ -47,7 +53,32 @@ public readonly struct QuestState
     /// <summary>The slot every quest's stage machine lives in, saved under the bare namespace.</summary>
     public const string StageSlot = "stage";
 
-    private readonly Session? _session;
+    /// <summary>What a TEXT slot starts with: a value saved in the string registry
+    /// (<see cref="Character.QuestStrings"/>), read by <see cref="GetText"/>. See the type doc.</summary>
+    public const string TextPrefix = "text.";
+
+    /// <summary>
+    /// QuestState's session path, and nothing else's: the saved-key read and write of each map. A session-bound
+    /// QuestState resolves a slot to its saved key and hands that key here; <see cref="Session"/> owns the live
+    /// character, the monitor and the save. Session implements this EXPLICITLY, so none of the four is a member
+    /// anything can call on a session: code names its state through <see cref="Session.Quest"/> (#308).
+    /// </summary>
+    internal interface ISessionStore
+    {
+        /// <summary>A saved int key's value on the live character; 0 if unset.</summary>
+        int Read(string savedKey);
+
+        /// <summary>Write a saved int key on the live character, and save.</summary>
+        void Write(string savedKey, int value);
+
+        /// <summary>A saved text key's value on the live character; "" if unset.</summary>
+        string ReadText(string savedKey);
+
+        /// <summary>Write a saved text key on the live character, and save.</summary>
+        void WriteText(string savedKey, string value);
+    }
+
+    private readonly ISessionStore? _session;
     private readonly Character? _char;
 
     /// <summary>The namespace — the quest's name and its stage key.</summary>
@@ -65,26 +96,54 @@ public readonly struct QuestState
     /// <summary>Set this quest's stage (persists).</summary>
     public void SetStage(int stage) => Set(StageSlot, stage);
 
-    /// <summary>A slot's value; 0 if it was never set.</summary>
+    /// <summary>A slot's value; 0 if it was never set. Throws for a text slot.</summary>
     public int Get(string slot)
     {
         string key = Resolve(Name, slot);
-        return _session is not null ? _session.QuestStage(key) : Read(_char!, key);
+        return _session is not null ? _session.Read(key) : Read(_char!, key);
     }
 
-    /// <summary>Set a slot (persists, through the session when there is one).</summary>
+    /// <summary>Set a slot (persists, through the session when there is one). Throws for a text slot.</summary>
     public void Set(string slot, int value)
     {
         string key = Resolve(Name, slot);
-        if (_session is not null) _session.SetQuestStage(key, value);
+        if (_session is not null) _session.Write(key, value);
         else Write(_char!, key, value);
     }
 
-    /// <summary>The key <paramref name="slot"/> of <paramref name="name"/> is saved under. Throws for a
-    /// slot the alias table does not list — see the type doc.</summary>
-    public static string Resolve(string name, string slot)
+    /// <summary>A text slot's value; "" if it was never set. Throws for a slot that is not a text slot.</summary>
+    public string GetText(string slot)
+    {
+        string key = ResolveText(Name, slot);
+        return _session is not null ? _session.ReadText(key) : ReadText(_char!, key);
+    }
+
+    /// <summary>Set a text slot (persists, through the session when there is one). "" empties the value and keeps
+    /// the key, as the string registry always has. Throws for a slot that is not a text slot.</summary>
+    public void SetText(string slot, string value)
+    {
+        string key = ResolveText(Name, slot);
+        if (_session is not null) _session.WriteText(key, value);
+        else WriteText(_char!, key, value);
+    }
+
+    /// <summary>The int-map key <paramref name="slot"/> of <paramref name="name"/> is saved under. Throws for a
+    /// text slot, and for a slot the alias table does not list — see the type doc.</summary>
+    public static string Resolve(string name, string slot) => ResolveIn(name, slot, text: false);
+
+    /// <summary>The string-registry key text slot <paramref name="slot"/> of <paramref name="name"/> is saved
+    /// under. Throws for a slot that is not a text slot, and for one the alias table does not list.</summary>
+    public static string ResolveText(string name, string slot) => ResolveIn(name, slot, text: true);
+
+    private static string ResolveIn(string name, string slot, bool text)
     {
         if (name.Length == 0) return slot;
+        if (slot.StartsWith(TextPrefix, StringComparison.Ordinal) != text)
+            throw new InvalidOperationException(text
+                ? $"Quest slot '{name}.{slot}' is not a text slot (a text slot starts \"{TextPrefix}\"): " +
+                  "read it with Get and write it with Set."
+                : $"Quest slot '{name}.{slot}' is a text slot, saved in the string registry: " +
+                  "read it with GetText and write it with SetText.");
         if (slot == StageSlot) return name;
         if (Aliases.TryGetValue((name, slot), out var saved)) return saved;
         foreach (var family in CompiledFamilies)
@@ -96,8 +155,8 @@ public readonly struct QuestState
 
     // =============================================================================================
     // The alias table: every quest slot, and the key characters were saved with before this type existed.
-    // Keep docs/common/Quest-Registry.md in step with it. Stages are not listed (rule 2 above), nor is the
-    // flat registry (rule 1).
+    // Keep docs/common/Quest-Registry.md in step with it. Stages are not listed (rule 3 above), nor is the
+    // flat registry (rule 1). A text slot's saved key is in the string registry (rule 2).
     // =============================================================================================
 
     /// <summary>Fixed keys: (namespace, slot) to saved key.</summary>
@@ -127,10 +186,16 @@ public readonly struct QuestState
             // mage_stone: MageStoneQuest.cs and the crypt spirit (Session.Navigation.cs).
             [("mage_stone", "flag.met_ghost")]                 = "mage_stone_met_ghost",
 
-            // minor_quest: MinorQuest.cs. The active target is in the STRING registry under "minor_quest".
+            // minor_quest: MinorQuest.cs. The active target is a text slot, saved in the string registry under
+            // the bare name "minor_quest"; the rest is in the int map.
             [("minor_quest", "tier")]                          = "minor_quest_tier",
             [("minor_quest", "timer.cooldown")]                = "minor_quest_timer",
             [("minor_quest", "count.completed")]               = "minor_quests_completed",
+            [("minor_quest", "text.target")]                   = "minor_quest",
+
+            // mentorship: Mentorship.cs. On the protégé, the name of the character mentoring them: a text slot,
+            // saved in the string registry as "mentor". The mentor's own tally is the flat "mentored".
+            [("mentorship", "text.mentor")]                    = "mentor",
 
             // nagnang_warrior_trial: NagnangShieldQuest.cs and the Gauntlet tiles (Session.Navigation.cs).
             [("nagnang_warrior_trial", "kills.forbidden")]     = "nagnang_trial_kills",
@@ -214,9 +279,10 @@ public readonly struct QuestState
     }
 
     // =============================================================================================
-    // The store. The only code in the server that reads or writes Character.Quests (bar SetNation, #307). Callers pass a
-    // SAVED key (already resolved); the session primitives (Session.QuestStage / SetQuestStage) own the
-    // monitor and the save around them, and @quest / @questreset read and clear the raw map through them.
+    // The store. The only code in the server that reads or writes Character.Quests or Character.QuestStrings.
+    // Callers pass a SAVED key (already resolved). The session path (Session's ISessionStore) owns the monitor
+    // and the save around the read and write; Session.SetNation clears the bound home through Write inside its
+    // own save; @quest / @questreset read, remove and clear the raw maps through the rest.
     // =============================================================================================
 
     internal static int Read(Character c, string key) => c.Quests.GetValueOrDefault(key);
@@ -231,4 +297,19 @@ public readonly struct QuestState
 
     /// <summary>Drop every saved key (<c>@questreset</c>).</summary>
     internal static void Clear(Character c) => c.Quests.Clear();
+
+    // The string registry: the same five, by text. An unset key reads "", and writing "" keeps the key.
+
+    internal static string ReadText(Character c, string key) => c.QuestStrings.GetValueOrDefault(key, "");
+
+    internal static void WriteText(Character c, string key, string value) => c.QuestStrings[key] = value;
+
+    /// <summary>The saved string registry, read-only, by saved key (<c>@quest</c>'s dump and read).</summary>
+    internal static IReadOnlyDictionary<string, string> SavedText(Character c) => c.QuestStrings;
+
+    /// <summary>Drop a saved text key outright (<c>@quest &lt;key&gt; 0</c>). True if it was there.</summary>
+    internal static bool RemoveText(Character c, string key) => c.QuestStrings.Remove(key);
+
+    /// <summary>Drop every saved text key (<c>@questreset</c>).</summary>
+    internal static void ClearText(Character c) => c.QuestStrings.Clear();
 }

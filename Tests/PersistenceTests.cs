@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 using Protocol.Tk495;
 using Server;
 using Shared;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -660,11 +661,11 @@ public class PersistenceTests : IDisposable
         InsertRawCharacter(_a, corrupt);
         Assert.Equal(CharacterLoadStatus.Unreadable, _store.Load(_a).Status);
 
-        var warnings = new List<string>();
+        var warnings = new ConcurrentQueue<string>();
         var previous = CharacterStore.Warn;
         try
         {
-            CharacterStore.Warn = warnings.Add;
+            CharacterStore.Warn = ChainedWarnSink(warnings, previous);
             Assert.False(_store.Save(Make(_a, 999)));
         }
         finally
@@ -672,10 +673,22 @@ public class PersistenceTests : IDisposable
             CharacterStore.Warn = previous;
         }
 
-        string warning = Assert.Single(warnings);
+        string warning = Assert.Single(warnings, w => w.Contains(CharacterStore.Key(_a), StringComparison.Ordinal));
         Assert.Contains("Refused to overwrite unreadable character row", warning);
-        Assert.Contains(CharacterStore.Key(_a), warning);
     }
+
+    /// <summary>A warning sink for the two facts that capture <see cref="CharacterStore.Warn"/>. That property is
+    /// one process-wide slot, and this collection runs beside <c>"world"</c>, whose write-lock facts fail saves
+    /// on purpose: a plain <c>warnings.Add</c> in the slot would count their warnings as this fact's (the old
+    /// <c>Assert.Single</c> would then fail on someone else's row) and would be a <c>List</c> written from two
+    /// threads. So the capture is a concurrent queue, every warning still goes on to the sink that was there
+    /// before, and each fact asserts on the warnings that name its own row or file.</summary>
+    private static Action<string> ChainedWarnSink(ConcurrentQueue<string> into, Action<string> previous) =>
+        message =>
+        {
+            into.Enqueue(message);
+            previous(message);
+        };
 
     [Fact]
     public void LegacyImport_ReportsTheFileItCannotUpgrade()
@@ -686,11 +699,11 @@ public class PersistenceTests : IDisposable
         File.WriteAllText(path,
             "{\"SchemaVersion\":1,\"Name\":\"FixtureHero\",\"RemovedField\":17}");
 
-        var warnings = new List<string>();
+        var warnings = new ConcurrentQueue<string>();
         var previous = CharacterStore.Warn;
         try
         {
-            CharacterStore.Warn = warnings.Add;
+            CharacterStore.Warn = ChainedWarnSink(warnings, previous);
             _ = new CharacterStore(legacyDir);
         }
         finally
@@ -698,8 +711,7 @@ public class PersistenceTests : IDisposable
             CharacterStore.Warn = previous;
         }
 
-        string warning = Assert.Single(warnings);
-        Assert.Contains(path, warning);
+        string warning = Assert.Single(warnings, w => w.Contains(path, StringComparison.Ordinal));
         Assert.Contains("RemovedField", warning);
     }
 

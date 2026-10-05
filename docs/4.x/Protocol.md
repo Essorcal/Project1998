@@ -2466,7 +2466,8 @@ pickup.
 
 **Equip stat bonuses + wear requirements — SOLVED (2026-07-25).** Worn gear now feeds the HUD/profile and
 combat. The character's `_char.*` stats stay the **base**; the effective values are `base + Σ(worn-gear
-lines)`, recomputed on every send by `Session.EquipTotals()` — nothing is ever baked into the base, so a
+lines)`: `Session.EquipTotals()` sums the gear at each gear change into one published totals snapshot that
+every send reads (PR #314) — nothing is ever baked into the base, so a
 relog (which reloads `Equipment` and redraws it) can't drift or double-count. Mapping: `Vita→maxHP`,
 `Mana→maxMP`, `Might/Will/Grace→` those stats (`0x08`), and `Armor→AC`, `Hit`, `Dam→` the profile (`0x39`).
 **AC is signed and lower is better**, so armor **subtracts**. `EquipFromSlot`/`HandleUnequip` push a fresh
@@ -3696,10 +3697,15 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     single summon lands exactly where it always did.)* Tagged `Mob.OwnerId` + `Mob.PetExpiresAt` (300s after cast, then a
     plain `World.DespawnMob` — no kill/loot/exp, same as riding a mob away), and capped at 4 concurrently
     alive pets (6 at level 90+, 8 at level 99 — `Content.PetCapFor`, RTK's `cotw_spawnCheck`), counted PER MAP
-    via the new `World.PetCountFor` (matching RTK's own `getObjectsInMap` scope). The level-99 "avatar" tier
-    is the one real outlier: `cotw_wind_warrior.lua` has no `player.magic` check at all — RTK charges GOLD (via
-    `requirements()`) plus an 8-minute cooldown instead, ported via the pre-existing `OnCooldown`/
-    `SetCooldown` plumbing (0 mana). **NOT ported:** `cotw_controller_poet`, neither its threat-transfer nor
+    via the new `World.PetCountFor` (matching RTK's own `getObjectsInMap` scope). The two level-99 wind tiers,
+    Wind dancer with the three Champions and Wind warrior with the three Avatars, cost no mana and have an
+    8-minute (480000 ms) cooldown, through the pre-existing `OnCooldown`/`SetCooldown` plumbing; every lower
+    tier costs a flat 10 mana with no cooldown (`game-data/Pets.csv`). The source is Nexus Atlas's poet page
+    (`Sources.csv` `atlas-poet-spells`). RTK agrees on the cooldown (`cotw_wind_dancer.lua` line 6,
+    `cotw_wind_warrior.lua` line 5) but charges the dancer tier 10 mana (`cotw_wind_dancer.lua` line 3); Caleb
+    chose 0 on 2026-09-29. The gold in RTK's `requirements()` is the trainer's learn price, which every tier
+    has, not a cast cost. *(Changed 2026-10-05. Wind dancer and the Champions used to cost 10 mana, with no
+    cooldown.)* **NOT ported:** `cotw_controller_poet`, neither its threat-transfer nor
     its dismiss-all — both are later-server behaviour (4.95 pets leave play only by dying or timing out, and
     RTK's threat table isn't 4.95; see §"Call of the Wild: the controller and the Giasomo bird"). Pets heel
     and assist — see §"Pet AI" for the rules (that was added 2026-08-06; before it, an owned mob ran the plain
@@ -3758,8 +3764,9 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     calculateDamage(35000)`, where RTK's `calculateDamage` armor-deduction formula turned out to be
     IDENTICAL to this codebase's existing `Combat.ApplyArmor` (both `1 + max(armor,floor)/100`), so it's
     reused verbatim rather than reimplemented — capped to leave at least 1 HP (a trap tripped mid-walk has no
-    death-flow of its own to hook, same "self-cost, never actually lethal" precedent as
-    `CastSacrificeStrike`). Level 99, 1520 mana, 125s cooldown, the decoy auto-expires 21s after placement if
+    death-flow of its own to hook, same "self-cost, never actually lethal" precedent as the sacrifice strikes'
+    own HP cost, which `verbs.sacrifice` sets through `ctx:setHp`, and that never takes a living caster below
+    1). Level 99, 1520 mana, 125s cooldown, the decoy auto-expires 21s after placement if
     never triggered (`Trap.ExpiresAt`, swept silently in `World.Tick` — traps have no ground graphic, so no
     broadcast is needed either way). **NOT ported:** the Lua's NPC heartbeat implies a 5000-mana/tick
     owner-upkeep drain while the decoy is alive — the exact drain/early-deletion formula wasn't in the

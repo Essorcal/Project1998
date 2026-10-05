@@ -47,6 +47,19 @@ public class SessionActorTests
     /// released alongside is mid-capture, rather than finishing first and parking on the barrier.</summary>
     private const int MutationsPerRound = 24;
 
+    /// <summary>A content-free map in the instance band for <see cref="LuaGateAgainstAPeerMonitorCannotDeadlock"/>'s
+    /// pair, so its heal broadcasts reach the pair and nobody else on the shared World.
+    ///
+    /// <para>The band is partitioned by hand, and two classes that pick the same id share a map on the one
+    /// fixture World, so the id was checked rather than assumed to be free. This pair's first id, 62010, became
+    /// <c>InfernoLadderSpellTests</c>' <c>LandedMap</c> in #322 while this change was open. 62040 was checked on
+    /// 2026-10-05 with <c>git grep</c> over every file at master 9512788 and over open PR #325's tests: nothing
+    /// else names it, and no class derives an id near it (the derived ranges are 60073-60079 in
+    /// <c>TickPhaseGuardTests</c>, 60260-60261 in <c>TickSweepSkipTests</c> and 65320-65329 in
+    /// <c>ReplacedSessionWorldTests</c>). No game-data map lies between 58999 and 65001. Check again before
+    /// reusing an id near it.</para></summary>
+    private const ushort LuaPairMap = 62040;
+
     // =====================================================================================================
     // The acceptance test the ticket asks for by name.
     // =====================================================================================================
@@ -514,13 +527,28 @@ public class SessionActorTests
     /// <para>This is the fact that flaked on 2026-09-10, twice, on a laptop running other suites beside it.
     /// The gate serialises both threads, so its rounds are the slowest of the three and the old fixed budget
     /// had the least room; the progress watch removes the budget from the question entirely.</para>
+    ///
+    /// <para><b>A map of its own (<see cref="LuaPairMap"/>).</b> It failed once more on 2026-09-28, on the
+    /// progress watch itself: "no round completed for 10 s, stopped at 31365 rounds 18 s in"
+    /// (<c>reviews/PR312-by-fable.md</c> line 56). Alone this fact takes about 0.1 s; in a full suite it took
+    /// 2.1 s, and the difference is where it stood. <c>ReceiveHeal</c> broadcasts the heal bar to everyone in
+    /// effect range, the pair used to stand on the fixture's 12x12 home map, and every earlier fact in this
+    /// collection that took a default <c>_fx.Player</c> was still standing there, each with a recorder that
+    /// keeps every frame. Measured on 2026-10-05 in a full Debug run: 333 sessions online, 20,000 heals
+    /// fanned out to the crowd, 2,286 ms, 761 ms of it in garbage-collection pauses, and the managed heap 194
+    /// MB larger afterwards. The cost of a round was set by how many facts had run first. On a map no other
+    /// fact uses, in a second full run with the same 333 sessions online: 38 ms, 10 ms of collection, 8 MB.
+    /// The cycle under test is the same
+    /// production calls in the same order; only the bystanders are gone. The pause that remains possible on
+    /// a loaded machine is no longer charged to the threads either: see
+    /// <see cref="StallWatch.MaxCreditPerPoll"/>.</para>
     /// </summary>
     [Fact]
     public void LuaGateAgainstAPeerMonitorCannotDeadlock()
     {
         const int Rounds = 20_000;
-        var (a, _) = _fx.Player("ActorLuaA");
-        var (b, _) = _fx.Player("ActorLuaB");
+        var (a, _) = _fx.Player("ActorLuaA", map: LuaPairMap);
+        var (b, _) = _fx.Player("ActorLuaB", map: LuaPairMap);
 
         var start = new ManualResetEventSlim();
         var rounds = new StallWatch.RoundCounter();
