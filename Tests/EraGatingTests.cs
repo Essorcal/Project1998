@@ -13,7 +13,13 @@ namespace Tests;
 ///
 /// Driving the static calendar is serialized with content loads that consume the same process environment
 /// variable, and every test restores it in a finally.
+///
+/// <para>Collection <c>"tile-translation"</c>, which runs alone. <c>TestProcessState.Gate</c> keeps the swap
+/// away from other content loads, but not from the tests reading the calendar meanwhile: between
+/// <c>Reload</c> and the restore, every <c>Era.Has</c> in the process answers for 2000 or 2008. That is a
+/// stubbed content snapshot, the seam <see cref="TestSeamCollectionTests"/> gives to this collection.</para>
 /// </summary>
+[Collection("tile-translation")]
 public class EraGatingTests
 {
     // Point the calendar at a throwaway ServerTuning.csv holding just the date. EraFeatures.csv is left

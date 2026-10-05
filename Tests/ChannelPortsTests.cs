@@ -7,7 +7,14 @@ namespace Tests;
 /// <summary>
 /// The login and game ports are two views of the same client-version channels. A mismatched mapping is
 /// silent on the wire: the login succeeds, then the client reconnects to the wrong game listener.
+///
+/// <para>Collection <c>"log"</c>, which runs alone: <c>ConfigureLoginPair</c> and <c>ResetForTests</c> set the
+/// one channel-port pair the whole process reads. <c>ChannelPorts</c> falls back to 2005/2006 for a port
+/// outside the configured pair, so today's other classes are not disturbed, but a second class configuring
+/// a pair beside this one would race it; <see cref="TestSeamCollectionTests"/> keeps process configuration
+/// where nothing else runs.</para>
 /// </summary>
+[Collection("log")]
 public class ChannelPortsTests
 {
     [Theory]
