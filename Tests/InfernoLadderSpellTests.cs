@@ -66,8 +66,9 @@ public sealed class InfernoLadderSpellTests
 
             Assert.Contains($"You cast {sp.Name}.", SpellCastSupport.MiniTexts(outbound));
             Assert.True(mob.Hp < mob.MaxHp, $"{sp.Name} never reached the creature beside the caster");
-            Assert.Equal(0u, c.Mp);
-            Assert.InRange(SpellCastSupport.AetherLeft(session, key), 60_000, 70_000);
+            var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
+            Assert.True(pool == 0 && aether is >= 60_000 and <= 70_000,
+                        $"pool {pool} (want 0), aether {aether} ms left (want 60000 to 70000)");
         }
         finally
         {
@@ -95,8 +96,8 @@ public sealed class InfernoLadderSpellTests
             Assert.Contains("You do not have enough mana.", lines);
             Assert.DoesNotContain($"You cast {sp.Name}.", lines);
             Assert.Equal(mob.MaxHp, mob.Hp);
-            Assert.Equal(3u, c.Mp);
-            Assert.Equal(0L, SpellCastSupport.AetherLeft(session, key));
+            var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
+            Assert.True(pool == 3 && aether == 0, $"pool {pool} (want 3), aether {aether} ms left (want 0)");
         }
         finally
         {
@@ -120,8 +121,9 @@ public sealed class InfernoLadderSpellTests
             session.Receive(SpellCastSupport.CastFrame(0));
 
             Assert.Contains($"You cast {sp.Name}.", SpellCastSupport.MiniTexts(outbound));
-            Assert.Equal(0u, c.Mp);
-            Assert.InRange(SpellCastSupport.AetherLeft(session, key), 60_000, 70_000);
+            var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
+            Assert.True(pool == 0 && aether is >= 60_000 and <= 70_000,
+                        $"pool {pool} (want 0), aether {aether} ms left (want 60000 to 70000)");
         }
         finally
         {
@@ -147,8 +149,9 @@ public sealed class InfernoLadderSpellTests
 
             Assert.Contains($"You cast {sp.Name}.", SpellCastSupport.MiniTexts(outbound));
             Assert.True(mob.Hp < mob.MaxHp, $"{sp.Name} never reached the creature beside the caster");
-            Assert.Equal(Pool - (uint)mana, c.Mp);
-            Assert.Equal(0L, SpellCastSupport.AetherLeft(session, key));
+            var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
+            Assert.True(pool == Pool - (uint)mana && aether == 0,
+                        $"pool {pool} (want {Pool - (uint)mana}), aether {aether} ms left (want 0)");
         }
         finally
         {
