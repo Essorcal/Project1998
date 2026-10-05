@@ -37,11 +37,27 @@ namespace Tests;
 /// collection is its own <c>[Collection]</c>: xunit takes it off the test class, never off the type it is nested
 /// in (the PR #326 review ran a nested class beside <c>"world"</c> while it sat inside a <c>"world"</c> class).
 /// The parts of a partial class are one class, so a <c>[Collection]</c> on any part covers all of them.</item>
-/// <item>A use belongs to the innermost test class around it; code in a nested helper type runs as the test class
-/// it is nested in. Code with no test class around it can be called from anywhere, so a type like that which
-/// touches a seam must be a registered wrapper under <c>Tests/Support/</c>, whose entry points are in the table,
-/// or its callers would be invisible here. <c>TestProcessState</c>'s module initializer sets the environment
-/// before any test runs, and is the one exemption.</item>
+/// <item>A use belongs to the member it sits in, and is judged by the code that can run that member, since a
+/// helper runs in its caller's collection (the PR #326 review, F8). A test method, and a test class's constructor,
+/// <c>Dispose</c>, <c>DisposeAsync</c> and <c>InitializeAsync</c>, run as their class: xunit needs them public and
+/// calls them for that class's tests. Any other member is called by whatever code its accessibility admits:
+/// <list type="bullet">
+/// <item>A private member, or any member of a private nested type, can be named only in the type that holds it.
+/// It is judged by the innermost test class around it, and by every other test class in that type whose test
+/// methods or lifecycle members name it, directly or through other private members, so a nested test class that
+/// calls its outer class's private helper is judged by its own collection.</item>
+/// <item>Any other member of a test class, or of a type nested in one, can be called by code in other classes, in
+/// their collections, so it is reported, as code with no test class around it is; so is a private member that one
+/// of them names. That includes <c>protected</c> and <c>private protected</c>: a derived class calls them from its
+/// own collection, and need not inherit a test method to do it (a base whose tests are private, say), so the
+/// cross-check below would not see it either.</item>
+/// </list>
+/// Names are matched as whole words in the holding type's code, which can only over-count callers, and naming a
+/// nested type counts as naming its members, since an instance carries them wherever it is handed. Code with no
+/// test class around it can be called from anywhere, so a type like that which touches a seam must be a
+/// registered wrapper under <c>Tests/Support/</c>, whose entry points are in the table, or its callers would be
+/// invisible here. <c>TestProcessState</c>'s module initializer sets the environment before any test runs, and
+/// is the one exemption.</item>
 /// <item>An import of a seam's type reaches the seam as the type's own name does: after
 /// <c>using static Shared.Log;</c> a bare <c>Shutdown()</c> counts, and after <c>using L = Shared.Log;</c>
 /// <c>L.Shutdown()</c> does. A <c>global using</c> counts in every file.</item>
@@ -54,7 +70,10 @@ namespace Tests;
 /// inherits, in its own or a base type's collection. No class in <c>Tests/</c> is built that way today, and
 /// <see cref="TheScannerSeesEveryTestClassXunitSeesInTheCollectionXunitGivesIt"/> fails the day one is: the day a
 /// class runs a test method it does not declare (an abstract base's, or a concrete base's run again in the
-/// derived class), or takes its <c>[Collection]</c> from a base type.</para>
+/// derived class), or takes its <c>[Collection]</c> from a base type. A helper a derived class could call is
+/// reported by the member rule above, whatever the cross-check sees. Nor does it follow code that a nested
+/// helper type runs when it is built rather than called (a field initializer, a static constructor): that is
+/// judged by the accessibility its own declaration writes, as any member is.</para>
 ///
 /// <para><b>Not seams</b> (inventoried, deliberately left out): <c>TestProcessState.LoadContent</c>
 /// re-publishes the real content and is safe anywhere; <c>SendCounters.Game</c> and
@@ -78,7 +97,8 @@ namespace Tests;
 /// <c>"log"</c> fails <see cref="TheCollectionsTheRuleTrustsRunAloneAndTheParallelOnesDoNot"/> and names
 /// the classes in <c>"log"</c> that hold a seam, since <c>"log"</c> owns seams only by running alone. The
 /// shapes the PR #326 review found missed or wrongly flagged are pinned in
-/// <see cref="TheScannerFindsSeamsInCodeAndOnlyInCode"/> and <see cref="APartialClassIsOneClassAcrossItsFiles"/>.</para>
+/// <see cref="TheScannerFindsSeamsInCodeAndOnlyInCode"/>, <see cref="APartialClassIsOneClassAcrossItsFiles"/> and
+/// <see cref="AHelperIsJudgedByEveryClassThatCanCallIt"/>.</para>
 /// </summary>
 public class TestSeamCollectionTests
 {
@@ -303,12 +323,33 @@ public class TestSeamCollectionTests
     [InlineData("""public class A { [Fact] public void F() { double x = 1; var a = $"{x,8:F2} {x:0.0} {(x > 0 ? 1 : 2)} {new[] { 1 }.Length}"; } }""", "")]
     // A nested test class with a collection of its own, in an outer class that has none.
     [InlineData("""public class C { [Collection("log")] public class Inner { [Fact] public void F() { Log.Shutdown(); } } }""", "")]
-    // A helper type nested in a test class runs as that class.
+    // A private helper type nested in a test class runs as that class.
     [InlineData("""[Collection("world")] public class A { [Fact] public void F() => H.T(); private static class H { public static void T() { using var s = LogLineSink.Acquire(); } } }""", "")]
     // The [Collection] of a partial class can sit on any part (PR #326 review, F2).
     [InlineData("""[Collection("log")] public partial class P { [Fact] public void A() { } } public partial class P { [Fact] public void B() { Log.Shutdown(); } }""", "")]
     // An import of a type that carries no seam changes nothing.
     [InlineData("""using static System.Math; public class A { [Fact] public void F() { var loadForTest = Max(1, 2); } }""", "")]
+    // A helper runs in its caller's collection (PR #326 review, F8). One that code in other classes can call is
+    // reported, whatever the collection of the class it sits in: an internal or public member, a member of a nested
+    // type that is not private, a protected or private protected member (a derived class's), a field whose
+    // initializer touches the seam, a private member that one of those names, and a private nested type's member
+    // reached through an instance one of those hands out...
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => T(); internal static IDisposable T() => LogLineSink.Acquire(); }""", "the log line sink")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => N.T(); internal static class N { public static IDisposable T() => LogLineSink.Acquire(); } }""", "the log line sink")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => T(); protected static void T() { StaffAccounts.Load(); } }""", "the staff roster")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => T(); private protected static void T() { StaffAccounts.Load(); } }""", "the staff roster")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() { } internal static readonly Func<IDisposable> T = () => LogLineSink.Acquire(); }""", "the log line sink")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => T(); public static IDisposable T() => U(); private static IDisposable U() => LogLineSink.Acquire(); }""", "the log line sink")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() { } internal static IDisposable Make() => new H(); private sealed class H : IDisposable { public void Dispose() { Session.TradeOpenProbeForTest = null; } } }""", "a static test hook")]
+    // ...and a private helper is judged by every test class that can name it, a nested one included.
+    [InlineData("""[Collection("world")] public class A { private static IDisposable T() => LogLineSink.Acquire(); [Fact] public void F() => T(); public class Inner { [Fact] public void G() => T(); } }""", "the log line sink")]
+    // What only the class's own tests reach is judged by its collection: a private helper beside a non-private
+    // member that does not name it, the constructor and lifecycle members xunit calls around each test (an explicit
+    // interface implementation included), and a private nested type the tests build.
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() => T(); private static IDisposable T() => LogLineSink.Acquire(); internal static int Count() => 1; }""", "")]
+    [InlineData("""[Collection("world")] public class A : IDisposable { public A() { StaffAccounts.Load(); } public void Dispose() { Session.TradeOpenProbeForTest = null; } [Fact] public void F() { } }""", "")]
+    [InlineData("""[Collection("world")] public class A : IAsyncLifetime { public Task InitializeAsync() { StaffAccounts.Load(); return Task.CompletedTask; } Task IAsyncLifetime.DisposeAsync() { Session.TradeOpenProbeForTest = null; return Task.CompletedTask; } [Fact] public void F() { } }""", "")]
+    [InlineData("""[Collection("world")] public class A { [Fact] public void F() { using var h = new H(); } private sealed class H : IDisposable { public H() { StaffAccounts.Load(); } public void Dispose() { Session.TradeOpenProbeForTest = null; } } }""", "")]
     public void TheScannerFindsSeamsInCodeAndOnlyInCode(string source, string expectedSeam)
     {
         var found = Violations(new[] { ("Sample.cs", "namespace Tests;\n" + source) }, new[] { "log", "tile-translation" });
@@ -328,6 +369,46 @@ public class TestSeamCollectionTests
             new[] { "log", "tile-translation" });
         Assert.Contains(found, v => v.Contains("NewTap", StringComparison.Ordinal)
                                     && v.Contains("registered wrapper", StringComparison.Ordinal));
+    }
+
+    /// <summary>A helper runs in the collection of whoever calls it (the PR #326 review, F8: a class with no
+    /// collection called a <c>"world"</c> class's internal capture helper, and ran it beside <c>"world"</c>). Each
+    /// helper that code in other classes can call is named with the member that lets them in and why, and a nested
+    /// test class that calls its outer class's private helper is named with the helper it goes through.</summary>
+    [Fact]
+    public void AHelperIsJudgedByEveryClassThatCanCallIt()
+    {
+        const string open = """
+            namespace Tests;
+            [Collection("world")]
+            public class Owner
+            {
+                [Fact] public void F() { using var tap = Tap(); }
+                internal static IDisposable Tap() => LogLineSink.Acquire();
+                internal static class Nested { internal static IDisposable Tap() => LogLineSink.Acquire(); }
+                private static IDisposable Hidden() => LogLineSink.Acquire();
+                public static IDisposable Door() => Hidden();
+            }
+            public class Caller { [Fact] public void G() { using var tap = Owner.Tap(); } }
+            """;
+        var found = Violations(new[] { ("Owner.cs", open) }, new[] { "log", "tile-translation" });
+        Assert.Equal(3, found.Count);
+        Assert.StartsWith("Owner.cs:6 Owner.Tap touches the log line sink (`LogLineSink.Acquire();`); Owner.Tap is internal, ", found[0]);
+        Assert.StartsWith("Owner.cs:7 Owner+Nested.Tap touches the log line sink (`LogLineSink.Acquire(); }`); Owner+Nested.Tap is internal, ", found[1]);
+        Assert.StartsWith("Owner.cs:8 Owner.Hidden touches the log line sink (`LogLineSink.Acquire();`), and Owner.Door names it; Owner.Door is public, ", found[2]);
+
+        const string nested = """
+            namespace Tests;
+            [Collection("world")]
+            public class Outer
+            {
+                private static IDisposable Tap() => LogLineSink.Acquire();
+                [Fact] public void F() { using var tap = Tap(); }
+                public class Inner { [Fact] public void G() { using var tap = Tap(); } }
+            }
+            """;
+        var inner = Assert.Single(Violations(new[] { ("Outer.cs", nested) }, new[] { "log", "tile-translation" }));
+        Assert.StartsWith("Outer.cs:5 Outer+Inner touches the log line sink (`LogLineSink.Acquire();`) through Outer.Tap from no collection; ", inner);
     }
 
     /// <summary>A partial class is one class to C# and to xunit, so a <c>[Collection]</c> on one part covers
@@ -548,7 +629,8 @@ public class TestSeamCollectionTests
             var imports = file.Imports.Where(i => !i.Global).Concat(scan.GlobalImports).ToList();
             foreach (var seam in Seams)
             {
-                var reported = new HashSet<TypeDecl>();
+                var allowed = seam.Owners.Concat(exclusive).ToArray();
+                var reported = new HashSet<object>();   // each class, and each member other classes can call, once per seam
                 foreach (var (at, via) in Hits(seam, file, imports).OrderBy(h => h.At))
                 {
                     var innermost = file.Innermost(at);
@@ -556,19 +638,18 @@ public class TestSeamCollectionTests
                     while (outermost?.Parent is not null) outermost = outermost.Parent;
                     if (outermost is not null && Exempt.Contains(outermost.Name)) continue;
 
-                    var owner = innermost;   // the innermost test class around the use
-                    while (owner is not null && !scan.IsTestClass(owner)) owner = owner.Parent;
+                    var owner = scan.TestClassAround(innermost);   // the innermost test class around the use
                     var subject = owner ?? outermost;
                     if (subject is not null && seam.ExemptCode is { } exempt
                         && exempt.IsMatch(file.Code.AsSpan(subject.Start, subject.Close + 1 - subject.Start)))
                         continue;
-                    if (subject is not null && !reported.Add(subject)) continue;
 
                     int line = 1 + file.Source.AsSpan(0, at).Count('\n');
                     string use = $"touches {seam.Name} (`{Snippet(file.Source, at)}`{via})";
                     if (owner is null)
                     {
                         if (support && outermost is not null && RegisteredWrappers.Contains(outermost.Name)) continue;
+                        if (outermost is not null && !reported.Add(outermost)) continue;
                         violations.Add($"{file.Path}:{line} {outermost?.DisplayName ?? "(outside any type)"} {use} and is " +
                                        "neither a test class nor a registered wrapper: no [Fact] or [Theory] is in it or " +
                                        "around it, so the classes that call it are invisible here. Move the seam into the " +
@@ -577,13 +658,35 @@ public class TestSeamCollectionTests
                         continue;
                     }
 
-                    string? collection = scan.CollectionOf(owner);
-                    var allowed = seam.Owners.Concat(exclusive).ToArray();
-                    if (collection is not null && allowed.Contains(collection, StringComparer.Ordinal)) continue;
-                    violations.Add($"{file.Path}:{line} {owner.DisplayName} {use} from " +
-                                   (collection is null ? "no collection" : $"collection \"{collection}\"") +
-                                   $"; {seam.Why}, so it belongs in " +
-                                   string.Join(" or ", allowed.Select(a => $"[Collection(\"{a}\")]")));
+                    // Which code can run the member the use sits in: other classes, through a member they can call,
+                    // or only the test classes whose tests reach it, each in its own collection.
+                    var member = innermost!.MemberAt(at);
+                    string where = member?.DisplayName ?? innermost.DisplayName;
+                    var reach = scan.ReachOf(innermost, member);
+                    if (reach.Door is { } door)
+                    {
+                        if (!reported.Add(door)) continue;
+                        violations.Add($"{file.Path}:{line} {where} {use}" +
+                                       (door == member ? "" : $", and {door.DisplayName} names it") +
+                                       $"; {door.DisplayName} is {reach.Why}, so code in other classes can call it, and it " +
+                                       "runs in their collections, out of this guard's sight. Make it private, or a type " +
+                                       $"around it, so that only {owner.DisplayName}'s own tests run it; or make the seam a " +
+                                       "Tests/Support wrapper: add its entry points to TestSeamCollectionTests.Seams and its " +
+                                       "name to RegisteredWrappers");
+                        continue;
+                    }
+
+                    foreach (var runner in reach.Classes.Prepend(owner).Distinct())
+                    {
+                        string? collection = scan.CollectionOf(runner);
+                        if (collection is not null && allowed.Contains(collection, StringComparer.Ordinal)) continue;
+                        if (!reported.Add(runner)) continue;
+                        violations.Add($"{file.Path}:{line} {runner.DisplayName} {use}" +
+                                       (runner == owner ? "" : $" through {where}") + " from " +
+                                       (collection is null ? "no collection" : $"collection \"{collection}\"") +
+                                       $"; {seam.Why}, so it belongs in " +
+                                       string.Join(" or ", allowed.Select(a => $"[Collection(\"{a}\")]")));
+                    }
                 }
             }
         }
@@ -637,7 +740,93 @@ public class TestSeamCollectionTests
         /// <summary>The <c>[Collection]</c> on any part of the class; C# allows it on one part only.</summary>
         public string? CollectionOf(TypeDecl type) =>
             _parts[type.FullName].Select(p => p.OwnCollection).FirstOrDefault(c => c is not null);
+
+        /// <summary>The innermost test class around <paramref name="type"/>, itself included, or null.</summary>
+        public TypeDecl? TestClassAround(TypeDecl? type)
+        {
+            while (type is not null && !IsTestClass(type)) type = type.Parent;
+            return type;
+        }
+
+        /// <summary>
+        /// Which code can run <paramref name="member"/> of <paramref name="type"/> (null: the type's own
+        /// declaration). It follows every member that names it, inside the one type whose code can, and on through
+        /// whatever names those, until each path ends at a test method or lifecycle member of a test class (xunit
+        /// runs those as that class, so the path ends in <see cref="Reach.Classes"/>), or at a member code in other
+        /// classes can call (<see cref="Reach.Door"/>, which ends the search).
+        /// </summary>
+        public Reach ReachOf(TypeDecl type, MemberDecl? member)
+        {
+            var classes = new List<TypeDecl>();
+            var seen = new HashSet<object> { (object?)member ?? type };
+            var queue = new Queue<(TypeDecl Type, MemberDecl? Member)>();
+            queue.Enqueue((type, member));
+            while (queue.TryDequeue(out var next))
+            {
+                var (t, m) = next;
+                if (m is null || (IsTestClass(t) && (m.IsTest || IsLifecycle(t, m))))
+                {
+                    if (TestClassAround(t) is { } runner && !classes.Contains(runner)) classes.Add(runner);
+                    continue;
+                }
+                var (holder, names, why) = Confinement(t, m);
+                if (holder is null) return new Reach(m, why, classes);
+                foreach (var caller in Callers(holder, names, m))
+                    if (seen.Add((object?)caller.Member ?? caller.Type)) queue.Enqueue(caller);
+            }
+            return new Reach(null, null, classes);
+        }
+
+        /// <summary>A test class's constructor, <c>Dispose</c>, <c>DisposeAsync</c> or <c>InitializeAsync</c>: xunit
+        /// needs them public, and calls them around that class's own tests.</summary>
+        private static bool IsLifecycle(TypeDecl testClass, MemberDecl member) =>
+            member.Name == testClass.Name || member.Name is "Dispose" or "DisposeAsync" or "InitializeAsync";
+
+        /// <summary>The one type whose code can name <paramref name="member"/>, with the names that code would use
+        /// for it: its own, and those of the nested types between it and that type, since whoever holds an
+        /// instance of one can call its members. No type when code in other classes can call it, with what makes
+        /// that so.</summary>
+        private (TypeDecl? Holder, List<string> Names, string Why) Confinement(TypeDecl type, MemberDecl member)
+        {
+            var names = new List<string> { member.Name };
+            if (member.IsPrivate) return (type, names, "");
+            for (var t = type; t.Parent is not null; t = t.Parent)
+            {
+                names.Add(t.Name);
+                if (IsPrivate(t)) return (t.Parent, names, "");
+            }
+            return (null, names, member.ExplicitImplementation ? "an explicit interface implementation" : member.Modifier ?? "public");
+        }
+
+        /// <summary>A nested type that is private: declared so on one of its parts, or with no accessibility at
+        /// all, which is a nested type's default outside an interface.</summary>
+        private bool IsPrivate(TypeDecl type) =>
+            type.Parent is not null
+            && (_parts[type.FullName].Select(p => p.Modifier).FirstOrDefault(m => m is not null)
+                ?? (type.Parent.IsInterface ? "public" : "private")) == "private";
+
+        /// <summary>Every member in the code of <paramref name="holder"/> (each of its parts, nested types
+        /// included) that names any of <paramref name="names"/>, other than <paramref name="self"/>, with its type;
+        /// a name outside any member comes with no member. A name counts wherever it stands as a whole word, which
+        /// can only over-count callers.</summary>
+        private IEnumerable<(TypeDecl Type, MemberDecl? Member)> Callers(TypeDecl holder, List<string> names, MemberDecl self)
+        {
+            var word = new Regex($@"(?<![\w@])(?:{string.Join("|", names.Distinct().Select(Regex.Escape))})(?!\w)",
+                                 RegexOptions.CultureInvariant);
+            foreach (var part in _parts[holder.FullName])
+                for (var m = word.Match(part.File.Code, part.Start, part.Close + 1 - part.Start); m.Success; m = m.NextMatch())
+                {
+                    if (part.File == self.Type.File && self.Start <= m.Index && m.Index <= self.Close) continue;
+                    var type = part.File.Innermost(m.Index)!;
+                    yield return (type, type.MemberAt(m.Index));
+                }
+        }
     }
+
+    /// <summary>Who can run a piece of code in a test class: the test classes whose test methods and lifecycle
+    /// members reach it (<see cref="Classes"/>), or, when <see cref="Door"/> is set, code in any class, through that
+    /// member, for the reason <see cref="Why"/>.</summary>
+    private sealed record Reach(MemberDecl? Door, string? Why, List<TypeDecl> Classes);
 
     /// <summary>One source file: its source, its text with comments blanked, its code with comments and literal
     /// text blanked (see <see cref="Blank"/>), the types it declares and the imports it makes.</summary>
@@ -658,6 +847,7 @@ public class TestSeamCollectionTests
                     "build compiled there. Add it to TestSeamCollectionTests.BuildSymbols with the #if that sets it.", e);
             }
             Types = ParseTypes(Text, Code);
+            foreach (var type in Types) type.File = this;
             Imports = ParseImports(Code);
         }
 
@@ -674,8 +864,9 @@ public class TestSeamCollectionTests
     }
 
     /// <summary>A type declaration: the name reflection gives the type (<see cref="FullName"/>, the identity of a
-    /// partial class's parts), the name a report shows, the type it is nested in, its own <c>[Collection]</c>,
-    /// how many test methods it declares, and its span from the declaration keyword to the closing brace.</summary>
+    /// partial class's parts), the name a report shows, the type it is nested in, its own <c>[Collection]</c>, the
+    /// accessibility it writes, how many test methods it declares, its members, and its span from the declaration
+    /// keyword to the closing brace.</summary>
     private sealed class TypeDecl
     {
         public required string Name { get; init; }
@@ -683,9 +874,37 @@ public class TestSeamCollectionTests
         public required string DisplayName { get; init; }
         public TypeDecl? Parent { get; init; }
         public string? OwnCollection { get; init; }
+        public string? Modifier { get; init; }
+        public bool IsInterface { get; init; }
         public required int Start { get; init; }
         public int Close { get; set; }
         public int Tests { get; set; }
+        public List<MemberDecl> Members { get; } = new();
+        public SourceFile File { get; set; } = null!;
+
+        /// <summary>The member of this type whose declaration spans <paramref name="at"/>, or null.</summary>
+        public MemberDecl? MemberAt(int at) => Members.FirstOrDefault(m => m.Start <= at && at <= m.Close);
+    }
+
+    /// <summary>A member of a type (a method, constructor, property, field, event or indexer), from its first
+    /// attribute or modifier to the <c>;</c> or closing brace that ends it: the name it declares (a constructor's is
+    /// its type's), the accessibility it writes, whether it implements an interface member explicitly
+    /// (<c>void IDisposable.Dispose()</c>), and whether it is a test method.</summary>
+    private sealed class MemberDecl
+    {
+        public required TypeDecl Type { get; init; }
+        public required int Start { get; init; }
+        public required int Close { get; init; }
+        public required string Name { get; init; }
+        public string? Modifier { get; init; }
+        public bool ExplicitImplementation { get; init; }
+        public bool IsTest { get; set; }
+
+        public string DisplayName => $"{Type.DisplayName}.{Name}";
+
+        /// <summary>Declared private, or with no accessibility outside an interface, which is a member's default
+        /// there. An explicit interface implementation is called through the interface, by whoever holds one.</summary>
+        public bool IsPrivate => !ExplicitImplementation && (Modifier ?? (Type.IsInterface ? "public" : "private")) == "private";
     }
 
     /// <summary>A <c>using static</c> (no <see cref="Alias"/>) or <c>using Alias = </c> directive naming
@@ -732,8 +951,10 @@ public class TestSeamCollectionTests
 
     private sealed record Scope(ScopeKind Kind, string Namespace, TypeDecl? Type);
 
-    /// <summary>Every type declared in a file, nested ones included, read off the code view: a brace that does not
-    /// open a namespace or a type body opens code, and no type is looked for inside code.</summary>
+    /// <summary>Every type declared in a file, nested ones included, with its members, read off the code view: a
+    /// brace that does not open a namespace or a type body opens code, and no type or member is looked for inside
+    /// code. A member runs from where the previous one ended to the <c>;</c> that ends it, or to the brace that
+    /// closes its body when nothing of it follows (an initializer after a property's accessors does).</summary>
     private static List<TypeDecl> ParseTypes(string text, string code)
     {
         var types = new List<TypeDecl>();
@@ -748,12 +969,25 @@ public class TestSeamCollectionTests
             if (ch == '{') { scopes.Push(new Scope(ScopeKind.Code, ns, top?.Type)); continue; }
             if (ch == '}')
             {
-                if (scopes.TryPop(out var closed) && closed.Kind == ScopeKind.Type) closed.Type!.Close = i;
-                if (scopes.Count == 0 || scopes.Peek().Kind != ScopeKind.Code) regionStart = i + 1;
+                scopes.TryPop(out var closed);
+                if (closed?.Kind == ScopeKind.Type) closed.Type!.Close = i;
+                var under = scopes.Count == 0 ? null : scopes.Peek();
+                if (under?.Kind == ScopeKind.Code) continue;
+                if (closed?.Kind == ScopeKind.Code && under?.Kind == ScopeKind.Type)
+                {
+                    if (MemberGoesOn(code, i + 1)) continue;   // `{ get; } = 1;`, a lambda's `};`, `new() { ... };`
+                    AddMember(code, regionStart, i, under.Type!);
+                }
+                regionStart = i + 1;
                 continue;
             }
             if (top is { Kind: ScopeKind.Code }) continue;
-            if (ch == ';') { regionStart = i + 1; continue; }
+            if (ch == ';')
+            {
+                if (top is { Kind: ScopeKind.Type }) AddMember(code, regionStart, i, top.Type!);
+                regionStart = i + 1;
+                continue;
+            }
             if (!char.IsLetter(ch) || (i > 0 && (char.IsLetterOrDigit(code[i - 1]) || code[i - 1] is '_' or '@'))) continue;
 
             if (NamespaceDecl.Match(code, i) is { Success: true } nsDecl)
@@ -794,6 +1028,8 @@ public class TestSeamCollectionTests
                 DisplayName = parent is not null ? parent.DisplayName + "+" + typeName : typeName,
                 Parent = parent,
                 OwnCollection = CollectionAttribute.Matches(text[regionStart..m.Index]).LastOrDefault()?.Groups["name"].Value,
+                Modifier = Accessibility(DeclarationWords(code, regionStart, m.Index)),
+                IsInterface = m.Value.StartsWith("interface", StringComparison.Ordinal),
                 Start = m.Index,
                 Close = code.Length - 1,
             };
@@ -806,9 +1042,81 @@ public class TestSeamCollectionTests
         foreach (Match attribute in TestAttribute.Matches(code))
         {
             int at = attribute.Index + attribute.Length - 1;
-            if (types.Where(t => t.Start <= at && at <= t.Close).MaxBy(t => t.Start) is { } owner) owner.Tests++;
+            if (types.Where(t => t.Start <= at && at <= t.Close).MaxBy(t => t.Start) is not { } owner) continue;
+            owner.Tests++;
+            if (owner.MemberAt(at) is { } method) method.IsTest = true;
         }
         return types;
+    }
+
+    /// <summary>Whether the member whose body closed just before <paramref name="i"/> goes on: it ends unless what
+    /// follows can only start the next member (a name or modifier, an attribute, a tuple type, a finalizer) or close
+    /// the type.</summary>
+    private static bool MemberGoesOn(string code, int i)
+    {
+        while (i < code.Length && char.IsWhiteSpace(code[i])) i++;
+        return i < code.Length && !(char.IsLetter(code[i]) || code[i] is '_' or '@' or '[' or '(' or '~' or '}');
+    }
+
+    private static void AddMember(string code, int start, int close, TypeDecl type)
+    {
+        var words = DeclarationWords(code, start, close + 1);
+        if (words.Count == 0) return;
+        var (name, at) = words[^1];
+        int before = at - 1;
+        while (before >= start && char.IsWhiteSpace(code[before])) before--;
+        type.Members.Add(new MemberDecl
+        {
+            Type = type,
+            Start = start,
+            Close = close,
+            Name = name,
+            Modifier = Accessibility(words.Take(words.Count - 1)),
+            ExplicitImplementation = before >= start && code[before] == '.',
+        });
+    }
+
+    private static readonly HashSet<string> AccessWords = new(StringComparer.Ordinal) { "public", "private", "protected", "internal", "file" };
+
+    private static readonly HashSet<string> ModifierWords = new(StringComparer.Ordinal)
+    {
+        "public", "private", "protected", "internal", "file", "static", "readonly", "const", "volatile", "virtual",
+        "override", "abstract", "sealed", "extern", "unsafe", "new", "async", "partial", "required", "ref", "event",
+        "fixed", "implicit", "explicit",
+    };
+
+    /// <summary>The words of a declaration from <paramref name="from"/>, each with where it starts, outside
+    /// attribute sections, type argument lists and tuple types, up to its parameter list, body or initializer (or
+    /// <paramref name="to"/>). The last is the name it declares; the accessibility is among the others.</summary>
+    private static List<(string Word, int At)> DeclarationWords(string code, int from, int to)
+    {
+        var words = new List<(string Word, int At)>();
+        int depth = 0;
+        for (int i = from; i < to; i++)
+        {
+            char c = code[i];
+            if (depth == 0 && c is '{' or ';' or '=') break;
+            if (depth == 0 && c == '(' && words.Count > 0 && !ModifierWords.Contains(words[^1].Word)) break;   // the parameters
+            if (c is '[' or '<' or '(') depth++;
+            else if (c is ']' or '>' or ')') depth = Math.Max(0, depth - 1);
+            else if (depth == 0 && (char.IsLetter(c) || c == '_'))
+            {
+                int end = i + 1;
+                while (end < to && (char.IsLetterOrDigit(code[end]) || code[end] == '_')) end++;
+                words.Add((code[i..end], i));
+                i = end - 1;
+            }
+        }
+        return words;
+    }
+
+    /// <summary>The accessibility among <paramref name="words"/> (<c>protected internal</c>, say), or null.</summary>
+    private static string? Accessibility(IEnumerable<(string Word, int At)> words)
+    {
+        var access = words.Select(w => w.Word).Where(AccessWords.Contains).ToList();
+        if (access.Contains("private") && access.Contains("protected")) return "private protected";
+        if (access.Contains("protected") && access.Contains("internal")) return "protected internal";
+        return access.FirstOrDefault();
     }
 
     /// <summary>The source twice, offsets kept: <c>Text</c> with every comment blanked, and <c>Code</c> with the
