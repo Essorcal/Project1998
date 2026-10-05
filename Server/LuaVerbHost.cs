@@ -87,9 +87,13 @@ public sealed class LuaVerbHost
         }
     }
 
-    /// <summary>Compile a candidate without changing the live host. A null candidate means the rejected or
-    /// missing file keeps the current host, matching <see cref="Load"/>'s established fallback.</summary>
-    internal (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    /// <summary>Compile a candidate without changing the live host. The answer has two halves, and they are
+    /// different facts. <c>Prepared</c> is the candidate; null means this file did not take, because it is
+    /// missing, does not compile, or defines no <c>verbs</c> table. <c>Live</c> is whether the host is live
+    /// afterwards: a rejected or missing file keeps the current host, matching <see cref="Load"/>'s
+    /// established fallback, so on a reload it is true whether or not the file took. A caller reporting
+    /// rejections reads <c>Prepared</c>; reading <c>Live</c> is how a rejected reload went unreported (#113).</summary>
+    internal (bool Live, PreparedReload? Prepared) PrepareReload(string? path)
     {
         using (Session.EnterScriptGate())
         {

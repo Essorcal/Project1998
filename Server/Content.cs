@@ -46,21 +46,26 @@ public static partial class Content
             // The Lua scripts have no rows, so they report 1/1 loaded and 1/0 rejected — see TableLoad.IsScript.
             // They belong in the same report as the CSVs because an operator must account for every content
             // input, and a rejected script is the loudest thing a reload can have to say.
-            bool Script<T>(TableSpec spec, Func<string?, (bool Ok, T? Prepared)> prepare,
+            // "Loaded" means the candidate took, not that the host is live afterwards. A reload that rejects the
+            // file keeps the previous program running, so the host is live either way; reading that answer kept
+            // a rejected edit out of RejectedScripts and the REJECTED banner (#113). With no previous program,
+            // as at startup, the two answers agree, so a first load reports exactly what it always did.
+            bool Script<T>(TableSpec spec, Func<string?, (bool Live, T? Prepared)> prepare,
                 Action<T> stage) where T : class
             {
                 if (spec.Kind != ContentTableKind.Lua)
                     throw new InvalidOperationException($"Programming error: {spec.File} is not a Lua script");
                 var scriptPath = ResolvePath(spec);
                 bool present = scriptPath is not null && File.Exists(scriptPath);
-                var (ok, prepared) = prepare(scriptPath);
+                var prepared = prepare(scriptPath).Prepared;
+                bool took = prepared is not null;
                 if (prepared is not null) stage(prepared);
                 var entry = new TableLoad(spec.File, scriptPath, present ? CsvStatus.Ok : CsvStatus.Missing,
-                                          read: 1, kept: ok ? 1 : 0, Array.Empty<string>(),
+                                          read: 1, kept: took ? 1 : 0, Array.Empty<string>(),
                                           spec.MissingConsequence)
                 { IsScript = true };
                 entries.Add(() => entry);
-                return ok;
+                return took;
             }
 
             snapshotBuilder.ObjectFlagOverrides = ObjectFlags.PrepareOverrides(
