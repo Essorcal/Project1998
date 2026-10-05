@@ -882,7 +882,9 @@ end
 --     instances): each is a map the 4.95 client cannot render, or an indoor map the indoor check already refuses.
 --   * the PK-status and PK-grudge halves of RTK's canPK: not modelled. The PvP-map half is checked.
 --   * Approach's dead-caster check: HandleCast refuses a ghost's cast before any verb runs.
--- Neither verb tells the moved person anything: RTK's scripts send them no line.
+-- Neither verb tells the moved person anything: RTK's scripts send them no line. One exception, Summon's: a person
+-- summoned mid-exchange has the exchange cancelled, and both traders see the client's "Exchange cancelled." box,
+-- as for any move (#57). Caleb decides at #325's merge whether Summon should instead fizzle on a trader.
 
 local function travel_fizzle(ctx) ctx:say("Fizzle."); return false end
 
@@ -924,10 +926,13 @@ function verbs.summon(ctx, row)
   if ctx.targetIsGm and not ctx.isGm then return travel_fizzle(ctx) end
   if ctx:mapPvp(ctx.targetMap) or ctx:mapPvp(here) then return travel_fizzle(ctx) end
   if not same_group_and_kingdom(ctx) then return travel_fizzle(ctx) end
+  -- The move first, then the cost: unlike every check above, it can still be refused, by a target who logged out
+  -- since the lookup or who keeps opening exchanges (Session.LuaSummonTarget). A refused cast costs nothing, so
+  -- the mana and the effect wait until somebody has actually moved (PR #325 review, F3). RTK debits before its
+  -- warp, but RTK has no logout to race.
+  if not ctx:summonTarget() then return travel_fizzle(ctx) end
   ctx:debitMana(mana)
   ctx:fxSelf()
-  ctx:summonTarget()   -- false only if they logged out since the lookup: nobody moves, and the mana stays spent
-                       -- (RTK debits before its warp too)
   return true
 end
 

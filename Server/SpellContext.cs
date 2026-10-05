@@ -494,8 +494,9 @@ public sealed class SpellContext
     /// W), else onto their tile. Exactly the move <c>@approach</c> makes. False with no target.</summary>
     public bool   approachTarget() => _s.LuaApproachTarget(_sp);
     /// <summary>Summon's move: the resolved player target to the first free tile beside the caster, else onto
-    /// the caster's tile. Exactly the move <c>@bring</c> makes, under the target's own monitor. False with no
-    /// target, or when they logged out between the lookup and the move (nobody moves then).</summary>
+    /// the caster's tile. Exactly the move <c>@bring</c> makes, under the target's own monitor, after ending any
+    /// exchange the target has open. False, and nobody moves, with no target, when they logged out between the
+    /// lookup and the move, or when their exchanges kept re-opening (<c>Session.LuaSummonTarget</c>).</summary>
     public bool   summonTarget()   => _s.LuaSummonTarget(_sp);
 
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
