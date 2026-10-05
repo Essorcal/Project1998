@@ -40,7 +40,12 @@ namespace Tests;
 /// <item>A use belongs to the member it sits in, and is judged by the code that can run that member, since a
 /// helper runs in its caller's collection (the PR #326 review, F8). A test method, and a test class's constructor,
 /// <c>Dispose</c>, <c>DisposeAsync</c> and <c>InitializeAsync</c>, run as their class: xunit needs them public and
-/// calls them for that class's tests. Any other member is called by whatever code its accessibility admits:
+/// calls them for that class's tests, and no other class's tests run them, because no test class may derive from
+/// another (the next item). A test class's static constructor runs when the type is first touched, in whichever
+/// class touches it first, so a seam use there is reported (F8a). So is one in an initializer of its static fields
+/// or properties, which runs with it, whenever another class can touch the type first: when the class has a static
+/// constructor, or a static member other classes can reach. With every static private, only its own code, run for
+/// its own tests, touches it first. Any other member is called by whatever code its accessibility admits:
 /// <list type="bullet">
 /// <item>A private member, or any member of a private nested type, can be named only in the type that holds it.
 /// It is judged by the innermost test class around it, and by every other test class in that type whose test
@@ -58,6 +63,13 @@ namespace Tests;
 /// registered wrapper under <c>Tests/Support/</c>, whose entry points are in the table, or its callers would be
 /// invisible here. <c>TestProcessState</c>'s module initializer sets the environment before any test runs, and
 /// is the one exemption.</item>
+/// <item>No test class derives from a test class, at any depth: from a type that declares a <c>[Fact]</c> or a
+/// <c>[Theory]</c>, inherits one, or has a <c>[Collection]</c>. A derived class runs its base's constructor and
+/// <c>Dispose</c>, its virtual test methods, and whatever it calls through <c>base.</c>, in its own collection, while
+/// the guard judges that code by the base's. Rather than follow it there, the guard reports the derivation itself,
+/// naming both classes (the PR #326 review, F8a). An abstract base whose tests run only in its derived classes is
+/// one too. Base types are matched by simple name, through any alias, which can only over-count them; a base
+/// that is not a test class is allowed.</item>
 /// <item>An import of a seam's type reaches the seam as the type's own name does: after
 /// <c>using static Shared.Log;</c> a bare <c>Shutdown()</c> counts, and after <c>using L = Shared.Log;</c>
 /// <c>L.Shutdown()</c> does. A <c>global using</c> counts in every file.</item>
@@ -65,15 +77,14 @@ namespace Tests;
 /// Debug run and nothing at all in a Release one (<see cref="BuildSymbols"/>). A symbol the scanner does not
 /// know stops the scan with its name and line, rather than being guessed.</item>
 /// </list>
-/// What it does not follow: inheritance between test classes. It judges each class as written, by the test
-/// methods it declares and its own <c>[Collection]</c>, while xunit runs every test method a class declares or
-/// inherits, in its own or a base type's collection. No class in <c>Tests/</c> is built that way today, and
-/// <see cref="TheScannerSeesEveryTestClassXunitSeesInTheCollectionXunitGivesIt"/> fails the day one is: the day a
-/// class runs a test method it does not declare (an abstract base's, or a concrete base's run again in the
-/// derived class), or takes its <c>[Collection]</c> from a base type. A helper a derived class could call is
-/// reported by the member rule above, whatever the cross-check sees. Nor does it follow code that a nested
-/// helper type runs when it is built rather than called (a field initializer, a static constructor): that is
-/// judged by the accessibility its own declaration writes, as any member is.</para>
+/// What it does not follow: the code a base test class runs for a derived one, which is why that derivation is
+/// reported instead. Behind that rule stands
+/// <see cref="TheScannerSeesEveryTestClassXunitSeesInTheCollectionXunitGivesIt"/>: the scanner judges each class
+/// as written, by the test methods it declares and its own <c>[Collection]</c>, while xunit runs every test method
+/// a class declares or inherits, in its own or a base type's collection, and the cross-check fails the day the two
+/// differ, however the base list names the base. Nor does it follow code that a nested helper type runs when it
+/// is built rather than called (a field initializer, a static constructor): that is judged by the accessibility
+/// its own declaration writes, as any member is.</para>
 ///
 /// <para><b>Not seams</b> (inventoried, deliberately left out): <c>TestProcessState.LoadContent</c>
 /// re-publishes the real content and is safe anywhere; <c>SendCounters.Game</c> and
@@ -217,7 +228,8 @@ public class TestSeamCollectionTests
     private static readonly HashSet<string> Exempt = new(StringComparer.Ordinal) { "TestProcessState" };
 
     /// <summary>The fact the whole rule exists for. Each violation it reports names the file and line, the
-    /// class, the seam, the collection the class is in and the collections it belongs in.</summary>
+    /// class, the seam, the collection the class is in and the collections it belongs in; or, for a test class
+    /// that derives from another, both classes.</summary>
     [Fact]
     public void EveryClassThatTouchesAProcessGlobalSeamSitsInACollectionThatOwnsIt()
     {
@@ -226,8 +238,8 @@ public class TestSeamCollectionTests
 
         var violations = Violations(files, ExclusiveCollections());
         Assert.True(violations.Count == 0,
-            "classes touching a process-global seam from a collection that does not own it:\n"
-            + string.Join("\n", violations));
+            "classes touching a process-global seam from a collection that does not own it, or deriving from a test " +
+            "class:\n" + string.Join("\n", violations));
     }
 
     /// <summary>The premise of the rule, pinned: the two collections the rule hands every seam to are the
@@ -350,6 +362,18 @@ public class TestSeamCollectionTests
     [InlineData("""[Collection("world")] public class A : IDisposable { public A() { StaffAccounts.Load(); } public void Dispose() { Session.TradeOpenProbeForTest = null; } [Fact] public void F() { } }""", "")]
     [InlineData("""[Collection("world")] public class A : IAsyncLifetime { public Task InitializeAsync() { StaffAccounts.Load(); return Task.CompletedTask; } Task IAsyncLifetime.DisposeAsync() { Session.TradeOpenProbeForTest = null; return Task.CompletedTask; } [Fact] public void F() { } }""", "")]
     [InlineData("""[Collection("world")] public class A { [Fact] public void F() { using var h = new H(); } private sealed class H : IDisposable { public H() { StaffAccounts.Load(); } public void Dispose() { Session.TradeOpenProbeForTest = null; } } }""", "")]
+    // A test class's static constructor runs in whichever class first touches the type (PR #326 review, F8a), and
+    // its static initializers run with it, once another class can touch the type first: through a static
+    // constructor, or a static member it can reach (xunit itself reads a public TheoryData member while discovering).
+    [InlineData("""[Collection("world")] public class W { static W() { StaffAccounts.Load(); } [Fact] public void F() { } internal static int Count() => 1; }""", "the staff roster")]
+    [InlineData("""[Collection("world")] public class W { static void Hold() => StaffAccounts.Load(); static W() => Hold(); [Fact] public void F() { } }""", "the staff roster")]
+    [InlineData("""[Collection("world")] public class W { private static readonly IDisposable Held = LogLineSink.Acquire(); [Fact] public void F() { } public static TheoryData<int> Rows => new() { 1 }; }""", "the log line sink")]
+    [InlineData("""[Collection("world")] public class W { private static IDisposable Held { get; } = LogLineSink.Acquire(); static W() { } [Fact] public void F() { } }""", "the log line sink")]
+    // With every static private, only the class's own tests touch the type first, as an instance field's
+    // initializer runs only in the constructor.
+    [InlineData("""[Collection("world")] public class W { private static readonly IDisposable Held = LogLineSink.Acquire(); [Fact] public void F() => Held.Dispose(); }""", "")]
+    [InlineData("""[Collection("world")] public class W { private readonly IDisposable _held = LogLineSink.Acquire(); [Fact] public void F() => _held.Dispose(); }""", "")]
+    [InlineData("""[Collection("world")] public class W { private static IDisposable Held => LogLineSink.Acquire(); [Fact] public void F() => Held.Dispose(); }""", "")]
     public void TheScannerFindsSeamsInCodeAndOnlyInCode(string source, string expectedSeam)
     {
         var found = Violations(new[] { ("Sample.cs", "namespace Tests;\n" + source) }, new[] { "log", "tile-translation" });
@@ -369,6 +393,34 @@ public class TestSeamCollectionTests
             new[] { "log", "tile-translation" });
         Assert.Contains(found, v => v.Contains("NewTap", StringComparison.Ordinal)
                                     && v.Contains("registered wrapper", StringComparison.Ordinal));
+    }
+
+    /// <summary>No test class derives from a test class (the PR #326 review, F8a): a derived class runs its base's
+    /// constructor and <c>Dispose</c>, its virtual test methods and whatever it calls through <c>base</c>, in its own
+    /// collection, where the guard does not follow that code. The first three cases are the review's round-5
+    /// routes, each green before this rule; a base that is not a test class stays allowed.
+    /// <paramref name="expected"/> is the report's "derived derives from base", or empty for none.</summary>
+    [Theory]
+    [InlineData("""[Collection("world")] public class B { [Fact] public virtual void F() { using var s = LogLineSink.Acquire(); } } [Collection("db")] public class D : B { [Fact] public override void F() => base.F(); }""", "D derives from B")]
+    [InlineData("""[Collection("world")] public class B { public B() { StaffAccounts.Load(); } [Fact] private void F() { } } [Collection("db")] public class D : B { [Fact] public void G() { } }""", "D derives from B")]
+    [InlineData("""[Collection("world")] public class B : IDisposable { public void Dispose() { Session.TradeOpenProbeForTest = null; } [Fact] private void F() { } } [Collection("db")] public class D : B { [Fact] public void G() { } }""", "D derives from B")]
+    // An abstract base whose tests run only in its derived classes, two levels down; a base that has only a
+    // [Collection]; a base named through an alias; a generic base.
+    [InlineData("""public abstract class B { [Fact] public void F() { } } public abstract class M : B { } public class D : M, IDisposable { public void Dispose() { } }""", "D derives from B")]
+    [InlineData("""public abstract class B { [Fact] public void F() { } } public abstract class M : B { } public class D : M { }""", "M derives from B")]
+    [InlineData("""[Collection("world")] public abstract class B { } public class D : B { [Fact] public void F() { } }""", "D derives from B")]
+    [InlineData("""using Base = Tests.B; public class B { [Fact] public void F() { } } [Collection("db")] public class D : Base { [Fact] public void G() { } }""", "D derives from B")]
+    [InlineData("""public abstract class B<T> where T : new() { [Fact] public void F() { } } public sealed class D : B<object> { }""", "D derives from B")]
+    // A base that is not a test class, interfaces, and a generic constraint naming a test class, are all allowed.
+    [InlineData("""public abstract class Base { protected static int Two() => 2; } [Collection("world")] public class D : Base, IDisposable { [Fact] public void F() { } public void Dispose() { } }""", "")]
+    [InlineData("""[Collection("world")] public class B { [Fact] public void F() { } } public class Box<T> where T : B { } [Collection("world")] public class D : IClassFixture<SessionFixture> { [Fact] public void G() { } }""", "")]
+    public void ATestClassMayNotDeriveFromATestClass(string source, string expected)
+    {
+        var found = Violations(new[] { ("Sample.cs", "namespace Tests;\n" + source) }, new[] { "log", "tile-translation" });
+        if (expected.Length == 0)
+            Assert.DoesNotContain(found, v => v.Contains(" derives from ", StringComparison.Ordinal));
+        else
+            Assert.Contains(found, v => v.Contains($" {expected}, a test class. ", StringComparison.Ordinal));
     }
 
     /// <summary>A helper runs in the collection of whoever calls it (the PR #326 review, F8: a class with no
@@ -668,11 +720,12 @@ public class TestSeamCollectionTests
                         if (!reported.Add(door)) continue;
                         violations.Add($"{file.Path}:{line} {where} {use}" +
                                        (door == member ? "" : $", and {door.DisplayName} names it") +
-                                       $"; {door.DisplayName} is {reach.Why}, so code in other classes can call it, and it " +
-                                       "runs in their collections, out of this guard's sight. Make it private, or a type " +
-                                       $"around it, so that only {owner.DisplayName}'s own tests run it; or make the seam a " +
-                                       "Tests/Support wrapper: add its entry points to TestSeamCollectionTests.Seams and its " +
-                                       "name to RegisteredWrappers");
+                                       $"; {door.DisplayName} {reach.Why}, out of this guard's sight. " +
+                                       (door.IsTypeInitializer
+                                           ? "Move the seam into the tests that need it"
+                                           : $"Make it private, or a type around it, so that only {owner.DisplayName}'s own tests run it") +
+                                       "; or make the seam a Tests/Support wrapper: add its entry points to " +
+                                       "TestSeamCollectionTests.Seams and its name to RegisteredWrappers");
                         continue;
                     }
 
@@ -690,6 +743,21 @@ public class TestSeamCollectionTests
                 }
             }
         }
+
+        // No test class derives from a test class: the code a base runs for a derived class is not followed (F8a).
+        var derivations = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in scan.Files)
+            foreach (var type in file.Types.Where(t => t.BaseNames.Count > 0))
+            {
+                if (scan.TestBaseOf(type) is not { } testBase || !derivations.Add(type.FullName)) continue;
+                int line = 1 + file.Source.AsSpan(0, type.Start).Count('\n');
+                violations.Add($"{file.Path}:{line} {type.DisplayName} derives from {testBase.DisplayName}, a test class. " +
+                               $"{type.DisplayName}'s tests run the base's constructor and Dispose, its virtual test methods " +
+                               $"and whatever they call through base, all in {type.DisplayName}'s own collection, while this " +
+                               "guard judges that code by the base's collection and does not follow it there. So no test class " +
+                               "may derive from another (the PR #326 review, F8a). Move what they share into a type with no " +
+                               "[Fact], [Theory] or [Collection], and derive from that or call it");
+            }
         return violations;
     }
 
@@ -719,6 +787,7 @@ public class TestSeamCollectionTests
     private sealed class Scan
     {
         private readonly Dictionary<string, List<TypeDecl>> _parts;
+        private readonly ILookup<string, TypeDecl> _byName;
 
         public Scan(IEnumerable<(string Path, string Source)> files, IReadOnlyDictionary<string, bool> symbols)
         {
@@ -726,6 +795,7 @@ public class TestSeamCollectionTests
             GlobalImports = Files.SelectMany(f => f.Imports).Where(i => i.Global).ToList();
             _parts = Files.SelectMany(f => f.Types).GroupBy(t => t.FullName, StringComparer.Ordinal)
                           .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+            _byName = Files.SelectMany(f => f.Types).ToLookup(t => t.Name, StringComparer.Ordinal);
         }
 
         public List<SourceFile> Files { get; }
@@ -752,8 +822,9 @@ public class TestSeamCollectionTests
         /// Which code can run <paramref name="member"/> of <paramref name="type"/> (null: the type's own
         /// declaration). It follows every member that names it, inside the one type whose code can, and on through
         /// whatever names those, until each path ends at a test method or lifecycle member of a test class (xunit
-        /// runs those as that class, so the path ends in <see cref="Reach.Classes"/>), or at a member code in other
-        /// classes can call (<see cref="Reach.Door"/>, which ends the search).
+        /// runs those as that class, so the path ends in <see cref="Reach.Classes"/>), or at code that other classes
+        /// run (<see cref="Reach.Door"/>, which ends the search): a member they can call, or a test class's type
+        /// initializer, which runs in whichever class first touches the type.
         /// </summary>
         public Reach ReachOf(TypeDecl type, MemberDecl? member)
         {
@@ -764,6 +835,8 @@ public class TestSeamCollectionTests
             while (queue.TryDequeue(out var next))
             {
                 var (t, m) = next;
+                bool initializer = m is { IsTypeInitializer: true } && IsTestClass(t) && OthersCanInitialize(t);
+                if (initializer && m!.IsConstructor) return TypeInitializer(t, m, classes);
                 if (m is null || (IsTestClass(t) && (m.IsTest || IsLifecycle(t, m))))
                 {
                     if (TestClassAround(t) is { } runner && !classes.Contains(runner)) classes.Add(runner);
@@ -771,14 +844,40 @@ public class TestSeamCollectionTests
                 }
                 var (holder, names, why) = Confinement(t, m);
                 if (holder is null) return new Reach(m, why, classes);
+                if (initializer) return TypeInitializer(t, m, classes);
                 foreach (var caller in Callers(holder, names, m))
                     if (seen.Add((object?)caller.Member ?? caller.Type)) queue.Enqueue(caller);
             }
             return new Reach(null, null, classes);
         }
 
+        /// <summary>A test class's static constructor, or a static field or property initializer: the runtime runs it
+        /// when the type is first touched, so it runs in whichever class touches the type first (the PR #326 review,
+        /// F8a). A non-private one is reported for its accessibility first, since that names the plainer fix.</summary>
+        private static Reach TypeInitializer(TypeDecl testClass, MemberDecl member, List<TypeDecl> classes) =>
+            new(member, (member.IsConstructor ? "runs" : "is initialized") + $" when {testClass.DisplayName} is first " +
+                        "touched, in whichever class touches it first, and in that class's collection", classes);
+
+        /// <summary>Whether code in another class can be the first to touch <paramref name="testClass"/>, and so run its
+        /// type initializer there. It can when the class has a static constructor, which also runs when any class
+        /// builds it, or a static member other classes can reach, its own or a nested type's. With neither, every static
+        /// it has is private, so only its own code, run for its own tests, touches the type first.</summary>
+        private bool OthersCanInitialize(TypeDecl testClass)
+        {
+            string nested = testClass.FullName + "+";
+            foreach (var type in Files.SelectMany(f => f.Types)
+                                      .Where(t => t.FullName == testClass.FullName || t.FullName.StartsWith(nested, StringComparison.Ordinal)))
+                foreach (var member in type.Members.Where(m => m.IsStatic))
+                {
+                    if (member.IsConstructor && type.FullName == testClass.FullName) return true;
+                    if (Confinement(type, member).Holder is null) return true;
+                }
+            return false;
+        }
+
         /// <summary>A test class's constructor, <c>Dispose</c>, <c>DisposeAsync</c> or <c>InitializeAsync</c>: xunit
-        /// needs them public, and calls them around that class's own tests.</summary>
+        /// needs them public, and calls them around that class's own tests. No other class's tests run them, since
+        /// no test class may derive from another (<see cref="TestBaseOf"/>).</summary>
         private static bool IsLifecycle(TypeDecl testClass, MemberDecl member) =>
             member.Name == testClass.Name || member.Name is "Dispose" or "DisposeAsync" or "InitializeAsync";
 
@@ -795,7 +894,43 @@ public class TestSeamCollectionTests
                 names.Add(t.Name);
                 if (IsPrivate(t)) return (t.Parent, names, "");
             }
-            return (null, names, member.ExplicitImplementation ? "an explicit interface implementation" : member.Modifier ?? "public");
+            string access = member.ExplicitImplementation ? "an explicit interface implementation" : member.Modifier ?? "public";
+            return (null, names, $"is {access}, so code in other classes can call it, and it runs in their collections");
+        }
+
+        /// <summary>The nearest type <paramref name="type"/> derives from, at any depth, that is a test class to
+        /// this rule: one that declares a test method or has a <c>[Collection]</c>. Null when there is none, or when
+        /// <paramref name="type"/> is no test class itself: it declares no test method, inherits none and has no
+        /// <c>[Collection]</c>.</summary>
+        public TypeDecl? TestBaseOf(TypeDecl type)
+        {
+            var ancestors = new List<TypeDecl>();
+            var seen = new HashSet<string>(StringComparer.Ordinal) { type.FullName };
+            var queue = new Queue<TypeDecl>(BasesOf(type));
+            while (queue.TryDequeue(out var next))
+            {
+                if (!seen.Add(next.FullName)) continue;
+                ancestors.Add(next);
+                foreach (var further in BasesOf(next)) queue.Enqueue(further);
+            }
+            var testBase = ancestors.FirstOrDefault(a => IsTestClass(a) || CollectionOf(a) is not null);
+            bool testClass = IsTestClass(type) || CollectionOf(type) is not null || ancestors.Any(IsTestClass);
+            return testClass ? testBase : null;
+        }
+
+        /// <summary>The scanned types that <paramref name="type"/>'s base lists, on any of its parts, can name: each
+        /// name through any alias its file or a <c>global using</c> gives it, matched by simple name, which can only
+        /// over-count them.</summary>
+        private IEnumerable<TypeDecl> BasesOf(TypeDecl type)
+        {
+            foreach (var part in _parts[type.FullName])
+                foreach (string name in part.BaseNames)
+                {
+                    string target = part.File.Imports.Where(i => !i.Global).Concat(GlobalImports)
+                                        .FirstOrDefault(i => i.Alias == name)?.TypeName ?? name;
+                    foreach (var candidate in _byName[target])
+                        if (candidate.FullName != type.FullName) yield return candidate;
+                }
         }
 
         /// <summary>A nested type that is private: declared so on one of its parts, or with no accessibility at
@@ -865,8 +1000,8 @@ public class TestSeamCollectionTests
 
     /// <summary>A type declaration: the name reflection gives the type (<see cref="FullName"/>, the identity of a
     /// partial class's parts), the name a report shows, the type it is nested in, its own <c>[Collection]</c>, the
-    /// accessibility it writes, how many test methods it declares, its members, and its span from the declaration
-    /// keyword to the closing brace.</summary>
+    /// accessibility it writes, the simple names its base list gives, how many test methods it declares, its members,
+    /// and its span from the declaration keyword to the closing brace.</summary>
     private sealed class TypeDecl
     {
         public required string Name { get; init; }
@@ -876,6 +1011,7 @@ public class TestSeamCollectionTests
         public string? OwnCollection { get; init; }
         public string? Modifier { get; init; }
         public bool IsInterface { get; init; }
+        public List<string> BaseNames { get; init; } = new();
         public required int Start { get; init; }
         public int Close { get; set; }
         public int Tests { get; set; }
@@ -888,8 +1024,8 @@ public class TestSeamCollectionTests
 
     /// <summary>A member of a type (a method, constructor, property, field, event or indexer), from its first
     /// attribute or modifier to the <c>;</c> or closing brace that ends it: the name it declares (a constructor's is
-    /// its type's), the accessibility it writes, whether it implements an interface member explicitly
-    /// (<c>void IDisposable.Dispose()</c>), and whether it is a test method.</summary>
+    /// its type's), the accessibility it writes, whether it is static and has an initializer, whether it implements
+    /// an interface member explicitly (<c>void IDisposable.Dispose()</c>), and whether it is a test method.</summary>
     private sealed class MemberDecl
     {
         public required TypeDecl Type { get; init; }
@@ -897,10 +1033,19 @@ public class TestSeamCollectionTests
         public required int Close { get; init; }
         public required string Name { get; init; }
         public string? Modifier { get; init; }
+        public bool IsStatic { get; init; }
+        public bool HasInitializer { get; init; }
         public bool ExplicitImplementation { get; init; }
         public bool IsTest { get; set; }
 
-        public string DisplayName => $"{Type.DisplayName}.{Name}";
+        public bool IsConstructor => Name == Type.Name;
+
+        /// <summary>Code the runtime runs when the type is first touched, whoever touches it: a static constructor,
+        /// or the initializer of a static field or property.</summary>
+        public bool IsTypeInitializer => IsStatic && (IsConstructor || HasInitializer);
+
+        public string DisplayName => IsConstructor ? $"{Type.DisplayName}'s {(IsStatic ? "static " : "")}constructor"
+                                                   : $"{Type.DisplayName}.{Name}";
 
         /// <summary>Declared private, or with no accessibility outside an interface, which is a member's default
         /// there. An explicit interface implementation is called through the interface, by whoever holds one.</summary>
@@ -1030,6 +1175,7 @@ public class TestSeamCollectionTests
                 OwnCollection = CollectionAttribute.Matches(text[regionStart..m.Index]).LastOrDefault()?.Groups["name"].Value,
                 Modifier = Accessibility(DeclarationWords(code, regionStart, m.Index)),
                 IsInterface = m.Value.StartsWith("interface", StringComparison.Ordinal),
+                BaseNames = BaseNames(code, m.Index + m.Length, open),
                 Start = m.Index,
                 Close = code.Length - 1,
             };
@@ -1072,8 +1218,64 @@ public class TestSeamCollectionTests
             Close = close,
             Name = name,
             Modifier = Accessibility(words.Take(words.Count - 1)),
+            IsStatic = words.Take(words.Count - 1).Any(w => w.Word == "static"),
+            HasInitializer = HasInitializer(code, start, close),
             ExplicitImplementation = before >= start && code[before] == '.',
         });
+    }
+
+    /// <summary>Whether a member has an initializer: an <c>=</c> outside its brackets, parameters and bodies (a
+    /// field's, or a property's after its accessors), as opposed to an expression body's <c>=&gt;</c>.</summary>
+    private static bool HasInitializer(string code, int start, int close)
+    {
+        int depth = 0;
+        for (int i = start; i <= close; i++)
+        {
+            char c = code[i];
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}') depth--;
+            else if (c == '=' && depth == 0) return i + 1 > close || code[i + 1] != '>';
+        }
+        return false;
+    }
+
+    /// <summary>The simple names a type's base list gives (<c>class D : Outer.B&lt;int&gt;, IDisposable</c> gives
+    /// <c>B</c> and <c>IDisposable</c>), read from <paramref name="from"/>, just past the type's name, to its body at
+    /// <paramref name="to"/>: past any type parameters and primary-constructor parameters, and up to any
+    /// <c>where</c> clause.</summary>
+    private static List<string> BaseNames(string code, int from, int to)
+    {
+        var names = new List<string>();
+        int depth = 0, colon = -1;
+        for (int i = from; i < to; i++)
+        {
+            char c = code[i];
+            if (c is '<' or '(' or '[') depth++;
+            else if (c is '>' or ')' or ']') depth = Math.Max(0, depth - 1);
+            else if (depth > 0) continue;
+            else if (c == ':' && colon < 0) colon = i;
+            else if (c == 'w' && string.CompareOrdinal(code, i, "where", 0, 5) == 0 && !char.IsLetterOrDigit(code[i - 1])
+                     && i + 5 < to && !char.IsLetterOrDigit(code[i + 5]) && code[i + 5] != '_')
+            {
+                to = i;
+                break;
+            }
+        }
+        if (colon < 0 || colon >= to) return names;
+        int entry = colon + 1;
+        depth = 0;
+        for (int i = entry; i <= to; i++)
+        {
+            char c = i < to ? code[i] : ',';
+            if (c is '<' or '(' or '[') depth++;
+            else if (c is '>' or ')' or ']') depth = Math.Max(0, depth - 1);
+            else if (c == ',' && depth == 0)
+            {
+                if (DeclarationWords(code, entry, i) is { Count: > 0 } words) names.Add(words[^1].Word);
+                entry = i + 1;
+            }
+        }
+        return names;
     }
 
     private static readonly HashSet<string> AccessWords = new(StringComparer.Ordinal) { "public", "private", "protected", "internal", "file" };
