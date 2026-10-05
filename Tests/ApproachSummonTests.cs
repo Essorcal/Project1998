@@ -323,8 +323,8 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 
         bool moved = s.Caster.WithState(() => ctx.summonTarget());
 
-        Assert.False(moved);
-        Assert.Null(_fx.World.Online.FindPlayer(s.Target.Name));
+        // One assertion, so a failure shows both halves: the move reported, and the logged-out player back on a map.
+        Assert.Equal((false, false), (moved, _fx.World.Online.FindPlayer(s.Target.Name) is not null));
         Assert.Equal((DepartTo, (ushort)10, (ushort)10), (s.Target.Map, s.Target.X, s.Target.Y));
     }
 
