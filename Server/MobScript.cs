@@ -214,11 +214,11 @@ public sealed class MobContext
     public void actorQuest(string questKey, double value)
     {
         if (_actor is null || questKey.Length == 0) return;
-        _actor.SetQuestStage(questKey, (int)value);
+        _actor.Quest(QuestState.Registry).Set(questKey, (int)value);
     }
 
-    /// <summary>Their current stage for a quest key (0 if unset).</summary>
-    public double actorQuestStage(string questKey) => _actor?.QuestStage(questKey) ?? 0;
+    /// <summary>Their current stage for a quest key (0 if unset), read from the flat registry.</summary>
+    public double actorQuestStage(string questKey) => _actor?.Quest(QuestState.Registry).Get(questKey) ?? 0;
 
     /// <summary>Does that player already carry this legend mark?</summary>
     public bool actorHasLegend(string mark) => _actor?.HasLegend(mark) ?? false;

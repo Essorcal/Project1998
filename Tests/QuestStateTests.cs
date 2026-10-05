@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Server;
@@ -7,13 +8,15 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// <see cref="QuestState"/> is a naming layer over the quest map every character already carries, and the
-/// failure it can cause is silent: a slot that resolves to the wrong key reads 0, and the player's progress
-/// looks lost with nothing in the log. These pin the three things that keep it honest (#51):
+/// <see cref="QuestState"/> is a naming layer over the two quest maps every character already carries, the int map
+/// <see cref="Character.Quests"/> and the string registry <see cref="Character.QuestStrings"/>, and the failure it
+/// can cause is silent: a slot that resolves to the wrong key reads 0 (or ""), and the player's progress looks lost
+/// with nothing in the log. These pin the things that keep it honest (#51, #308, #309):
 /// <list type="bullet">
-/// <item>every quest slot resolves to the key characters were saved under BEFORE the type existed;</item>
-/// <item>a real character blob, loaded, read and written back through the type, saves byte-identical;</item>
-/// <item>nothing outside <c>Server/QuestState.cs</c> touches <see cref="Character.Quests"/>.</item>
+/// <item>every quest slot, int or text, resolves to the key characters were saved under BEFORE it was a slot;</item>
+/// <item>a real character blob, loaded, read and written back through the type, saves byte-identical, and so does
+/// a text value of any shape;</item>
+/// <item>nothing outside <c>Server/QuestState.cs</c> touches either map.</item>
 /// </list>
 /// </summary>
 public class QuestStateTests
@@ -31,7 +34,7 @@ public class QuestStateTests
         ("tutorial_quest", "flag.talked_to_tutor",        "talked_to_tutor"),
         ("tutorial_quest", "flag.helped_haguru",          "helped_haguru"),
         ("tutorial_quest", "flag.visited_yon_and_weaved", "visited_yon_and_weaved"),
-        // TigerMailQuest.cs:119 (MetClawReg), TutorialQuest.cs:37 (NudgedAt)
+        // TigerMailQuest.cs:119 (MetClawReg, gone since #308), TutorialQuest.cs:37 (NudgedAt)
         ("tiger_armor", "flag.met_claw",                  "tiger_essence_met_claw"),
         ("tiger_armor", "level.nudged",                   "tiger_essence_nudged_level"),
         // NoviceQuest.cs:59-65
@@ -78,6 +81,14 @@ public class QuestStateTests
         ("sun_armor",  "step.1.kills.sute",               "aq_sun_1_sute"),
     };
 
+    // The saved key of every TEXT slot: the string registry's two keys, as the quests spelled them at 9c00b98,
+    // the base #309 was cut from (MinorQuest.cs:26 KActive, Mentorship.cs:40 MentorStr).
+    private static readonly (string Name, string Slot, string Saved)[] LegacyTextKeys =
+    {
+        ("minor_quest", "text.target",                    "minor_quest"),
+        ("mentorship",  "text.mentor",                    "mentor"),
+    };
+
     // Every stage key the C# quests use: the namespace IS the stage key, so these need no alias.
     private static readonly string[] StageKeys =
     {
@@ -95,6 +106,12 @@ public class QuestStateTests
         "dog_linguist_echo_2", "myung_suck_threshold", "paid_gold_for_frost_sabre", "damage_shotgun",
     };
 
+    // Flat registry TEXT keys: the slot is the saved key, as @quest writes any non-numeric value under the name a
+    // GM types. No quest reads these two. The fixture carries them for the two value shapes its quest text keys do
+    // not hold there: the empty string (what the minor quest and the mentorship write when they end; the key
+    // stays) and non-ASCII text, which the store saves escaped.
+    private static readonly string[] RegistryTextKeys = { "fixture_empty", "fixture_non_ascii" };
+
     private static string FixturePath() =>
         Path.Combine(RepoPaths.Root(), "Tests", "Fixtures", "character-quests-v1.json");
 
@@ -104,14 +121,19 @@ public class QuestStateTests
         foreach (var (name, slot, saved) in LegacyKeys)
             Assert.True(QuestState.Resolve(name, slot) == saved,
                         $"{name}.{slot} resolves to '{QuestState.Resolve(name, slot)}', but characters saved it as '{saved}'");
+        foreach (var (name, slot, saved) in LegacyTextKeys)
+            Assert.True(QuestState.ResolveText(name, slot) == saved,
+                        $"{name}.{slot} resolves to '{QuestState.ResolveText(name, slot)}', but characters saved it as " +
+                        $"'{saved}' in the string registry");
         foreach (var stage in StageKeys)
             Assert.Equal(stage, QuestState.Resolve(stage, QuestState.StageSlot));
         foreach (var key in RegistryKeys)
             Assert.Equal(key, QuestState.Resolve(QuestState.Registry, key));
+        // The flat registry is verbatim in the string registry too: @quest reads and writes raw text keys there.
+        foreach (var (_, _, saved) in LegacyTextKeys)
+            Assert.Equal(saved, QuestState.ResolveText(QuestState.Registry, saved));
 
-        // The saved key code outside the quests still spells (Session.PushTigerEssence), and the Sun chains'
-        // namespace, which the totem step reads by a constant rather than from its chain.
-        Assert.Equal("tiger_essence_met_claw", TigerMailQuest.MetClawReg);
+        // The Sun chains' namespace, which the totem step reads by a constant rather than from its chain.
         Assert.All(ArmorQuest.Chains.Values.Where(c => c.Tier == "sun"), c => Assert.Equal(ArmorQuest.SunKey, c.StageKey));
     }
 
@@ -120,15 +142,23 @@ public class QuestStateTests
     [Fact]
     public void TheAliasTableHasNoEntryTheLegacyCatalogueDoesNotPin()
     {
-        var pinned = LegacyKeys.ToDictionary(k => (k.Name, k.Slot), k => k.Saved);
+        var pinned = LegacyKeys.Concat(LegacyTextKeys).ToDictionary(k => (k.Name, k.Slot), k => k.Saved);
         foreach (var (key, saved) in QuestState.Aliases)
         {
-            Assert.True(pinned.TryGetValue(key, out var want), $"alias {key.Name}.{key.Slot} is not pinned in LegacyKeys");
+            Assert.True(pinned.TryGetValue(key, out var want),
+                        $"alias {key.Name}.{key.Slot} is not pinned in LegacyKeys or LegacyTextKeys");
             Assert.Equal(want, saved);
         }
-        // No two slots share one saved key: two names for one value would let one quest clobber another.
-        var targets = QuestState.Aliases.Values.ToList();
-        Assert.Equal(targets.Count, targets.Distinct(StringComparer.Ordinal).Count());
+        // No two slots share one saved key in the same map: two names for one value would let one quest clobber
+        // another. A text key and an int key may share a name, because they are in different maps.
+        foreach (bool text in new[] { false, true })
+        {
+            var targets = QuestState.Aliases
+                .Where(a => a.Key.Slot.StartsWith(QuestState.TextPrefix, StringComparison.Ordinal) == text)
+                .Select(a => a.Value).ToList();
+            Assert.NotEmpty(targets);
+            Assert.Equal(targets.Count, targets.Distinct(StringComparer.Ordinal).Count());
+        }
     }
 
     /// <summary>The quests name their slots by constants (public or private) rather than by the literals
@@ -137,12 +167,12 @@ public class QuestStateTests
     [Fact]
     public void EverySlotConstantInTheServerIsInTheTable()
     {
-        var shaped = new Regex(@"^(flag|kills|timer|count|level|step)\.[^.]+(\.[^.]+)*$|^tier$", RegexOptions.CultureInvariant);
+        var shaped = new Regex(@"^(flag|kills|timer|count|level|step|text)\.[^.]+(\.[^.]+)*$|^tier$", RegexOptions.CultureInvariant);
         var known = new HashSet<string>(QuestState.Aliases.Keys.Select(k => k.Slot), StringComparer.Ordinal);
         var found = new List<string>();
         foreach (var type in typeof(QuestState).Assembly.GetTypes())
-            foreach (var f in type.GetFields(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public |
-                                             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+            foreach (var f in type.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic |
+                                             BindingFlags.DeclaredOnly))
             {
                 if (!f.IsLiteral || f.FieldType != typeof(string)) continue;
                 if (f.GetRawConstantValue() is not string value || !shaped.IsMatch(value)) continue;
@@ -153,10 +183,12 @@ public class QuestStateTests
         Assert.Contains("TutorialQuest.GaveGold", found);
         Assert.Contains("TotemWorship.Pity", found);
         Assert.Contains("MinorQuestAbility.KTimer", found);
+        Assert.Contains("MinorQuestAbility.KTarget", found);
+        Assert.Contains("Mentorship.MentorSlot", found);
     }
 
     /// <summary>A slot the table does not list must fail loudly, not start a fresh counter at 0 under a key no
-    /// character has — which is exactly what a typo would otherwise do.</summary>
+    /// character has — which is exactly what a typo would otherwise do. Text slots the same.</summary>
     [Fact]
     public void ASlotTheTableDoesNotListThrows()
     {
@@ -164,13 +196,45 @@ public class QuestStateTests
         Assert.Throws<InvalidOperationException>(() => QuestState.Resolve("leviathan", "flag.typo"));
         Assert.Throws<InvalidOperationException>(() => QuestState.Over(c, "tutorial_quest").Get("flag.gave_gld"));
         Assert.Throws<InvalidOperationException>(() => QuestState.Over(c, "tutorial_quest").Set("flag.gave_gld", 1));
-        Assert.Empty(QuestState.Saved(c));   // the refused write wrote nothing
+        Assert.Throws<InvalidOperationException>(() => QuestState.ResolveText("minor_quest", "text.targt"));
+        Assert.Throws<InvalidOperationException>(() => QuestState.Over(c, "minor_quest").GetText("text.targt"));
+        Assert.Throws<InvalidOperationException>(() => QuestState.Over(c, "minor_quest").SetText("text.targt", "rabbit"));
+        Assert.Empty(QuestState.Saved(c));       // the refused writes wrote nothing, in either map
+        Assert.Empty(QuestState.SavedText(c));
+    }
+
+    /// <summary>The two maps are keyed independently: the minor quest's text target is saved as <c>minor_quest</c> in
+    /// the string registry, and its int stage would be <c>minor_quest</c> in the int map. So a slot asked of the
+    /// OTHER map's pair must fail loudly too: an int read of <c>text.target</c> that resolved through the table would
+    /// read the int map's <c>minor_quest</c>, an unrelated number, with nothing in the log.</summary>
+    [Fact]
+    public void ASlotAskedOfTheOtherMapThrows()
+    {
+        var c = new Character();
+        var minor = QuestState.Over(c, "minor_quest");
+        minor.SetStage(7);                       // an int value under the same saved name, for a wrong read to find
+        minor.SetText("text.target", "squirrel");
+
+        Assert.Throws<InvalidOperationException>(() => QuestState.Resolve("minor_quest", "text.target"));
+        Assert.Throws<InvalidOperationException>(() => minor.Get("text.target"));
+        Assert.Throws<InvalidOperationException>(() => minor.Set("text.target", 1));
+        Assert.Throws<InvalidOperationException>(() => QuestState.ResolveText("minor_quest", "tier"));
+        Assert.Throws<InvalidOperationException>(() => QuestState.ResolveText("minor_quest", QuestState.StageSlot));
+        Assert.Throws<InvalidOperationException>(() => minor.GetText("tier"));
+        Assert.Throws<InvalidOperationException>(() => minor.SetText("tier", "x"));
+
+        // Nothing moved: each map still holds exactly what it was given.
+        Assert.Equal(7, minor.Stage);
+        Assert.Equal("squirrel", minor.GetText("text.target"));
+        Assert.Equal(new[] { "minor_quest" }, QuestState.Saved(c).Keys);
+        Assert.Equal(new[] { "minor_quest" }, QuestState.SavedText(c).Keys);
     }
 
     /// <summary>The fixture test: a real character blob (the #32 fixture's shape, carrying every saved key the
-    /// quests use, each with a distinct value) is loaded through the store, every slot is read through
-    /// QuestState and must see its own value, every slot is written back through QuestState, and the blob
-    /// the store would save is byte-for-byte the one that was loaded.</summary>
+    /// quests use, int and text, each with a distinct value, plus two flat registry text keys holding the empty
+    /// string and non-ASCII text) is loaded through the store, every slot is read through QuestState and must see
+    /// its own value, every slot is written back through QuestState, and the blob the store would save is
+    /// byte-for-byte the one that was loaded.</summary>
     [Fact]
     public void SavedQuestKeysRoundTripByteIdenticalThroughQuestState()
     {
@@ -182,6 +246,8 @@ public class QuestStateTests
         // The saved values, read from the blob itself rather than through any code under test.
         var blob = JsonNode.Parse(json)!["Quests"]!.AsObject()
                            .ToDictionary(p => p.Key, p => p.Value!.GetValue<int>(), StringComparer.Ordinal);
+        var texts = JsonNode.Parse(json)!["QuestStrings"]!.AsObject()
+                            .ToDictionary(p => p.Key, p => p.Value!.GetValue<string>(), StringComparer.Ordinal);
 
         var addressed = new HashSet<string>(StringComparer.Ordinal);
         void Check(string name, string slot, string saved)
@@ -196,15 +262,74 @@ public class QuestStateTests
         foreach (var stage in StageKeys) Check(stage, QuestState.StageSlot, stage);
         foreach (var key in RegistryKeys) Check(QuestState.Registry, key, key);
 
+        var textsAddressed = new HashSet<string>(StringComparer.Ordinal);
+        void CheckText(string name, string slot, string saved)
+        {
+            Assert.True(texts.ContainsKey(saved), $"the fixture has no text key '{saved}' — add it, or fix the catalogue");
+            var q = QuestState.Over(character, name);
+            Assert.True(string.Equals(texts[saved], q.GetText(slot), StringComparison.Ordinal),
+                        $"{name}.{slot} read \"{q.GetText(slot)}\", the blob holds {saved} = \"{texts[saved]}\"");
+            q.SetText(slot, q.GetText(slot));
+            textsAddressed.Add(saved);
+        }
+        foreach (var (name, slot, saved) in LegacyTextKeys) CheckText(name, slot, saved);
+        foreach (var key in RegistryTextKeys) CheckText(QuestState.Registry, key, key);
+        // The two value shapes are really in the blob, so the round trip below covers them as stored.
+        Assert.Equal("", texts["fixture_empty"]);
+        Assert.Contains(texts["fixture_non_ascii"], ch => ch > '\u007F');
+
         // Every key in the blob was reached by some name, so the fixture tests nothing it does not cover.
-        var unreached = blob.Keys.Where(k => !addressed.Contains(k)).ToList();
+        var unreached = blob.Keys.Where(k => !addressed.Contains(k))
+                                 .Concat(texts.Keys.Where(k => !textsAddressed.Contains(k))).ToList();
         Assert.True(unreached.Count == 0, "fixture keys no quest name reaches: " + string.Join(", ", unreached));
         Assert.Equal(json, CharacterStore.Serialize(character));
     }
 
-    /// <summary>The acceptance line "no raw Quests[...] access outside QuestState", as a fact. Scans every
-    /// production project's source (comment lines stripped) for the member name and fails on any use outside
-    /// Server/QuestState.cs and the field's own declaration.</summary>
+    /// <summary>
+    /// A text value is free text: a MinorQuests.csv key, a character's name. So every text key must round-trip
+    /// byte-identical whatever it holds. Each value goes into each text key of the fixture blob in turn; the blob is
+    /// the store's own output for it (its encoder escapes non-ASCII, the quote and the backslash), and that blob,
+    /// loaded, read through the text slot and written back through it, must save to the same bytes. "" is a value
+    /// like any other: the minor quest writes it when a quest ends, and the key stays.
+    ///
+    /// <para>The second half: a text key the blob does not carry reads "" and the read adds nothing.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("Ünsal Ølberg")]                     // Latin-1
+    [InlineData("무사 武士")]                         // Hangul and Han, outside Latin-1
+    [InlineData("say \"hi\" \\ back")]               // a quote and a backslash
+    public void EveryTextKeyRoundTripsByteIdenticalWhateverItHolds(string value)
+    {
+        string fixture = File.ReadAllText(FixturePath()).TrimEnd('\n');
+        foreach (var (name, slot, saved) in LegacyTextKeys)
+        {
+            var seeded = CharacterStore.Deserialize(fixture);
+            Assert.True(QuestState.SavedText(seeded).ContainsKey(saved), $"the fixture has no text key '{saved}'");
+            QuestState.WriteText(seeded, saved, value);
+            string json = CharacterStore.Serialize(seeded);
+            var character = CharacterStore.Deserialize(json);
+            Assert.Equal(json, CharacterStore.Serialize(character));   // baseline: the store itself round-trips it
+
+            var q = QuestState.Over(character, name);
+            string read = q.GetText(slot);
+            Assert.True(string.Equals(value, read, StringComparison.Ordinal), $"{name}.{slot} read \"{read}\", saved \"{value}\"");
+            q.SetText(slot, read);
+            Assert.Equal(json, CharacterStore.Serialize(character));
+            Assert.True(QuestState.SavedText(character).ContainsKey(saved), $"writing \"{value}\" dropped '{saved}'");
+
+            // Absent: the key removed from the blob reads "" and stays absent.
+            Assert.True(QuestState.RemoveText(character, saved));
+            string without = CharacterStore.Serialize(character);
+            Assert.Equal("", q.GetText(slot));
+            Assert.Equal(without, CharacterStore.Serialize(character));
+        }
+    }
+
+    /// <summary>The acceptance lines "no raw Quests[...] access outside QuestState" (#51) and the same for the string
+    /// registry (#309), as one fact. Scans every production project's source (comment lines stripped) for either
+    /// member name and fails on any use outside Server/QuestState.cs and the two fields' own declarations. Every
+    /// allowlisted entry must still be found, so the list cannot go stale.</summary>
     [Fact]
     public void NothingButQuestStateTouchesTheQuestMap()
     {
@@ -213,13 +338,11 @@ public class QuestStateTests
         var allowed = new HashSet<string>(StringComparer.Ordinal)
         {
             "Server/QuestState.cs",
-            // The field itself.
+            // The fields themselves.
             "Shared/Character.cs: public Dictionary<string, int> Quests = new();",
-            // SetNation clearing the bound home. It sits outside the region #51 was allowed to edit in
-            // Session.CharacterApi.cs; routing it through QuestState is #307. Delete this line when it is.
-            "Server/Session.CharacterApi.cs: _char.Quests[HomeReg] = HomeNone;",
+            "Shared/Character.cs: public Dictionary<string, string> QuestStrings = new();",
         };
-        var member = new Regex(@"\bQuests\b", RegexOptions.CultureInvariant);
+        var member = new Regex(@"\bQuests\b|\bQuestStrings\b", RegexOptions.CultureInvariant);
 
         var hits = new List<string>();
         var seenAllowed = new HashSet<string>(StringComparer.Ordinal);
@@ -244,7 +367,7 @@ public class QuestStateTests
             }
         }
 
-        Assert.True(hits.Count == 0, "Character.Quests touched outside QuestState:\n" + string.Join("\n", hits));
+        Assert.True(hits.Count == 0, "Character.Quests or Character.QuestStrings touched outside QuestState:\n" + string.Join("\n", hits));
         Assert.Equal(allowed.OrderBy(a => a, StringComparer.Ordinal), seenAllowed.OrderBy(a => a, StringComparer.Ordinal));
     }
 }

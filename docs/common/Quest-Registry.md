@@ -12,7 +12,7 @@ A character carries four stores (all persisted in the character JSON, all surviv
 | Store | Shape | What lives there |
 |---|---|---|
 | `Character.Quests` | `string → int` | Stage machines, flags, counters, kill-count snapshots and unix-second timers — **one flat map**, read and written only through `Server/QuestState.cs` (see [Names in code](#names-in-code-queststate)). The keys below are the SAVED keys, which is what `@quest` shows and takes. |
-| `Character.QuestStrings` | `string → string` | The rare string-valued selections (active minor quest, mentor's name). |
+| `Character.QuestStrings` | `string → string` | The rare string-valued selections (active minor quest, mentor's name) — the string registry, also read and written only through `Server/QuestState.cs`, as **text slots**. |
 | `Character.Legends` | list of `{Icon, Color, Text, Name}` | Profile-window marks. The client only ever sees `Text`; `Name` is the hidden key quests gate on (`HasLegend`), and adding is replace-by-key. |
 | `Character.Kills` / `KillTrack` | tallies | Lifetime kills per mob key (quests read a *delta* against a snapshot), and the 8-slot kill track the mythic alliances count. |
 
@@ -20,13 +20,15 @@ A character carries four stores (all persisted in the character JSON, all surviv
 
 C# never spells a saved key. A quest reads and writes through `ctx.Quest(<namespace>)` (NPC scripts) or
 `Session.Quest(<namespace>)`: the namespace is the quest's stage key, and every other value is a **slot** in
-it — `flag.<name>`, `kills.<mob>` (a kill-count snapshot), `timer.<name>` (unix seconds), `count.<name>`.
-An explicit alias table in `Server/QuestState.cs` maps each slot to the key characters were already saved
-under, so nothing was migrated (#51). A slot the table does not list throws rather than reading 0. The
-flat namespace, `QuestState.Registry`, is RTK's `player.registry`: the name IS the saved key. The Lua
-`stage`/`setStage`/`reg`/`setReg` verbs (npc_dialog.lua), the spell verbs' `reg`/`setReg`, `mob_ai.lua`'s
-`actorQuest`, and the registry globals several features share (`home`, `sage_rung`, `sage_timer`,
-`dog_flag`, `carnage_wins`, `mentored`, `craft_*`, `damage_shotgun`, `baekhos_cunning`) all live there.
+it — `flag.<name>`, `kills.<mob>` (a kill-count snapshot), `timer.<name>` (unix seconds), `count.<name>`,
+and `text.<name>` for a value in the string registry (read with `GetText`/`SetText`; asking either map's
+pair for the other's slot throws). An explicit alias table in `Server/QuestState.cs` maps each slot to the
+key characters were already saved under, so nothing was migrated (#51, #309). A slot the table does not list
+throws rather than reading 0. The flat namespace, `QuestState.Registry`, is RTK's `player.registry`: the name
+IS the saved key, in either map. The Lua `stage`/`setStage`/`reg`/`setReg` verbs (npc_dialog.lua), the spell
+verbs' `reg`/`setReg`, `mob_ai.lua`'s `actorQuest`, `@quest`'s raw keys, and the registry globals several
+features share (`home`, `sage_rung`, `sage_timer`, `dog_flag`, `carnage_wins`, `mentored`, `craft_*`,
+`damage_shotgun`, `baekhos_cunning`) all live there.
 
 | Namespace (= stage key) | Slot | Saved key |
 |---|---|---|
@@ -35,7 +37,8 @@ flat namespace, `QuestState.Registry`, is RTK's `player.registry`: the name IS t
 | `tiger_armor` | `flag.met_claw` · `level.nudged` | `tiger_essence_met_claw` · `tiger_essence_nudged_level` |
 | `novice_quest` | `kills.rabbit` · `kills.squirrel` · `flag.gave_garb` · `flag.asked_soothe` | `novice_quest1_rabbit_snapshot` · `novice_quest2_squirrel_snapshot` · `novice_quest2_gave_garb` · `novice_quest3_asked_soothe` |
 | `mage_stone` | `flag.met_ghost` · `flag.zapped.{mouse}` | `mage_stone_met_ghost` · `zapped_{mouse}` |
-| `minor_quest` | `tier` · `timer.cooldown` · `count.completed` · `kills.{mob}` | `minor_quest_tier` · `minor_quest_timer` · `minor_quests_completed` · `minor_quest_kill_count_{mob}` |
+| `minor_quest` | `tier` · `timer.cooldown` · `count.completed` · `kills.{mob}` · `text.target` | `minor_quest_tier` · `minor_quest_timer` · `minor_quests_completed` · `minor_quest_kill_count_{mob}` · `minor_quest` (string registry) |
+| `mentorship` | `text.mentor` | `mentor` (string registry) |
 | `nagnang_warrior_trial` | `kills.forbidden` | `nagnang_trial_kills` |
 | `nangen_acolyte` | `flag.gave_pipe` · `timer.water` · `flag.destroyed_infected` · `kills.magic_rabbit` | `gave_sonhi_pipe` · `sacred_water_timer` · `destroyed_infected` · `nangen_rabbit_base` |
 | `sute_quest` | `flag.dye` · `timer.recoat` | `sute_quest_dye` · `sute_quest_timer` |
@@ -47,8 +50,8 @@ flat namespace, `QuestState.Registry`, is RTK's `player.registry`: the name IS t
 Stage-only namespaces need no row: `leviathan`, `dagger_uniform`, `forgotten_path`, `lesser_alliance_{animal}`,
 `newbie_area_quest`, and the stage of every namespace above. A new slot is added to the table mapped to its
 own dotted name (`leviathan.flag.x`); no saved key contains a dot, so a new key can never collide with an old
-one. `Tests/QuestStateTests.cs` pins every row against the pre-#51 constants and round-trips a character
-blob carrying all of them (`Tests/Fixtures/character-quests-v1.json`).
+one. `Tests/QuestStateTests.cs` pins every row against the constants each quest spelled before it was a slot,
+and round-trips a character blob carrying all of them (`Tests/Fixtures/character-quests-v1.json`).
 
 **Most chains gate on the legend, not the stage.** Clearing only the stage usually re-tests nothing —
 the door/NPC checks the mark. A full quest reset is generally: clear the legend(s), zero the stage
@@ -155,8 +158,8 @@ Kinds: **stage** = a stage machine (0 = untouched), **flag** = 0/1, **counter** 
 
 | Key | Values | Feature |
 |---|---|---|
-| `minor_quest` | the active target's key from `MinorQuests.csv` (`squirrel`, `rabbit`, `deer`, …); `""` = none | Minor quests |
-| `mentor` | on the protégé: the mentor's character name; `""` = free | Mentorship |
+| `minor_quest` | the active target's key from `MinorQuests.csv` (`squirrel`, `rabbit`, `deer`, …); `""` = none | Minor quests (slot `minor_quest` / `text.target`) |
+| `mentor` | on the protégé: the mentor's character name; `""` = free | Mentorship (slot `mentorship` / `text.mentor`) |
 
 ## Legend marks (`Character.Legends`)
 

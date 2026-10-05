@@ -168,9 +168,9 @@ public sealed class PeerMiniTextMonitorTests
     {
         var (mentor, mentorProbe, _) = ProbePlayer("MentorshipMentor");
         var (protege, protegeProbe, _) = ProbePlayer("MentorshipProtege", c => c.Level = Mentorship.CulminateLevel);
-        // Already this mentor's protégé. Under their own monitor, because SetQuestStr marks the character
-        // dirty and the Debug guard on that chokepoint (Session.State.cs:308-314) rightly refuses a bare write.
-        protege.WithState(() => protege.SetQuestStr(Mentorship.MentorStr, "MentorshipMentor"));
+        // Already this mentor's protégé. Under their own monitor, because a text slot's write saves the character
+        // and the Debug guard on that chokepoint (Session.State.cs:308-314) rightly refuses a bare write.
+        protege.WithState(() => protege.Quest(Mentorship.Key).SetText(Mentorship.MentorSlot, "MentorshipMentor"));
         mentorProbe.Clear(); protegeProbe.Clear();
 
         mentor.LuaMentor(new SpellDef(0, "mentor", "Mentor", 1, 0, 40, 0, "Who would you like to mentor?"));
@@ -188,14 +188,14 @@ public sealed class PeerMiniTextMonitorTests
         Assert.Equal(1, mentorProbe.Count(ours));
         Assert.Equal(0, protegeProbe.Count(ours));
         // The relationship really culminated — the line is not being sent down a dead branch.
-        Assert.Equal("", protege.QuestStr(Mentorship.MentorStr));
+        Assert.Equal("", protege.Quest(Mentorship.Key).GetText(Mentorship.MentorSlot));
     }
 
     // ---- 5. "@carnage" -------------------------------------------------------------------------------
 
     /// <summary>"@carnage &lt;name&gt; [n]" reads the target's carnage counter, writes counter+n back and tells
     /// them, all from the OPERATOR's thread. The read and the write are now one section on the target — they
-    /// are a genuine read-modify-write, and <c>QuestCounter</c> is a bare <c>_char.Quests</c> lookup — and so
+    /// are a genuine read-modify-write, and the registry read is a bare <c>_char.Quests</c> lookup — and so
     /// is the line and the read of their name. The operator's own confirmation stays outside that section and
     /// still carries the same text.</summary>
     [Fact]
@@ -210,7 +210,7 @@ public sealed class PeerMiniTextMonitorTests
         const string won = "Your victory in the Carnage is recorded.";
         Assert.Equal(1, targetProbe.Count(won));
         Assert.True(targetProbe.AllHeld(won), targetProbe.Explain(won));
-        Assert.Equal(2, target.QuestCounter(ArmorQuest.CarnageWinsReg));
+        Assert.Equal(2, target.Quest(QuestState.Registry).Get(ArmorQuest.CarnageWinsReg));
         // The operator's own confirmation, wrapped to the 30-char status pane (Commands.cs:462).
         Assert.Equal(1, gmProbe.Count("CarnageTarget: 2 carnage"));
         Assert.Equal(0, gmProbe.Count(won));   // the target's line is the target's alone
@@ -221,7 +221,7 @@ public sealed class PeerMiniTextMonitorTests
         const string amended = "Your Carnage record has been amended.";
         Assert.Equal(1, targetProbe.Count(amended));
         Assert.True(targetProbe.AllHeld(amended), targetProbe.Explain(amended));
-        Assert.Equal(0, target.QuestCounter(ArmorQuest.CarnageWinsReg));
+        Assert.Equal(0, target.Quest(QuestState.Registry).Get(ArmorQuest.CarnageWinsReg));
     }
 
     // ---- 6. "@bring" ---------------------------------------------------------------------------------

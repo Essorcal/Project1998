@@ -442,7 +442,7 @@ public sealed class CommandTableTests
 
         // Set up through the commands themselves rather than the internal setters: a packet is the atomic
         // unit of work against a session (#29) and the state monitor wraps Session.Handle, so calling
-        // SetQuestStr directly from here writes _char outside the monitor and trips its Debug.Fail.
+        // a text slot's SetText directly from here writes _char outside the monitor and trips its Debug.Fail.
         Run(session, "@quest poet_whip 3");
         Run(session, "@quest minor_quest squirrel");        // non-numeric -> the string registry
         Run(session, "@legend family_nangen_mages 7 128 Family to the Nangen Mages");
@@ -451,8 +451,8 @@ public sealed class CommandTableTests
         outbound.Clear();
         Run(session, "@questreset");
 
-        Assert.Equal(0, session.QuestStage("poet_whip"));            // stage: gone
-        Assert.Equal("", session.QuestStr("minor_quest"));           // string registry: gone
+        Assert.Equal(0, session.Quest(QuestState.Registry).Get("poet_whip"));             // stage: gone
+        Assert.Equal("", session.Quest(QuestState.Registry).GetText("minor_quest"));      // string registry: gone
         Assert.False(session.HasLegend("family_nangen_mages"));      // a quest mark: gone
         Assert.True(session.HasLegend("married"));                   // not a quest: spared
         Assert.True(session.HasLegend(""));                          // the unkeyed "Born in ..." seed: spared

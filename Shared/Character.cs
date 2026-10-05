@@ -114,7 +114,7 @@ public sealed class Character
     // ("trial_of_iron.kills"), so one flat map holds both stage machine and progress tallies. Persisted in
     // the character JSON, so an accepted quest and its progress survive a relog. Read and written through
     // Server/QuestState.cs, which names each key by quest and slot and maps it to the key saved here
-    // (Tests/QuestStateTests.cs fails on any other access; its allowlist names the one left, #307).
+    // (Tests/QuestStateTests.cs fails on any other access, here or to QuestStrings below).
     public Dictionary<string, int> Quests = new();
 
     // String-valued quest registry (RTK's registryString): e.g. the active minor-quest key. Kept separate
