@@ -126,7 +126,9 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     ///   and Atlas 2002 ("citizenship in the same kingdom"); RTK has no such check. Two Neutrals hold no
     ///   citizenship, so they fizzle too.</item>
     /// <item>indoor: the destination is indoors (Approach: the target's map; Summon: the caster's). RTK.</item>
-    /// <item>level-band: the mover is below the destination's level band (5840 asks 69; the mover is 30). RTK.</item>
+    /// <item>level-band: the mover is below the destination's level band (5840 asks 69; the mover is 30). RTK.
+    ///   The player who does NOT move is level 99, inside the band, so the case fails if a verb judges the wrong
+    ///   player: Approach's caster and Summon's target are the movers (review F4).</item>
     /// <item>warp-locked: the mover's own map refuses warp-outs. RTK's one non-Fizzle line.</item>
     /// <item>pvp-target / pvp-caster: either side stands on a PvP map (RTK's two canPK checks).</item>
     /// <item>dead-target: Summon only; RTK's approach.lua has no such check.</item>
@@ -164,7 +166,7 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     {
         bool approach = spell == "approach";
         ushort casterMap = RefuseFrom, targetMap = RefuseTo;
-        byte casterNation = 1, targetNation = 1;
+        byte casterNation = 1, targetNation = 1, casterLevel = 30, targetLevel = 30;
         bool grouped = true, targetDead = false;
         uint mp = StartMp;
 
@@ -174,7 +176,11 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
             case "other-kingdom": targetNation = 2; break;
             case "both-neutral":  casterNation = 0; targetNation = 0; break;
             case "indoor":        if (approach) targetMap = IndoorMap; else casterMap = IndoorMap; break;
-            case "level-band":    if (approach) targetMap = GatedMap; else casterMap = GatedMap; break;
+            // The mover at 30, below the band; the one who stays at 99, inside it.
+            case "level-band":
+                if (approach) { targetMap = GatedMap; targetLevel = 99; }
+                else          { casterMap = GatedMap; casterLevel = 99; }
+                break;
             case "warp-locked":   if (approach) casterMap = WarpLockedMap; else targetMap = WarpLockedMap; break;
             case "pvp-target":    targetMap = PvpMap; break;
             case "pvp-caster":    casterMap = PvpMap; break;
@@ -184,8 +190,8 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 
         string tag = (approach ? "Ap" : "Su") + why.Replace("-", "");
         var s = Pair(tag, casterMap, targetMap,
-                     c => { c.Nation = casterNation; c.Mp = mp; },
-                     t => t.Nation = targetNation,
+                     c => { c.Nation = casterNation; c.Mp = mp; c.Level = casterLevel; },
+                     t => { t.Nation = targetNation; t.Level = targetLevel; },
                      grouped);
         if (targetDead)
         {
@@ -242,11 +248,12 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 
     /// <summary>
     /// <b>The destination's bands, at their edges</b> (<c>ctx:mapAdmits</c>, the four comparisons RTK's
-    /// approach.lua and summon.lua make). Only the floors can be reached through a cast today (the level floor on
-    /// many outdoor maps, the vita-or-mana floor on one, Sheep Bridge 2): every rendered map that caps level, vita
-    /// or mana is indoors, and the indoor check refuses first. So the edges are pinned here, on real Maps.csv rows
-    /// picked by what they carry rather than by id: a wrong comparison at a cap would otherwise pass nothing and
-    /// fail nothing.
+    /// approach.lua and summon.lua make). A cast reaches few of them: all 46 rendered maps that cap LEVEL are
+    /// indoors, where the indoor check refuses first, and of the 194 that cap vita or mana exactly one is outdoors,
+    /// Sheep Bridge 2 (3481: floors 140000 vita or 70000 mana, caps 339999 and 169999). So the edges are pinned
+    /// here, on real Maps.csv rows picked by what they carry rather than by id: a wrong comparison at an edge no
+    /// cast reaches would otherwise pass nothing and fail nothing. (Corrected per review F5: an earlier version
+    /// said no cast could reach a cap; Sheep Bridge 2's two can be.)
     /// <list type="bullet">
     /// <item>level: one below <c>MapReqLvl</c> refused, at it and at <c>MapLvlMax</c> admitted, one above refused;</item>
     /// <item>vita OR mana meets its floor (RTK's <c>baseHealth &lt; reqVita and baseMagic &lt; reqMana</c>
