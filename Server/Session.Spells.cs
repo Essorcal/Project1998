@@ -541,13 +541,6 @@ public sealed partial class Session
         if (Content.AreaSpellFor(sp) is (string areaVerb, int areaMana))
             return Lua(CastArch(areaVerb, sp, fx, null, areaMana), sp);
 
-        // The dog 5-way (Fissure / Lava Surge). Same reason for intercepting here as the 4-way above: their
-        // export rows are perfectly good Damage rows, so they reached the single-target archetype and hit
-        // exactly one thing instead of five. Their mana IS correct in the export (120 / 210), so unlike the
-        // 4-way family there is no side table — `mana` as computed above is right.
-        if (Content.IsTargetAreaZap(sp))
-            return Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp);
-
         // Read the pool BEFORE the archetype spends anything: the post-cast drain below is a fraction of what
         // you were holding when you cast, not of what's left after the row's own mana cost came out (RTK
         // hellfire.lua computes its manaTaken on the line above its global_zap call, for exactly that reason).
@@ -556,8 +549,18 @@ public sealed partial class Session
         // Archetype dispatch — every archetype now runs its `arch_<name>` verb in spell_verbs.lua. There is no
         // C# handler behind any of them any more: the whole spell system is scriptable and hot-reloadable, and
         // Lua() turns "no such verb" into a visible failed cast rather than a silent fallthrough.
+        //
+        // The 5-way fire goes first (Content.IsTargetAreaZap: the dog pair, Volcanic Blast, and the Inferno and
+        // Earthquake ladders). Same reason for intercepting as the 4-way above: their export rows are perfectly
+        // good Damage rows, so arch_damage hit exactly one thing instead of five. Unlike the 4-way, the 5-way
+        // stays inside this dispatch instead of returning ahead of it, so it shares the tail below, gated on its
+        // verb's verdict like every archetype. The tail is where the Inferno ladder's whole-pool drain and 70 s
+        // aether live, and returning first skipped both (Caleb, 2026-09-29). The rest of the family has no drain
+        // entry and no aether, so the tail does nothing for them. `mana` is the row's: 120 / 210 for the dog
+        // pair, and 5 for the Inferno ladder, whose row says 0 and whose drain then takes the rest.
         bool ok = arch switch
         {
+            _ when Content.IsTargetAreaZap(sp) => Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp),
             "Damage"     => Lua(CastArch("arch_damage", sp, fx, targetId, mana), sp),
             "Heal"       => Lua(CastArch("arch_heal", sp, fx, targetId, mana), sp),
             "Buff"       => Lua(CastArch("arch_buff", sp, fx, null, mana), sp),
@@ -571,8 +574,8 @@ public sealed partial class Session
         // Overhead cast shout for the strikes that run the generic Damage archetype rather than the sacrifice
         // verb — Assault and its reskins ("Assault~!"). The sacrifice four shout at their own dispatch above.
         if (ok && Content.OverheadShoutFor(sp) is string archShout) Shout(archShout);
-        // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for Inferno/Dooms Fire and the
-        // Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
+        // Pool-fraction spells (Content.PostCastManaDrainFor — the whole pool for the Inferno ladder, Dooms Fire and
+        // the Retribution family, 70% for Hellfire's, a third for Restore) spend their share AFTER the damage or
         // heal is computed, from the SAME pre-cast reading the amount came from. Which is the point: these
         // scale off the pool at both ends, so taking the cost first would quietly halve the effect. Floors at
         // zero rather than underflowing, matching RTK's own guard.

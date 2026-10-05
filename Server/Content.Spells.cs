@@ -1124,9 +1124,13 @@ public static partial class Content
     // 1.0 - "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San
     //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr
     //   reading player.magic, which computes the damage correctly but NEVER SPENT the pool - so before this
-    //   they were free, repeatable nukes scaling off a mana bar that never moved. Retribution and its three
-    //   reskins (RTK poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same
-    //   thing one tier down: "deals 34% of current mana to target", and it empties you doing it.
+    //   they were free, repeatable nukes scaling off a mana bar that never moved. Inferno's three alignment
+    //   reskins (Death's Door, Nature's Denial, Steel Storm) take the same entry: RTK mage/inferno.lua gives
+    //   all four one body, ending setAether(<key>, 70000) and `player.magic = 0`. (The four are 5-way zaps,
+    //   and ApplyCast's 5-way branch used to return ahead of this drain, so even Inferno's entry never applied
+    //   until that branch joined the archetype tail.) Retribution and its three reskins (RTK
+    //   poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same thing one tier
+    //   down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
     //   global_zap debits the 1000 it is handed (which is the only number the formula extractor could see, and
     //   so the only one in spell_effects.csv), and then the script itself subtracts a second
@@ -1141,6 +1145,8 @@ public static partial class Content
     private static readonly Dictionary<string, ManaDrain> PostCastManaDrain = new(StringComparer.OrdinalIgnoreCase)
     {
         ["inferno_mage"] = new(1.0, false), ["dooms_fire_mage"] = new(1.0, false),
+        ["deaths_door_mage"] = new(1.0, false), ["natures_denial_mage"] = new(1.0, false),
+        ["steel_storm_mage"] = new(1.0, false),
 
         ["hellfire_mage"] = new(0.7, false),     ["consume_soul_mage"] = new(0.7, false),
         ["flesh_eaters_mage"] = new(0.7, false), ["hurricane_mage"] = new(0.7, false),
