@@ -1256,12 +1256,14 @@ public sealed class TeardownSlotLeakTests
 
     /// <summary>
     /// The loading-screen close, widened to a throw BEFORE the slot claim (the PR #311 review's F2; Caleb, 2026-09-29:
-    /// "6 widen it in that slice"). An arrival can throw ahead of <c>ClaimAccountSlot</c> (the handoff token's
-    /// consume or the ban check on a database fault, the ban notice's send) and leave its client on the same loading
-    /// screen as one that throws after it. The connection is closed there and then, with ONE Error line for the
-    /// session, the arrival's own, carrying the exception and saying no slot is held, and none from the handler
-    /// guard; the close's line names the cause. No slot was claimed: nothing is held or parked for the account before
-    /// the teardown or after it, the teardown writes nothing, and a later login for the account is handed nobody.
+    /// "6 widen it in that slice"). Nothing ahead of <c>ClaimAccountSlot</c> throws in today's code (the PR #321
+    /// review's F1): the handoff token's consume returns false on a database fault and the arrival is refused as a bad
+    /// token, the ban check reads "not banned" on one too, and the ban notice's send ends in a <c>TryWrite</c>. So this
+    /// pins a guard. A throw there, should a later change bring one, must not leave its client on the loading screen:
+    /// the connection is closed there and then, with ONE Error line for the session, the arrival's own, carrying the
+    /// exception and saying no slot is held, and none from the handler guard; the close's line names the cause. No
+    /// slot was claimed: nothing is held or parked for the account before the teardown or after it, the teardown
+    /// writes nothing, and a later login for the account is handed nobody.
     ///
     /// <para>The throw comes from <c>Session.ArrivalBeforeClaimProbeForTest</c>, which runs right before
     /// <c>ClaimAccountSlot</c> and stands for anything ahead of it. Before the widening the handler guard caught it,

@@ -665,8 +665,8 @@ public sealed partial class Session
         // the gap is still strictly better than the nothing that guarded this before. Everything else, and
         // the uncontended cast, really is atomic.
         //
-        // An arrival that throws between its slot claim and world entry does not reach this guard: its client is
-        // on the loading screen with nothing more coming, so ArriveOrClose closes the connection instead.
+        // An arrival that throws before world entry does not reach this guard: its client would be left on the
+        // loading screen with nothing more coming, so ArriveOrClose closes the connection instead.
         try { WithState(() => Dispatch(pkt, dec)); }
         catch (Exception e)
         {
@@ -1028,8 +1028,8 @@ public sealed partial class Session
     /// <summary>The account key this session's arrival claimed the online slot under, set by
     /// <see cref="ClaimAccountSlot"/> once the registry has it; null until then, and null again once one of the
     /// arrival's refusals has given the slot back itself. Read by the teardown of a session that never entered
-    /// the world, which gives the slot back under it, and by <see cref="ArriveOrClose"/>, which closes the
-    /// connection of an arrival that threw after its claim. A session that did enter parks
+    /// the world, which gives the slot back under it, and by <see cref="ArriveOrClose"/>, whose Error line for an
+    /// arrival that threw before world entry says whether the slot is held. A session that did enter parks
     /// the slot under its character's key (<c>UserKey</c>), as it always has. Written and read under this
     /// session's monitor: the arrival and the teardown both run inside it.</summary>
     private string? _claimedKey;
@@ -1041,21 +1041,27 @@ public sealed partial class Session
     internal static Action<Session>? ArrivalClaimedProbeForTest;
 
     /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right before
-    /// <see cref="ClaimAccountSlot"/>, after the handoff token and the ban check. A fact throws from it to stand for
-    /// any throw before the claim (the token's consume or the ban check on a database fault, the ban notice's send),
-    /// which leaves the session with no slot claimed and <c>_enteredWorld</c> false. Null outside the test host.</summary>
+    /// <see cref="ClaimAccountSlot"/>, after the handoff token and the ban check. A fact throws from it to stand for a
+    /// throw before the claim, which leaves the session with no slot claimed and <c>_enteredWorld</c> false. Nothing
+    /// in that span throws in today's code (see <see cref="ArriveOrClose"/>), so this seam is the only way a fact
+    /// reaches it. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalBeforeClaimProbeForTest;
 
     /// <summary>The arrival, and the throw of it that closes the connection: any throw before world entry
-    /// (<c>_enteredWorld</c>). Such a throw leaves its client on the loading screen with nothing more coming, so the
-    /// connection is closed here and the cause logged, in one Error line that says whether the session holds the
-    /// account's slot. A throw after <see cref="ClaimAccountSlot"/> (the row load, the restores after it) holds it:
-    /// the read loop then ends, and its teardown gives it back through <see cref="_claimedKey"/>
-    /// (<see cref="TearDownWorldState"/>), as it already did once the client disconnected by itself (#303 report,
-    /// follow-up candidate 1). A throw before the claim (the handoff token's consume or the ban check on a database
-    /// fault, the ban notice's send) holds none, and its teardown has nothing to give back (PR #311 review F2, widened
-    /// on Caleb's decision of 2026-09-29). Until each was closed here, it reached the handler guard in
-    /// <see cref="Handle"/>, which keeps the session, and the client sat on the loading screen until it gave up.
+    /// (<c>_enteredWorld</c>). Such a throw would leave its client on the loading screen with nothing more coming, so
+    /// the connection is closed here and the cause logged, in one Error line that says whether the session holds the
+    /// account's slot. A throw after <see cref="ClaimAccountSlot"/> has taken the slot holds it: the read loop then
+    /// ends, and its teardown gives it back through <see cref="_claimedKey"/> (<see cref="TearDownWorldState"/>), as
+    /// it already did once the client disconnected by itself (#303 report, follow-up candidate 1). A throw before the
+    /// claim holds none, and its teardown has nothing to give back.
+    ///
+    /// <para>The pre-claim half is a guard with no trigger in today's code (PR #321 review F1). The handoff token's
+    /// consume returns false on a database fault, so the arrival is refused as a bad token; the ban check reads
+    /// "not banned" on a database fault too; and the ban notice's send ends in the outbound channel's
+    /// <c>TryWrite</c>. The close was widened to that span to cover an unexpected throw there (PR #311 review F2, on
+    /// Caleb's decision of 2026-09-29), and the widening changes nothing a player sees today. Without this close, a
+    /// throw on either side of the claim would reach the handler guard in <see cref="Handle"/>, which keeps the
+    /// session, and the client would sit on the loading screen until it gave up.</para>
     ///
     /// <para>Every other throw goes on to that guard exactly as before: an arrival's after <c>_enteredWorld</c> is
     /// set, and any other opcode's handler, which <c>Dispatch</c> calls directly. This runs inside <c>Handle</c>'s
