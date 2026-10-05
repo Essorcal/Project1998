@@ -670,14 +670,20 @@ public sealed partial class World
     /// <summary>Every tile on a map that something is standing on. Built once per refill sweep and updated as
     /// mobs are placed: the placement test runs up to four times the group's cap, and the big woodcutting maps
     /// cap at 500, so re-scanning the map's entity lists per attempt would be a quarter-million comparisons
-    /// under the world lock. Caller holds <c>_lock</c>.</summary>
-    private HashSet<(int, int)> OccupiedTiles(ushort mapId)
+    /// under the world lock. Caller holds <c>_lock</c>.
+    ///
+    /// <para><paramref name="arriving"/> is the tile of a player who is entering the map and is not on its
+    /// player list yet, and null on every other path. <see cref="EnterMap"/> fills the room before it adds the
+    /// newcomer to that list, and keeps that order on purpose (#122): the newcomer's tile is handed in here
+    /// instead, so a creature, an ambush trap or a cold tile is never placed on the tile they arrive on.</para></summary>
+    private HashSet<(int, int)> OccupiedTiles(ushort mapId, (int X, int Y)? arriving)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         var map = Map(mapId);
-        var taken = new HashSet<(int, int)>(map.Mobs.Count + map.Players.Count);
+        var taken = new HashSet<(int, int)>(map.Mobs.Count + map.Players.Count + 1);
         foreach (var m in map.Mobs) if (m.Alive) taken.Add((m.X, m.Y));
         foreach (var p in map.Players) taken.Add((p.PlayerX, p.PlayerY));
+        if (arriving is { } a) taken.Add(a);
         return taken;
     }
 
@@ -1084,8 +1090,10 @@ public sealed partial class World
 
     // Top a configured map's hidden ambush traps back up to its target count, but only while live mobs stay
     // under the map's cap — RTK's population governor (its trap refiller stops adding while the map is already
-    // full of mobs). Caller holds _lock. Called on every map entry (EnsureMaterialized) and after a trap fires.
-    private void RefillAmbushLocked(ushort mapId)
+    // full of mobs). Caller holds _lock. Called on every map entry (EnsureMaterialized, which passes the
+    // entering player's tile as `arriving`: they are not on the map's player list yet, #122) and after a trap
+    // fires (the stepper is on the list, so no `arriving`).
+    private void RefillAmbushLocked(ushort mapId, (int X, int Y)? arriving = null)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         if (!Content.Ambushes.TryGetValue(mapId, out var cfg)) return;
@@ -1095,7 +1103,7 @@ public sealed partial class World
         int mobs = 0; foreach (var mob in m.Mobs) if (mob.Alive && !mob.IsNpc) mobs++;
         if (mobs >= cfg.MobCap) return;
 
-        var taken = OccupiedTiles(mapId);
+        var taken = OccupiedTiles(mapId, arriving);
         foreach (var t in m.Traps) taken.Add((t.X, t.Y));   // don't stack two traps on one tile
         int budget = cfg.Count * PlacementTriesPerMob;
         while (traps < cfg.Count && budget-- > 0)
@@ -1112,8 +1120,9 @@ public sealed partial class World
     // topped back up to SuteAi.FrigidTrapsPerMap on every entry and after each one springs. Deliberately the
     // same machinery as the cave ambush traps above rather than a per-step dice roll, so they can be SPOTTED
     // (spot_traps reveals any trap kind) and so a sprung one relocates instead of thinning the room out.
-    // Caller holds _lock.
-    private void RefillFrigidLocked(ushort mapId)
+    // Caller holds _lock. `arriving` as in RefillAmbushLocked: the entering player's tile on map entry, null
+    // after a cold tile springs under someone already on the map.
+    private void RefillFrigidLocked(ushort mapId, (int X, int Y)? arriving = null)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         if (Array.IndexOf(SuteAi.CaveMaps, mapId) < 0) return;
@@ -1121,7 +1130,7 @@ public sealed partial class World
         int traps = 0; foreach (var t in m.Traps) if (t.Kind == SuteAi.FrigidTrapKind) traps++;
         if (traps >= SuteAi.FrigidTrapsPerMap) return;
 
-        var taken = OccupiedTiles(mapId);
+        var taken = OccupiedTiles(mapId, arriving);
         foreach (var t in m.Traps) taken.Add((t.X, t.Y));   // don't stack two traps on one tile
         int budget = SuteAi.FrigidTrapsPerMap * PlacementTriesPerMob;
         while (traps < SuteAi.FrigidTrapsPerMap && budget-- > 0)
@@ -1354,7 +1363,10 @@ public sealed partial class World
         PeerTile[] peers; Mob[] mobs; PeerTile newcomer;
         lock (_lock)
         {
-            _spawnDirector.EnsureMaterialized(mapId);                 // instantiate this map's spawns on first entry
+            // The room is filled BEFORE the newcomer joins the player list below, and that order stays. The
+            // tile they are arriving on is handed to the fill instead, as taken, so no creature, ambush trap or
+            // cold tile is placed on it (#122). Read under the lock, like the newcomer snapshot further down.
+            _spawnDirector.EnsureMaterialized(mapId, (s.PlayerX, s.PlayerY));   // instantiate this map's spawns on first entry
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
             m.ViewGen++;                    // a player roster change — the peer sweep reads this list
