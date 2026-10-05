@@ -621,12 +621,15 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # attached to. Runs in a helper PowerShell because the sender has to detach from its own console to attach
 # to the target's, and detaching THIS process would take an interactive caller's shell down with it. The
 # helper installs a real handler that swallows both events for itself (ignoring Ctrl+C alone would not
-# survive its own Ctrl+Break). Returns { Code; By; Why; Skipped }. Code is 100 when the process exited after
-# Ctrl+C, 101 when Ctrl+Break was sent as well, 10000+/20000+/30000+ plus the Win32 error when attaching or
-# generating failed, and By is the PowerShell that ran the helper. 40000 means there was no PowerShell to run
-# it; any other code means none of them ran the helper's code, and Why says what each did instead. Skipped
-# lists the hosts that failed before the one that ran it. Success is not 0/1, because 1 is what a PowerShell
-# exits with when its script never got going (it used to be, and such a helper read as "Ctrl+Break sent").
+# survive its own Ctrl+Break). Returns { Code; By; Why; Skipped; MaySignalled }. Code is 100 when the process
+# exited after Ctrl+C, 101 when Ctrl+Break was sent as well, 10000+/20000+/30000+ plus the Win32 error when
+# attaching or generating failed, and By is the PowerShell that ran the helper. MaySignalled is true when a
+# helper got as far as AttachConsole and then failed (killed after its wait, or any other exit), and on 30000+
+# (its Ctrl+C had gone out): it may have signalled, so no other host runs, and Code is that helper's. 40000
+# means there was no PowerShell to run it; any other code means no helper got that far. Why says what
+# happened, every failed host included, and Skipped lists the hosts that failed before the last one ran.
+# Success is not 0/1, because 1 is what a PowerShell exits with when its script never got going (it used to
+# be, and such a helper read as "Ctrl+Break sent").
 #
 # Why Ctrl+Break follows. A console inherits the "ignore Ctrl+C" attribute of whatever launched it
 # (SetConsoleCtrlHandler(NULL, TRUE); every process started in a new process group carries it), and a
@@ -637,7 +640,11 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # with an 8 s handler got no second call, finished, and exited.
 #
 # Which PowerShell, and how. Windows PowerShell by absolute path first, then PowerShell 7
-# (Get-SignalHelperHosts); the next is tried only when the previous did not run the helper's code. Never
+# (Get-SignalHelperHosts). The next is tried only when the previous never reached AttachConsole: the helper
+# prints a marker line just before it, and that line is read even from a helper killed after its wait. A helper
+# that printed it may already have signalled, and a second one would signal again, by PID, possibly after that
+# PID has gone to another process. For the same reason no further host runs once the target, checked through a
+# handle taken before the first one, has exited. Never
 # "$PSHOME\powershell.exe": under PowerShell 7 $PSHOME holds pwsh.exe and no powershell.exe, so that helper
 # silently never started and every -Stop from a PowerShell 7 shell ended in a terminate (2026-09-27). Each is
 # started directly (Invoke-SignalHelper), not through cmd, and what it prints is read here and reported, not
@@ -664,6 +671,8 @@ public static class P1998Sig {
     try { return System.Diagnostics.Process.GetProcessById(pid).HasExited; } catch { return true; }
   }
   public static int Send(int pid, int waitMs) {
+    Console.Out.WriteLine("ATTACHMARKER");
+    Console.Out.Flush();
     FreeConsole();
     if (!AttachConsole((uint)pid)) return 10000 + Marshal.GetLastWin32Error();
     SetConsoleCtrlHandler(keep, true);
@@ -686,26 +695,46 @@ public static class P1998Sig {
 }
 exit [P1998Sig]::Send(TARGETPID, WAITMS)
 '@
-    $code = $code.Replace('TARGETPID', [string]$ProcessId).Replace('WAITMS', [string]$WaitMs)
+    $marker = 'P1998Sig: attaching to the target console'
+    $code = $code.Replace('TARGETPID', [string]$ProcessId).Replace('WAITMS', [string]$WaitMs).Replace('ATTACHMARKER', $marker)
     $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
     $skipped = @()
     $last = 40000
-    foreach ($exe in (Get-SignalHelperHosts)) {
-        $r = Invoke-SignalHelper -Exe $exe -EncodedCommand $enc -TimeoutMs ($WaitMs + 20000)
-        $name = Split-Path -Leaf $exe
-        if ($r.Code -eq 100 -or $r.Code -eq 101) {
-            return [pscustomobject]@{ Code = $r.Code; By = $name; Why = ''; Skipped = @($skipped) }
+    # A handle, not just the PID: it keeps naming this process after it exits, even once Windows has given the
+    # PID to another. Not opened (gone already, or no access): the first helper finds that out for itself.
+    $target = $null
+    try { $target = [System.Diagnostics.Process]::GetProcessById($ProcessId); [void]$target.Handle } catch { $target = $null }
+    try {
+        foreach ($exe in (Get-SignalHelperHosts)) {
+            $name = Split-Path -Leaf $exe
+            if ($skipped.Count -gt 0 -and $null -ne $target -and $target.HasExited) {
+                return [pscustomobject]@{ Code = $last; By = ''; Skipped = @($skipped); MaySignalled = $false
+                                          Why = "$($skipped -join '; '); then the process exited, so $name was not run" }
+            }
+            $r = Invoke-SignalHelper -Exe $exe -EncodedCommand $enc -TimeoutMs ($WaitMs + 20000) -Marker $marker
+            $before = if ($skipped.Count -gt 0) { "; before it, $($skipped -join '; ')" } else { '' }
+            if ($r.Code -eq 100 -or $r.Code -eq 101) {
+                return [pscustomobject]@{ Code = $r.Code; By = $name; Why = ''; Skipped = @($skipped); MaySignalled = $false }
+            }
+            if ($r.Code -ge 10000 -and $r.Code -lt 40000) {
+                # The helper ran and Windows refused; another host would ask Windows the same thing. From 30000 up,
+                # the refusal was the Ctrl+Break, so the Ctrl+C before it had gone out.
+                $step = @('attach to the console', 'generate Ctrl+C', 'generate Ctrl+Break')[[int][Math]::Floor($r.Code / 10000) - 1]
+                $sent = $r.Code -ge 30000
+                return [pscustomobject]@{ Code = $r.Code; By = $name; Skipped = @($skipped); MaySignalled = $sent
+                                          Why = "$name $(if ($sent) { 'sent Ctrl+C but ' })could not $step, Win32 error $($r.Code % 10000)$before" }
+            }
+            if ($r.Marked) {
+                # It got as far as AttachConsole, so it may have signalled: see the comment above.
+                return [pscustomobject]@{ Code = $r.Code; By = $name; Skipped = @($skipped); MaySignalled = $true
+                                          Why = "$name started to signal, then failed (exit $($r.Code)$(if ($r.Text) { ": $($r.Text)" })), so it may have signalled$before" }
+            }
+            $skipped += "$name exit $($r.Code)$(if ($r.Text) { ": $($r.Text)" })"
+            $last = $r.Code
         }
-        if ($r.Code -ge 10000 -and $r.Code -lt 40000) {
-            # The helper ran and Windows refused; another host would ask Windows the same thing.
-            $step = @('attach to the console', 'generate Ctrl+C', 'generate Ctrl+Break')[[int][Math]::Floor($r.Code / 10000) - 1]
-            return [pscustomobject]@{ Code = $r.Code; By = $name; Why = "$name could not $step, Win32 error $($r.Code % 10000)"; Skipped = @($skipped) }
-        }
-        $skipped += "$name exit $($r.Code)$(if ($r.Text) { ": $($r.Text)" })"
-        $last = $r.Code
-    }
+    } finally { if ($null -ne $target) { $target.Dispose() } }
     $why = if ($skipped.Count -gt 0) { $skipped -join '; ' } else { 'no Windows PowerShell or PowerShell 7 to run the helper' }
-    return [pscustomobject]@{ Code = $last; By = ''; Why = $why; Skipped = @($skipped) }
+    return [pscustomobject]@{ Code = $last; By = ''; Why = $why; Skipped = @($skipped); MaySignalled = $false }
 }
 
 # The PowerShells Send-ConsoleBreak may run its helper under, in the order it tries them: Windows PowerShell
@@ -728,9 +757,11 @@ function Get-SignalHelperHosts {
 
 # Run the signal helper under one PowerShell: started directly (no cmd, so a path with spaces is fine), with no
 # window of its own, stdin closed, and stdout/stderr read here so none of it reaches this session's streams.
-# Returns { Code; Text }: the exit code, and the first line the helper printed (its own error, when it
-# failed), or why it could not be started or did not finish.
-function Invoke-SignalHelper([string]$Exe, [string]$EncodedCommand, [int]$TimeoutMs) {
+# Returns { Code; Text; Marked }: the exit code, and the first line the helper printed (its own error, when it
+# failed), or why it could not be started or did not finish; Marked says whether it printed -Marker. A helper
+# still running after TimeoutMs is killed through the handle Start returned (never by PID), and what it printed
+# before that is still read: its pipes close as it dies.
+function Invoke-SignalHelper([string]$Exe, [string]$EncodedCommand, [int]$TimeoutMs, [string]$Marker = '') {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = "-NoProfile -NonInteractive -EncodedCommand $EncodedCommand"
@@ -742,18 +773,24 @@ function Invoke-SignalHelper([string]$Exe, [string]$EncodedCommand, [int]$Timeou
     try { $p = [System.Diagnostics.Process]::Start($psi) } catch {
         $e = $_.Exception
         if ($null -ne $e.InnerException) { $e = $e.InnerException }
-        return [pscustomobject]@{ Code = 40002; Text = "could not be started: $($e.Message)" }
+        return [pscustomobject]@{ Code = 40002; Text = "could not be started: $($e.Message)"; Marked = $false }
     }
     try {
         $p.StandardInput.Close()
         $reads = @($p.StandardOutput.ReadToEndAsync(), $p.StandardError.ReadToEndAsync())
-        if (-not $p.WaitForExit($TimeoutMs)) {
+        $why = ''
+        if ($p.WaitForExit($TimeoutMs)) { $code = $p.ExitCode } else {
             try { $p.Kill() } catch { }
-            return [pscustomobject]@{ Code = 40003; Text = "still running after $([int]($TimeoutMs / 1000)) s, so it was killed" }
+            [void]$p.WaitForExit(5000)
+            $code = 40003
+            $why = "still running after $([int]($TimeoutMs / 1000)) s, so it was killed"
         }
         $text = ''
         foreach ($read in $reads) { if ($read.Wait(3000)) { $text += [string]$read.Result + "`n" } }
-        return [pscustomobject]@{ Code = $p.ExitCode; Text = (Get-HelperLine $text) }
+        $marked = $Marker.Length -gt 0 -and $text.Contains($Marker)
+        if ($marked) { $text = $text.Replace($Marker, '') }
+        if ($why -eq '') { $why = Get-HelperLine $text }
+        return [pscustomobject]@{ Code = $code; Text = $why; Marked = $marked }
     } finally { $p.Dispose() }
 }
 
@@ -784,15 +821,19 @@ function Stop-SessionProcess($Slot, [string]$Root) {
     $sig = Send-ConsoleBreak -ProcessId $id -WaitMs 5000
     $rc = [int]$sig.Code
     $delivered = $rc -eq 100 -or $rc -eq 101
+    $maybe = [bool]$sig.MaySignalled
     if ($delivered -and @($sig.Skipped).Count -gt 0) {
         Write-Host "$($Slot.Label) PID $id`: signalled through $($sig.By) ($(@($sig.Skipped) -join '; '))."
     }
-    if (-not $delivered) {
+    if ($maybe) {
+        Write-Host "$($Slot.Label) PID $id`: $($sig.Why)."
+    } elseif (-not $delivered) {
         Write-Host "$($Slot.Label) PID $id`: the console signal could not be delivered ($($sig.Why))."
     }
     if (Wait-Exit $id 30) {
         if ($rc -eq 100) { return "stopped on Ctrl+C after $([int]$sw.Elapsed.TotalSeconds) s" }
         if ($rc -eq 101) { return "stopped after Ctrl+C and Ctrl+Break, $([int]$sw.Elapsed.TotalSeconds) s" }
+        if ($maybe) { return "exited after $([int]$sw.Elapsed.TotalSeconds) s; its signal helper had started to signal before it failed" }
         return "exited after $([int]$sw.Elapsed.TotalSeconds) s, with no console signal delivered"
     }
     if ($Slot.Label -eq 'GAME') {
