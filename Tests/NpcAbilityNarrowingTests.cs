@@ -21,7 +21,11 @@ namespace Tests;
 /// <para>Falsified by hand on the branch that added it: dropping 41 from <c>armor_quest@36;41</c> turns
 /// <see cref="ArmorQuestNamesExactlyTheGuildMasters"/> red; adding a bogus 9999 to <c>sute@39</c> turns
 /// <see cref="EveryNarrowedIdIsAnNpcOfItsOwnIdentifier"/> red.</para>
+///
+/// <para>Collection <c>"log"</c> (runs alone) because <see cref="TheLoaderLogsABadNarrowingAndFailsClosed"/>
+/// holds the process-wide log line sink; see <see cref="TestSeamCollectionTests"/>.</para>
 /// </summary>
+[Collection("log")]
 public class NpcAbilityNarrowingTests
 {
     private static readonly object _gate = new();
