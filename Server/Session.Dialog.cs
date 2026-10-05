@@ -890,8 +890,10 @@ public sealed partial class Session
             // never delivered). The conditional DELETE inside the transaction is still the double-claim
             // guard, so nothing is lost by moving it in here.
             var snapshot = SnapshotBag();
-            ParcelItem? got = null;
             string? say = null;
+            // Set only when the claim step ran and found the parcel already gone: the one failed claim worth
+            // listing again for (the !committed branch below says why).
+            bool gone = false;
             // The pack-full fallback drops the goods at the player's feet. That drop is deferred until AFTER
             // the commit on purpose: ground items are pure runtime state with no database row, so dropping
             // inside the transaction and then failing to commit would leave the item lying there AND the
@@ -901,8 +903,8 @@ public sealed partial class Session
             // claim's row against the session's other writes (Session.CharacterApi.cs).
             bool committed = CaptureAndWriteWith((cn, tx) =>
             {
-                got = Parcel.ClaimIn(cn, tx, _char.Name, p.Position);
-                if (got is null) return false;                  // already taken by another path — re-list
+                var got = Parcel.ClaimIn(cn, tx, _char.Name, p.Position);
+                if (got is null) { gone = true; return false; }   // already taken by another path — re-list
 
                 if (got.IsGold)
                 {
@@ -936,10 +938,14 @@ public sealed partial class Session
                 // COMMIT failed, and leaving that standing would let the next autosave persist an item whose
                 // parcel row is still in the queue — a dupe.
                 RestoreBag(snapshot);
-                // A replaced session's claim is refused before the claim runs, so got is null there too, and
-                // re-listing would find the same parcel and try again for ever. Its connection is closed; the
-                // parcel stays queued for the session that replaced it.
-                if (got is null && !IsReplaced) continue;
+                // List again ONLY when the claim step ran and found the parcel gone: the next listing no longer
+                // shows it. Any other failed claim would find the same parcel and claim it again at once, for as
+                // long as the cause lasts, inside this player's monitor (ParcelClaimRefusalTests): a store that
+                // refused or failed before the claim step (an unreadable row, a busy or broken database), a
+                // claim step that threw, a replaced session (CaptureAndWriteWith refuses it before the work).
+                // Each takes the failure branch once and keeps the parcel; a replaced session's line goes to a
+                // connection that is already closed, and the parcel waits for the session that replaced it.
+                if (gone) continue;
                 await DlgSay(npc, "I couldn't hand that over just now — try me again in a moment.");
                 Log.Warn($"parcel claim FAILED for '{_char.Name}' pos={p.Position} — rolled back, parcel kept");
                 return;
