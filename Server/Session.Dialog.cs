@@ -371,8 +371,8 @@ public sealed partial class Session
     private void NoteBlueRooster(Mob mob)
     {
         if (mob.Key != DaggerUniformQuest.RoosterMob) return;
-        if (QuestStage(DaggerUniformQuest.Key) != DaggerUniformQuest.Stage.WatchForRooster) return;
-        SetQuestStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.SeenRooster);
+        if (Quest(DaggerUniformQuest.Key).Stage != DaggerUniformQuest.Stage.WatchForRooster) return;
+        Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.SeenRooster);
         Notify(DaggerUniformQuest.RoosterNoticed);
     }
 

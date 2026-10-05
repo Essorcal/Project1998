@@ -6,7 +6,8 @@ using Shared;
 
 namespace Server;
 
-public sealed partial class Session
+// QuestState.ISessionStore: QuestState's session path, implemented explicitly in the quests section below.
+public sealed partial class Session : QuestState.ISessionStore
 {
 
     // ===== items ================================================================================
@@ -425,23 +426,42 @@ public sealed partial class Session
     }
 
     // ===== quests (see Server/QuestState.cs; the conversations are QuestDef, Server/NpcAbility.cs) =====
-    // _char.Quests (a flat key->int map, persisted) goes through QuestState (SetNation's clear is #307). Quest
-    // code names its state via Quest(name); QuestStage/SetQuestStage/QuestCounter are the flat primitives under it.
+    // Both quest maps, _char.Quests (key -> int) and _char.QuestStrings (key -> text), persisted, go through
+    // QuestState. Code names its state via Quest(name), or Quest(QuestState.Registry) for a flat registry key.
+    // The four members after HasDogFlag are QuestState's session path under it (QuestState.ISessionStore),
+    // implemented explicitly, so they are not members anything can call on a session (#308).
     internal QuestState Quest(string name) => new(this, name);
-    internal int  QuestStage(string questKey) => QuestState.Read(_char, questKey);
 
     /// <summary>Has this character finished the Dog Linguist chain? Set by the Spotted dog (npc_dialog.lua
     /// <c>npcs_say.DogLinguistNpc</c>) or by <c>@dog</c>; it is what lets you say "secret" to your own class's
     /// Dog. Learning the spells ALSO needs an eligible path (Content.CanLearnDogSpells — base classes and NPC
     /// subpaths, never a PC subpath), which the Dog checks separately.</summary>
-    internal bool HasDogFlag => QuestStage(Content.DogFlagReg) > 0;
-    internal void SetQuestStage(string questKey, int stage)
+    internal bool HasDogFlag => Quest(QuestState.Registry).Get(Content.DogFlagReg) > 0;
+
+    /// <summary>A saved int key off the live character: a bare map read with no monitor, as it always was.</summary>
+    int QuestState.ISessionStore.Read(string savedKey) => QuestState.Read(_char, savedKey);
+
+    /// <summary>A saved int key written and saved, under this session's monitor.</summary>
+    void QuestState.ISessionStore.Write(string savedKey, int value)
     {
         using var _ = EnterState();   // #29: a GM command sets a quest stage on ANOTHER player's session
-        QuestState.Write(_char, questKey, stage);
+        QuestState.Write(_char, savedKey, value);
         SaveChar();
     }
-    internal int  QuestCounter(string counterKey) => QuestState.Read(_char, counterKey);
+
+    /// <summary>A saved text key off the live character: a bare map read with no monitor, as the string
+    /// registry's read always was. Mentorship reads a protégé's from the mentor's thread this way.</summary>
+    string QuestState.ISessionStore.ReadText(string savedKey) => QuestState.ReadText(_char, savedKey);
+
+    /// <summary>A saved text key written and saved. It takes no monitor of its own, as the string registry's
+    /// write never did: each writer already holds this session's (the minor quest and the protégé's accept run on
+    /// that player's own read loop, the mentorship culmination inside <c>target.WithState</c>, <c>@quest</c> on
+    /// the GM's own), and <see cref="SaveChar"/>'s Debug guard fails one that does not.</summary>
+    void QuestState.ISessionStore.WriteText(string savedKey, string value)
+    {
+        QuestState.WriteText(_char, savedKey, value);
+        SaveChar();
+    }
 
     // ===== group experience (RTK Scripts/exp.lua onGetExp) =======================================
     // Per-head share by group size. The whole group is worth MORE than a solo kill — two people take
@@ -650,7 +670,7 @@ public sealed partial class Session
     /// own branch (<see cref="TutorialQuest"/>) plays the same script on demand and is the fallback for
     /// everyone this cannot reach; see that method for why both exist.
     ///
-    /// <para>Fires once per character: <see cref="TigerMailQuest.MetClawReg"/> is stamped here as well as by
+    /// <para>Fires once per character: <see cref="TigerMailQuest.MetClaw"/> is stamped here as well as by
     /// Claw, so a player who dismisses the push is not shown it again on the next level — the tutor is where
     /// they get it back. It is silent (and re-armed for the next level) while the player is sitting in another
     /// MODAL box, because <c>AwaitReply</c> overwrites the pending prompt and would orphan whatever
@@ -659,10 +679,11 @@ public sealed partial class Session
     {
         if (CharBasePathId != TigerMailQuest.WarriorPathId) return;
         if (_char.Level < TigerMailQuest.MinLevel) return;
-        if (QuestCounter(TigerMailQuest.MetClawReg) == 1) return;
+        var tigerMail = Quest(TigerMailQuest.QuestKey);
+        if (tigerMail.Get(TigerMailQuest.MetClaw) == 1) return;
         if (DialogBusy) return;                       // mid-conversation: leave it, the next level tries again
 
-        SetQuestStage(TigerMailQuest.MetClawReg, 1);
+        tigerMail.Set(TigerMailQuest.MetClaw, 1);
         _ = PushTigerEssenceAsync();                  // fire-and-forget: suspends on each page, like OpenNpcDialog
     }
 
@@ -1002,10 +1023,6 @@ public sealed partial class Session
     /// fine for its only use: every reader compares a delta taken after the quest was accepted.</summary>
     internal int TotalKills => _char.Kills.GetValueOrDefault(TotalKillsKey);
 
-    // ---- string quest registry (RTK registryString): the active minor-quest key, etc. -----------
-    internal string QuestStr(string key) => _char.QuestStrings.GetValueOrDefault(key, "");
-    internal void   SetQuestStr(string key, string value) { _char.QuestStrings[key] = value; SaveChar(); }
-
     // ---- legends by internal name (add/replace/remove/query) -------------------------------------
     // A quest owns a legend by its Name key, so it can update or clear its own line without matching text.
     internal bool HasLegend(string name) => _char.Legends.Any(l => l.Name == name);
@@ -1070,7 +1087,7 @@ public sealed partial class Session
     internal void SetNation(byte nation)
     {
         _char.Nation = nation;
-        _char.Quests[HomeReg] = HomeNone;
+        QuestState.Write(_char, HomeReg, HomeNone);
         SaveChar();
         SendStats();
     }

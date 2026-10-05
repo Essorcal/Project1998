@@ -32,12 +32,17 @@ namespace Server;
 /// </summary>
 public static class Mentorship
 {
-    /// <summary>Completed mentorships (the mentor's side). Poet Moon reads this — see
-    /// <see cref="ArmorQuest.MentoredReg"/>, the same key.</summary>
+    /// <summary>Completed mentorships (the mentor's side), a flat registry key
+    /// (<see cref="QuestState.Registry"/>). Poet Moon reads this — see <see cref="ArmorQuest.MentoredReg"/>, the
+    /// same key.</summary>
     public const string MentoredReg = ArmorQuest.MentoredReg;
 
-    /// <summary>On the PROTÉGÉ: the name of the character currently mentoring them ("" = none).</summary>
-    public const string MentorStr = "mentor";
+    /// <summary>The namespace of the mentorship's own state (<see cref="QuestState"/>).</summary>
+    public const string Key = "mentorship";
+
+    /// <summary>On the PROTÉGÉ: the name of the character currently mentoring them ("" = none). A text slot of
+    /// <see cref="Key"/>, saved in the string registry as <c>mentor</c>.</summary>
+    public const string MentorSlot = "text.mentor";
 
     /// <summary>Permanent mark on someone who has completed a mentorship — one per life, which is what
     /// stops a pair of friends farming the tally between them.</summary>
@@ -74,7 +79,7 @@ public sealed partial class Session
         { SendMiniText($"{target.Snapshot().Name} must be near you when you ask to mentor."); return; }
 
         string them = target.Snapshot().Name;
-        bool mine = string.Equals(target.QuestStr(Mentorship.MentorStr), _char.Name,
+        bool mine = string.Equals(target.Quest(Mentorship.Key).GetText(Mentorship.MentorSlot), _char.Name,
                                   StringComparison.OrdinalIgnoreCase);
 
         // ---- culminate: this is already your protégé -------------------------------------------
@@ -88,8 +93,9 @@ public sealed partial class Session
                 new[] { "Yes, that's fine.", "No, absolutely not." });
             if (done != 1) return;
 
-            int total = QuestCounter(Mentorship.MentoredReg) + 1;
-            SetQuestStage(Mentorship.MentoredReg, total);
+            var registry = Quest(QuestState.Registry);
+            int total = registry.Get(Mentorship.MentoredReg) + 1;
+            registry.Set(Mentorship.MentoredReg, total);
             AddLegend($"Mentored {total} new player{(total == 1 ? "" : "s")}", Mentorship.MentorLegend,
                       Mentorship.LegendIcon, Mentorship.LegendColor);
 
@@ -98,7 +104,7 @@ public sealed partial class Session
             // half-unbound (#29).
             target.WithState(() =>
             {
-                target.SetQuestStr(Mentorship.MentorStr, "");
+                target.Quest(Mentorship.Key).SetText(Mentorship.MentorSlot, "");
                 target.RemoveLegend(Mentorship.BeingMentoredLegend);
                 target.AddLegend($"Mentored by {_char.Name} ({Character.GameDate})", Mentorship.MentoredByLegend,
                                  Mentorship.LegendIcon, Mentorship.LegendColor);
@@ -122,7 +128,7 @@ public sealed partial class Session
         // ---- offer: everything that disqualifies a new protégé ----------------------------------
         if (target.HasLegend(Mentorship.MentoredByLegend))
         { SendMiniText($"{them} has already been mentored!"); return; }
-        if (target.QuestStr(Mentorship.MentorStr).Length > 0)
+        if (target.Quest(Mentorship.Key).GetText(Mentorship.MentorSlot).Length > 0)
         { SendMiniText($"{them} is already being mentored by someone else!"); return; }
         if (target.CharLevel < Mentorship.MinProtegeLevel || target.CharLevel > Mentorship.MaxProtegeLevel)
         {
@@ -163,10 +169,11 @@ public sealed partial class Session
         }
 
         // Re-check on landing: both parties have been free to act while the prompt was open.
-        if (HasLegend(Mentorship.MentoredByLegend) || QuestStr(Mentorship.MentorStr).Length > 0)
+        var mentorship = Quest(Mentorship.Key);
+        if (HasLegend(Mentorship.MentoredByLegend) || mentorship.GetText(Mentorship.MentorSlot).Length > 0)
         { mentor.SendMiniText($"{me} is already being mentored."); return; }
 
-        SetQuestStr(Mentorship.MentorStr, who);
+        mentorship.SetText(Mentorship.MentorSlot, who);
         AddLegend($"Being mentored by {who}", Mentorship.BeingMentoredLegend,
                   Mentorship.LegendIcon, Mentorship.LegendColor);
         mentor.SendMiniText($"{me} accepts your offer of mentorship! Please guide them until level " +

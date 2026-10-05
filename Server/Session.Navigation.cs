@@ -588,11 +588,11 @@ public sealed partial class Session
     private void TryCrowSnatch()
     {
         if (_char.Map != DaggerUniformQuest.KugnaeMap) return;
-        if (QuestStage(DaggerUniformQuest.Key) != DaggerUniformQuest.Stage.StealAcorn) return;
+        if (Quest(DaggerUniformQuest.Key).Stage != DaggerUniformQuest.Stage.StealAcorn) return;
         if (IsDead || DialogBusy) return;
         if (!TakeItem(DaggerUniformQuest.StolenAcorn, 1)) return;
 
-        SetQuestStage(DaggerUniformQuest.Key, DaggerUniformQuest.Stage.CrowTookIt);
+        Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.CrowTookIt);
         _ = ShowCrowSnatchAsync();
     }
 
@@ -642,7 +642,7 @@ public sealed partial class Session
         Log.Info($"   -> LEVIATHAN talisman dropped by {_char.Name} at ({_char.X},{_char.Y}) map {_char.Map}: " +
                  $"captive={(captive is null ? "NONE ON MAP" : $"({captive.X},{captive.Y}) dist {dist}")}, " +
                  $"freedLegend={HasLegend(LeviathanQuest.LegendFreed)}, enemyLegend={HasLegend(LeviathanQuest.LegendEnemy)}, " +
-                 $"stage={QuestStage(LeviathanQuest.Key)}");
+                 $"stage={Quest(LeviathanQuest.Key).Stage}");
 
         if (HasLegend(LeviathanQuest.LegendEnemy))
         { Notify("The talisman lies cold in your hand. The Leviathans have not forgiven you."); return true; }
@@ -674,7 +674,7 @@ public sealed partial class Session
         Notify("You cast Release leviathan.");
         NpcBubble(captive, "Thank you puny one.");   // NpcBubble prefixes the speaker's own name
         _world.DespawnMob(_char.Map, captive);
-        SetQuestStage(LeviathanQuest.Key, LeviathanQuest.StageFreed);
+        Quest(LeviathanQuest.Key).SetStage(LeviathanQuest.StageFreed);
         Log.Info($"   -> LEVIATHAN freed at ({captive.X},{captive.Y}) by {_char.Name}");
     }
 
@@ -856,9 +856,10 @@ public sealed partial class Session
     private void TryNewbieCoordinateLesson(ushort mapId, ushort x, ushort y)
     {
         if (mapId != 4714 || x != 21 || y != 20) return;
-        if (QuestStage("newbie_area_quest") < 5) return;         // hasn't been set the task yet
-        if (QuestCounter(NewbCoordsLearned) != 0) return;        // already paid
-        SetQuestStage(NewbCoordsLearned, 1);
+        var registry = Quest(QuestState.Registry);                // npc_dialog.lua's stage (NEWB), and our flag
+        if (registry.Get("newbie_area_quest") < 5) return;       // hasn't been set the task yet
+        if (registry.Get(NewbCoordsLearned) != 0) return;        // already paid
+        registry.Set(NewbCoordsLearned, 1);
         AwardExp(50);                                            // NEWB_STAGE_EXP, same as every other beat
     }
 
@@ -1216,7 +1217,7 @@ public sealed partial class Session
     private void TryForeverBranch()
     {
         if (!PoetWhipQuest.InTreeGround(_char.Map, _char.X, _char.Y)) return;
-        if (QuestStage(PoetWhipQuest.Key) != PoetWhipQuest.StageBranch) return;
+        if (Quest(PoetWhipQuest.Key).Stage != PoetWhipQuest.StageBranch) return;
         if (CountItem(PoetWhipQuest.Branch) > 0) return;
         if (Random.Shared.Next(PoetWhipQuest.BranchRate) != 0) return;
 

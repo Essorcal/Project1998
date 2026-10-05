@@ -76,7 +76,7 @@ public sealed partial class Session
         // ...and the Sage rung they paid for, which is path-independent (every class buys the same ladder
         // from the same NPC), so unlike the Dog spells there is nothing to check but the registry.
         var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag,
-                                          QuestCounter(Content.SageRungReg));
+                                          Quest(QuestState.Registry).Get(Content.SageRungReg));
 
         ClearSpellbook();
         bool capped = want.Count > SpellBookCap;
@@ -3432,7 +3432,7 @@ public sealed partial class Session
     /// where neutrals live, so it has its own group (a clearing by Rotah, RTK <c>country == 0</c>). Only the
     /// nations with no tavern set of their own (Shilla/Jinhan/Paekjae/Kaya, none of them reachable in this
     /// era) fall back, and they fall back to Kugnae's.</para></summary>
-    private string HomeGroup() => QuestCounter(HomeReg) switch
+    private string HomeGroup() => Quest(QuestState.Registry).Get(HomeReg) switch
     {
         HomeSanhae  => "Sanhae",
         HomeHausson => "Hausson",
