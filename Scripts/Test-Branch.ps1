@@ -253,7 +253,7 @@ function Get-ScriptHeader([string]$Path) {
 # apphost (p1998-test.exe, TestClient.Cli's <AssemblyName>) as a CHILD of it -- Kill() alone (the only
 # overload on .NET Framework; Kill(bool entireProcessTree) is .NET Core-only) would leave that child
 # running and the bot connected. $ErrorActionPreference = 'Continue' for the duration of this one native
-# call, Scripts\Serve.ps1's own pattern (Get-GitInfo, Test-DotnetSdk, Send-ConsoleBreak): under 'Stop',
+# call, Scripts\Serve.ps1's own pattern (Get-GitInfo, Test-DotnetSdk): under 'Stop',
 # ANY stderr line from a native command -- including taskkill's normal "process not found" when the tree
 # already exited on its own between the timeout check and this call -- becomes a terminating exception
 # that would unwind out of the caller and lose the rest of the table.
