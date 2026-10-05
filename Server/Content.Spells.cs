@@ -1393,6 +1393,20 @@ public static partial class Content
     /// <summary>The cast delay, live-measured at exactly one second.</summary>
     public const int ZapCastDelayMs = 1000;
 
+    // The Rogue sacrifice reskins: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
+    // and The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack, under the other three
+    // alignments. RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
+    // desperate_attack.lua), and the sacrifice verb runs all eight alike, but the export gave the six reskins bare
+    // Utility rows where the originals have Damage rows, so the archetype test in CastDelayMs gave the reskins no
+    // delay at all. Caleb, 2026-09-29: they share the originals' 1s. Named key by key rather than by sacrifice
+    // family on purpose: the Warrior Berserk and Whirlwind reskins have Utility rows and the same gap, and no
+    // decision covers them yet.
+    private static readonly HashSet<string> RogueSacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "afterlifes_embrace_rogue", "mingkens_judgement_rogue", "calculating_blow_rogue",   // Lethal Strike's
+        "the_voids_measure_rogue", "beastly_frenzy_rogue", "tilting_the_balance_rogue",    // Desperate Attack's
+    };
+
     /// <summary>How long this spell occupies the shared cast/swing slot. 0 = no cast delay, so it neither
     /// waits on a swing nor blocks the next one (it still pays the ordinary 3/sec action budget).</summary>
     public static int CastDelayMs(SpellDef sp)
@@ -1415,6 +1429,9 @@ public static partial class Content
         // and shared with swinging, instead of the aether path's "Invisible isn't ready yet (0s)." -- a
         // message whose "(0s)" was always a sub-second remainder being floored, i.e. this same 1s.
         if (IsStealthSpell(sp)) return ZapCastDelayMs;
+
+        // The six Rogue sacrifice reskins (RogueSacrificeReskins, above) take their originals' 1s.
+        if (RogueSacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
 
         var fx = FxFor(sp);
         return fx is not null && fx.Archetype == "Damage" ? ZapCastDelayMs : 0;
