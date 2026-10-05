@@ -2466,7 +2466,8 @@ pickup.
 
 **Equip stat bonuses + wear requirements — SOLVED (2026-07-25).** Worn gear now feeds the HUD/profile and
 combat. The character's `_char.*` stats stay the **base**; the effective values are `base + Σ(worn-gear
-lines)`, recomputed on every send by `Session.EquipTotals()` — nothing is ever baked into the base, so a
+lines)`: `Session.EquipTotals()` sums the gear at each gear change into one published totals snapshot that
+every send reads (PR #314) — nothing is ever baked into the base, so a
 relog (which reloads `Equipment` and redraws it) can't drift or double-count. Mapping: `Vita→maxHP`,
 `Mana→maxMP`, `Might/Will/Grace→` those stats (`0x08`), and `Armor→AC`, `Hit`, `Dam→` the profile (`0x39`).
 **AC is signed and lower is better**, so armor **subtracts**. `EquipFromSlot`/`HandleUnequip` push a fresh

@@ -1337,7 +1337,7 @@ public sealed partial class Session
 
     // Apply one timed stat buff (might/hit/dam/hp/mp/…) for durationMs, folded live into Totals() -> HUD/melee.
     // Re-casting the SAME spell refreshes rather than stacks (matches C# CastBuff / RTK removeDuras-then-set).
-    // Buffs flow through BuffTotals() (never cached), so no equip-cache invalidation is needed. Shares the exact
+    // BuffRemoveAll and BuffAdd republish the totals snapshot (PR #314): no InvalidateEquipTotals. Shares the exact
     // ActiveBuff plumbing the C# archetype uses.
     internal void LuaBuff(string stat, int amount, int durationMs, SpellDef sp)
     {
