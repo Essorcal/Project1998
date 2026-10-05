@@ -22,7 +22,8 @@ namespace Tests;
 /// another path took it, the next listing does not show it, and listing again is right. Or the claim never found
 /// anything out: the store refused or failed before the step, or the step itself threw. Listing again then finds
 /// the same parcel and claims it again at once, for as long as the store keeps failing, inside the player's state
-/// monitor: over 280,000 claims in 10 s in each case below, on the old loop.</para>
+/// monitor: at least 149,521 claims in 10 s in every case below and every run on the old loop (see the
+/// theory).</para>
 ///
 /// <para><b>Now.</b> Only a claim step that ran and found its parcel gone lists again. Every other claim that does
 /// not commit takes the failure branch once: the "try me again" line, the Warn line, the parcel kept, the bag put
@@ -80,8 +81,9 @@ public sealed class ParcelClaimRefusalTests
     /// back, so a loop that spins fails this fact rather than hanging the run.
     ///
     /// <para>Falsified (see the w2-parcel-refusal report). On master's loop: red in all three cases, "the claim
-    /// never came back", 284,188 to 433,145 claims in 10 s, Debug and Release. With the flag set on entering the
-    /// claim step instead of on its null answer: red in the ClaimStepFails case only.</para></summary>
+    /// never came back", with 149,521 to 446,438 claims in 10 s over three runs each in Debug and Release (the
+    /// count follows the machine's load). With the flag set on entering the claim step instead of on its null
+    /// answer: red in the ClaimStepFails case only.</para></summary>
     [Theory]
     [InlineData(Refusal.UnreadableRow)]
     [InlineData(Refusal.StoreFailsFirst)]
