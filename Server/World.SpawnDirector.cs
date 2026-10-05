@@ -188,8 +188,15 @@ public sealed partial class World
         /// tick thread may touch (<see cref="FaultThrottle{TKey}"/>), and this runs on a session thread; and
         /// catching here would turn a failed entry into a successful one, a player-visible change of its own.
         /// Both are left as a follow-up (the spawn-row-guards report), with the facts in
-        /// <c>Tests/SpawnRowGuardTests.cs</c> pinning today's behaviour until then.</para></summary>
-        internal void EnsureMaterialized(ushort mapId)
+        /// <c>Tests/SpawnRowGuardTests.cs</c> pinning today's behaviour until then.</para>
+        ///
+        /// <para><paramref name="arriving"/> is the entering player's tile (<c>World.EnterMap</c>), null on the
+        /// <c>@reload</c> re-materialise. The entering player is not on the map's player list until this
+        /// returns, so the three placements below that avoid that list's tiles (the group fill, the ambush
+        /// traps, the cold tiles) are handed their tile as taken (#122). The points are not:
+        /// <see cref="Materialize"/> places through <c>FreeSpawnTile</c>, which has never looked at players on
+        /// any path.</para></summary>
+        internal void EnsureMaterialized(ushort mapId, (int X, int Y)? arriving = null)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             // Batch groups get a chance to fill BEFORE the entering player's room list is read, so a room whose
@@ -197,9 +204,9 @@ public sealed partial class World
             // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
             // entry, since that is the only moment a due group on an unwatched map gets looked at.
             List<PhaseFault>? unguarded = null;   // stays null: guarded is false, so nothing is caught
-            RefillGroups(mapId, guarded: false, ref unguarded);
-            world.RefillAmbushLocked(mapId);   // top up this map's hidden ambush traps (also every entry, same reason)
-            world.RefillFrigidLocked(mapId);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
+            RefillGroups(mapId, guarded: false, ref unguarded, arriving);
+            world.RefillAmbushLocked(mapId, arriving);   // top up this map's hidden ambush traps (also every entry, same reason)
+            world.RefillFrigidLocked(mapId, arriving);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
 
             if (!_materialized.Add(mapId)) return;              // already done
             if (!_spawns.TryGetValue(mapId, out var list)) return;
@@ -245,8 +252,11 @@ public sealed partial class World
         /// <para>Unguarded on the map-entry path (<see cref="EnsureMaterialized"/>, from
         /// <c>World.EnterMap</c>): the filter below is false there, so a throw leaves this method exactly as
         /// it always did. That path runs on a session thread, and the throttle behind <c>LogPhaseFaults</c>
-        /// has one owner, the tick thread; see the entry path's own note.</para></summary>
-        private void RefillGroups(ushort mapId, bool guarded, ref List<PhaseFault>? faults)
+        /// has one owner, the tick thread; see the entry path's own note.</para>
+        ///
+        /// <para><paramref name="arriving"/>: the entering player's tile on the map-entry path, taken for the
+        /// whole fill (#122); null on the tick's, whose players are all on the map's list already.</para></summary>
+        private void RefillGroups(ushort mapId, bool guarded, ref List<PhaseFault>? faults, (int X, int Y)? arriving)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             if (!_groups.TryGetValue(mapId, out var groups)) return;
@@ -255,7 +265,7 @@ public sealed partial class World
             foreach (var g in groups)
             {
                 if (now < g.NextBatchUnix) continue;
-                taken ??= world.OccupiedTiles(mapId);
+                taken ??= world.OccupiedTiles(mapId, arriving);
                 bool threw = false;
                 foreach (var (def, cap) in g.Members)
                 {
@@ -523,7 +533,7 @@ public sealed partial class World
             foreach (var (mapId, _) in _groups)
             {
                 if (!world._maps.TryGetValue(mapId, out var pm) || pm.Players.Count == 0) continue;
-                RefillGroups(mapId, guarded: true, ref faults);
+                RefillGroups(mapId, guarded: true, ref faults, arriving: null);
             }
         }
 
