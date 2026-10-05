@@ -80,6 +80,8 @@ spiritual_guide_rogue,divine,,,,,,,,,binding only; spy variants still flagged by
 natures_handiwork_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,,,,,
 judgement_day_rogue,divine,,,,,,,,,binding only; spy variants still flagged by Content.IsDivinationSpySpell,,,,,,
 return_spell,return_home,,,,,,,,,binding only; no spell_effects row, ctx.spellMana falls back to 5,,,,,
+approach_spell,approach,,,,,,,,,"binding only (#313): the 30 mana, animation and sound are the spell_effects row (ctx.spellMana, ctx:fxSelf); the move is @approach's",tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes|rtk-lua,,,,,
+summon_spell,summon,,,,,,,,,"binding only (#313): the 30 mana, animation and sound are the spell_effects row (ctx.spellMana, ctx:fxSelf); the move is @bring's",tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes|rtk-lua,,,,,
 set_bladestorm_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,,,,,
 set_swords_dance_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,,,,,
 set_tigers_ambush_trap,bladestorm,,,,,,,,,binding only; verb owns mana/cooldown/fx,,,,,,

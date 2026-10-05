@@ -33,6 +33,8 @@ snake_spell,GM,Debuff,,,,,,,slow,,,,,,,
 spin,GM,Debuff,,,,,,,slow,,,,,,,
 approach,GM,Teleport,,,,,,,,,,,3,,,
 summon,GM,Teleport,,,,,,,,,,,3,,,5000
+approach_spell,,Teleport,30,,,,,,,,,,3,4,,
+summon_spell,,Teleport,30,,,,,,,,,,3,4,,
 super_saiyan,GM,Buff,,,,,,1,,,,,241,,,
 wind_walk,GM,Buff,,,,,,60000,,,,,,,,
 experience_shrine_spell,instance,Buff,,,,,,600000,,,,,3,,,

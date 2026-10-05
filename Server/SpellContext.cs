@@ -438,6 +438,66 @@ public sealed class SpellContext
     /// <summary>Mark this cast as self-narrated so the central "You cast X." line is suppressed.</summary>
     public void narrated()      => _s.LuaMarkNarrated();
 
+    // ---- Approach / Summon (#313): the person is TYPED into the prompt, not aimed at ----------------------
+    // The engine half is Session.ApproachSummon.cs; the verbs own every guard and every line. Both moves are the
+    // ones @approach and @bring make (EnterMap with ArrivalPolicy.AdjacentFreeElseStack).
+
+    /// <summary>Resolve the online player whose name was typed (<paramref name="name"/>, normally
+    /// <see cref="answer"/>; any map, case-insensitive, like whisper) as this cast's player target: the typed
+    /// twin of <see cref="pcTarget"/>, so <see cref="targetIsSelf"/>, <see cref="targetIsDead"/>,
+    /// <see cref="targetInGroup"/> and the members below read them. False, and SILENT, on a blank name or when
+    /// nobody online has it; the verb says why.</summary>
+    public bool   pcTargetNamed(string name) => _s.LuaResolveNamedPcTarget(_sp, name);
+    /// <summary>The resolved player target's kingdom (<c>Character.Nations</c>: 0 Neutral, 1 Koguryo, 2 Buya, …);
+    /// -1 with no target.</summary>
+    public double targetNation => _s.LuaPcTarget?.CharNation ?? -1;
+    /// <summary>The map the resolved player target stands on (0 with no target).</summary>
+    public double targetMap    => _s.LuaPcTarget?.CharMap ?? 0;
+    /// <summary>Is the resolved player target staff (the GM roster)?</summary>
+    public bool   targetIsGm   => _s.LuaPcTarget?.LuaIsGm ?? false;
+    /// <summary>The caster's kingdom, numbered as <see cref="targetNation"/>.</summary>
+    public double nation       => _s.CharNation;
+    /// <summary>The map the caster stands on.</summary>
+    public double map          => _s.CharMap;
+    /// <summary>Is the caster staff?</summary>
+    public bool   isGm         => _s.LuaIsGm;
+    /// <summary>Is <paramref name="mapId"/> indoors (Maps.csv <c>MapIndoor</c>)? False for a map with no row.</summary>
+    public bool   mapIndoor(double mapId)  => Content.IsIndoor((ushort)mapId);
+    /// <summary>Is <paramref name="mapId"/> a PvP map (Maps.csv <c>MapPvP</c>)? False for a map with no row.</summary>
+    public bool   mapPvp(double mapId)     => Content.IsPvpMap((ushort)mapId);
+    /// <summary>May a player warp out of <paramref name="mapId"/> (Maps.csv <c>MapWarpout</c>)? True unless the
+    /// row says 0. <see cref="canWarpOut"/> asks the same of the caster's own map.</summary>
+    public bool   mapWarpOut(double mapId) => Content.WarpOut((ushort)mapId);
+
+    /// <summary>Do <paramref name="mapId"/>'s level, vita and mana bands admit <paramref name="who"/>
+    /// (<c>"caster"</c>, or <c>"target"</c> for the resolved player target)? The four comparisons RTK's
+    /// <c>Spells/common/approach.lua</c> and <c>summon.lua</c> make against the destination, on its Maps.csv
+    /// row: level at least <c>MapReqLvl</c> and at most <c>MapLvlMax</c>; base vita at least
+    /// <c>MapReqVita</c> OR base mana at least <c>MapReqMana</c>; base vita at most <c>MapVitaMax</c> AND base
+    /// mana at most <c>MapManaMax</c>. A map with no row has no bands. Base, not with gear, as RTK's
+    /// <c>baseHealth</c>/<c>baseMagic</c> and the walk-in warp gate read them.
+    /// <para>Not the walk-in gate (<c>Session.TryWarpGate</c>), on purpose: that is RTK's clif.c cascade, which also
+    /// asks for mark and path and caps vita and mana with AND rather than OR. These are the spell scripts'
+    /// own comparisons.</para></summary>
+    public bool mapAdmits(double mapId, string who)
+    {
+        Session? mover = who switch { "caster" => _s, "target" => _s.LuaPcTarget, _ => null };
+        if (mover is null) return false;
+        if (!Content.MapMeta.TryGetValue((ushort)mapId, out var band)) return true;
+        long level = mover.CharLevel, vita = mover.CharMaxHp, mana = mover.CharMaxMp;
+        if (level < band.ReqLvl || level > band.LvlMax) return false;
+        if (vita < band.ReqVita && mana < band.ReqMana) return false;
+        return vita <= band.VitaMax && mana <= band.ManaMax;
+    }
+
+    /// <summary>Approach's move: the caster to the first free tile beside the resolved player target (N, E, S,
+    /// W), else onto their tile. Exactly the move <c>@approach</c> makes. False with no target.</summary>
+    public bool   approachTarget() => _s.LuaApproachTarget(_sp);
+    /// <summary>Summon's move: the resolved player target to the first free tile beside the caster, else onto
+    /// the caster's tile. Exactly the move <c>@bring</c> makes, under the target's own monitor. False with no
+    /// target, or when they logged out between the lookup and the move (nobody moves then).</summary>
+    public bool   summonTarget()   => _s.LuaSummonTarget(_sp);
+
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     /// <summary>Which self-sacrifice strike family this spell is ("LethalStrike"/"DesperateAttack"/"Berserk"/
     /// "Whirlwind"), driving its per-family damage/mana/cooldown/HP-cost formulas.</summary>
