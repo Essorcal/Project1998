@@ -21,16 +21,17 @@ namespace Tests;
 /// at all — which is exactly the record you want when a world-wide knob like the mob swing pose has been
 /// moved by somebody.</para>
 ///
-/// <para><b>No collection.</b> Facts (b) and (c) used to read the formatted line back off the file sink,
-/// which is process-global, so this class had to sit in collection <c>"log"</c> — away from the world it
-/// pins, and paying a real <c>Log.Shutdown</c> and <c>RestartWriterForTest</c> per fact. They now observe the
-/// line in process through <see cref="LogLineSink"/>, which is exclusive on its own, so neither reason is
-/// left. It does NOT join <c>"world"</c> either: the <see cref="SessionFixture"/> is taken as a CLASS fixture
-/// so this class drives its own unstarted <c>World</c>, and the <c>@clock</c> and zone-weather lines in fact
-/// (a)'s readout are per-<c>World</c> state that would otherwise be whatever the shared world had last
-/// pinned. A class cannot take both the "world" collection fixture and its own, so the isolation and the
-/// collection are the same choice. Without a <c>[Collection]</c> xunit gives the class its own, which is
-/// exactly what it wants: its own World, and parallel with everything else.</para>
+/// <para><b>Collection <c>"log"</c></b> (PR #326). Facts (b) and (c) observe the override's line in process
+/// through <see cref="LogLineSink"/>, and that sink is process-global: one slot, which shuts out other captures
+/// but still collects every line every other running test writes. The roster load in the constructor and fact
+/// (c)'s world-wide swing pair reach the whole process too. <c>"log"</c> runs alone, after every parallel
+/// collection has finished (<c>Tests/Support/ExclusiveCollections.cs</c>), so nothing runs beside them, and
+/// <see cref="TestSeamCollectionTests"/> fails the class in any collection that does not own those seams. It does
+/// NOT join <c>"world"</c>, the parallel-phase collection that owns them: the <see cref="SessionFixture"/> is
+/// taken as a CLASS fixture so this class drives its own unstarted <c>World</c>, and the <c>@clock</c> and
+/// zone-weather lines in fact (a)'s readout are per-<c>World</c> state that would otherwise be whatever the
+/// shared world had last pinned. A class cannot take both the "world" collection fixture and its own.
+/// <c>"log"</c> has no collection fixture, so the class keeps its own <c>World</c> there.</para>
 /// </summary>
 [Collection("log")]
 public sealed class GmOverridesTests : IClassFixture<SessionFixture>
