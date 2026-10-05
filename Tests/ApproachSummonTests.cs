@@ -18,17 +18,22 @@ namespace Tests;
 /// destination's level/vita/mana bands, staff. The Atlas's "area that allows approaching" is RTK's
 /// <c>MapCanSummon</c> flag, which this server does not load; it is listed in #313's report, not invented.</para>
 ///
-/// <para><b>Its own World.</b> The <see cref="SessionFixture"/> is a CLASS fixture, as in
-/// <see cref="GmOverridesTests"/>, so this class runs on a World nothing else touches. Two reasons. These spells
-/// find their target by NAME, and the shared fixture World keeps a "cmdgm" session from every class that runs a
-/// GM command, so the staff fact's lookup could land on any of them. And the refusals need real maps (Vale,
-/// Purgatory, the Dark Forest) that no other class stands on; on a World of their own, nothing here leaves a
-/// session or a spawned mob behind on them for anyone else.</para>
+/// <para><b>Collection "world", on a World of its own.</b> The constructor replaces the staff roster
+/// (<c>StaffAccounts.Load</c>), which is one for the whole process, so the class runs in <c>"world"</c>, the
+/// collection that owns the roster (<see cref="TestSeamCollectionTests"/>), one class at a time with the other
+/// classes that write it. The <see cref="SessionFixture"/> is still a CLASS fixture, as in
+/// <see cref="GmOverridesTests"/>: xunit hands a class its own class fixture before the collection's, so this
+/// class runs on a World nothing else touches. Two reasons. These spells find their target by NAME, and the
+/// shared fixture World keeps a "cmdgm" session from every class that runs a GM command, so the staff fact's
+/// lookup could land on any of them. And the refusals need real maps (Vale, Purgatory, the Dark Forest) that no
+/// other class stands on; on a World of their own, nothing here leaves a session or a spawned mob behind on them
+/// for anyone else.</para>
 ///
 /// <para>Every cast is the real <c>0x0F</c> frame through <c>Session.Receive</c>: the book slot, then the typed
 /// answer NUL-terminated, the way <c>HandleCast</c> parses a type-1 spell. So the SpellParams row, the verb, the
 /// mana and the central "You cast X." line are all part of what is under test.</para>
 /// </summary>
+[Collection("world")]
 public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 {
     // Content-free maps in the instance band: no Maps.csv row, so none is indoors, PvP, warp-locked or gated.

@@ -24,13 +24,27 @@ namespace Tests;
 ///
 /// <para><b>How the interleavings are forced.</b> Threads, real sessions, the real 0x0F cast frame through
 /// <c>Session.Receive</c>, and the real <c>TearDownWorldState</c> under the leaver's own monitor (how
-/// <c>DepartedSessionFenceTests</c> drives a logout). A cast is "parked" when its thread is blocked with the
-/// monitors in the expected state, held for 200 ms: a cast waiting a moment for the process-wide Lua gate looks
-/// the same for an instant, but not for that long. Ported from the reviewer's probes N1d, N1e and N2a
+/// <c>DepartedSessionFenceTests</c> drives a logout). A cast is "parked" when, for 200 ms without a break, its
+/// thread is blocked, the monitors are in the expected state, and the caster's player target is the target
+/// (<see cref="Resolved"/>). Ported from the reviewer's probes N1d, N1e and N2a
 /// (<c>reviews/PR325-review-1-scratch/PR325ReviewProbes.final.cs</c>).</para>
 ///
-/// <para>A World of its own (class fixture): the facts find players by name, and leave departed sessions behind.</para>
+/// <para><b>Why the player target (the PR #325 re-check's F6).</b> A cast waiting for the process-wide Lua gate
+/// holds no monitor (the gate's slow path drops them) and has not touched the target, so it meets the other two
+/// conditions for as long as another test holds the gate. The facts then ran their logout before the cast
+/// reached the window, the name lookup failed, and the verb's "Fizzle." at no cost passed them whatever Summon
+/// did. Only the verb sets the player target, inside the gate, and each fact's caster is a new session, so a
+/// cast that has not got the gate is never parked; a busy gate only delays the park.</para>
+///
+/// <para><b>Collection "world", on a World of its own.</b> The bound fact sets a static test hook
+/// (<see cref="Session.SummonExchangeEndedProbeForTest"/>), which would fire for every session in the process,
+/// so the class runs in <c>"world"</c>, the collection that owns those hooks
+/// (<see cref="TestSeamCollectionTests"/>). It is not one of the collections that run alone: with the check
+/// above, what runs beside it can delay a fact but not pass it. The <see cref="SessionFixture"/> is still a class
+/// fixture, which xunit hands the class before the collection's: the facts find players by name, and leave
+/// departed sessions behind.</para>
 /// </summary>
+[Collection("world")]
 public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
 {
     // Content-free maps (no Maps.csv row), claimed by no other class; 61313-61332 are ApproachSummonTests'.
@@ -94,7 +108,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.True(pHeld.Wait(5000), "the partner never took its monitor");
 
         var cast = Run("caster", () => Cast(c, SummonSlot, tc.Name));
-        Assert.True(Stable(() => Parked(cast) && MonitorFree(t) && MonitorFree(c)),
+        Assert.True(Stable(() => Parked(cast) && Resolved(c, t) && MonitorFree(t) && MonitorFree(c)),
                     "the summon never parked on the partner with the target's and the caster's monitors dropped");
 
         cancelNow.Set();
@@ -144,7 +158,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.True(tHeld.Wait(5000), "the target's thread never took its monitor");
 
         var cast = Run("caster", () => Cast(c, SummonSlot, tc.Name));
-        Assert.True(Stable(() => Parked(cast) && MonitorFree(c) && !MonitorFree(t)),
+        Assert.True(Stable(() => Parked(cast) && Resolved(c, t) && MonitorFree(c) && !MonitorFree(t)),
                     "the summon never parked on the target's monitor");
 
         go.Set();
@@ -222,7 +236,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.True(tHeld.Wait(5000), "the target's thread never took its monitor");
 
         var cast = Run("caster", () => Cast(c, SummonSlot, tc.Name));
-        Assert.True(Stable(() => Parked(cast) && MonitorFree(c) && !MonitorFree(t)),
+        Assert.True(Stable(() => Parked(cast) && Resolved(c, t) && MonitorFree(c) && !MonitorFree(t)),
                     "the summon never parked on the target's monitor");
 
         go.Set();
@@ -339,6 +353,12 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     private int MapsHolding(Session s) => _fx.World.Online.All().Count(p => ReferenceEquals(p, s));
 
     private static bool Parked(Thread t) => (t.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0;
+
+    /// <summary>Has <paramref name="caster"/>'s cast resolved <paramref name="target"/> as its player target? Only
+    /// the verb does that (<c>ctx:pcTargetNamed</c>), inside the Lua gate, so a cast still waiting for the gate
+    /// has not. Each fact's caster is a new session that has cast nothing before, so no earlier cast's target can
+    /// stand in for this one's.</summary>
+    private static bool Resolved(Session caster, Session target) => ReferenceEquals(caster.LuaPcTarget, target);
 
     private static bool MonitorFree(Session s)
     {
