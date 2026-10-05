@@ -291,47 +291,63 @@ public class HandoffTokenTests : IDisposable
         Assert.Equal(60, most);
     }
 
-    /// <summary>A mint that cannot record its token says so, at Warn, with the database's reason, and the
-    /// login it belongs to is refused at the door rather than let in unchecked.</summary>
-    [Fact]
-    public void AMintThatCannotRecordItsTokenWarnsWithTheReason()
+    /// <summary>
+    /// The two facts that read their Warn line from the log, run in <c>"log"</c> rather than this class's
+    /// <c>"db"</c>. Each takes the log line sink, which is one process-wide slot, and a capture collects every
+    /// running test's lines. <c>"db"</c> runs beside the rest of the parallel phase; <c>"log"</c> runs alone,
+    /// after it (<c>Tests/Support/ExclusiveCollections.cs</c>). <see cref="TestSeamCollectionTests"/> fails a
+    /// capture taken anywhere but <c>"world"</c> or a collection that runs alone.
+    ///
+    /// <para>The class is nested only so the facts keep this class's private helpers. xunit takes a test
+    /// class's collection off the class itself, never off the type around it, so these run in <c>"log"</c>
+    /// and the rest of this class stays in <c>"db"</c>. Each fact builds its own
+    /// <see cref="IsolatedDatabase"/>, so neither needs the process database.</para>
+    /// </summary>
+    [Collection("log")]
+    public sealed class HandoffTokenWarnTests
     {
-        using var db = new IsolatedDatabase();
-        Exec(db.Open, "CREATE TRIGGER refuse_mint BEFORE INSERT ON handoff_tokens " +
-                      "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this insert'); END;");
-        var user = Fresh(9);
-        byte[] echo;
-        LogLineSink.Entry warning;
-        using (var sink = LogLineSink.Acquire())
+        /// <summary>A mint that cannot record its token says so, at Warn, with the database's reason, and the
+        /// login it belongs to is refused at the door rather than let in unchecked.</summary>
+        [Fact]
+        public void AMintThatCannotRecordItsTokenWarnsWithTheReason()
         {
-            echo = MintAt(db.Open, user, T0);
-            warning = sink.EntryContaining($"handoff token for '{user}' could not be recorded");
+            using var db = new IsolatedDatabase();
+            Exec(db.Open, "CREATE TRIGGER refuse_mint BEFORE INSERT ON handoff_tokens " +
+                          "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this insert'); END;");
+            var user = Fresh(9);
+            byte[] echo;
+            LogLineSink.Entry warning;
+            using (var sink = LogLineSink.Acquire())
+            {
+                echo = MintAt(db.Open, user, T0);
+                warning = sink.EntryContaining($"handoff token for '{user}' could not be recorded");
+            }
+            Assert.Equal(LogLevel.Warn, warning.Level);
+            Assert.Contains("test trigger refuses this insert", warning.Line);
+            Assert.False(ConsumeAt(db.Open, echo, user, T0));
         }
-        Assert.Equal(LogLevel.Warn, warning.Level);
-        Assert.Contains("test trigger refuses this insert", warning.Line);
-        Assert.False(ConsumeAt(db.Open, echo, user, T0));
-    }
 
-    /// <summary>The purge and the insert are independent: a purge the database refuses is logged at Warn and
-    /// the login still enters.</summary>
-    [Fact]
-    public void APurgeThatFailsWarnsAndTheLoginStillEnters()
-    {
-        using var db = new IsolatedDatabase();
-        Assert.True(Login(db.Open, Fresh(8), T0));   // leaves a consumed row for the next purge to meet
-        Exec(db.Open, "CREATE TRIGGER refuse_purge BEFORE DELETE ON handoff_tokens " +
-                      "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this delete'); END;");
-        var user = Fresh(8);
-        bool entered;
-        LogLineSink.Entry warning;
-        using (var sink = LogLineSink.Acquire())
+        /// <summary>The purge and the insert are independent: a purge the database refuses is logged at Warn and
+        /// the login still enters.</summary>
+        [Fact]
+        public void APurgeThatFailsWarnsAndTheLoginStillEnters()
         {
-            entered = Login(db.Open, user, T0 + 1);
-            warning = sink.EntryContaining("handoff token purge failed");
+            using var db = new IsolatedDatabase();
+            Assert.True(Login(db.Open, Fresh(8), T0));   // leaves a consumed row for the next purge to meet
+            Exec(db.Open, "CREATE TRIGGER refuse_purge BEFORE DELETE ON handoff_tokens " +
+                          "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this delete'); END;");
+            var user = Fresh(8);
+            bool entered;
+            LogLineSink.Entry warning;
+            using (var sink = LogLineSink.Acquire())
+            {
+                entered = Login(db.Open, user, T0 + 1);
+                warning = sink.EntryContaining("handoff token purge failed");
+            }
+            Assert.True(entered, "a failed purge stopped the mint");
+            Assert.Equal(LogLevel.Warn, warning.Level);
+            Assert.Contains("test trigger refuses this delete", warning.Line);
         }
-        Assert.True(entered, "a failed purge stopped the mint");
-        Assert.Equal(LogLevel.Warn, warning.Level);
-        Assert.Contains("test trigger refuses this delete", warning.Line);
     }
 
     // -- the security properties, where the key change could have touched them --
