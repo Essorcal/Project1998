@@ -2,9 +2,12 @@
 # Tests/SpellDispatchRouteTests.cs observes it: identifier, Spells.csv id, then the mini-text the
 # probe cast sent ("verb=<name>", "row" when a SpellParams row bound it, else the engine's own answer).
 # Recorded on upstream/master 9c00b98; the dispatch fall-through slice (#322) changed spirit_blade from
-# verb=generic to verb=stance_enchant, and the Approach/Summon slice (#325) changed approach_spell and
-# summon_spell from verb=generic to verb=approach row and verb=summon row. Re-record with
-# P1998_SPELL_ROUTES_OUT (see the fact's doc).
+# verb=generic to verb=stance_enchant. The Approach/Summon slice (#325) then changed two more spells,
+# approach_spell and summon_spell, from verb=generic to verb=approach row and verb=summon row: it binds
+# them to their own verbs through SpellParams.csv rows, where before they fell to the generic fallback.
+# The fact's name and doc still say "except Spirit Blade"; these two are the other intended changes.
+# Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
+# fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
 add_script	10002	verb=generic
 adepts_wisdom	404	verb=sage_shout row
