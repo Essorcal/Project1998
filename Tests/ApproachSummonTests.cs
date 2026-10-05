@@ -242,16 +242,17 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 
     /// <summary>
     /// <b>The destination's bands, at their edges</b> (<c>ctx:mapAdmits</c>, the four comparisons RTK's
-    /// approach.lua and summon.lua make). Only the level floor can be reached through a cast today: every
-    /// rendered map that caps level, vita or mana is indoors, and the indoor check refuses first. So the rest is
-    /// pinned here, on real Maps.csv rows picked by what they carry rather than by id: a wrong comparison at an
-    /// edge would otherwise pass nothing and fail nothing.
+    /// approach.lua and summon.lua make). Only the floors can be reached through a cast today (the level floor on
+    /// many outdoor maps, the vita-or-mana floor on one, Sheep Bridge 2): every rendered map that caps level, vita
+    /// or mana is indoors, and the indoor check refuses first. So the edges are pinned here, on real Maps.csv rows
+    /// picked by what they carry rather than by id: a wrong comparison at a cap would otherwise pass nothing and
+    /// fail nothing.
     /// <list type="bullet">
     /// <item>level: one below <c>MapReqLvl</c> refused, at it and at <c>MapLvlMax</c> admitted, one above refused;</item>
     /// <item>vita OR mana meets its floor (RTK's <c>baseHealth &lt; reqVita and baseMagic &lt; reqMana</c>
     ///   refuses only when both fall short);</item>
     /// <item>either one over its cap refuses (<c>baseHealth &gt; maxVita or baseMagic &gt; maxMana</c>);</item>
-    /// <item>a map with no row has no bands; "target" reads the resolved target, not the caster.</item>
+    /// <item>a map with no Maps.csv row has no bands.</item>
     /// </list>
     /// </summary>
     [Fact]
