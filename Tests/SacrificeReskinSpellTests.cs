@@ -17,7 +17,9 @@ namespace Tests;
 /// (<c>game-data/spell_effects.csv</c>), so the reskins cast with no delay at all and never blocked a swing.</para>
 ///
 /// <para>The six keys are named here on purpose. The Warrior Berserk and Whirlwind reskins have Utility rows too
-/// and the same gap, but no decision covers them, so they stay as they are and the last fact pins that.</para>
+/// and the same gap, but no decision covers them, so they stay as they are. The last fact pins that only as far as
+/// <c>CastDelayMs</c>'s own body goes: a change to their rows moves both sides of its comparison (see that
+/// fact).</para>
 /// </summary>
 [Collection("world")]
 public sealed class SacrificeReskinSpellTests
@@ -91,9 +93,16 @@ public sealed class SacrificeReskinSpellTests
         }
     }
 
-    /// <summary>No other spell's cast delay moves: every spell in <c>Content</c> is compared with what
-    /// <c>Content.CastDelayMs</c> gave it on 9c00b98, and only the six reskins may differ, each from 0 to 1000.
-    /// That includes the six Warrior reskins with the same Utility-row gap.</summary>
+    /// <summary>No other spell's cast delay moves through <c>Content.CastDelayMs</c>'s own body: every spell in
+    /// <c>Content</c> is compared with 9c00b98's rule (<see cref="CastDelayOnMaster"/>), and only the six reskins
+    /// may differ, each from 0 to 1000. That includes the six Warrior reskins with the same Utility-row gap.
+    ///
+    /// <para>Both sides read the same inputs: the dog fire set (<c>Content.IsDogFireSpell</c>), the stealth set
+    /// (<c>Content.IsStealthSpell</c>), each spell's effects row (<c>Content.FxFor</c>) and the constant
+    /// <c>Content.ZapCastDelayMs</c>, which <c>want</c> reads too. A delay moved through any of those moves both
+    /// sides and stays green. What this catches is a change to <c>CastDelayMs</c>'s own body, and to
+    /// <c>RogueSacrificeReskins</c>, which only that body reads. A recorded table of every spell's delay would close
+    /// the gap.</para></summary>
     [Fact]
     public void NoOtherSpellsCastDelayMoves()
     {
@@ -112,9 +121,11 @@ public sealed class SacrificeReskinSpellTests
         Assert.Empty(moved);
     }
 
-    /// <summary><c>Content.CastDelayMs</c> as it stood at upstream/master 9c00b98
+    /// <summary><c>Content.CastDelayMs</c>'s body as it stood at upstream/master 9c00b98
     /// (<c>Server/Content.Spells.cs</c>, lines 1390-1413 there): the dog fire family 0, the stealth family one
-    /// second, then one second for a Damage row and 0 for everything else.</summary>
+    /// second, then one second for a Damage row and 0 for everything else. It is that rule, not that commit's
+    /// values: it reads today's <c>Content.IsDogFireSpell</c>, <c>Content.IsStealthSpell</c>, <c>Content.FxFor</c>
+    /// and <c>Content.ZapCastDelayMs</c>, as the live body does, so it moves with them.</summary>
     private static int CastDelayOnMaster(SpellDef sp) =>
         Content.IsDogFireSpell(sp) ? 0
         : Content.IsStealthSpell(sp) ? Content.ZapCastDelayMs
