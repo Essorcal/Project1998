@@ -363,7 +363,7 @@ public sealed partial class Session
     // re/extract_spell_formulas.py). We dispatch on the archetype — Damage/Heal evaluate the actual per-spell
     // formula, Buff applies a timed stat mod, Debuff freezes a mob, ManaBattery trades HP↔MP, Cure clears our
     // debuffs; Utility/Summon/Teleport/Dialog degrade to "spend mana + acknowledge". A spell with no export row
-    // falls back to the keyword classifier (ApplyCastGeneric).
+    // falls back to the keyword classifier (the `generic` verb), unless it is an enchant (Spirit Blade).
     private bool ApplyCast(SpellDef sp, uint? targetId, string? answer = null)
     {
         // Data-driven Lua verb path (game-data/SpellParams.csv + spell_verbs.lua): if this spell has a
@@ -423,7 +423,19 @@ public sealed partial class Session
         if (arch == "ManaBattery" || Content.BaseKey(sp) is "invoke" or "spirits_power" or "life_force" or "gather_magic")
             return Lua(CastUtilArch("mana_battery", sp, null), sp);
 
-        if (fx is null) return Lua(CastUtilArch("generic", sp, targetId), sp);   // no export row — keyword classifier fallback
+        // No export row: the keyword classifier fallback, with one exception. An enchant (Content.EnchantFor) takes
+        // its multiplier and mana from SpellMods.csv, not from an export row, and Spirit Blade is the one enchant
+        // the export never gave a row. This fallback used to take it before the enchant dispatch below could, so
+        // a cast charged generic's 5 mana, answered "You cast Spirit blade." and armed nothing. It now arms the
+        // enchant here exactly as that dispatch would: the same stance verb, mana and multiplier. (stance_enchant
+        // reads nothing from the row it is handed; the effect it plays over the caster is looked up from the
+        // export row, so Spirit Blade arms without one. The cast pose is HandleCast's and still plays.)
+        if (fx is null)
+        {
+            if (Content.EnchantFor(sp) is (double rowlessAmt, int rowlessMana))
+                return Lua(CastStanceArch("stance_enchant", sp, null, rowlessMana, rowlessAmt), sp);
+            return Lua(CastUtilArch("generic", sp, targetId), sp);
+        }
 
         // Cooldown (RTK "aether"), if this spell has one and it's still ticking.
         if (fx.Aether > 0 && OnCooldown(sp.Key, out int wait))
@@ -609,8 +621,9 @@ public sealed partial class Session
     // the cast via Lua() below, same as CastArch — no C# handler remains. The C# classifier has already picked
     // the spell + its RTK numbers, passed via ctx: `amount`
     // carries the rage/enchant multiplier (0 for the flag-only stealth/backstab/flank), `mana` the resolved cost,
-    // and `fx` the export row (ctx.durationMs). No per-spell formula to evaluate (unlike CastArch's amountExpr).
-    private bool? CastStanceArch(string verb, SpellDef sp, SpellFx fx, int mana, double amount)
+    // and `fx` the export row (ctx.durationMs), null for an enchant that has none (Spirit Blade). No per-spell
+    // formula to evaluate (unlike CastArch's amountExpr).
+    private bool? CastStanceArch(string verb, SpellDef sp, SpellFx? fx, int mana, double amount)
     {
         if (!SpellScript.HasVerb(verb)) return null;
         return SpellScript.Run(verb, new SpellContext(this, sp, null, null, amount, mana, fx));

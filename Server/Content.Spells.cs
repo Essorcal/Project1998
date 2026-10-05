@@ -965,7 +965,9 @@ public static partial class Content
     //     Baekho's Blade (rogue, Ee San) 1.5
     // Melalye's Dragon's Harness (Sam San) 8 and Chung Ryong's Wrath (Sa San) 10 do NOT exist in our 4.95
     // Spells.csv (later-era subpath content) so they are not added. spirit_blade was ADDED here — it existed
-    // in Spells.csv with no SpellMods row, i.e. it was silently INERT.
+    // in Spells.csv with no SpellMods row, i.e. it was silently INERT. The row alone did not wire it: having no
+    // spell_effects row either, it reached Session.ApplyCast's no-row fallback first, which now hands an enchant
+    // to the same stance verb as the rest of this table.
     // Klanx/Yari (also in the DM PDF) define `Ing` as 1 none | 3 Ingress | 4 "Il san NPC" | 5 "Ee san NPC",
     // agreeing on Ingress 3. Infuse 2 / Ingress 3 / Viper's Venom 4 are unanimous across all sources.
     // NOTE baekhos_blade_rogue 1.5 now EQUALS the free tigers_fortitude_rogue despite costing 6000 mana at
