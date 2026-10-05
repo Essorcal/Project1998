@@ -51,7 +51,9 @@ Stage-only namespaces need no row: `leviathan`, `dagger_uniform`, `forgotten_pat
 `newbie_area_quest`, and the stage of every namespace above. A new slot is added to the table mapped to its
 own dotted name (`leviathan.flag.x`); no saved key contains a dot, so a new key can never collide with an old
 one. `Tests/QuestStateTests.cs` pins every row against the constants each quest spelled before it was a slot,
-and round-trips a character blob carrying all of them (`Tests/Fixtures/character-quests-v1.json`).
+round-trips a character blob carrying all of them (`Tests/Fixtures/character-quests-v1.json`), and walks every
+armor chain's steps and every `MinorQuests.csv` mob through the `{tier}_armor` and `kills.{mob}` families, so a
+data row they cannot resolve (a mob key with a dot in it) fails the test run instead of a dialog.
 
 **Most chains gate on the legend, not the stage.** Clearing only the stage usually re-tests nothing —
 the door/NPC checks the mark. A full quest reset is generally: clear the legend(s), zero the stage

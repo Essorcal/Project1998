@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Server;
 using Shared;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Tests;
 
@@ -11,9 +12,11 @@ namespace Tests;
 /// <see cref="QuestState"/> is a naming layer over the two quest maps every character already carries, the int map
 /// <see cref="Character.Quests"/> and the string registry <see cref="Character.QuestStrings"/>, and the failure it
 /// can cause is silent: a slot that resolves to the wrong key reads 0 (or ""), and the player's progress looks lost
-/// with nothing in the log. These pin the things that keep it honest (#51, #308, #309):
+/// with nothing in the log. These pin the things that keep it honest (#51, #308, #309, the #310 review's F1):
 /// <list type="bullet">
 /// <item>every quest slot, int or text, resolves to the key characters were saved under BEFORE it was a slot;</item>
+/// <item>every slot the game DATA can produce (each armor chain's steps and mobs, each MinorQuests.csv mob)
+/// resolves through the variable-part families to the key the pre-#51 code built;</item>
 /// <item>a real character blob, loaded, read and written back through the type, saves byte-identical, and so does
 /// a text value of any shape;</item>
 /// <item>nothing outside <c>Server/QuestState.cs</c> touches either map.</item>
@@ -21,6 +24,10 @@ namespace Tests;
 /// </summary>
 public class QuestStateTests
 {
+    private readonly ITestOutputHelper _out;
+
+    public QuestStateTests(ITestOutputHelper output) => _out = output;
+
     // The saved key of every quest slot, copied from the quest classes' own constants at b43a8e5 (the base
     // #51 was cut from, where each quest spelled its keys itself) — NOT from QuestState's table, which is
     // the thing under test. One row per exact alias, plus instances of each variable-part family.
@@ -326,6 +333,75 @@ public class QuestStateTests
         }
     }
 
+    /// <summary>
+    /// The families resolve keys whose variable part comes from game DATA: each armor chain's tier, steps and
+    /// watched mobs, and every mob a MinorQuests.csv row names (every tier, offered or not). The pins above check a
+    /// handful of instances; this walks all of them through <see cref="QuestState.Resolve"/>, so a data change the
+    /// family patterns reject fails here rather than as a throw in a guildmaster's or trainer's dialog (#310 review
+    /// F1: a family's hole matches no dot, so a mob key with a dot in it would throw where the pre-#51 code read 0).
+    ///
+    /// <para>Each resolved key must also be the key the pre-#51 code built for that slot, at b43a8e5:
+    /// <c>$"aq_{chain.Tier}_{stage}_"</c> + "!", "@" or the mob (ArmorQuestAbility.cs:102 and :292), and
+    /// <c>"minor_quest_kill_count_"</c> + the mob (MinorQuest.cs:28). The slot names come from the quests' own
+    /// private builders and constants, read by reflection, so the walk names exactly what the runners name.</para>
+    /// </summary>
+    [Fact]
+    public void EveryArmorStepAndMinorQuestMobResolvesToItsLegacyKey()
+    {
+        EnsureContentLoaded();
+
+        var armor = typeof(ArmorQuestAbility);
+        var opened     = StaticFunc<int, string>(armor, "Opened");
+        var totalKills = StaticFunc<int, string>(armor, "TotalKills");
+        var kills      = StaticFunc<int, string, string>(armor, "Kills");
+        var watched    = StaticFunc<ArmorStep, IEnumerable<string>>(armor, "Watched");
+        string minorName  = PrivateConst(typeof(MinorQuestAbility), "KQuest");
+        string minorKills = PrivateConst(typeof(MinorQuestAbility), "KKills");
+
+        var wrong = new List<string>();
+        void Expect(string name, string slot, string legacy)
+        {
+            string got;
+            try { got = QuestState.Resolve(name, slot); }
+            catch (InvalidOperationException e) { wrong.Add($"{name}.{slot}: THROWS {e.Message}"); return; }
+            if (got != legacy) wrong.Add($"{name}.{slot} resolves to '{got}', but the pre-#51 code saved it as '{legacy}'");
+        }
+
+        int steps = 0, armorSlots = 0;
+        foreach (var chain in ArmorQuest.Chains.Values)
+            for (int n = 0; n < chain.Steps.Length; n++, steps++)
+            {
+                string pfx = $"aq_{chain.Tier}_{n}_";
+                Expect(chain.StageKey, opened(n), pfx + "!");
+                Expect(chain.StageKey, totalKills(n), pfx + "@");
+                armorSlots += 2;
+                foreach (var mob in watched(chain.Steps[n]))
+                {
+                    Expect(chain.StageKey, kills(n, mob), pfx + mob);
+                    armorSlots++;
+                }
+            }
+
+        int minorSlots = 0;
+        foreach (var quest in Content.MinorQuests)
+            foreach (var mob in quest.Mobs)
+            {
+                Expect(minorName, minorKills + mob, "minor_quest_kill_count_" + mob);
+                minorSlots++;
+            }
+
+        _out.WriteLine($"walked {ArmorQuest.Chains.Count} armor chains ({steps} steps, {armorSlots} slots) and " +
+                       $"{Content.MinorQuests.Count} MinorQuests.csv rows ({minorSlots} mob slots); {wrong.Count} wrong");
+        Assert.True(wrong.Count == 0, $"{wrong.Count} data-driven slot(s) do not resolve to their saved key:\n" +
+                                      string.Join("\n", wrong));
+
+        // The walk has to be walking something: all twelve chains (four paths, three tiers), and a loaded
+        // MinorQuests.csv in which every row names at least one mob.
+        Assert.Equal(12, ArmorQuest.Chains.Count);
+        Assert.NotEmpty(Content.MinorQuests);
+        Assert.True(minorSlots >= Content.MinorQuests.Count, "a MinorQuests.csv row names no mob");
+    }
+
     /// <summary>The acceptance lines "no raw Quests[...] access outside QuestState" (#51) and the same for the string
     /// registry (#309), as one fact. Scans every production project's source (comment lines stripped) for either
     /// member name and fails on any use outside Server/QuestState.cs and the two fields' own declarations. Every
@@ -370,4 +446,34 @@ public class QuestStateTests
         Assert.True(hits.Count == 0, "Character.Quests or Character.QuestStrings touched outside QuestState:\n" + string.Join("\n", hits));
         Assert.Equal(allowed.OrderBy(a => a, StringComparer.Ordinal), seenAllowed.OrderBy(a => a, StringComparer.Ordinal));
     }
+
+    // ---- plumbing --------------------------------------------------------------------------------------
+
+    private static readonly object ContentGate = new();
+    private static bool _contentLoaded;
+
+    /// <summary>MinorQuests.csv, through the real loader (ArmorQuestTests' pattern).</summary>
+    private static void EnsureContentLoaded()
+    {
+        lock (ContentGate)
+        {
+            if (_contentLoaded) return;
+            TestProcessState.LoadContent();
+            _contentLoaded = true;
+        }
+    }
+
+    private static MethodInfo PrivateStatic(Type type, string name) =>
+        type.GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
+        ?? throw new Xunit.Sdk.XunitException($"{type.Name}.{name} is gone: the walk names its slots through it");
+
+    private static Func<T, TResult> StaticFunc<T, TResult>(Type type, string name) =>
+        PrivateStatic(type, name).CreateDelegate<Func<T, TResult>>();
+
+    private static Func<T1, T2, TResult> StaticFunc<T1, T2, TResult>(Type type, string name) =>
+        PrivateStatic(type, name).CreateDelegate<Func<T1, T2, TResult>>();
+
+    private static string PrivateConst(Type type, string name) =>
+        type.GetField(name, BindingFlags.Static | BindingFlags.NonPublic)?.GetRawConstantValue() as string
+        ?? throw new Xunit.Sdk.XunitException($"{type.Name}.{name} is gone: the walk names its slots through it");
 }
