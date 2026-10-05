@@ -1036,8 +1036,13 @@ public sealed partial class Session
 
     /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right after
     /// <see cref="ClaimAccountSlot"/> returns, before the row is loaded. A fact throws from it to stand for any
-    /// throw between the claim and world entry (the row load, the restores after it), which leaves the session
-    /// holding the account's slot with <c>_enteredWorld</c> false. Null outside the test host.</summary>
+    /// throw between the claim and world entry, which leaves the session holding the account's slot with
+    /// <c>_enteredWorld</c> false. The row load is not one: <c>CharacterStore.Load</c> returns a status for a
+    /// database or JSON fault. What can throw there today is the restore after the load
+    /// (<c>RestoreTimedEffects</c>), and only on a row the server could not have written: a JSON null for a list
+    /// it walks (the timed effects' <c>Buffs</c> or <c>StatusFlags</c>, or the <c>Equipment</c> its first
+    /// <c>BuffClear</c> sums) loads, then throws <c>NullReferenceException</c>. The server's own serializer
+    /// writes those as <c>[]</c> and <c>{}</c>. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalClaimedProbeForTest;
 
     /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right before
