@@ -1040,16 +1040,25 @@ public sealed partial class Session
     /// holding the account's slot with <c>_enteredWorld</c> false. Null outside the test host.</summary>
     internal static Action<Session>? ArrivalClaimedProbeForTest;
 
-    /// <summary>The arrival, and the one throw of it that closes the connection. An arrival that throws after
-    /// <see cref="ClaimAccountSlot"/> and before world entry (<c>_enteredWorld</c>) leaves its client on the
-    /// loading screen with nothing more coming, so the connection is closed here and the cause logged. The read
-    /// loop then ends, and its teardown gives the slot back through <see cref="_claimedKey"/>
-    /// (<see cref="TearDownWorldState"/>), as it already did once the client disconnected by itself. Before, the
-    /// throw reached the handler guard in <see cref="Handle"/>, which keeps the session, and the client sat on the
-    /// loading screen until it gave up (#303 report, follow-up candidate 1).
+    /// <summary>Test seam: called with the arriving session in <c>HandleArrival</c> right before
+    /// <see cref="ClaimAccountSlot"/>, after the handoff token and the ban check. A fact throws from it to stand for
+    /// any throw before the claim (the token's consume or the ban check on a database fault, the ban notice's send),
+    /// which leaves the session with no slot claimed and <c>_enteredWorld</c> false. Null outside the test host.</summary>
+    internal static Action<Session>? ArrivalBeforeClaimProbeForTest;
+
+    /// <summary>The arrival, and the throw of it that closes the connection: any throw before world entry
+    /// (<c>_enteredWorld</c>). Such a throw leaves its client on the loading screen with nothing more coming, so the
+    /// connection is closed here and the cause logged, in one Error line that says whether the session holds the
+    /// account's slot. A throw after <see cref="ClaimAccountSlot"/> (the row load, the restores after it) holds it:
+    /// the read loop then ends, and its teardown gives it back through <see cref="_claimedKey"/>
+    /// (<see cref="TearDownWorldState"/>), as it already did once the client disconnected by itself (#303 report,
+    /// follow-up candidate 1). A throw before the claim (the handoff token's consume or the ban check on a database
+    /// fault, the ban notice's send) holds none, and its teardown has nothing to give back (PR #311 review F2, widened
+    /// on Caleb's decision of 2026-09-29). Until each was closed here, it reached the handler guard in
+    /// <see cref="Handle"/>, which keeps the session, and the client sat on the loading screen until it gave up.
     ///
-    /// <para>Every other throw goes on to that guard exactly as before: an arrival's before its claim or after
-    /// <c>_enteredWorld</c> is set, and any other opcode's handler. This runs inside <c>Handle</c>'s
+    /// <para>Every other throw goes on to that guard exactly as before: an arrival's after <c>_enteredWorld</c> is
+    /// set, and any other opcode's handler, which <c>Dispatch</c> calls directly. This runs inside <c>Handle</c>'s
     /// <c>WithState</c>, under the monitor both fields are written under; the close is the same CloseConnection the
     /// arrival's refusals already make there, and takes no lock of docs/common/Locking.md.</para></summary>
     private void ArriveOrClose(TkPacket pkt)
@@ -1057,9 +1066,12 @@ public sealed partial class Session
         try { HandleArrival(pkt); }
         catch (Exception e)
         {
-            if (_claimedKey is null || _enteredWorld) throw;
-            Log.Error($"{_remote} arrival for '{_user}' threw after claiming the account's slot, before entering the world — " +
-                      $"closing the connection; its teardown gives the slot back; {DiagState()}", e);
+            if (_enteredWorld) throw;
+            string where = _claimedKey is null
+                ? "before entering the world, holding no slot — closing the connection"
+                : "after claiming the account's slot, before entering the world — closing the connection; its teardown " +
+                  "gives the slot back";
+            Log.Error($"{_remote} arrival for '{_user}' threw {where}; {DiagState()}", e);
             CloseConnection("arrival threw before world entry");
         }
     }
@@ -1137,6 +1149,7 @@ public sealed partial class Session
         // CharacterStore.Save is a blind last-write-wins upsert. Must run BEFORE _store.Load below so the
         // kicked session's flush (if any) is visible to our own load. Since #168 the same kick also fences a
         // session for this account that tore down moments ago; see ClaimAccountSlot.
+        ArrivalBeforeClaimProbeForTest?.Invoke(this);   // null except under test; see the field
         ClaimAccountSlot(_user);
         ArrivalClaimedProbeForTest?.Invoke(this);   // null except under test; see the field
 
