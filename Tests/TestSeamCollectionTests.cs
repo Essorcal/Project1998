@@ -56,6 +56,15 @@ namespace Tests;
 /// the instance hooks on a <c>World</c> (<c>SweepProbeForTest</c>, <c>PreSweepProbeForTest</c>) reach only
 /// the world a test built.</para>
 ///
+/// <para><b>Also not seams today: the four Lua script hosts</b> (<c>SpellScript.Load</c>, <c>ItemScript.Load</c>,
+/// <c>NpcScript.Load</c>, <c>MobScript.Load</c>). Each is one host for the whole process, so loading a file of
+/// your own into one changes what every running test's casts and dialogs do. The one class that does it,
+/// <c>SpellDispatchRouteTests</c>, loads a probe copy of the real <c>spell_verbs.lua</c> whose wrapper calls the
+/// real verb for every caster but its own probe caster, so a cast anywhere else behaves as with the real file;
+/// it holds <c>TestProcessState.Gate</c> from the probe's load until the real file is back, so no content load
+/// can land in between. A load that changed an answer for other casters would be a seam, and would belong in a
+/// collection that runs alone (the PR #326 review, F5).</para>
+///
 /// <para>Falsified three ways, each red in Debug and Release and green again once restored: deleting
 /// <c>[Collection("log")]</c> from <c>SendMapLogTests</c> names its <c>ConsoleTap.AcquireAsync</c> (line 31)
 /// and its reflected write to the wire switch (line 35); a new class with no collection that takes
