@@ -16,7 +16,8 @@ namespace Tests;
 /// terminated with no flush, until #305 booked it 8 s ahead. This reads both files as they are, so a change to
 /// either side that makes the fallback stale again fails here rather than on somebody's stop.
 /// <para>Falsification: book the deadline 7000 ms ahead instead of 8000 in Serve.ps1 (or restore the pre-#305
-/// line, which books no lead at all), or raise <c>FilePollMs</c> to 8000, and this fact goes red.</para>
+/// line, which books no lead at all), write anything but <c>$deadline</c> into the file, or raise
+/// <c>FilePollMs</c> to 8000, and this fact goes red.</para>
 /// </summary>
 public class ServeStopFallbackTests
 {
@@ -26,8 +27,10 @@ public class ServeStopFallbackTests
         string script = File.ReadAllText(Path.Combine(RepoPaths.Root(), "Scripts", "Serve.ps1"));
         var lead = Regex.Match(script, @"\$deadline\s*=\s*\[DateTimeOffset\]::UtcNow\.ToUnixTimeMilliseconds\(\)\s*\+\s*(\d+)");
         Assert.True(lead.Success, "Serve.ps1 no longer books run\\restart_at as UtcNow plus a lead in ms");
-        var wait = Regex.Match(script, @"WriteAllText\(\$trigger[^\n]*\n\s*if \(Wait-Exit \$id (\d+)\)");
-        Assert.True(wait.Success, "Serve.ps1 no longer waits on the process right after writing run\\restart_at");
+        // The wait is read from the line after the write, and that write must be of $deadline itself: a write of
+        // anything else (the pre-#305 "now") would leave the lead above booked by a variable nobody uses.
+        var wait = Regex.Match(script, @"WriteAllText\(\$trigger,\s*""\$deadline\|[^\n]*\n\s*if \(Wait-Exit \$id (\d+)\)");
+        Assert.True(wait.Success, "Serve.ps1 no longer writes $deadline into run\\restart_at and then waits on the process");
         long leadMs = long.Parse(lead.Groups[1].Value);
         long waitMs = long.Parse(wait.Groups[1].Value) * 1000;
 
