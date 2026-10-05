@@ -995,10 +995,11 @@ public static partial class Content
     // RTK rogue/lethal_strike.lua + desperate_attack.lua, warrior/berserk.lua + whirlwind.lua: a facing-tile
     // physical attack computed from the CASTER's OWN current HP/MP that costs the caster a big chunk of
     // their own HP the instant it lands. Each base identifier here is cast by ALL 4 of its alignment aliases
-    // (Kwisin/Ming-Ken/Ohaeng flavor names only — same mechanic, same formula); RTK picks the display name
-    // from the caster's OWN alignment stat, not from which alias identifier was actually granted/cast, so
-    // Session.CastSacrificeStrike keys off _char.Alignment rather than sp.Key for that (and for whirlwind's
-    // alignment-gated damage factor/HP cost).
+    // (Kwisin/Ming-Ken/Ohaeng flavor names only — same mechanic, same formula). RTK picks the display name, and
+    // the key it sets the aether under, from the caster's OWN alignment stat, not from which alias identifier
+    // was granted/cast. The `sacrifice` verb (game-data/spell_verbs.lua) does not: the name a cast shows and
+    // the cooldown it arms are the cast identifier's own (ctx.spellName, ctx.spellKey). Only Whirlwind's
+    // alignment-gated damage factor, HP cost and cooldown length read the caster's alignment (ctx.alignment).
     // FocusedBlow (Rogue Sam San) and Siege (Warrior Sam San) join the same family — both are "spend your own
     // vita for a big facing-tile hit". nexusatlas: Focused Blow "Takes 2/3 of current Vita in a Strong Attack.
     // The attack does 2 times current vitality in damage at 0 AC"; Siege "does a critical strike and leaves the
@@ -1011,8 +1012,8 @@ public static partial class Content
         ["focused_blow_rogue"] = SacrificeFamily.FocusedBlow,
 
         // Siege + its three alignment aliases (user-confirmed): Kwi-Sin "Soul's Freedom", Ming-Ken
-        // "Life's End", Ohaeng "Winter Chill". Same mechanic; CastSacrificeStrike picks the DISPLAYED name
-        // from the caster's own alignment, not from which alias was granted, exactly as the other families do.
+        // "Life's End", Ohaeng "Winter Chill". Same mechanic; as for every family here, a cast shows the name
+        // of the alias that was cast (the sacrifice verb's ctx.spellName), not one picked by the caster's alignment.
         ["siege_warrior"]        = SacrificeFamily.Siege,
         ["souls_freedom_warrior"] = SacrificeFamily.Siege,
         ["lifes_end_warrior"]     = SacrificeFamily.Siege,
@@ -1623,7 +1624,8 @@ public static partial class Content
     // only" (the established no-PvP-damage-path precedent everywhere else in this audit); the TRIGGER's own
     // self-damage IS kept when the trigger is a player (tripping a trap isn't "PvP" the way hitting another
     // player would be), but capped to leave at least 1 HP — same "self-cost, never actually lethal" precedent
-    // as CastSacrificeStrike, since a trap tripped mid-walk has no death-flow of its own to hook cleanly.
+    // as the sacrifice strikes' own HP cost (verbs.sacrifice sets it through ctx:setHp, which never takes a
+    // living caster below 1), since a trap tripped mid-walk has no death-flow of its own to hook cleanly.
     // Level 99, 1520 mana, 125s cooldown (RTK aether), the decoy auto-expires 21s after placement if never
     // triggered. NOT ported: the Lua's NPC heartbeat implies a 5000-mana/tick owner-upkeep drain while the
     // decoy is alive — the exact drain/early-deletion formula wasn't in the captured source, so this is a

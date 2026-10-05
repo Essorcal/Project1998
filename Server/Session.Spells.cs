@@ -2588,8 +2588,9 @@ public sealed partial class Session
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
     // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the
-    // overkill backflow/overflow, and (ambush) the leap + swing. Mirror the logic the removed CastSacrificeStrike/
-    // CastAmbush handlers used to own (neither remains). A single stash holds the resolved target for the rest of the cast.
+    // overkill backflow/overflow, and (ambush) the leap + swing. Their only callers are verbs.sacrifice and
+    // verbs.ambush (game-data/spell_verbs.lua); no C# handler sits behind either. A single stash holds the
+    // resolved target for the rest of the cast.
     private Mob? _frontStrikeMob;
     private Session? _frontStrikePc;
     private int  _frontStrikeX, _frontStrikeY;
@@ -3279,7 +3280,8 @@ public sealed partial class Session
     /// Combat.ApplyArmor mirrors calculateDamage's identical deduction formula) — applied both to us and to
     /// every mob the facing cone catches. Capped here to leave at least 1 HP on OURSELVES only: a trap
     /// tripped mid-walk has no death-flow of its own to hook (unlike a real melee/spell kill), same
-    /// "self-cost, never actually lethal" precedent as CastSacrificeStrike. Returns the UNCAPPED value so the
+    /// "self-cost, never actually lethal" precedent as the sacrifice strikes' own HP cost (verbs.sacrifice
+    /// sets it through ctx:setHp, which never takes a living caster below 1). Returns the UNCAPPED value so the
     /// cone's mob targets take the real RTK number, not our clamped one.</summary>
     public int ApplyBladestormSelfDamage()
     {
