@@ -1693,9 +1693,13 @@ public static partial class Content
     // anyway: it is the only cotw row in Spells.csv with SplActive=0 (all 14 summons are 1), so LoadSpells
     // skips it. Every
     // tier spawns a real MobDef (all 28 DO exist in mobs.csv, correctly statted) owned by the caster,
-    // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top "avatar" tier is the one
-    // real outlier: RTK charges GOLD (via requirements(), not mana) plus an 8-minute cooldown instead of the
-    // flat 10-mana every other tier uses (cotw_wind_warrior.lua has no `player.magic` check at all).
+    // capped by Content.PetCapFor and expiring 300s later (World.Tick). The top two tiers, Wind dancer with
+    // the three Champions and Wind warrior with the three Avatars, cost no mana and have an 8-minute
+    // (480000 ms) cooldown; every lower tier costs a flat 10 mana with no cooldown. Source: Nexus Atlas's poet
+    // page (Sources.csv atlas-poet-spells). RTK agrees on the cooldown (cotw_wind_dancer.lua:6,
+    // cotw_wind_warrior.lua:5) but charges the dancer tier 10 mana (cotw_wind_dancer.lua:3); Caleb chose 0 on
+    // 2026-09-29. The gold in RTK's requirements() is the trainer's learn price (SpellLearnCosts.csv), which
+    // every tier has, not a cast cost.
     // Loaded from game-data/Pets.csv in Load() — see LoadPets.
     private static IReadOnlyDictionary<string, (string MobKey, int Level, int Mana, int CooldownMs)> PetSpells
     {
