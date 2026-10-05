@@ -10,11 +10,13 @@ namespace Tests;
 /// <summary>
 /// Gear taken off by an NPC takes its bonuses with it (F2 of the PR #281 review).
 ///
-/// <para>The worn-gear sum is cached (<c>Session._equipTotals</c>). PR #281 made <c>EquipClear</c> drop the
-/// cache, but <c>EquipAdd</c> and <c>EquipRemove</c> still left it to their callers, and two callers never did:
-/// the gender-change NPC's strip (<c>StripAllEquipment</c>) and the armor-quest guildmaster's turn-in
-/// (<c>TakeReady</c>, when the tribute is worn). A character stripped of Cimmerian steel either way kept its
-/// +1000 vita and +8 might, with nothing worn, until the next equip change or relog.</para>
+/// <para>The worn-gear sum is part of the session's one published totals snapshot (<c>Session._equipTotals</c>,
+/// PR #314), and <c>InvalidateEquipTotals</c> re-sums and republishes it; before #314 it was a cache that call
+/// dropped. PR #281 made <c>EquipClear</c> call it, but <c>EquipAdd</c> and <c>EquipRemove</c> still left it to
+/// their callers, and two callers never did: the gender-change NPC's strip (<c>StripAllEquipment</c>) and the
+/// armor-quest guildmaster's turn-in (<c>TakeReady</c>, when the tribute is worn). A character stripped of
+/// Cimmerian steel either way kept its +1000 vita and +8 might, with nothing worn, until the next equip change
+/// or relog.</para>
 ///
 /// <para>Both entry points are called under the state monitor, the way the NPC dialog reaches them.</para>
 /// </summary>
@@ -67,7 +69,7 @@ public sealed class EquipCacheInvalidationTests
 
     /// <summary>Round 1 of the PR #286 review (F1): the fix must stay on the two NPC paths. Swapping one weapon
     /// for another while a weapon enchant is active drops the enchant mid-swap, and that drop pushes stats, which
-    /// clamps current HP. With the cache still counting the old weapon at that moment the clamp is a no-op; an
+    /// clamps current HP. With the published sum still counting the old weapon at that moment the clamp is a no-op; an
     /// invalidation inside <c>EquipRemove</c> made it clamp against a cap counting neither weapon (200/200 read
     /// 100/250 after the swap). Red if the invalidation moves back into <c>EquipRemove</c>.</summary>
     [Fact]
@@ -104,7 +106,8 @@ public sealed class EquipCacheInvalidationTests
 
     /// <summary>A level-1 character on base max HP 6 and might 3, wearing Cimmerian steel (+1000 vita, +8
     /// might) at full durability, with the gear sum PRIMED: the precondition reads the effective stats once,
-    /// which fills the cache, and pins that the steel's bonuses were really counted before it came off.</summary>
+    /// which publishes the totals snapshot (the session's first read does), and pins that the steel's bonuses
+    /// were really counted before it came off.</summary>
     private (Session session, Character character) SteelWearer(string name)
     {
         var steel = Content.Items.First(i => i.Key == "cimmerian_steel");

@@ -212,7 +212,7 @@ public sealed partial class Session
         // and with `kill` the only way to exercise its GROUP half without a mob to kill (#155).
         T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = as a kill would: split across your group in range, group totem rule; no quest credit)"),
         T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
-        T("class",   (s, a) => s.SetClass(a),      "<Warrior|Rogue|Mage|Poet|Peasant>", "set the class/path and rebuild for it"),
+        T("class",   (s, a) => s.SetClass(a),      "<Warrior | Rogue | Mage | Poet | Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
         // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild
         // grants them, and buying it honestly is 500,000 gold across 360 real days of upgrade waits.
@@ -226,7 +226,7 @@ public sealed partial class Session
         // server side — the packet sends, the log says so, the client draws nothing. See TextChannelCmd.
         // A probe filed under character for want of a better home: handler in Server/Session.Probes.cs.
         T("text",    (s, a) => s.TextChannelCmd(a), "[0-255] [message]",   "send yourself one 0x0A line on a channel; bare @text sweeps them to compare panes/colours"),
-        T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned|Kwisin|Mingken|Ohaeng|0-3>", "set sub-alignment and rebuild the book"),
+        T("align",   (s, a) => s.SetAlignment(a),  "<Unaligned | Kwisin | Mingken | Ohaeng | 0-3>", "set sub-alignment and rebuild the book"),
         T("stats",   (s, a) => s.SetStatsCmd(a),   "<vita> <mana> <all> | <vita> <mana> <might> <grace> <will>",
                                                                           "set vitals and stats directly, overriding the curve — e.g. @stats 50000 50000 130"),
         T("might",   (s, a) => s.SetBaseStat("might", a), "<n>",          "set base might"),

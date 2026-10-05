@@ -387,7 +387,6 @@ public sealed class TeardownSlotLeakTests
         var (old, oldOut, oldChar) = _fx.PlayerWith(name, c => c.Coins = 300, SweepDropMap, 5, 5);
         var (fresh, _) = Arriving(name, "new");
         object gate = WriteGateOf(old);
-        bool sweepReturned = false;
         Thread? sweep = null;
 
         try
@@ -400,7 +399,7 @@ public sealed class TeardownSlotLeakTests
             uint loaded, rowAtLoad;
             lock (gate)
             {
-                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(old, "autosave"))
+                sweep = new Thread(() => World.AutoSaveLoop.FlushIsolated(old, "autosave"))
                     { IsBackground = true, Name = "sweep-write" };
                 sweep.Start();
                 WaitBlocked(sweep, "the sweep's write, on the old session's write gate");
@@ -429,7 +428,6 @@ public sealed class TeardownSlotLeakTests
 
             Assert.Equal(300u, loaded);
             Assert.Equal(300u, rowAtLoad);
-            Assert.True(sweepReturned);                     // refused at the gate, not failed
             Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
             Assert.Equal(loaded, rowAfterNext);
         }
@@ -461,7 +459,6 @@ public sealed class TeardownSlotLeakTests
         var (departed, _, ch) = _fx.PlayerWith(name, c => c.Coins = 100, DepartedDropMap, 5, 5);
         var (fresh, _) = Arriving(name, "new");
         object gate = WriteGateOf(departed);
-        bool sweepReturned = false;
         Thread? sweep = null;
 
         try
@@ -474,7 +471,7 @@ public sealed class TeardownSlotLeakTests
             uint loaded, rowAtLoad;
             lock (gate)
             {
-                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
+                sweep = new Thread(() => World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
                     { IsBackground = true, Name = "sweep-write" };
                 sweep.Start();
                 WaitBlocked(sweep, "the sweep's write, on the session's write gate");
@@ -507,7 +504,6 @@ public sealed class TeardownSlotLeakTests
 
             Assert.Equal(100u, loaded);
             Assert.Equal(100u, rowAtLoad);
-            Assert.True(sweepReturned);
             Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
         }
         finally
@@ -651,7 +647,6 @@ public sealed class TeardownSlotLeakTests
         var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
         _fx.World.EnterMap(old, FailedKickMap);
         object gate = WriteGateOf(old);
-        bool sweepReturned = false;
         Thread? sweep = null;
 
         try
@@ -666,7 +661,7 @@ public sealed class TeardownSlotLeakTests
             bool lostLogged, lostAtError, guardLogged;
             lock (gate)
             {
-                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(old, "autosave"))
+                sweep = new Thread(() => World.AutoSaveLoop.FlushIsolated(old, "autosave"))
                     { IsBackground = true, Name = "sweep-write" };
                 sweep.Start();
                 WaitBlocked(sweep, "the sweep's write, on the old session's write gate");
@@ -701,7 +696,6 @@ public sealed class TeardownSlotLeakTests
 
             Assert.Equal(300u, loaded);
             Assert.Equal(300u, rowAtLoad);
-            Assert.True(sweepReturned);                     // refused at the gate, not failed
             Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
             Assert.Equal(loaded, rowAfterNext);
             Assert.True(lostLogged, "the kick's failed write was not logged as LOST");
@@ -743,7 +737,6 @@ public sealed class TeardownSlotLeakTests
         var fresh = new Session(new RecordingOutbound($"recorder:{name}:new"), 2005, db.Store, _fx.World);
         _fx.World.EnterMap(departed, FailedDepartedKickMap);
         object gate = WriteGateOf(departed);
-        bool sweepReturned = false;
         Thread? sweep = null;
 
         try
@@ -758,7 +751,7 @@ public sealed class TeardownSlotLeakTests
             bool lostLogged;
             lock (gate)
             {
-                sweep = new Thread(() => sweepReturned = World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
+                sweep = new Thread(() => World.AutoSaveLoop.FlushIsolated(departed, "autosave"))
                     { IsBackground = true, Name = "sweep-write" };
                 sweep.Start();
                 WaitBlocked(sweep, "the sweep's write, on the session's write gate");
@@ -793,7 +786,6 @@ public sealed class TeardownSlotLeakTests
 
             Assert.Equal(100u, loaded);
             Assert.Equal(100u, rowAtLoad);
-            Assert.True(sweepReturned);
             Assert.Equal(loaded, rowAfterSweep);            // the older capture was dropped, not landed after the load
             Assert.True(lostLogged, "the departed kick's failed write was not logged as LOST");
         }

@@ -17,7 +17,7 @@ public static class ItemScript
 
     public static bool Load(string? path) => _host.Load(path);
 
-    internal static (bool Ok, LuaVerbHost.PreparedReload? Prepared) PrepareReload(string? path) =>
+    internal static (bool Live, LuaVerbHost.PreparedReload? Prepared) PrepareReload(string? path) =>
         _host.PrepareReload(path);
 
     internal static void CommitReload(LuaVerbHost.PreparedReload prepared) => _host.CommitReload(prepared);

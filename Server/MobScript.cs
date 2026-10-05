@@ -61,7 +61,7 @@ public static class MobScript
     }
 
     /// <summary>Compile candidate hooks without replacing the live Lua state.</summary>
-    internal static (bool Ok, PreparedReload? Prepared) PrepareReload(string? path)
+    internal static (bool Live, PreparedReload? Prepared) PrepareReload(string? path)
     {
         using (Session.EnterScriptGate())
         {
