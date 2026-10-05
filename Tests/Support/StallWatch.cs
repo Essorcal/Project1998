@@ -13,7 +13,9 @@ internal static class StallWatch
     internal static readonly TimeSpan StallQuiet = TimeSpan.FromSeconds(10);
 
     /// <summary>The safety net, not the detector. A run still creeping forward after this long is not the
-    /// cycle under test — it is a machine in trouble — and the fact says which of the two it saw.</summary>
+    /// cycle under test — it is a machine in trouble — and the fact says which of the two it saw. A run that
+    /// reaches it having completed no round for a whole quiet window of wall clock had a starved watcher as
+    /// well, and is reported as exactly that: no round for so long, so much of it watched.</summary>
     internal static readonly TimeSpan StallCap = TimeSpan.FromSeconds(600);
 
     /// <summary>Poll interval for the progress watch. Short enough that the failure message's round count is
@@ -68,10 +70,12 @@ internal static class StallWatch
     /// with each poll's contribution capped at <see cref="MaxCreditPerPoll"/>, so a stopped process does not
     /// spend the window.
     ///
-    /// <para><paramref name="cap"/> is a backstop so a wedged run cannot hold the agent forever; reaching it
-    /// while still making progress is reported as its own, differently worded failure, because it means
-    /// something other than a deadlock (a machine at a standstill, a round that got orders of magnitude more
-    /// expensive) and should not be read as the watched cycle having closed.</para>
+    /// <para><paramref name="cap"/> is a backstop so a wedged run cannot hold the agent forever, on the wall
+    /// clock. Reaching it while still making progress is reported as its own, differently worded failure,
+    /// because it means something other than a deadlock (a machine at a standstill, a round that got orders of
+    /// magnitude more expensive) and should not be read as the watched cycle having closed. Reaching it with no
+    /// round for a whole <paramref name="quiet"/> of wall clock is a third message, giving both figures: the
+    /// watcher was starved too, so the run cannot say which it was (<c>Tests/StallWatchTests.cs</c>).</para>
     /// </summary>
     internal static void RunUntilDoneOrStalled(
         Thread[] threads, Func<long> progress, TimeSpan quiet, TimeSpan cap, string what)
@@ -126,6 +130,17 @@ internal static class StallWatch
 
             if (at >= cap)
             {
+                // Watched time fills slowly while the watcher itself is starved, so the cap can come first on a run
+                // that has completed no round for a whole quiet window of wall clock. That run is not "still
+                // moving", and the message must not send its reader away from a possible cycle (PR #326 review, F4).
+                var silent = at - lastMoved;
+                if (silent >= quiet)
+                {
+                    Assert.Fail($"{what}: reached the {cap.TotalSeconds:0.#} s cap at {last} rounds with no round for " +
+                                $"{silent.TotalSeconds:0.#} s of wall clock, {watchedQuiet.TotalSeconds:0.#} s watched — " +
+                                "the watcher was starved as well, so this run cannot tell stuck threads from a stopped " +
+                                "machine");
+                }
                 Assert.Fail($"{what}: still running after the {cap.TotalSeconds:0} s cap at {last} rounds — still " +
                             "moving, so not this cycle, but far past anything this machine should need");
             }
