@@ -19,6 +19,9 @@ namespace Tests;
 /// uses. The NPC fact runs on a real map (7, Redcap Message) so its NPC is the one <c>World.PlaceNpc</c> put
 /// there at start-up. The map's contents are asserted, not assumed. Every fact undoes what it placed in a
 /// <c>finally</c>, since the fixture World is shared by the collection.</para>
+///
+/// <para>Each fact's doc names the edit that turns it red; each was run red against that edit in Debug and in
+/// Release. On master's <c>ClearMap</c> the first three facts are red and the local-dummy fact is green.</para>
 /// </summary>
 [Collection("world")]
 public sealed class GmKillTests
@@ -59,7 +62,12 @@ public sealed class GmKillTests
     /// <summary>One spawn point, three-beat respawn timer. Entering the map materialises it. <c>@kill</c> takes
     /// the creature off, and the point refills on its own timer: not on beats one and two, and on beat three a
     /// new creature stands on the point's home tile. The point's index entry for the killed creature goes too:
-    /// after the refill the index holds as many entries as before the kill.</summary>
+    /// after the refill the index holds as many entries as before the kill.
+    ///
+    /// <para>Falsified by deleting the <c>ReleasePoint</c> call in <c>World.ClearMap</c>: red with "the point
+    /// should refill on beat 3 after @kill; 0 creature(s) on the map", which is what master did. Deleting
+    /// <c>_mobSpawn.Remove</c> from <c>SpawnDirector.ReleasePoint</c> turns the last line red instead (2 index
+    /// entries, expected 1).</para></summary>
     [Fact]
     public void AKilledSpawnPointCreatureComesBackOnItsOwnTimer()
     {
@@ -106,7 +114,12 @@ public sealed class GmKillTests
 
     /// <summary>A GM and a watcher on a town map with one NPC and one ordinary creature, both drawn on the
     /// watcher's screen. <c>@kill</c> takes the creature and leaves the NPC: the NPC is still in the map's list
-    /// under the same id, and the only despawn either player receives carries the creature's id.</summary>
+    /// under the same id, and the only despawn either player receives carries the creature's id.
+    ///
+    /// <para>Falsified three ways in <c>World.ClearMap</c>. Taking every entry, NPCs included, is red with "@kill
+    /// removed NPC #… (Redcap)", which is what master did. Keeping the NPC but adding the ids still on the map
+    /// to the despawn broadcast is red on the watcher's despawn list, which then carries the NPC's id. Returning
+    /// the list's size before the removal is red on the reply ("cleared 2 world mob(s)").</para></summary>
     [Fact]
     public void AnNpcSurvivesKillAndNoPlayerIsToldItLeft()
     {
@@ -163,7 +176,12 @@ public sealed class GmKillTests
     /// <summary>Three kinds of non-NPC creature and an NPC on one map: a spawn point's creature, a GM summon
     /// (<c>@mob 1 20</c>), and a GM summon made with no hit points (<c>@mob 1 0</c>), which no client draws,
     /// nothing can damage and <c>DespawnMob</c> refuses, so <c>@kill</c> is the only way to remove it short of a
-    /// reload. <c>@kill</c> takes all three, leaves the NPC, and its reply counts the three.</summary>
+    /// reload. <c>@kill</c> takes all three, leaves the NPC, and its reply counts the three.
+    ///
+    /// <para>Falsified by narrowing <c>World.ClearMap</c>'s filter to <c>DespawnMob</c>'s whole predicate
+    /// (<c>Alive &amp;&amp; !IsNpc</c>): red with the no-HP summon still on the map. Also red when ClearMap takes
+    /// the NPC, when it despawns an id it did not take, and when it returns the list's size before the removal
+    /// ("cleared 4 world mob(s)").</para></summary>
     [Fact]
     public void KillTakesEveryNonNpcCreatureAndCountsOnlyThose()
     {
@@ -207,7 +225,11 @@ public sealed class GmKillTests
 
     /// <summary><c>@spawn</c> draws four session-local dummies on the GM's own screen. <c>@kill</c> despawns
     /// them for the GM only, in one 0x0E, and counts them as local; a watcher on the same map receives no
-    /// despawn, and the map's shared list was empty before and after.</summary>
+    /// despawn, and the map's shared list was empty before and after. This half of <c>@kill</c> is not changed;
+    /// the fact pins that it stays as it was.
+    ///
+    /// <para>Falsified by deleting the local-dummy <c>SendDespawn</c> in <c>Session.KillMobs</c>: red on the
+    /// GM's despawn ids (none, where the four dummies were expected).</para></summary>
     [Fact]
     public void KillDespawnsLocalDummiesForTheCallerOnly()
     {
