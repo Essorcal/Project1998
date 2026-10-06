@@ -250,8 +250,8 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     /// <summary>
     /// <b>Summoning someone mid-exchange cancels the exchange for both traders</b>, and each sees the client's
     /// "Exchange cancelled." box, the line every other cancelled exchange gets. The partner is not in the group
-    /// and is not moved. The rule is #57's: any move ends an exchange. Whether Summon should instead fizzle on a
-    /// trader is Caleb's call (PR #325); this pins the behaviour as shipped.
+    /// and is not moved. The rule is #57's: any move ends an exchange. Caleb kept this at PR #325's merge
+    /// (2026-10-06), rather than have Summon fizzle on a trader; this pins it.
     /// </summary>
     [Fact]
     public void SummoningATraderCancelsTheExchangeForBothTraders()
