@@ -38,10 +38,11 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 {
     // Content-free maps in the instance band: no Maps.csv row, so none is indoors, PvP, warp-locked or gated.
     // Each success case gets its own pair because a landing tile is asserted exactly and a session is never
-    // unregistered from a map. 61313-61332 are claimed by no other class (61325-61328 are
-    // ApproachSummonGmCommandTests', on the shared World).
+    // unregistered from a map. 61313-61332 and 61349-61352 are claimed by no other class (61325-61328 are
+    // ApproachSummonGmCommandTests', on the shared World; 61333-61348 are ApproachSummonRaceTests').
     private const int ApproachFromA = 61313, ApproachToA = 61314, SummonHereA = 61315, SummonFromA = 61316;
     private const int ApproachFromB = 61319, ApproachToB = 61320, SummonHereB = 61321, SummonFromB = 61322;
+    private const int ApproachFromN = 61349, ApproachToN = 61350, SummonHereN = 61351, SummonFromN = 61352;
     private const ushort RefuseFrom = 61317, RefuseTo = 61318, StaffMap = 61323, StaffFrom = 61324;
     private const ushort BandFrom = 61329, BandTo = 61330, DepartFrom = 61331, DepartTo = 61332;
 
@@ -76,13 +77,16 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// <summary>
     /// <b>Approach takes the caster to the named group member.</b> The caster lands on a free tile beside them
     /// (north first: the @approach move, <c>ArrivalPolicy.AdjacentFreeElseStack</c>), 30 mana is spent, the
-    /// target does not move, and the cast says "You cast Approach.". Both kingdoms, and a name typed in the
-    /// wrong case (the lookup is case-insensitive, like whisper's).
-    /// <para>Red on 9c00b98: the caster stays home and 5 mana goes (the generic fallback).</para>
+    /// target does not move, and the cast says "You cast Approach.". Both kingdoms, two Neutrals (nation 0), and
+    /// a name typed in the wrong case (the lookup is case-insensitive, like whisper's).
+    /// <para>Red on 9c00b98: the caster stays home and 5 mana goes (the generic fallback). The Neutral pair is
+    /// Caleb's ruling of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two
+    /// Neutrals: "Fizzle.", nothing spent, nobody moved.</para>
     /// </summary>
     [Theory]
     [InlineData("ApKoguryo", 1, ApproachFromA, ApproachToA, false)]
     [InlineData("ApBuya", 2, ApproachFromB, ApproachToB, true)]
+    [InlineData("ApNeutral", 0, ApproachFromN, ApproachToN, false)]
     public void ApproachTakesTheCasterBesideAGroupMember(string tag, int nation, int from, int to, bool lowerCase)
     {
         var s = Pair(tag, (ushort)from, (ushort)to, c => c.Nation = (byte)nation, t => t.Nation = (byte)nation);
@@ -99,12 +103,15 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// <summary>
     /// <b>Summon brings the named group member to the caster.</b> The target lands on a free tile beside the
     /// caster (north first: the @bring move), 30 mana is spent, the caster does not move, and the cast says
-    /// "You cast Summon.". The target is told nothing: RTK's summon.lua sends them no line.
-    /// <para>Red on 9c00b98: the target stays where they were and 5 mana goes.</para>
+    /// "You cast Summon.". The target is told nothing: RTK's summon.lua sends them no line. Both kingdoms, and
+    /// two Neutrals (nation 0).
+    /// <para>Red on 9c00b98: the target stays where they were and 5 mana goes. The Neutral pair is Caleb's ruling
+    /// of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two Neutrals.</para>
     /// </summary>
     [Theory]
     [InlineData("SuKoguryo", 1, SummonHereA, SummonFromA)]
     [InlineData("SuBuya", 2, SummonHereB, SummonFromB)]
+    [InlineData("SuNeutral", 0, SummonHereN, SummonFromN)]
     public void SummonBringsAGroupMemberBesideTheCaster(string tag, int nation, int here, int from)
     {
         var s = Pair(tag, (ushort)here, (ushort)from, c => c.Nation = (byte)nation, t => t.Nation = (byte)nation);
@@ -127,9 +134,11 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// <item>offline / blank: no online player has the typed name (or none was typed). RTK: "Fizzle.".</item>
     /// <item>self: the caster typed their own name. RTK: "Fizzle.".</item>
     /// <item>not-grouped: the target is not in the caster's group. RTK, tswolf 2001 and Atlas 2002.</item>
-    /// <item>other-kingdom / both-neutral: not citizens of the same kingdom. tswolf 2001 ("From Same Kingdom")
-    ///   and Atlas 2002 ("citizenship in the same kingdom"); RTK has no such check. Two Neutrals hold no
-    ///   citizenship, so they fizzle too.</item>
+    /// <item>other-kingdom / neutral-caster / neutral-target: not of the same nation. tswolf 2001 ("From Same
+    ///   Kingdom") and Atlas 2002 ("citizenship in the same kingdom"); RTK has no such check. other-kingdom is
+    ///   Koguryo and Buya; the two neutral cases put a Neutral (nation 0) with a Koguryo citizen, each way round.
+    ///   Two Neutrals are not a refusal: read literally the sources leave them out, but Caleb chose to allow
+    ///   them (2026-10-06), so they are in the success facts above.</item>
     /// <item>indoor: the destination is indoors (Approach: the target's map; Summon: the caster's). RTK.</item>
     /// <item>level-band: the mover is below the destination's level band (5840 asks 69; the mover is 30). RTK.
     ///   The player who does NOT move is level 99, inside the band, so the case fails if a verb judges the wrong
@@ -152,8 +161,10 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     [InlineData("summon", "not-grouped", Fizzle)]
     [InlineData("approach", "other-kingdom", Fizzle)]
     [InlineData("summon", "other-kingdom", Fizzle)]
-    [InlineData("approach", "both-neutral", Fizzle)]
-    [InlineData("summon", "both-neutral", Fizzle)]
+    [InlineData("approach", "neutral-caster", Fizzle)]
+    [InlineData("summon", "neutral-caster", Fizzle)]
+    [InlineData("approach", "neutral-target", Fizzle)]
+    [InlineData("summon", "neutral-target", Fizzle)]
     [InlineData("approach", "indoor", Fizzle)]
     [InlineData("summon", "indoor", Fizzle)]
     [InlineData("approach", "level-band", Fizzle)]
@@ -179,7 +190,8 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
         {
             case "not-grouped":   grouped = false; break;
             case "other-kingdom": targetNation = 2; break;
-            case "both-neutral":  casterNation = 0; targetNation = 0; break;
+            case "neutral-caster": casterNation = 0; break;
+            case "neutral-target": targetNation = 0; break;
             case "indoor":        if (approach) targetMap = IndoorMap; else casterMap = IndoorMap; break;
             // The mover at 30, below the band; the one who stays at 99, inside it.
             case "level-band":

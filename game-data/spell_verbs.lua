@@ -871,6 +871,8 @@ end
 --   nexusatlas.com/spells/{mage,poet,rogue}.php (Wayback 2002-12-30): "Brings you to a person" / "Brings a
 --     person to you", Mana Cost 30, Aethers 0, Target "Type in Name"; the person must be "in an area that allows
 --     approaching, citizenship in the same kingdom, and be in your group ... or else a "Fizzle" message is seen."
+-- The kingdom rule here is "the same nation", two Neutrals (0) included. Read literally, the lines above leave two
+-- Neutrals out; Caleb chose to allow them (#325, 2026-10-06). His ruling, not a sourced fact (same_group_and_kingdom).
 -- RTK agrees on the group, the 30 mana and "Fizzle.", and adds the map checks below. Its ORDER is kept: it decides
 -- which line a player reads when more than one applies ("That does not work here." comes before the later fizzles).
 -- The cost, animation and sound are the spell_effects.csv rows (ctx.spellMana, ctx:fxSelf()).
@@ -882,17 +884,22 @@ end
 --     instances): each is a map the 4.95 client cannot render, or an indoor map the indoor check already refuses.
 --   * the PK-status and PK-grudge halves of RTK's canPK: not modelled. The PvP-map half is checked.
 --   * Approach's dead-caster check: HandleCast refuses a ghost's cast before any verb runs.
+-- The mover lands on @approach's and @bring's tile: the first free one north, east, south or west of the other
+-- person, else that person's own tile. RTK searches in facing order instead; Caleb kept this one at #325's merge
+-- (2026-10-06).
 -- Neither verb tells the moved person anything: RTK's scripts send them no line. One exception, Summon's: a person
 -- summoned mid-exchange has the exchange cancelled, and both traders see the client's "Exchange cancelled." box,
--- as for any move (#57). Caleb decides at #325's merge whether Summon should instead fizzle on a trader.
+-- as for any move (#57). Caleb kept this at #325's merge (2026-10-06), rather than have Summon fizzle on a trader.
 
 local function travel_fizzle(ctx) ctx:say("Fizzle."); return false end
 
--- The two people's own standing, checked last, where RTK checks the group. "Citizenship in the same kingdom": a
--- Neutral (0) holds no citizenship, so two Neutrals do not qualify.
+-- The two people's own standing, checked last, where RTK checks the group. The kingdom half is "the same
+-- nation", Neutral (0) included. Read literally, "citizenship in the same kingdom" excludes two Neutrals, since a
+-- Neutral holds no citizenship; Caleb chose to allow them (2026-10-06). A Neutral and a citizen of a kingdom, or
+-- citizens of two kingdoms, still fizzle.
 local function same_group_and_kingdom(ctx)
   if not ctx.targetInGroup then return false end
-  return ctx.nation ~= 0 and ctx.nation == ctx.targetNation
+  return ctx.nation == ctx.targetNation
 end
 
 function verbs.approach(ctx, row)
