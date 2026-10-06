@@ -2498,16 +2498,44 @@ public sealed partial class World
         return gi;
     }
 
-    /// <summary>Despawn every mob on a map for all its players (the shared @kill).</summary>
+    /// <summary>Despawn every creature on a map except its NPCs, for all its players (the shared @kill). Returns
+    /// how many were taken.
+    ///
+    /// <para><b>NPCs stay.</b> No despawn path takes one: <see cref="DespawnMob"/> refuses them, and an NPC leaves
+    /// the world only through its NPCs.csv toggle (<see cref="DisableNpc"/>) or a population rebuild. When this
+    /// cleared the whole list, a GM's @kill on a town map removed the townsfolk until the next @reload or
+    /// restart.</para>
+    ///
+    /// <para><b>Each creature taken gets a despawn's bookkeeping.</b> A spawn point's creature releases its
+    /// point, as <see cref="DespawnMob"/> does, so the point refills on its creature's own timer. Without the
+    /// release the point kept the removed creature as its live one. The respawn pass skips a point that has
+    /// one, so the point stayed empty until a @reload or restart. A batch group's creature has no point: its
+    /// group counts what is left on the map and tops up on its own clock, with or without this.</para>
+    ///
+    /// <para><b>No <c>Alive</c> test, unlike <see cref="DespawnMob"/>.</b> There it guards a caller holding a
+    /// stale reference: a creature killed after the caller found it has already left the list and released its
+    /// point. This reads the list itself, under the lock, so every entry is current. A kill takes its creature
+    /// off the list in the same locked section, and content floors a creature's HP at 1, so an entry with no
+    /// hit points is a GM's <c>@mob &lt;look&gt; 0</c>. No client draws it, nothing can damage it, and
+    /// DespawnMob refuses it, so @kill is the only way to clear it, as it always has been.</para>
+    ///
+    /// <para>One locked section. <see cref="SpawnDirector.ReleasePoint"/> runs under the lock this already
+    /// holds and takes none of its own. The despawns go out after the lock, one per creature taken and for no
+    /// other id.</para></summary>
     public int ClearMap(ushort mapId)
     {
+        static bool Takes(Mob mo) => !mo.IsNpc;
+
         uint[] ids;
         lock (_lock)
         {
-            if (!_maps.TryGetValue(mapId, out var m) || m.Mobs.Count == 0) return 0;
-            ids = m.Mobs.Select(mo => mo.Id).ToArray();
-            m.Mobs.Clear();
+            if (!_maps.TryGetValue(mapId, out var m)) return 0;
+            var taken = m.Mobs.FindAll(Takes);
+            if (taken.Count == 0) return 0;
+            m.Mobs.RemoveAll(Takes);
             m.ViewGen++;                    // a mob roster change
+            foreach (var mo in taken) _spawnDirector.ReleasePoint(mo);   // a spawn point's creature frees its point
+            ids = taken.Select(mo => mo.Id).ToArray();
         }
         foreach (var id in ids) Broadcast(mapId, p => p.DespawnEntity(id));
         return ids.Length;
