@@ -163,7 +163,11 @@ public class MovementRaceTests
         var (mover, _) = _fx.Player("TornMover", TornMap, 5, 5);
         var (observer, _) = _fx.Player("TornObserver", TornMap, 12, 12);   // out of the way; View excludes self
 
-        const int Steps = 40_000;
+        // The walker is the thread that ends the race. It takes at least Steps steps, then walks on until the
+        // watcher has seen the mover MinObservations times: a fixed walk alone could end before the watcher first
+        // looked (red once on 2026-10-05, a 123 ms run with no observation). It stops sooner only when the watcher
+        // has faulted, and at ObserveCapMs whatever the count, which the assertion below then reports.
+        const int Steps = 40_000, MinObservations = 1_000, ObserveCapMs = 20_000;
         var done = new ManualResetEventSlim();
         Exception? walkerFault = null, watcherFault = null;
         int walkerSteps = 0, snapshotTears = 0, observations = 0;
@@ -175,8 +179,10 @@ public class MovementRaceTests
         {
             try
             {
-                for (int i = 0; i < Steps; i++)
+                long cap = Environment.TickCount64 + ObserveCapMs;
+                for (int i = 0; i < Steps || Volatile.Read(ref observations) < MinObservations; i++)
                 {
+                    if (Volatile.Read(ref watcherFault) is not null || Environment.TickCount64 >= cap) break;
                     var (nx, ny) = (i & 1) == 0 ? (6, 6) : (5, 5);
                     mover.WithState(() => world.TryMovePlayer(
                         mover, TornMap, nx, ny,
@@ -224,7 +230,9 @@ public class MovementRaceTests
 
         Assert.Null(walkerFault);
         Assert.Null(watcherFault);
-        Assert.True(observations > 0, "the watcher never saw the mover — the probe proved nothing");
+        Assert.True(observations >= MinObservations,
+            $"the watcher saw the mover {observations} time(s) in {walkerSteps} step(s), short of {MinObservations} " +
+            $"when the {ObserveCapMs / 1000} s cap stopped the walk — the probe proved nothing");
         Assert.Equal(0, snapshotTears);
     }
 

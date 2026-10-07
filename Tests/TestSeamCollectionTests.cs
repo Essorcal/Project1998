@@ -39,9 +39,11 @@ namespace Tests;
 /// The parts of a partial class are one class, so a <c>[Collection]</c> on any part covers all of them.</item>
 /// <item>A use belongs to the member it sits in, and is judged by the code that can run that member, since a
 /// helper runs in its caller's collection (the PR #326 review, F8). A test method, and a test class's constructor,
-/// <c>Dispose</c>, <c>DisposeAsync</c> and <c>InitializeAsync</c>, run as their class: xunit needs them public and
-/// calls them for that class's tests, and no other class's tests run them, because no test class may derive from
-/// another (the next item). A test class's static constructor runs when the type is first touched, in whichever
+/// <c>Dispose</c>, <c>DisposeAsync</c> and <c>InitializeAsync</c>, are judged by their own class's collection: xunit
+/// needs them public and calls them for that class's tests, and no derived class's tests run them, because no test
+/// class may derive from another (the next item). Two other routes into them are not followed: another class calling
+/// a test class's public static test method directly, and another class building a test class with <c>new</c> (the
+/// PR #326 re-check, F8b). A test class's static constructor runs when the type is first touched, in whichever
 /// class touches it first, so a seam use there is reported (F8a). So is one in an initializer of its static fields
 /// or properties, which runs with it, whenever another class can touch the type first: when the class has a static
 /// constructor, or a static member other classes can reach. With every static private, only its own code, run for
@@ -72,10 +74,18 @@ namespace Tests;
 /// that is not a test class is allowed.</item>
 /// <item>An import of a seam's type reaches the seam as the type's own name does: after
 /// <c>using static Shared.Log;</c> a bare <c>Shutdown()</c> counts, and after <c>using L = Shared.Log;</c>
-/// <c>L.Shutdown()</c> does. A <c>global using</c> counts in every file.</item>
-/// <item>An <c>#if</c> region is read the way this build compiled it: a fact under <c>#if DEBUG</c> is a fact in a
-/// Debug run and nothing at all in a Release one (<see cref="BuildSymbols"/>). A symbol the scanner does not
-/// know stops the scan with its name and line, rather than being guessed.</item>
+/// <c>L.Shutdown()</c> does. A <c>global using</c> counts in every file. The bare form is matched by name alone,
+/// so it counts where C# binds the name to something else: after <c>using static Shared.Log;</c> a class's own
+/// <c>Configure()</c> counts as the log's, and after a <c>using static</c> of any type outside System, Microsoft and
+/// Xunit a local <c>countForTest = 1</c> counts as a static test hook. Qualify the name, rename it, or drop the
+/// import (the PR #326 re-check, F1a).</item>
+/// <item>An <c>#if</c> region is read as each configuration compiles it. The rule reads every file twice, with
+/// Debug's symbols and with Release's (<c>DEBUG</c> or <c>RELEASE</c>, with <c>TRACE</c>, as the SDK defines them),
+/// and reports what either reading finds: CI builds and tests Release only (<c>.github/workflows/ci.yml</c>), and a
+/// seam under <c>#if DEBUG</c> must not pass there unjudged (the PR #326 re-check, F7a). The cross-check below
+/// reads this build's own symbols (<see cref="BuildSymbols"/>), because it compares the scanner with what xunit ran
+/// in this build: a fact under <c>#if DEBUG</c> is a fact in a Debug run and nothing at all in a Release one. A
+/// symbol the scanner does not know stops the scan with its name and line, rather than being guessed.</item>
 /// </list>
 /// What it does not follow: the code a base test class runs for a derived one, which is why that derivation is
 /// reported instead. Behind that rule stands
@@ -229,14 +239,17 @@ public class TestSeamCollectionTests
 
     /// <summary>The fact the whole rule exists for. Each violation it reports names the file and line, the
     /// class, the seam, the collection the class is in and the collections it belongs in; or, for a test class
-    /// that derives from another, both classes.</summary>
+    /// that derives from another, both classes. It reads every file as Debug compiles it and as Release does, and
+    /// reports what either reading finds, so a run in one configuration judges the other's code too.</summary>
     [Fact]
     public void EveryClassThatTouchesAProcessGlobalSeamSitsInACollectionThatOwnsIt()
     {
         var files = TestSources();
         Assert.True(files.Count > 100, $"found only {files.Count} source files under Tests/; is that the Tests folder?");
 
-        var violations = Violations(files, ExclusiveCollections());
+        var exclusive = ExclusiveCollections();
+        var violations = Violations(files, exclusive, SymbolsFor(debug: true))
+            .Union(Violations(files, exclusive, SymbolsFor(debug: false)), StringComparer.Ordinal).ToList();
         Assert.True(violations.Count == 0,
             "classes touching a process-global seam from a collection that does not own it, or deriving from a test " +
             "class:\n" + string.Join("\n", violations));

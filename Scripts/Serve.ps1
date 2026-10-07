@@ -643,8 +643,8 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
 # (Get-SignalHelperHosts). The next is tried only when the previous never reached AttachConsole: the helper
 # prints a marker line just before it, and that line is read even from a helper killed after its wait. A helper
 # that printed it may already have signalled, and a second one would signal again, by PID, possibly after that
-# PID has gone to another process. For the same reason no further host runs once the target, checked through a
-# handle taken before the first one, has exited. Never
+# PID has gone to another process when no handle could be taken (below). For the same reason no further host
+# runs once the target, checked through a handle taken before the first one, has exited. Never
 # "$PSHOME\powershell.exe": under PowerShell 7 $PSHOME holds pwsh.exe and no powershell.exe, so that helper
 # silently never started and every -Stop from a PowerShell 7 shell ended in a terminate (2026-09-27). Each is
 # started directly (Invoke-SignalHelper), not through cmd, and what it prints is read here and reported, not
@@ -700,8 +700,9 @@ exit [P1998Sig]::Send(TARGETPID, WAITMS)
     $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($code))
     $skipped = @()
     $last = 40000
-    # A handle, not just the PID: it keeps naming this process after it exits, even once Windows has given the
-    # PID to another. Not opened (gone already, or no access): the first helper finds that out for itself.
+    # A handle, not just the PID: it keeps naming this process after it exits, and while it is open Windows
+    # cannot give the PID to another process, so a later helper's attach by PID can only reach this process or
+    # fail. Not opened (gone already, or no access): the first helper finds that out for itself.
     $target = $null
     try { $target = [System.Diagnostics.Process]::GetProcessById($ProcessId); [void]$target.Handle } catch { $target = $null }
     try {
@@ -758,9 +759,9 @@ function Get-SignalHelperHosts {
 # Run the signal helper under one PowerShell: started directly (no cmd, so a path with spaces is fine), with no
 # window of its own, stdin closed, and stdout/stderr read here so none of it reaches this session's streams.
 # Returns { Code; Text; Marked }: the exit code, and the first line the helper printed (its own error, when it
-# failed), or why it could not be started or did not finish; Marked says whether it printed -Marker. A helper
-# still running after TimeoutMs is killed through the handle Start returned (never by PID), and what it printed
-# before that is still read: its pipes close as it dies.
+# failed), or why it could not be started or did not finish; Marked says whether it printed -Marker as a line of
+# its own. A helper still running after TimeoutMs is killed through the handle Start returned (never by PID), and
+# what it printed before that is still read: its pipes close as it dies.
 function Invoke-SignalHelper([string]$Exe, [string]$EncodedCommand, [int]$TimeoutMs, [string]$Marker = '') {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
@@ -787,7 +788,9 @@ function Invoke-SignalHelper([string]$Exe, [string]$EncodedCommand, [int]$Timeou
         }
         $text = ''
         foreach ($read in $reads) { if ($read.Wait(3000)) { $text += [string]$read.Result + "`n" } }
-        $marked = $Marker.Length -gt 0 -and $text.Contains($Marker)
+        # The marker counts only as a line of its own: Windows PowerShell's Add-Type error quotes the C# line that
+        # prints it, and a helper that failed to compile never reached AttachConsole (the PR #327 re-check, N1).
+        $marked = $Marker.Length -gt 0 -and $text -match "(?m)^$([regex]::Escape($Marker))\r?$"
         if ($marked) { $text = $text.Replace($Marker, '') }
         if ($why -eq '') { $why = Get-HelperLine $text }
         return [pscustomobject]@{ Code = $code; Text = $why; Marked = $marked }

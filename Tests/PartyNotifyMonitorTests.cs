@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -238,7 +237,6 @@ public sealed class PartyNotifyMonitorTests
     private const int RaceRounds = 300;
     private static readonly TimeSpan StallQuiet = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StallCap = TimeSpan.FromSeconds(120);
-    private const int StallPollMs = 25;
 
     /// <summary>A member's own leave against a leader's kick: two removals on two threads, each broadcasting
     /// into the other's session and into the third member's. Broadcast now enters a monitor per member, so
@@ -281,7 +279,7 @@ public sealed class PartyNotifyMonitorTests
             }
         }) { IsBackground = true, Name = "leave-vs-kick-driver" };
         driver.Start();
-        RunUntilDoneOrStalled(new[] { driver }, () => Interlocked.Read(ref rounds), StallQuiet, StallCap,
+        StallWatch.RunUntilDoneOrStalled(new[] { driver }, () => Interlocked.Read(ref rounds), StallQuiet, StallCap,
             "the leave-against-kick race");
 
         Assert.Equal(RaceRounds, (int)Interlocked.Read(ref rounds));
@@ -332,7 +330,7 @@ public sealed class PartyNotifyMonitorTests
             }
         }) { IsBackground = true, Name = "invite-vs-leave-driver" };
         driver.Start();
-        RunUntilDoneOrStalled(new[] { driver }, () => Interlocked.Read(ref rounds), StallQuiet, StallCap,
+        StallWatch.RunUntilDoneOrStalled(new[] { driver }, () => Interlocked.Read(ref rounds), StallQuiet, StallCap,
             "the invite-against-leave race");
 
         Assert.Equal(RaceRounds, (int)Interlocked.Read(ref rounds));
@@ -342,34 +340,6 @@ public sealed class PartyNotifyMonitorTests
     }
 
     // ---- machinery -------------------------------------------------------------------------------------
-
-    /// <summary>A copy of <c>SessionActorTests.RunUntilDoneOrStalled</c>, private to this file: a deadlock is
-    /// a counter that stops dead, where a busy machine only slows it down. Copied rather than shared because
-    /// that file is owned by another change in flight.</summary>
-    private static void RunUntilDoneOrStalled(Thread[] threads, Func<long> progress, TimeSpan quiet,
-                                              TimeSpan cap, string what)
-    {
-        var elapsed = Stopwatch.StartNew();
-        long last = progress();
-        var lastMoved = TimeSpan.Zero;
-
-        while (true)
-        {
-            if (threads.All(t => t.Join(0))) return;
-
-            long now = progress();
-            if (now != last) { last = now; lastMoved = elapsed.Elapsed; }
-            else if (elapsed.Elapsed - lastMoved >= quiet)
-                Assert.Fail($"{what}: no round completed for {quiet.TotalSeconds:0} s, stopped at {last} rounds "
-                          + $"{elapsed.Elapsed.TotalSeconds:0} s in — the threads are stuck, not slow");
-
-            if (elapsed.Elapsed >= cap)
-                Assert.Fail($"{what}: still running after the {cap.TotalSeconds:0} s cap at {last} rounds — "
-                          + "still moving, so not this cycle, but far past anything this machine should need");
-
-            Thread.Sleep(StallPollMs);
-        }
-    }
 
     /// <summary>A session on the fixture's world wearing a <see cref="MonitorProbe"/> instead of the plain
     /// recorder: thread-safe, and it records whether the recipient's own monitor was held at the instant the

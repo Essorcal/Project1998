@@ -39,7 +39,11 @@ public class PeerSweepBatchTests
     public PeerSweepBatchTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per fact so nothing is shared.
-    private const ushort BatchMap = 60070, SteadyMap = 60071;
+    // 63070 and 63071 were checked on 2026-10-05: git grep finds neither in any file at master 5999f5a or at open
+    // PR #325's head 215aba9; no class derives an id near them (60073-60079 in TickPhaseGuardTests, 60260-60261 in
+    // TickSweepSkipTests, 65301-65329 in ReplacedSessionWorldTests, 61345-61348 in #325's ApproachSummonRaceTests);
+    // and game-data/Maps.csv has no map between 58999 and 65001.
+    private const ushort BatchMap = 63070, SteadyMap = 63071;
 
     private const ushort ViewerX = 5, ViewerY = 10;
     private const ushort InStrict = 5;      // x in [-2,15)
