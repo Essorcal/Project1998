@@ -862,6 +862,87 @@ function verbs.return_home(ctx, row)
   return true
 end
 
+-- Approach and Summon (#313; RTK common/approach.lua + summon.lua): the Mage/Rogue/Poet travel spells. The
+-- player TYPES a name into the prompt ("Approach who?>" / "Summon who?>", ctx.answer). Approach takes you to that
+-- person; Summon brings them to you. Two era sources agree on what they did and what they asked:
+--   tswolf.com/spells/{mage,poet,rogue}.shtml (Wayback 2001-02-23 to 2001-08-21): "Approach a Person" / "Brings
+--     Someone to You", 30 Mana; "Person Must be In Group and Same Server. Must also be From Same Kingdom as
+--     Person."
+--   nexusatlas.com/spells/{mage,poet,rogue}.php (Wayback 2002-12-30): "Brings you to a person" / "Brings a
+--     person to you", Mana Cost 30, Aethers 0, Target "Type in Name"; the person must be "in an area that allows
+--     approaching, citizenship in the same kingdom, and be in your group ... or else a "Fizzle" message is seen."
+-- The kingdom rule here is "the same nation", two Neutrals (0) included. Read literally, the lines above leave two
+-- Neutrals out; Caleb chose to allow them (#325, 2026-10-06). His ruling, not a sourced fact (same_group_and_kingdom).
+-- RTK agrees on the group, the 30 mana and "Fizzle.", and adds the map checks below. Its ORDER is kept: it decides
+-- which line a player reads when more than one applies ("That does not work here." comes before the later fizzles).
+-- The cost, animation and sound are the spell_effects.csv rows (ctx.spellMana, ctx:fxSelf()).
+-- Not checked, and why:
+--   * the "area that allows approaching" (RTK canSummon, Maps.csv MapCanSummon): the server does not load that
+--     column yet. A listed follow-up, not a guess.
+--   * "Same Server": this is one process, so everyone is on it.
+--   * RTK's hardcoded map ids (jail 666, 1228, 3010/3011/33, 3042, 3034-3039, 4259, the two Kan Shops, the 59000+
+--     instances): each is a map the 4.95 client cannot render, or an indoor map the indoor check already refuses.
+--   * the PK-status and PK-grudge halves of RTK's canPK: not modelled. The PvP-map half is checked.
+--   * Approach's dead-caster check: HandleCast refuses a ghost's cast before any verb runs.
+-- The mover lands on @approach's and @bring's tile: the first free one north, east, south or west of the other
+-- person, else that person's own tile. RTK searches in facing order instead; Caleb kept this one at #325's merge
+-- (2026-10-06).
+-- Neither verb tells the moved person anything: RTK's scripts send them no line. One exception, Summon's: a person
+-- summoned mid-exchange has the exchange cancelled, and both traders see the client's "Exchange cancelled." box,
+-- as for any move (#57). Caleb kept this at #325's merge (2026-10-06), rather than have Summon fizzle on a trader.
+
+local function travel_fizzle(ctx) ctx:say("Fizzle."); return false end
+
+-- The two people's own standing, checked last, where RTK checks the group. The kingdom half is "the same
+-- nation", Neutral (0) included. Read literally, "citizenship in the same kingdom" excludes two Neutrals, since a
+-- Neutral holds no citizenship; Caleb chose to allow them (2026-10-06). A Neutral and a citizen of a kingdom, or
+-- citizens of two kingdoms, still fizzle.
+local function same_group_and_kingdom(ctx)
+  if not ctx.targetInGroup then return false end
+  return ctx.nation == ctx.targetNation
+end
+
+function verbs.approach(ctx, row)
+  local mana = row.mana or ctx.spellMana
+  if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
+  if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
+  if ctx.targetIsSelf then return travel_fizzle(ctx) end
+  local there = ctx.targetMap                                      -- where the caster would land
+  if ctx:mapIndoor(there) then return travel_fizzle(ctx) end
+  if not ctx:mapAdmits(there, "caster") then return travel_fizzle(ctx) end
+  if not ctx.canWarpOut then ctx:say("That does not work here."); return false end
+  if ctx.targetIsGm and not ctx.isGm then return travel_fizzle(ctx) end
+  if ctx:mapPvp(there) or ctx:mapPvp(ctx.map) then return travel_fizzle(ctx) end
+  if not same_group_and_kingdom(ctx) then return travel_fizzle(ctx) end
+  ctx:debitMana(mana)
+  ctx:fxSelf()
+  ctx:approachTarget()
+  return true
+end
+
+function verbs.summon(ctx, row)
+  local mana = row.mana or ctx.spellMana
+  if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
+  if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
+  if ctx.targetIsSelf then return travel_fizzle(ctx) end
+  local here = ctx.map                                             -- where the target would land
+  if ctx:mapIndoor(here) then return travel_fizzle(ctx) end
+  if ctx.targetIsDead then return travel_fizzle(ctx) end
+  if not ctx:mapAdmits(here, "target") then return travel_fizzle(ctx) end
+  if not ctx:mapWarpOut(ctx.targetMap) then ctx:say("That does not work here."); return false end
+  if ctx.targetIsGm and not ctx.isGm then return travel_fizzle(ctx) end
+  if ctx:mapPvp(ctx.targetMap) or ctx:mapPvp(here) then return travel_fizzle(ctx) end
+  if not same_group_and_kingdom(ctx) then return travel_fizzle(ctx) end
+  -- The move first, then the cost: unlike every check above, it can still be refused, by a target who logged out
+  -- since the lookup or who keeps opening exchanges (Session.LuaSummonTarget). A refused cast costs nothing, so
+  -- the mana and the effect wait until somebody has actually moved (PR #325 review, F3). RTK debits before its
+  -- warp, but RTK has no logout to race.
+  if not ctx:summonTarget() then return travel_fizzle(ctx) end
+  ctx:debitMana(mana)
+  ctx:fxSelf()
+  return true
+end
+
 -- Divination (RTK rogue/judge.lua + spy.lua): inspect a lower-level player's class/name/level/stats (spy also
 -- lists their inventory). 30 mana. Judge needs a STRICTLY lower target; spy allows equal level too.
 function verbs.divine(ctx, row)

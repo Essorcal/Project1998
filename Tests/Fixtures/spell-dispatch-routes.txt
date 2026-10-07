@@ -1,8 +1,13 @@
 # The branch Session.ApplyCast takes for every spell, as the route probe in
 # Tests/SpellDispatchRouteTests.cs observes it: identifier, Spells.csv id, then the mini-text the
 # probe cast sent ("verb=<name>", "row" when a SpellParams row bound it, else the engine's own answer).
-# Recorded on upstream/master 9c00b98; this slice changed spirit_blade from verb=generic to
-# verb=stance_enchant. Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc).
+# Recorded on upstream/master 9c00b98; the dispatch fall-through slice (#322) changed spirit_blade from
+# verb=generic to verb=stance_enchant. The Approach/Summon slice (#325) then changed two more spells,
+# approach_spell and summon_spell, from verb=generic to verb=approach row and verb=summon row: it binds
+# them to their own verbs through SpellParams.csv rows, where before they fell to the generic fallback.
+# The fact's name and doc still say "except Spirit Blade"; these two are the other intended changes.
+# Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
+# fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
 add_script	10002	verb=generic
 adepts_wisdom	404	verb=sage_shout row
@@ -22,7 +27,7 @@ apply_stealth	30807	verb=generic
 apply_stealth	30810	verb=generic
 appraise_rogue	2016	verb=divine row
 apprentices_wisdom	403	verb=sage_shout row
-approach_spell	104	verb=generic
+approach_spell	104	verb=approach row
 armor_of_elements_poet	4150	verb=ward row
 art_of_war	30303	verb=generic
 assassinate	30806	verb=generic
@@ -764,7 +769,7 @@ strengthen_mage	3041	verb=arch_targetbuff
 strengthen_poet	4038	verb=arch_targetbuff
 strengthen_weapon_warrior	1037	verb=stance_enchant
 summon_healing_totem	12019	verb=misc
-summon_spell	105	verb=generic
+summon_spell	105	verb=summon row
 sunstroke_mage	3047	verb=arch_damage
 super_saiyan	12017	verb=arch_buff
 suppress_mage	3170	verb=curse row
