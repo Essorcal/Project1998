@@ -883,9 +883,18 @@ end
 --     and the Atlas line asks that the PERSON be in such an area.
 --   * Summon reads both maps: the caster's, where the person would land (RTK summon.lua checks
 --     player.canSummon), and the person's own (the Atlas line).
--- Both sit where RTK checks the flag: after the self check, before the indoor check. So a person standing on a
--- map that is both no-summon and warp-locked (Guol, the newbie tutorial fields) gets Summon's "Fizzle.", not
--- "That does not work here.". A map with no Maps.csv row, or a blank cell, allows.
+-- All three sit where RTK checks the flag: after the self check, before the indoor check, and so before the
+-- warp-out check too. That decides the line: #325's "That does not work here." becomes "Fizzle." in three groups
+-- of casts (PR #336 review, F1):
+--   * Summon of a person on a map that is both no-summon and warp-locked: Guol (1111-1116), the newbie tutorial
+--     fields (4711-4718), the event halls and arenas 3001-3010, the Mythic zodiac rooms (3020-3031), Judge's
+--     Chambers (3051) and the halls 3683-3694. Only this group rests on where the person's-map check sits;
+--     placed after the warp-out check, it would keep #325's line.
+--   * Summon cast from an outdoor no-summon area, of a person on a warp-locked map. RTK's own order: summon.lua
+--     checks player.canSummon (L42) before the person's warpOut (L74).
+--   * Approach cast from a warp-locked map, to a person in an outdoor no-summon area. RTK's own order:
+--     approach.lua checks target.canSummon (L37) before the caster's warpOut (L65).
+-- A map with no Maps.csv row, or a blank cell, allows.
 -- Not checked, and why:
 --   * "Same Server": this is one process, so everyone is on it.
 --   * RTK's hardcoded map ids (jail 666, 1228, 3010/3011/33, 3042, 3034-3039, 4259, the two Kan Shops, the 59000+

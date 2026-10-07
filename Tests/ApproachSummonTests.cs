@@ -28,8 +28,8 @@ namespace Tests;
 /// class runs on a World nothing else touches. Two reasons. These spells find their target by NAME, and the
 /// shared fixture World keeps a "cmdgm" session from every class that runs a GM command, so the staff fact's
 /// lookup could land on any of them. And the refusals need real maps (Vale, Purgatory, Worm Pits, Tiger's Steps,
-/// Buya, Nagnang) that no other class stands on; on a World of their own, nothing here leaves a session or a
-/// spawned mob behind on them for anyone else.</para>
+/// Guol Shore, Mythic Rat, Buya, Nagnang) that no other class stands on; on a World of their own, nothing here
+/// leaves a session or a spawned mob behind on them for anyone else.</para>
 ///
 /// <para>Every cast is the real <c>0x0F</c> frame through <c>Session.Receive</c>: the book slot, then the typed
 /// answer NUL-terminated, the way <c>HandleCast</c> parses a type-1 spell. So the SpellParams row, the verb, the
@@ -56,6 +56,9 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     // MapCanSummon 1, so the area check never answers for another flag's case. (The band case used The Dark
     // Forest, 5840, until the area check: that map is MapCanSummon 0 too, and the area check comes first.)
     private const ushort IndoorMap = 36, PvpMap = 1005, GatedMap = 56, WarpLockedMap = 600, NoSummonMap = 219;
+    // Two real maps that carry BOTH refusals on purpose, MapCanSummon 0 and MapWarpout 0, to pin which line wins:
+    // Guol Shore (1111, outdoors) and Mythic Rat (3025, one of the indoor zodiac rooms). Neither is PvP or banded.
+    private const ushort BothFlagsMap = 1111, BothFlagsRoom = 3025;
     // Two kingdom towns whose rows say MapCanSummon 1: Buya and Nagnang (outdoors, not PvP, no bands).
     private const ushort AllowedA = 330, AllowedB = 2500;
 
@@ -195,6 +198,14 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     ///   area that allows approaching"). Summon: the caster's map (RTK summon.lua <c>player.canSummon</c>) or the
     ///   person's (the Atlas). Which maps count is Caleb's ruling of 2026-10-06. Approach out of such a map is a
     ///   success case above.</item>
+    /// <item>both-flags-target / both-flags-room / locked-to-area: the no-summon check and the warp-out check
+    ///   both apply, and the area check answers first, so the line is "Fizzle.", not "That does not work here."
+    ///   (PR #336 review, F1/F2). both-flags-*: Summon of a person on a map that is warp-locked AND no-summon
+    ///   (Guol Shore; Mythic Rat, an indoor room); this one rests on where the person's-map check sits, beside
+    ///   RTK's canSummon line, and flips to "That does not work here." if it moves after the warp-out check.
+    ///   locked-to-area: the mover leaves a warp-locked map (Purgatory) for a no-summon one (Tiger's Steps): Approach
+    ///   cast from Purgatory, Summon cast on Tiger's Steps. These two follow RTK's own order (approach.lua checks
+    ///   canSummon at L37 before warp-out at L65; summon.lua at L42 before L74), whatever that placement is.</item>
     /// <item>indoor: the destination is indoors (Approach: the target's map; Summon: the caster's). RTK.</item>
     /// <item>level-band: the mover is below the destination's level band (Worm Pits, 56, asks 14; the mover is
     ///   10). RTK. The player who does NOT move is level 99, inside the band, so the case fails if a verb judges
@@ -224,6 +235,10 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     [InlineData("approach", "no-summon-target", Fizzle)]
     [InlineData("summon", "no-summon-caster", Fizzle)]
     [InlineData("summon", "no-summon-target", Fizzle)]
+    [InlineData("summon", "both-flags-target", Fizzle)]
+    [InlineData("summon", "both-flags-room", Fizzle)]
+    [InlineData("approach", "locked-to-area", Fizzle)]
+    [InlineData("summon", "locked-to-area", Fizzle)]
     [InlineData("approach", "indoor", Fizzle)]
     [InlineData("summon", "indoor", Fizzle)]
     [InlineData("approach", "level-band", Fizzle)]
@@ -253,6 +268,13 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
             case "neutral-target": targetNation = 0; break;
             case "no-summon-target": targetMap = NoSummonMap; break;
             case "no-summon-caster": casterMap = NoSummonMap; break;
+            case "both-flags-target": targetMap = BothFlagsMap; break;
+            case "both-flags-room":  targetMap = BothFlagsRoom; break;
+            // The mover starts on the warp-locked map and would land on the no-summon one.
+            case "locked-to-area":
+                if (approach) { casterMap = WarpLockedMap; targetMap = NoSummonMap; }
+                else          { casterMap = NoSummonMap; targetMap = WarpLockedMap; }
+                break;
             case "indoor":        if (approach) targetMap = IndoorMap; else casterMap = IndoorMap; break;
             // The mover at 10, below the band; the one who stays at 99, inside it.
             case "level-band":
