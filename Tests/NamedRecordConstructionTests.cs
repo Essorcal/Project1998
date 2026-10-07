@@ -25,6 +25,7 @@ public sealed class NamedRecordConstructionTests
             ManaMax = 9,
             RejectMsg = "sentinel",
             Indoor = true,
+            CanSummon = false,
         };
 
         Assert.Equal(1, value.Region);
@@ -42,6 +43,7 @@ public sealed class NamedRecordConstructionTests
         Assert.Equal(9, value.ManaMax);
         Assert.Equal("sentinel", value.RejectMsg);
         Assert.True(value.Indoor);
+        Assert.False(value.CanSummon);
     }
 
     [Fact]

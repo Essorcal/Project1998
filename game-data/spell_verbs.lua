@@ -876,9 +876,17 @@ end
 -- RTK agrees on the group, the 30 mana and "Fizzle.", and adds the map checks below. Its ORDER is kept: it decides
 -- which line a player reads when more than one applies ("That does not work here." comes before the later fizzles).
 -- The cost, animation and sound are the spell_effects.csv rows (ctx.spellMana, ctx:fxSelf()).
+-- The "area that allows approaching" is Maps.csv MapCanSummon (RTK map[m].summon, which its scripts read as
+-- canSummon), through ctx:mapCanSummon: 0 is "Fizzle." at no cost. Which map counts is Caleb's ruling
+-- (2026-10-06, the follow-up to #325):
+--   * Approach reads the person's map, where the caster would land: RTK approach.lua checks target.canSummon,
+--     and the Atlas line asks that the PERSON be in such an area.
+--   * Summon reads both maps: the caster's, where the person would land (RTK summon.lua checks
+--     player.canSummon), and the person's own (the Atlas line).
+-- Both sit where RTK checks the flag: after the self check, before the indoor check. So a person standing on a
+-- map that is both no-summon and warp-locked (Guol, the newbie tutorial fields) gets Summon's "Fizzle.", not
+-- "That does not work here.". A map with no Maps.csv row, or a blank cell, allows.
 -- Not checked, and why:
---   * the "area that allows approaching" (RTK canSummon, Maps.csv MapCanSummon): the server does not load that
---     column yet. A listed follow-up, not a guess.
 --   * "Same Server": this is one process, so everyone is on it.
 --   * RTK's hardcoded map ids (jail 666, 1228, 3010/3011/33, 3042, 3034-3039, 4259, the two Kan Shops, the 59000+
 --     instances): each is a map the 4.95 client cannot render, or an indoor map the indoor check already refuses.
@@ -908,6 +916,7 @@ function verbs.approach(ctx, row)
   if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
   if ctx.targetIsSelf then return travel_fizzle(ctx) end
   local there = ctx.targetMap                                      -- where the caster would land
+  if not ctx:mapCanSummon(there) then return travel_fizzle(ctx) end  -- the person's area (RTK target.canSummon)
   if ctx:mapIndoor(there) then return travel_fizzle(ctx) end
   if not ctx:mapAdmits(there, "caster") then return travel_fizzle(ctx) end
   if not ctx.canWarpOut then ctx:say("That does not work here."); return false end
@@ -926,6 +935,8 @@ function verbs.summon(ctx, row)
   if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
   if ctx.targetIsSelf then return travel_fizzle(ctx) end
   local here = ctx.map                                             -- where the target would land
+  if not ctx:mapCanSummon(here) then return travel_fizzle(ctx) end           -- RTK player.canSummon
+  if not ctx:mapCanSummon(ctx.targetMap) then return travel_fizzle(ctx) end  -- the person's area (Atlas)
   if ctx:mapIndoor(here) then return travel_fizzle(ctx) end
   if ctx.targetIsDead then return travel_fizzle(ctx) end
   if not ctx:mapAdmits(here, "target") then return travel_fizzle(ctx) end

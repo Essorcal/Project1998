@@ -25,7 +25,8 @@ public static partial class Content
     // kingdoms (0 Kugnae · 1 Buya · 2 Mythic · 3 Nagnang · …) and is what the Gateway spell keys off to pick
     // the destination city; warpOut==false is a map that blocks Gateway/Return ("It doesn't work here").
     // Also carries the warp-entry gate (RTK map_data.reqlvl/reqvita/reqmana/reqmark/reqpath/*max/rejectmsg,
-    // map.c:1102) and the PvP flag (MapPvP — durability loss is disabled on PvP maps, RTK clif.c:6650).
+    // map.c:1102) and the PvP flag (MapPvP — durability loss is disabled on PvP maps, RTK clif.c:6650), and
+    // MapCanSummon (the "area that allows approaching" Approach and Summon check; see CanSummon).
     // Loaded from the full RTK Maps.csv (map_index.csv, the renderable subset, doesn't carry these columns).
     public sealed record MapMetaInfo
     {
@@ -44,6 +45,7 @@ public static partial class Content
         public required long ManaMax { get; init; }
         public required string RejectMsg { get; init; }
         public required bool Indoor { get; init; }
+        public required bool CanSummon { get; init; }
     }
 
     public static IReadOnlyDictionary<ushort, MapMetaInfo> MapMeta
@@ -384,6 +386,13 @@ public static partial class Content
     /// <summary>Whether a map allows warp-out spells (Gateway/Return). Unknown maps default to true (only an
     /// explicit MapWarpout==0 blocks); RTK shows "It doesn't work here" when this is false.</summary>
     public static bool WarpOut(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.WarpOut;
+
+    /// <summary>Whether Approach and Summon may reach this map (RTK <c>MapCanSummon</c>, <c>map[m].summon</c>,
+    /// which its scripts read as <c>canSummon</c>): the era spell pages' "area that allows approaching". Unknown
+    /// maps default to true, and so does a blank cell, because RTK's column default is 1; only an explicit
+    /// <c>MapCanSummon=0</c> refuses. Which map each spell asks about is decided in
+    /// <c>game-data/spell_verbs.lua</c>.</summary>
+    public static bool CanSummon(ushort mapId) => !MapMeta.TryGetValue(mapId, out var m) || m.CanSummon;
 
     /// <summary>Whether a map is flagged PvP (RTK MapPvP) — disables equipment durability loss there
     /// (clif_deductdura, clif.c:6650: "disable dura loss from mobs on pvp map").</summary>
