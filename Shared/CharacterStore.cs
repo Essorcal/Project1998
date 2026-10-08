@@ -379,6 +379,9 @@ public sealed class CharacterStore
                     continue;
                 }
                 if (c is null || string.IsNullOrEmpty(c.Name)) continue;
+                // A file from before creation decoded the nation holds the compiled-in 1, not the pick, and a login
+                // no longer re-derives it, so it is applied here, once (CharacterFactory.ApplyCreationNation).
+                CharacterFactory.ApplyCreationNation(c);
 
                 using var cn = Open();
                 using var cmd = cn.CreateCommand();

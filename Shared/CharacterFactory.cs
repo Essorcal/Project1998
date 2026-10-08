@@ -25,7 +25,8 @@ public static class CharacterFactory
         var c = new Character { SchemaVersion = Character.CurrentSchemaVersion };
         c.Name = checkedName;      // stored with the player's chosen CASING; logins match case-insensitively
         c.CreationBlob = body;     // keep the raw body for future re-decoding if the mapping changes
-        ApplyAppearance(c);        // decode gender/face/nation/totem/hair
+        ApplyAppearance(c);        // decode gender/face/totem/hair
+        ApplyCreationNation(c);    // and the nation, which only creation (and the legacy import) applies
         return c;
     }
 
@@ -52,7 +53,8 @@ public static class CharacterFactory
         if (b is null || b.Length < 2) return;
         c.Sex  = b[1];   // gender: 0=male, 1=female
         c.Face = b[0];   // -> render appearance[2]
-        if (b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
+        // Not the nation (b[2]): this runs at every login, and a nation changes in play without the blob changing,
+        // so applying the byte here undid every change at the next login. See ApplyCreationNation.
         // Totem crest, valid range 0..3 (JuJak/Baekho/HyunMoo/ChungRyong). Only apply a VALID pick from the
         // creation blob: this runs on every login (a migration for pre-appearance records), so a stale or
         // wrong blob byte of 4 ("none", the legacy default) must NOT re-clobber a totem the player has since
@@ -60,6 +62,27 @@ public static class CharacterFactory
         // leaves the loaded value in place; Session arrival then clamps it into range.
         if (b.Length > 3 && b[3] <= 3) c.Totem = b[3];
         if (b.Length > 4) c.Hair = b[4];   // persisted; no 4.95 render slot yet
+    }
+
+    /// <summary>
+    /// The kingdom picked at creation, <c>CreationBlob[2]</c>, when it is a nation (<see cref="Character.Nations"/>);
+    /// otherwise the character keeps what it has. Applied once in a character's life and never at a login: by
+    /// <see cref="FromCreate"/>, and by <see cref="CharacterStore"/>'s import of a legacy per-file record.
+    ///
+    /// <para><b>Not at a login.</b> A nation changes in play: the town criers' kingdom join, Rotah's "Become
+    /// Neutral", <c>@nation</c>. None of them writes the blob, so applying the byte at every login, as
+    /// <see cref="ApplyAppearance"/> used to, undid each change at the next one (PR #325 re-check 3, F7).</para>
+    ///
+    /// <para><b>At the legacy import.</b> Until 85d423b (2026-07-25) creation saved the compiled-in nation, 1,
+    /// whatever the player picked, and only that login re-derivation gave those records their pick. They were
+    /// files in the per-file store, which 07878cf replaced with SQLite the same day; its import still brings in, at
+    /// every start, any file whose name the database lacks. No such file can hold a nation changed in play: the
+    /// first path that changes one (efa1bfd, 2026-08-12) came after the last write to that store.</para>
+    /// </summary>
+    public static void ApplyCreationNation(Character c)
+    {
+        var b = c.CreationBlob;
+        if (b is not null && b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
     }
 
     // A character's home city — INSIDE the nation's home (RTK Warps.csv door-arrival tiles, not GmWarp's
@@ -109,7 +132,7 @@ public static class CharacterFactory
     }
 
     // Place a BRAND NEW character (never persisted before) at their starting point instead of Character's
-    // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation
+    // compiled-in fallback. MUST run after ApplyCreationNation has decoded the real Nation pick (creation
     // byte[2]) or every character would route by the compiled-in default instead of the picked nation.
     //
     // Also rolls starting Vita/Mana here (RTK player.lua Player.reset: baseHealth = random(45,55),

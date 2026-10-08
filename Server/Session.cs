@@ -1196,7 +1196,10 @@ public sealed partial class Session
         // prompt, and logins are case-insensitive, so assigning it here would rewrite "Snuggle" to "snuggle"
         // (and then broadcast that to every peer) on the first lowercase login.
         if (string.IsNullOrEmpty(_char.Name)) _char.Name = _user;
-        CharacterFactory.ApplyAppearance(_char);   // re-derive appearance (incl. nation/totem) for records saved before this existed
+        // Re-derive sex, face, totem and hair for records saved before the mapping existed. Not the nation: it changes
+        // in play and must survive a login, so only creation and the legacy import apply the creation pick
+        // (CharacterFactory.ApplyCreationNation).
+        CharacterFactory.ApplyAppearance(_char);
         // Totem is picked at creation and can be changed, but NEVER "unset" — the valid crests are 0..3
         // (JuJak/Baekho/HyunMoo/ChungRyong). Force any stored out-of-range value into range at login so a
         // bad record self-heals. This matters beyond tidiness on 5.33: that client clamps the 0x08 totem
