@@ -15,8 +15,10 @@ namespace Tests;
 /// 30 mana, the name is typed into the prompt, and the person must be in your group and a citizen of the same
 /// kingdom, or the spell fizzles. RTK's <c>Spells/common/approach.lua</c> and <c>summon.lua</c> agree on the
 /// group, the 30 mana and "Fizzle.", and add the map checks this file pins: indoors, PvP, warp-out, the
-/// destination's level/vita/mana bands, staff. The Atlas's "area that allows approaching" is RTK's
-/// <c>MapCanSummon</c> flag, which this server does not load; it is listed in #313's report, not invented.</para>
+/// destination's level/vita/mana bands, staff. The Atlas's "area that allows approaching" is Maps.csv's
+/// <c>MapCanSummon</c> (RTK <c>canSummon</c>). Which map it reads is Caleb's ruling of 2026-10-06: Approach the
+/// person's, as RTK's approach.lua does; Summon both, the caster's as RTK's summon.lua does and the person's as
+/// the Atlas says.</para>
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The constructor replaces the staff roster
 /// (<c>StaffAccounts.Load</c>), which is one for the whole process, so the class runs in <c>"world"</c>, the
@@ -25,9 +27,9 @@ namespace Tests;
 /// <see cref="GmOverridesTests"/>: xunit hands a class its own class fixture before the collection's, so this
 /// class runs on a World nothing else touches. Two reasons. These spells find their target by NAME, and the
 /// shared fixture World keeps a "cmdgm" session from every class that runs a GM command, so the staff fact's
-/// lookup could land on any of them. And the refusals need real maps (Vale, Purgatory, the Dark Forest) that no
-/// other class stands on; on a World of their own, nothing here leaves a session or a spawned mob behind on them
-/// for anyone else.</para>
+/// lookup could land on any of them. And the refusals need real maps (Vale, Purgatory, Worm Pits, Tiger's Steps,
+/// Guol Shore, Mythic Rat, Buya, Nagnang) that no other class stands on; on a World of their own, nothing here
+/// leaves a session or a spawned mob behind on them for anyone else.</para>
 ///
 /// <para>Every cast is the real <c>0x0F</c> frame through <c>Session.Receive</c>: the book slot, then the typed
 /// answer NUL-terminated, the way <c>HandleCast</c> parses a type-1 spell. So the SpellParams row, the verb, the
@@ -38,18 +40,27 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
 {
     // Content-free maps in the instance band: no Maps.csv row, so none is indoors, PvP, warp-locked or gated.
     // Each success case gets its own pair because a landing tile is asserted exactly and a session is never
-    // unregistered from a map. 61313-61332 and 61349-61352 are claimed by no other class (61325-61328 are
+    // unregistered from a map. 61313-61332 and 61349-61353 are claimed by no other class (61325-61328 are
     // ApproachSummonGmCommandTests', on the shared World; 61333-61348 are ApproachSummonRaceTests').
     private const int ApproachFromA = 61313, ApproachToA = 61314, SummonHereA = 61315, SummonFromA = 61316;
     private const int ApproachFromB = 61319, ApproachToB = 61320, SummonHereB = 61321, SummonFromB = 61322;
     private const int ApproachFromN = 61349, ApproachToN = 61350, SummonHereN = 61351, SummonFromN = 61352;
+    private const int ApproachToS = 61353;
     private const ushort RefuseFrom = 61317, RefuseTo = 61318, StaffMap = 61323, StaffFrom = 61324;
     private const ushort BandFrom = 61329, BandTo = 61330, DepartFrom = 61331, DepartTo = 61332;
 
     // Real maps, each picked for exactly one flag (game-data/Maps.csv): IronHeart's Home is indoors; Vale is the
-    // only outdoor PvP map the 4.95 client renders; The Dark Forest (5840) is outdoors, not PvP, and asks level 69;
-    // Purgatory (600) refuses warp-outs but allows casting.
-    private const ushort IndoorMap = 36, PvpMap = 1005, GatedMap = 5840, WarpLockedMap = 600;
+    // only outdoor PvP map the 4.95 client renders; Worm Pits (56) is outdoors, not PvP, and asks level 14;
+    // Purgatory (600) refuses warp-outs but allows casting; Tiger's Steps (219) is MapCanSummon 0 and otherwise
+    // plain (outdoors, not PvP, no bands, warp-outs and casting allowed). Every one but Tiger's Steps is
+    // MapCanSummon 1, so the area check never answers for another flag's case. (The band case used The Dark
+    // Forest, 5840, until the area check: that map is MapCanSummon 0 too, and the area check comes first.)
+    private const ushort IndoorMap = 36, PvpMap = 1005, GatedMap = 56, WarpLockedMap = 600, NoSummonMap = 219;
+    // Two real maps that carry BOTH refusals on purpose, MapCanSummon 0 and MapWarpout 0, to pin which line wins:
+    // Guol Shore (1111, outdoors) and Mythic Rat (3025, one of the indoor zodiac rooms). Neither is PvP or banded.
+    private const ushort BothFlagsMap = 1111, BothFlagsRoom = 3025;
+    // Two kingdom towns whose rows say MapCanSummon 1: Buya and Nagnang (outdoors, not PvP, no bands).
+    private const ushort AllowedA = 330, AllowedB = 2500;
 
     private const int ApproachSlot = 0, SummonSlot = 1;
     private const uint StartMp = 100;
@@ -82,11 +93,15 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// <para>Red on 9c00b98: the caster stays home and 5 mana goes (the generic fallback). The Neutral pair is
     /// Caleb's ruling of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two
     /// Neutrals: "Fizzle.", nothing spent, nobody moved.</para>
+    /// <para>ApFromNoSummon: Approach leaves a <c>MapCanSummon</c> 0 map (Tiger's Steps) for an allowed one.
+    /// Approach reads only the person's map, as RTK's approach.lua does (<c>target.canSummon</c>) and as Caleb
+    /// ruled (2026-10-06); red if the verb also asks about the caster's map.</para>
     /// </summary>
     [Theory]
     [InlineData("ApKoguryo", 1, ApproachFromA, ApproachToA, false)]
     [InlineData("ApBuya", 2, ApproachFromB, ApproachToB, true)]
     [InlineData("ApNeutral", 0, ApproachFromN, ApproachToN, false)]
+    [InlineData("ApFromNoSummon", 1, (int)NoSummonMap, ApproachToS, false)]
     public void ApproachTakesTheCasterBesideAGroupMember(string tag, int nation, int from, int to, bool lowerCase)
     {
         var s = Pair(tag, (ushort)from, (ushort)to, c => c.Nation = (byte)nation, t => t.Nation = (byte)nation);
@@ -125,6 +140,45 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
         Assert.Empty(MiniTexts(s.TargetOut));
     }
 
+    /// <summary>
+    /// <b>Both spells still work between two maps whose rows say <c>MapCanSummon</c> 1</b>: Buya and Nagnang. The
+    /// success facts above run on content-free maps, which have no row and read the default; this one reads the
+    /// column's own 1 through the verbs. Approach goes from Buya to a person in Nagnang; Summon brings a person
+    /// from Buya to a caster in Nagnang. 30 mana each, and the person who does not move stays put. The landing
+    /// tile is asserted only as the other person's tile or one beside it: these are real maps, whose terrain and
+    /// spawns decide which of the four neighbours is free.
+    /// <para>Red if the area check refuses an allowed map, for example with its sense inverted.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("approach")]
+    [InlineData("summon")]
+    public void BothSpellsStillWorkBetweenTwoSummonAllowedMaps(string spell)
+    {
+        foreach (ushort map in new[] { AllowedA, AllowedB })
+        {
+            // Asserted rather than trusted, so a Maps.csv edit fails here by name instead of as a wrong refusal.
+            Assert.True(Content.MapMeta.TryGetValue(map, out var row), $"map {map} has no Maps.csv row");
+            Assert.True(row!.CanSummon && !row.Indoor && !row.Pvp && row.WarpOut && row.CanCast
+                        && row.ReqLvl <= 30 && row.LvlMax >= 30 && row.ReqVita == 0 && row.ReqMana == 0
+                        && row.VitaMax == uint.MaxValue && row.ManaMax == uint.MaxValue,
+                        $"map {map} is no longer a plain summon-allowed outdoor map");
+        }
+        bool approach = spell == "approach";
+        ushort casterMap = approach ? AllowedA : AllowedB, targetMap = approach ? AllowedB : AllowedA;
+        var s = Pair(approach ? "ApAllowed" : "SuAllowed", casterMap, targetMap, c => { }, t => { });
+
+        Cast(s.Caster, approach ? ApproachSlot : SummonSlot, s.Target.Name);
+
+        Assert.Equal(new[] { approach ? "You cast Approach." : "You cast Summon." }, MiniTexts(s.CasterOut));
+        Assert.Equal(StartMp - 30, s.CasterChar.Mp);
+        var (mover, anchor) = approach ? (s.CasterChar, s.Target) : (s.Target, s.CasterChar);
+        Assert.Equal(approach ? (AllowedB, (ushort)10, (ushort)10) : (AllowedB, (ushort)5, (ushort)5),
+                     (anchor.Map, anchor.X, anchor.Y));
+        Assert.Equal(AllowedB, mover.Map);
+        Assert.True(Math.Abs(mover.X - anchor.X) + Math.Abs(mover.Y - anchor.Y) <= 1,
+                    $"landed at ({mover.X},{mover.Y}), not on or beside ({anchor.X},{anchor.Y})");
+    }
+
     // ---- refusals -------------------------------------------------------------------------------------
 
     /// <summary>
@@ -139,10 +193,23 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     ///   Koguryo and Buya; the two neutral cases put a Neutral (nation 0) with a Koguryo citizen, each way round.
     ///   Two Neutrals are not a refusal: read literally the sources leave them out, but Caleb chose to allow
     ///   them (2026-10-06), so they are in the success facts above.</item>
+    /// <item>no-summon-target / no-summon-caster: a map with <c>MapCanSummon</c> 0 (Tiger's Steps, plain but for
+    ///   that flag). Approach: the person's map only (RTK approach.lua <c>target.canSummon</c>; the Atlas's "in an
+    ///   area that allows approaching"). Summon: the caster's map (RTK summon.lua <c>player.canSummon</c>) or the
+    ///   person's (the Atlas). Which maps count is Caleb's ruling of 2026-10-06. Approach out of such a map is a
+    ///   success case above.</item>
+    /// <item>both-flags-target / both-flags-room / locked-to-area: the no-summon check and the warp-out check
+    ///   both apply, and the area check answers first, so the line is "Fizzle.", not "That does not work here."
+    ///   (PR #336 review, F1/F2). both-flags-*: Summon of a person on a map that is warp-locked AND no-summon
+    ///   (Guol Shore; Mythic Rat, an indoor room); this one rests on where the person's-map check sits, beside
+    ///   RTK's canSummon line, and flips to "That does not work here." if it moves after the warp-out check.
+    ///   locked-to-area: the mover leaves a warp-locked map (Purgatory) for a no-summon one (Tiger's Steps): Approach
+    ///   cast from Purgatory, Summon cast on Tiger's Steps. These two follow RTK's own order (approach.lua checks
+    ///   canSummon at L37 before warp-out at L65; summon.lua at L42 before L74), whatever that placement is.</item>
     /// <item>indoor: the destination is indoors (Approach: the target's map; Summon: the caster's). RTK.</item>
-    /// <item>level-band: the mover is below the destination's level band (5840 asks 69; the mover is 30). RTK.
-    ///   The player who does NOT move is level 99, inside the band, so the case fails if a verb judges the wrong
-    ///   player: Approach's caster and Summon's target are the movers (review F4).</item>
+    /// <item>level-band: the mover is below the destination's level band (Worm Pits, 56, asks 14; the mover is
+    ///   10). RTK. The player who does NOT move is level 99, inside the band, so the case fails if a verb judges
+    ///   the wrong player: Approach's caster and Summon's target are the movers (review F4).</item>
     /// <item>warp-locked: the mover's own map refuses warp-outs. RTK's one non-Fizzle line.</item>
     /// <item>pvp-target / pvp-caster: either side stands on a PvP map (RTK's two canPK checks).</item>
     /// <item>dead-target: Summon only; RTK's approach.lua has no such check.</item>
@@ -165,6 +232,13 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     [InlineData("summon", "neutral-caster", Fizzle)]
     [InlineData("approach", "neutral-target", Fizzle)]
     [InlineData("summon", "neutral-target", Fizzle)]
+    [InlineData("approach", "no-summon-target", Fizzle)]
+    [InlineData("summon", "no-summon-caster", Fizzle)]
+    [InlineData("summon", "no-summon-target", Fizzle)]
+    [InlineData("summon", "both-flags-target", Fizzle)]
+    [InlineData("summon", "both-flags-room", Fizzle)]
+    [InlineData("approach", "locked-to-area", Fizzle)]
+    [InlineData("summon", "locked-to-area", Fizzle)]
     [InlineData("approach", "indoor", Fizzle)]
     [InlineData("summon", "indoor", Fizzle)]
     [InlineData("approach", "level-band", Fizzle)]
@@ -192,11 +266,20 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
             case "other-kingdom": targetNation = 2; break;
             case "neutral-caster": casterNation = 0; break;
             case "neutral-target": targetNation = 0; break;
+            case "no-summon-target": targetMap = NoSummonMap; break;
+            case "no-summon-caster": casterMap = NoSummonMap; break;
+            case "both-flags-target": targetMap = BothFlagsMap; break;
+            case "both-flags-room":  targetMap = BothFlagsRoom; break;
+            // The mover starts on the warp-locked map and would land on the no-summon one.
+            case "locked-to-area":
+                if (approach) { casterMap = WarpLockedMap; targetMap = NoSummonMap; }
+                else          { casterMap = NoSummonMap; targetMap = WarpLockedMap; }
+                break;
             case "indoor":        if (approach) targetMap = IndoorMap; else casterMap = IndoorMap; break;
-            // The mover at 30, below the band; the one who stays at 99, inside it.
+            // The mover at 10, below the band; the one who stays at 99, inside it.
             case "level-band":
-                if (approach) { targetMap = GatedMap; targetLevel = 99; }
-                else          { casterMap = GatedMap; casterLevel = 99; }
+                if (approach) { targetMap = GatedMap; targetLevel = 99; casterLevel = 10; }
+                else          { casterMap = GatedMap; casterLevel = 99; targetLevel = 10; }
                 break;
             case "warp-locked":   if (approach) casterMap = WarpLockedMap; else targetMap = WarpLockedMap; break;
             case "pvp-target":    targetMap = PvpMap; break;
@@ -316,11 +399,11 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     }
 
     /// <summary><c>ctx:mapAdmits(map, "target")</c> judges the resolved target, not the caster: a level-99 caster
-    /// and a level-30 target against The Dark Forest's level-69 floor. Summon depends on exactly this.</summary>
+    /// and a level-10 target against Worm Pits' level-14 floor. Summon depends on exactly this.</summary>
     [Fact]
     public void TheTargetBandReadsTheTargetNotTheCaster()
     {
-        var s = Pair("BandWho", BandFrom, BandTo, c => c.Level = 99, t => t.Level = 30);
+        var s = Pair("BandWho", BandFrom, BandTo, c => c.Level = 99, t => t.Level = 10);
         var ctx = new SpellContext(s.Caster, Content.SpellByKey("summon_spell")!, null, s.Target.Name);
 
         var (resolved, caster, target) = s.Caster.WithState(() =>
@@ -353,11 +436,76 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
         Assert.Equal((DepartTo, (ushort)10, (ushort)10), (s.Target.Map, s.Target.X, s.Target.Y));
     }
 
+    // ---- the area flag's data -------------------------------------------------------------------------
+
+    /// <summary>
+    /// <b>The loader reads <c>MapCanSummon</c> from Maps.csv.</b> Rows that say 0 read false: Tiger's Steps (219),
+    /// Guol Shore (1111) and Welcome (4711, the first newbie tutorial field). Rows that say 1 read true: the three
+    /// kingdom towns, Kugnae (0), Buya (330) and Nagnang (2500), so a town marked 0 by a data edit fails here by
+    /// name. A map with no row reads true.
+    /// <para>Red without the loader's line (every map then reads the default, true): the three 0 rows.</para>
+    /// </summary>
+    [Fact]
+    public void MapCanSummonIsReadFromMapsCsv()
+    {
+        var expected = new (ushort Map, string Name, bool CanSummon)[]
+        {
+            (219, "Tiger's Steps", false), (1111, "Guol Shore", false), (4711, "Welcome", false),
+            (0, "Kugnae", true), (330, "Buya", true), (2500, "Nagnang", true),
+        };
+        foreach (var (map, name, _) in expected)
+            Assert.True(Content.MapMeta.ContainsKey(map), $"map {map} ({name}) has no Maps.csv row");
+        Assert.Equal(expected.Select(e => (e.Map, e.CanSummon)).ToArray(),
+                     expected.Select(e => (e.Map, Content.CanSummon(e.Map))).ToArray());
+
+        Assert.False(Content.MapMeta.ContainsKey(RefuseFrom), $"map {RefuseFrom} was meant to have no Maps.csv row");
+        Assert.True(Content.CanSummon(RefuseFrom), "a map with no Maps.csv row must allow Approach and Summon");
+    }
+
+    /// <summary>
+    /// <b>Only an explicit 0 refuses: a blank <c>MapCanSummon</c> cell allows.</b> RTK's column default is 1
+    /// (<c>MapCanSummon ... NOT NULL DEFAULT '1'</c> in its table script), and a map with no row allows here too.
+    /// No row in today's Maps.csv is blank, so this runs the real loader (<c>Content.LoadMapMeta</c>) over three
+    /// copies of Kugnae's row, the header unchanged, whose cell says 0, 1 and nothing.
+    /// <para>Red if the loader asks for "1" instead of "not 0": the blank copy reads false.</para>
+    /// </summary>
+    [Fact]
+    public void ABlankMapCanSummonCellReadsAsAllowed()
+    {
+        string[] real = File.ReadLines(Path.Combine(RepoPaths.GameDataDir(), "Maps.csv")).Take(2).ToArray();
+        int column = Csv.Split(real[0]).IndexOf("MapCanSummon");
+        Assert.True(column > 0, "Maps.csv has no MapCanSummon column");
+        Assert.Equal("0", Csv.Split(real[1])[0]);   // the first data row is Kugnae's
+        string Copy(int id, string cell)
+        {
+            var fields = Csv.Split(real[1]);
+            fields[0] = id.ToString();
+            fields[column] = cell;
+            return string.Join(",", fields);
+        }
+        string path = Path.Combine(Path.GetTempPath(), $"p1998-map-can-summon-{Guid.NewGuid():N}.csv");
+        File.WriteAllLines(path, new[] { real[0], Copy(1, "0"), Copy(2, "1"), Copy(3, "") });
+        try
+        {
+            var meta = (IReadOnlyDictionary<ushort, Content.MapMetaInfo>)
+                LoadMapMeta.Invoke(null, new object[] { Csv.Open("Maps.csv (blank-cell copy)", path) })!;
+            Assert.Equal((false, true, true), (meta[1].CanSummon, meta[2].CanSummon, meta[3].CanSummon));
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* best-effort cleanup of a test fixture */ }
+        }
+    }
+
     // ---- fixture --------------------------------------------------------------------------------------
 
     private static readonly System.Reflection.MethodInfo TearDown =
         typeof(Session).GetMethod("TearDownWorldState",
                                   System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    private static readonly System.Reflection.MethodInfo LoadMapMeta =
+        typeof(Content).GetMethod("LoadMapMeta",
+                                  System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
 
     private sealed record Scene(Session Caster, RecordingOutbound CasterOut, Character CasterChar,
                                 Session TargetSession, RecordingOutbound TargetOut, Character Target);

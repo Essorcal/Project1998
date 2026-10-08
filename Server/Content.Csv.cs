@@ -52,6 +52,10 @@ public static partial class Content
             // the weather gate (WeatherModel.For): no rain/snow indoors. Deliberately NOT reused as a casting
             // gate — casting has to work in caves, which is why MapSpells above is the separate no-cast flag.
             bool indoor = col.Require("MapIndoor", "0") == "1";
+            // MapCanSummon (RTK map[m].summon, its Lua canSummon): 0 = Approach and Summon fizzle here. Which map
+            // each spell asks about is the verbs' business (spell_verbs.lua). Only an explicit 0 refuses: a blank
+            // cell allows, as a map with no row does, because RTK's column default is 1.
+            bool canSummon = col.Require("MapCanSummon", "1") != "0";
             meta[id] = new MapMetaInfo
             {
                 Region = region,
@@ -69,6 +73,7 @@ public static partial class Content
                 ManaMax = Rl("MapManaMax"),
                 RejectMsg = Clean(col.Require("MapRejectMsg", "")),
                 Indoor = indoor,
+                CanSummon = canSummon,
             };
             col.Keep();
         }

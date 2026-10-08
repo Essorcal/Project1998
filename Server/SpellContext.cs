@@ -468,6 +468,9 @@ public sealed class SpellContext
     /// <summary>May a player warp out of <paramref name="mapId"/> (Maps.csv <c>MapWarpout</c>)? True unless the
     /// row says 0. <see cref="canWarpOut"/> asks the same of the caster's own map.</summary>
     public bool   mapWarpOut(double mapId) => Content.WarpOut((ushort)mapId);
+    /// <summary>May Approach and Summon reach <paramref name="mapId"/> (Maps.csv <c>MapCanSummon</c>, RTK
+    /// <c>canSummon</c>)? True unless the row says 0: a map with no row, or a blank cell, allows.</summary>
+    public bool   mapCanSummon(double mapId) => Content.CanSummon((ushort)mapId);
 
     /// <summary>Do <paramref name="mapId"/>'s level, vita and mana bands admit <paramref name="who"/>
     /// (<c>"caster"</c>, or <c>"target"</c> for the resolved player target)? The four comparisons RTK's
