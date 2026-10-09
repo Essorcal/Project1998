@@ -1259,11 +1259,13 @@ Creation is two login-channel packets:
 
 **Creation → render mapping** (server-side, `CharacterFactory.ApplyAppearance`): render `appearance[0]` (sex) =
 creation `[1]`; render `appearance[2]` (face) = creation `[0]`. `Character.Nation`/`Character.Totem`
-are set directly from creation `[2]`/`[3]` (validated against range). The nation is set once, at creation
-or when a legacy per-file record is imported (`CharacterFactory.ApplyCreationNation`), never at a login: it
-changes in play (the town criers, Rotah, `@nation`) and a login must keep it. Hair (`[4]`) is persisted but has no 4.95 render slot.
-`PlaceNewCharacter` (run AFTER the nation is decoded) then routes a brand-new character to their home
-city — see §11f.
+are set directly from creation `[2]`/`[3]` (validated against range). Hair (`[4]`) is persisted but has no
+4.95 render slot. All five are set once, at creation or when a legacy per-file record is imported, never at
+a login: the nation, face, sex and totem change in play (the town criers, Rotah and `@nation`; the
+rogue-guild shaman; the totem shrines and `@totem`) and a login must keep them. At a login only a saved face
+or totem that no client can use falls back to the creation pick (`CharacterFactory.RestoreUnusableFromCreation`).
+`PlaceNewCharacter` (run AFTER `ApplyAppearance` so it sees the real nation) then routes a brand-new character
+to their home city — see §11f.
 
 Real RTK note: in the *Lua* gameplay layer (`totem_npc.lua`), totem is normally re-assigned later by
 worshipping a totem-animal shrine in the Wilderness, not fixed forever at creation — this server
@@ -3819,7 +3821,7 @@ Jadespear's tile took two corrections before landing on `(3,6)`:
   layer draws a walled room, so a merely in-bounds tile isn't enough — it also needs to dodge every
   nonzero object id. `(3,6)` sits in the empty interior clear of all of them.
 
-`PlaceNewCharacter` MUST run after `ApplyCreationNation` has decoded the real creation-time nation (§9) — it
+`PlaceNewCharacter` MUST run after `ApplyAppearance` has decoded the real creation-time nation (§9) — it
 used to run first, silently always landing new characters at Ironheart regardless of what they picked.
 
 **Real RTK note:** in the Lua gameplay layer, totem is normally *re-worshipped* later at one of four
