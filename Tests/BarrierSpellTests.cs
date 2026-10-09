@@ -274,6 +274,48 @@ public sealed class BarrierSpellTests
         }
     }
 
+    /// <summary>Two Poets' barriers on one creature: it is held to the later barrier's end. Poet A's Barrier holds
+    /// the creature between the two Poets; with one second of that hold left (moved there under the world lock, as
+    /// 21 s of the clock would), Poet B casts Barrier, and the creature is now held, slot and freeze both, to B's
+    /// end. Red before the overlap was extended (PR #338 review, F2): the slot refused B's hold, the creature was
+    /// freed after the one second, and it swung from a tile B's barrier still closed.</summary>
+    [Fact]
+    public void ASecondBarrierHoldsACreatureToItsOwnEnd()
+    {
+        var sp = Content.SpellByKey("barrier_poet")!;
+        var (a, _, _) = Poet(sp, HoldMap, 60, 60);
+        var (b, _, _) = Poet(sp, HoldMap, 62, 60);
+        var mob = Creature(HoldMap, 61, 60, m => { m.Aggressive = true; m.AttackTime = 1; });
+        try
+        {
+            a.Receive(SpellCastSupport.CastFrame(0));
+            long aUntil = Assert.Single(_fx.World.BarriersForTest(HoldMap), z => z.CasterId == a.PlayerId).Until;
+            Assert.InRange(mob.FrozenUntil, aUntil - 50, aUntil + 50);
+
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                long soon = Environment.TickCount64 + 1_000;
+                mob.SetStatus(World.BarrierHoldSlot, soon, sp.Key);
+                mob.FrozenUntil = soon;
+            });
+            b.Receive(SpellCastSupport.CastFrame(0));
+
+            long bUntil = Assert.Single(_fx.World.BarriersForTest(HoldMap), z => z.CasterId == b.PlayerId).Until;
+            Assert.InRange(bUntil - Environment.TickCount64, 22_000 - SlackMs, 22_000);
+            long slot = 0;
+            _fx.World.UnderWorldLockForTest(() => slot = mob.Statuses![World.BarrierHoldSlot].Until);
+            Assert.InRange(mob.FrozenUntil, bUntil - 50, bUntil + 50);
+            Assert.InRange(slot, bUntil - 50, bUntil + 50);
+        }
+        finally
+        {
+            _fx.World.DespawnMob(HoldMap, mob);
+            _fx.World.EndBarriersForTest(HoldMap);
+            _fx.World.LeaveMap(a, HoldMap);
+            _fx.World.LeaveMap(b, HoldMap);
+        }
+    }
+
     // ===== Human Barrier ============================================================================
 
     /// <summary>A cast takes 300 mana, holds the <c>humanBarriers</c> slot for 22 s, starts its 86 s aether and
@@ -447,6 +489,35 @@ public sealed class BarrierSpellTests
             _fx.World.DespawnMob(StepMap, chaser);
             _fx.World.EndBarriersForTest(StepMap);
             _fx.World.LeaveMap(poet, StepMap);
+        }
+    }
+
+    /// <summary>A ghost beside the Poet is not held and is not told: it walks off the tile on its way back to life.
+    /// The living player on the other side is held. Red before the scan skipped the dead (PR #338 review, F4): the
+    /// ghost was paralysed for 22 s and told "<c>&lt;Poet&gt; casts Human Barrier on you.</c>".</summary>
+    [Fact]
+    public void AGhostBesideThePoetIsNotHeld()
+    {
+        var sp = Content.SpellByKey("blockade_human_poet")!;
+        var (poet, _, _) = Poet(sp, HumanMap, 60, 60);
+        var (ghost, ghostOut, _) = _fx.PlayerWith($"HbGhost{Interlocked.Increment(ref _serial)}",
+            ch => { ch.Level = 50; ch.MaxHp = 1_000; ch.Hp = 0; Wide(ch, HumanMap); }, HumanMap, 61, 60);
+        var (living, _, _) = Plain("HbLiving", HumanMap, 59, 60);
+        try
+        {
+            Assert.True(ghost.IsDead);
+            poet.Receive(SpellCastSupport.CastFrame(0));
+
+            Assert.False(ghost.Paralyzed, "a ghost beside the Poet is held");
+            Assert.DoesNotContain(SpellCastSupport.MiniTexts(ghostOut), l => l.EndsWith("casts Human Barrier on you.", StringComparison.Ordinal));
+            Assert.True(living.Paralyzed, "the living player beside the Poet is not held");
+            Walk(ghost, East);
+            Assert.Equal(((ushort)62, (ushort)60), (ghost.PlayerX, ghost.PlayerY));
+        }
+        finally
+        {
+            _fx.World.EndBarriersForTest(HumanMap);
+            foreach (var s in new[] { poet, ghost, living }) _fx.World.LeaveMap(s, HumanMap);
         }
     }
 

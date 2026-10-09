@@ -2249,8 +2249,9 @@ public sealed partial class World
     /// <list type="bullet">
     /// <item>Barrier holds every living creature there (NPCs aside, which have no AI to stop) through
     /// <see cref="ApplyMobStatus"/>, the path every paralyze takes: <c>FrozenUntil</c>, which stops a creature
-    /// moving and attacking, until the barrier ends. <paramref name="creaturesHeld"/> counts them.</item>
-    /// <item>Human Barrier returns the players there instead, and holds nobody itself: holding a player writes
+    /// moving and attacking, until the barrier ends; one another barrier already holds is held to the later end.
+    /// <paramref name="creaturesHeld"/> counts them.</item>
+    /// <item>Human Barrier returns the living players there instead, and holds nobody itself: holding a player writes
     /// that player's state under that player's monitor, which may not be taken under this lock
     /// (docs/common/Locking.md, rows 2 and 3). The caller does it after this returns.</item>
     /// </list>
@@ -2270,15 +2271,31 @@ public sealed partial class World
             m.Barriers.Add(zone);
             if (players)
             {
+                // A ghost is not held (PR #338 review, F4): the dead never block the living here either
+                // (TryMovePlayer), and a hold would keep a ghost from its way back to life for 22 s. It is still
+                // kept off the tiles, like any player.
                 foreach (var p in m.Players)
-                    if (!p.IsReplaced && zone.Closes(p.PlayerX, p.PlayerY)) standing.Add(p);
+                    if (!p.IsReplaced && !p.IsDead && zone.Closes(p.PlayerX, p.PlayerY)) standing.Add(p);
             }
             else
             {
+                long until = now + durMs;
                 foreach (var mob in m.Mobs)
-                    if (mob.Alive && !mob.IsNpc && zone.Closes(mob.X, mob.Y)
-                        && ApplyMobStatus(mob, BarrierHoldSlot, durMs, hold: true, blind: false, spellKey: spellKey))
+                {
+                    if (!mob.Alive || mob.IsNpc || !zone.Closes(mob.X, mob.Y)) continue;
+                    // Already held by another barrier (only barriers fill this slot): held to the later of the two
+                    // ends, because it is "paralyzed until the barrier wears off" and this one has not. Not
+                    // ApplyMobStatus's refusal, which keeps an offensive hold from being chained on its victim;
+                    // a barrier's hold belongs to the tile (PR #338 review, F2).
+                    if (mob.HasStatus(BarrierHoldSlot, now))
+                    {
+                        if (mob.Statuses![BarrierHoldSlot].Until < until) mob.SetStatus(BarrierHoldSlot, until, spellKey);
+                        mob.FrozenUntil = Math.Max(mob.FrozenUntil, until);
                         creaturesHeld++;
+                    }
+                    else if (ApplyMobStatus(mob, BarrierHoldSlot, durMs, hold: true, blind: false, spellKey: spellKey))
+                        creaturesHeld++;
+                }
             }
         }
         return standing;

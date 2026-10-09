@@ -38,8 +38,10 @@ namespace Server;
 public sealed partial class Session
 {
     /// <summary>The slot a player's paralysis takes. Holding it is the hold (<see cref="Paralyzed"/>): the four
-    /// gates (walk, turn, attack, cast) read it, it lapses with its 22 s, a relog restores it with the rest of
-    /// <c>_buffs</c>, and the Cure Paralysis family, whose rows cure <c>paras</c>, clears it.</summary>
+    /// gates (walk, turn, attack, cast) read it, it lapses with its 22 s, and a relog restores it, for what is left
+    /// of the 22 s, with the rest of <c>_buffs</c>. Nothing cures it: the Cure Paralysis rows cure <c>paras</c>, but
+    /// <c>arch_cure</c> cures only its own caster, and a held player cannot cast (PR #338 review, F3). The 22 s,
+    /// death and <c>@dispel</c> end it.</summary>
     internal const string ParalysisSlot = "paras";
 
     /// <summary>Is this player paralysed (a Human Barrier's hold)? Read under this session's own monitor by the
