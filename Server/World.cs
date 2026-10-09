@@ -2192,6 +2192,27 @@ public sealed partial class World
         }
     }
 
+    /// <summary>The names of the players on <paramref name="mapId"/> who are invisible and stand within
+    /// <paramref name="range"/> tiles of (<paramref name="x"/>, <paramref name="y"/>) on both axes, in the map's
+    /// player order: Second Sight's scan (<c>Session.SecondSightScan</c>; RTK poet/second_sight.lua reads
+    /// <c>distanceSquare(player, pc, 9)</c> and <c>state == 2</c>). Under <c>_lock</c>, the lock every writer of a
+    /// player's tile holds. <see cref="Session.IsInvisible"/> is the unsynchronised scalar read the tick makes
+    /// here of <c>IsStealthExpired</c>, and the name is one reference read of a string set at arrival. The
+    /// caller holds its own state monitor, which comes before this lock (docs/common/Locking.md).</summary>
+    public List<string> HiddenPlayersNear(ushort mapId, int x, int y, int range)
+    {
+        var names = new List<string>();
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return names;
+            foreach (var p in m.Players)
+                if (!p.IsReplaced && p.IsInvisible
+                    && Math.Abs(p.PlayerX - x) <= range && Math.Abs(p.PlayerY - y) <= range)
+                    names.Add(p.CharName);
+        }
+        return names;
+    }
+
     // One gate covers the entire disk-to-live sequence below, not just Content.Load: cache invalidation,
     // staff reload, terrain pre-warm and population rebuild must observe the same content generation. A GM
     // invokes this on the session read loop, so contention is bounded rather than stalling packet handling.

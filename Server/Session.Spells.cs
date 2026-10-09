@@ -2962,6 +2962,11 @@ public sealed partial class Session
     private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
+    /// <summary>Is this player invisible right now (RTK's <c>PC_INVIS</c>)? Read by
+    /// <see cref="World.HiddenPlayersNear"/> under <c>World._lock</c> for another player's Second Sight, without
+    /// this session's monitor: one 64-bit deadline, the same unsynchronised scalar read the tick makes of
+    /// <see cref="IsStealthExpired"/>.</summary>
+    public bool IsInvisible => Stealthed;
     /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
     public void RevertStealth()
     {

@@ -115,7 +115,8 @@ timer tick, which synchronises otherwise-independent threads (contended fraction
   friends. They are unsynchronised on purpose: taking the monitor there would invert row 2 against row 3.
   `IsReplaced` is a volatile read of `_replaced`; its one writer, `KickForReplacement`, latches it under the
   session's own monitor and nothing clears it. `World` reads it under `World._lock` without the session's monitor
-  (#183, #297).
+  (#183, #297). `IsInvisible` is one more of these: `World.HiddenPlayersNear` reads it for Second Sight's scan
+  (#334), which runs on the tick thread inside the caster's own monitor and takes `World._lock` after it.
 * A session's **totals snapshot** (`Session._equipTotals`, an immutable `TotalsSnapshot`: the worn-gear sum plus a
   copy of the timed buffs). The owner builds it under its OWN monitor and publishes it with one `Volatile.Write`:
   `InvalidateEquipTotals` at each gear change and the four `_buffs` writers, or its own first `Totals()` read

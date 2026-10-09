@@ -1117,12 +1117,19 @@ public sealed partial class Session
     internal long NextBuffExpiryForTest => Volatile.Read(ref _nextBuffExpiry);
 
     /// <summary>Recompute the hint from the list. Called at the end of every <c>_buffs</c> writer, on a list
-    /// that is a handful of entries in practice, under the monitor the writer already holds.</summary>
+    /// that is a handful of entries in practice, under the monitor the writer already holds. The same pass keeps
+    /// <c>_secondSightUntil</c>, the other hint <see cref="RegenTick"/> reads without the monitor
+    /// (Session.SecondSight.cs), exact in the same way.</summary>
     private void RecomputeNextBuffExpiry()
     {
-        long min = long.MaxValue;
-        foreach (var b in _buffs) if (b.Expires < min) min = b.Expires;
+        long min = long.MaxValue, sight = 0;
+        foreach (var b in _buffs)
+        {
+            if (b.Expires < min) min = b.Expires;
+            if (b.Category == SecondSightSlot && b.Expires > sight) sight = b.Expires;
+        }
         Volatile.Write(ref _nextBuffExpiry, min);
+        Volatile.Write(ref _secondSightUntil, sight);
     }
 
     // ---- the only writers of _buffs (#29) ------------------------------------------------------------
