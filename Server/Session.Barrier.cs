@@ -39,9 +39,11 @@ public sealed partial class Session
 {
     /// <summary>The slot a player's paralysis takes. Holding it is the hold (<see cref="Paralyzed"/>): the four
     /// gates (walk, turn, attack, cast) read it, it lapses with its 22 s, and a relog restores it, for what is left
-    /// of the 22 s, with the rest of <c>_buffs</c>. Nothing cures it: the Cure Paralysis rows cure <c>paras</c>, but
-    /// <c>arch_cure</c> cures only its own caster, and a held player cannot cast (PR #338 review, F3). The 22 s,
-    /// death and <c>@dispel</c> end it.</summary>
+    /// of the 22 s, with the rest of <c>_buffs</c>. No cure spell frees a held player: the Cure Paralysis rows cure
+    /// <c>paras</c>, but <c>arch_cure</c> cures only its own caster, and a held player cannot cast (PR #338 review,
+    /// F3). Four things end it: the 22 s; death; <c>@dispel</c>; and another player's Dispell-family cast (Dispell,
+    /// Remove Magic, Return Natural, Restore Balance) on a won roll, whose <c>cleanse</c> verb wipes every timed
+    /// effect, this one included (PR #338 re-check, F7).</summary>
     internal const string ParalysisSlot = "paras";
 
     /// <summary>Is this player paralysed (a Human Barrier's hold)? Read under this session's own monitor by the
@@ -84,7 +86,9 @@ public sealed partial class Session
     internal bool ReceiveParalysis(int durMs, string key, string name)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        if (durMs <= 0 || HasStatusCategory(ParalysisSlot)) return false;
+        // Dead is checked again here, under the monitor where Hp is exact: RaiseBarrier skips the dead under
+        // World._lock, but a player can die between that scan and this write (PR #338 re-check, F8).
+        if (durMs <= 0 || IsDead || HasStatusCategory(ParalysisSlot)) return false;
         ReceiveCurse("", 0, durMs, key, name, ParalysisSlot);   // no stat: the slot IS the hold
         return true;
     }

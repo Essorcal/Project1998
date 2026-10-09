@@ -521,6 +521,37 @@ public sealed class BarrierSpellTests
         }
     }
 
+    /// <summary>A player who dies between the scan and the hold is not held either. The scan skips the dead under
+    /// <c>World._lock</c>, and the hold is written after that lock is released, inside the player's own monitor:
+    /// the re-check's sequence (PR #338 re-check, F8, probe R5) puts a death in that gap. <c>RaiseBarrier</c> lists
+    /// the living player; the killing blow sets its Hp to 0 under its own monitor; then the same
+    /// <c>ReceiveParalysis</c> call <c>LuaRaiseBarrier</c> makes refuses. Red before that call checked death too:
+    /// the ghost was held for 22 s.</summary>
+    [Fact]
+    public void APlayerWhoDiesBetweenTheScanAndTheHoldIsNotHeld()
+    {
+        var sp = Content.SpellByKey("blockade_human_poet")!;
+        var (poet, _, _) = Poet(sp, HumanMap, 80, 80);
+        var (victim, _, vc) = Plain("HbDying", HumanMap, 81, 80);
+        try
+        {
+            var standing = _fx.World.RaiseBarrier(HumanMap, 80, 80, 22_000, players: true, poet.PlayerId, sp.Key, out _);
+            Assert.Contains(victim, standing);                       // alive at the scan
+
+            victim.WithState(() => vc.Hp = 0);                       // the killing blow, under the victim's monitor
+            Assert.True(victim.IsDead);
+
+            Assert.False(victim.ReceiveParalysis(22_000, $"{sp.Key}:held", sp.Name), "a ghost was held");
+            Assert.False(victim.Paralyzed);
+        }
+        finally
+        {
+            _fx.World.EndBarriersForTest(HumanMap);
+            _fx.World.LeaveMap(poet, HumanMap);
+            _fx.World.LeaveMap(victim, HumanMap);
+        }
+    }
+
     /// <summary>A GM on the tiles is held like anyone. The server's player hold has no staff exemption: the sleep
     /// gates this one sits beside have none, and RTK's GM walk-through (clif.c:5043) was never ported.</summary>
     [Fact]
