@@ -1198,7 +1198,8 @@ public sealed partial class Session
         if (string.IsNullOrEmpty(_char.Name)) _char.Name = _user;
         // The saved picks win. Nation, face, sex and totem all change in play and must survive a login, so the
         // creation blob is applied only by creation and the legacy import (CharacterFactory.ApplyAppearance). A
-        // saved face or totem that no client can use falls back to the creation pick, as the login always made it.
+        // saved face, totem or nation that no client can use falls back to the creation pick, as the login always
+        // made it.
         CharacterFactory.RestoreUnusableFromCreation(_char, FaceCount);
         // Totem is picked at creation and can be changed, but NEVER "unset" — the valid crests are 0..3
         // (JuJak/Baekho/HyunMoo/ChungRyong). Force any stored out-of-range value into range at login so a

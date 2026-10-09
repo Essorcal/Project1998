@@ -1262,8 +1262,8 @@ creation `[1]`; render `appearance[2]` (face) = creation `[0]`. `Character.Natio
 are set directly from creation `[2]`/`[3]` (validated against range). Hair (`[4]`) is persisted but has no
 4.95 render slot. All five are set once, at creation or when a legacy per-file record is imported, never at
 a login: the nation, face, sex and totem change in play (the town criers, Rotah and `@nation`; the
-rogue-guild shaman; the totem shrines and `@totem`) and a login must keep them. At a login only a saved face
-or totem that no client can use falls back to the creation pick (`CharacterFactory.RestoreUnusableFromCreation`).
+rogue-guild shaman; the totem shrines and `@totem`) and a login must keep them. At a login only a saved face,
+totem or nation that no client can use falls back to the creation pick (`CharacterFactory.RestoreUnusableFromCreation`).
 `PlaceNewCharacter` (run AFTER `ApplyAppearance` so it sees the real nation) then routes a brand-new character
 to their home city — see §11f.
 

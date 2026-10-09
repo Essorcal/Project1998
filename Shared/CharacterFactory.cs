@@ -77,20 +77,24 @@ public static class CharacterFactory
     }
 
     /// <summary>
-    /// At a login, put the creation pick back over a saved face or totem that no client can use, exactly as the
-    /// login's old re-derivation did for it. Every usable saved value is kept: that is the whole point of no
+    /// At a login, put the creation pick back over a saved face, totem or nation that no client can use, exactly as
+    /// the login's old re-derivation did for it. Every usable saved value is kept: that is the whole point of no
     /// longer applying <see cref="ApplyAppearance"/> at a login.
     ///
     /// <list type="bullet">
     /// <item><b>A face of <paramref name="faceCount"/> or more.</b> The 4.95 client has heads 0 to 89 only. The
     /// rogue-guild shaman's first version (5a0b626 to 339526b, 2026-07-27 to 2026-08-07) sold RTK's faces 200 to 216,
     /// and its browse wrote each candidate into the character, so a player who left mid-browse took one into the
-    /// logout's save. The old login replaced either with the creation face, and so does this. The shaman sells 0 to 89 now, and no
-    /// other path writes a face, so a usable saved face is never one the player did not choose.</item>
+    /// logout's save. The old login replaced either with the creation face, and so does this. The shaman sells 0 to
+    /// 89 now, and no other path writes a face, so a usable saved face is never one the player did not choose.</item>
     /// <item><b>A totem past 3 whose creation byte is 0 to 3.</b> The old login applied that byte. A saved 4 is the
     /// compiled-in "none" of a record created before 85d423b, or a value @totem accepted before 744dfd1 clamped it
     /// (2026-08-17 to 2026-08-22). A totem past 3 with no usable creation byte is left to the arrival's clamp, as
     /// before.</item>
+    /// <item><b>A nation past the crest table (<see cref="Character.Nations"/>) whose creation byte is in it.</b> The
+    /// old login applied that byte. Such a value came from @nation, which took 0 to 255 until the PR #337 review (F1)
+    /// clamped it to the table; the scripts' setNation passes only 0 to 3. A nation past the table with no usable
+    /// creation byte stays, as the old login left it.</item>
     /// </list>
     /// </summary>
     public static void RestoreUnusableFromCreation(Character c, int faceCount)
@@ -99,6 +103,7 @@ public static class CharacterFactory
         if (b is null || b.Length < 2) return;   // the old login did nothing for these either
         if (c.Face >= faceCount) c.Face = b[0];
         if (c.Totem > 3 && b.Length > 3 && b[3] <= 3) c.Totem = b[3];
+        if (c.Nation >= Character.Nations.Length && b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
     }
 
     // A character's home city — INSIDE the nation's home (RTK Warps.csv door-arrival tiles, not GmWarp's

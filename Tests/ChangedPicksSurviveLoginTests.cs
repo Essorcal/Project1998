@@ -21,9 +21,10 @@ namespace Tests;
 /// <c>@totem</c>.</para>
 ///
 /// <para><b>Now.</b> The blob is applied once: by <c>CharacterFactory.FromCreate</c>, and by the legacy import of a
-/// per-file record from before creation decoded it. A login keeps the saved values, except a face or a totem that
-/// no client can use, which falls back to the creation pick as the old login made it
-/// (<c>CharacterFactory.RestoreUnusableFromCreation</c>).</para>
+/// per-file record from before creation decoded it. A login keeps the saved values, except a face, a totem or a
+/// nation that no client can use, which falls back to the creation pick as the old login made it
+/// (<c>CharacterFactory.RestoreUnusableFromCreation</c>). <c>@nation</c> no longer stores a nation past the crest
+/// table (the PR #337 review, F1).</para>
 ///
 /// <para><b>The path.</b> Each change fact seeds the row creation writes (<c>FromCreate</c>), sends the real
 /// <c>0x10</c> arrival through <c>Session.Receive</c>, changes the value through the path it names, logs out through
@@ -36,7 +37,7 @@ namespace Tests;
 /// <see cref="SessionFixture"/> is a class fixture, so this class runs on a World no other class stands on. The NPC
 /// facts stand on the real maps their NPC stands on: Buya (330, Honi, who picks the kingdom from the map), the
 /// Wilderness (1002, Rotah), Onyx's room (343) and Baekho's shrine (1406). Every other fact uses a content-free map
-/// in 61901-61910, which no other class uses. Each fact has a database of its own (<see cref="IsolatedDatabase"/>),
+/// in 61901-61913, which no other class uses. Each fact has a database of its own (<see cref="IsolatedDatabase"/>),
 /// so "cmdgm", the GM name every GM-command class shares, has a row only that fact writes.</para>
 /// </summary>
 [Collection("world")]
@@ -46,6 +47,7 @@ public sealed class ChangedPicksSurviveLoginTests : IClassFixture<SessionFixture
     private const ushort SetJoinMap = 61901, SetNeutralMap = 61902, GmJoinMap = 61903, GmNeutralMap = 61904;
     private const ushort NewCharacterMap = 61905, TotemMap = 61906, LegacyMap = 61907;
     private const ushort AtTotemMapA = 61908, AtTotemMapB = 61909, FaceMap = 61910;
+    private const ushort AtNationClampMapA = 61911, AtNationClampMapB = 61912, NationMap = 61913;
 
     // The NPCs, by their NPCs.csv rows: Honi, Buya's town crier (map 330); Rotah (the Wilderness, 1002); Onyx, a
     // rogue-guild shaman (343); Baekho's shrine (1406).
@@ -167,6 +169,30 @@ public sealed class ChangedPicksSurviveLoginTests : IClassFixture<SessionFixture
             {
                 Run(s, $"@nation {changed}");
                 Assert.Contains($"nation set to {changed} ({Character.NationName(changed)}).", MiniTexts(o));
+            });
+        AssertSurvived(report);
+    }
+
+    /// <summary>
+    /// <b><c>@nation</c> past the crest table sets the last crest, as <c>@totem</c> does past its own</b> (the PR #337
+    /// review, F1). The table is <c>Character.Nations</c>, 0 to 7; 8 and 200 both set 7 (Kaya), with the command's own
+    /// reply, and 7 survives the relog.
+    /// <para>Red without the clamp (0 to 255, as on 45dafed): the nation is 200 or 8 after the command, and the reply
+    /// names "nation#200" or "nation#8".</para>
+    /// </summary>
+    [Theory]
+    [InlineData(2, 200, AtNationClampMapA)]
+    [InlineData(0, 8, AtNationClampMapB)]
+    public void AtNationPastTheCrestTableSetsTheLastCrest(byte created, int typed, ushort map)
+    {
+        byte last = (byte)(Character.Nations.Length - 1);
+        var report = ChangeSurvivesARelog(GmName, Blob(nation: created), Pick.Nation, last, map, 5, 5, _ => { },
+            (s, o) =>
+            {
+                Run(s, $"@nation {typed}");
+                var said = MiniTexts(o);
+                _out.WriteLine($"[nation] @nation {typed} said: {string.Join(" | ", said)}");
+                Assert.Contains($"nation set to {last} ({Character.NationName(last)}).", said);
             });
         AssertSurvived(report);
     }
@@ -312,6 +338,30 @@ public sealed class ChangedPicksSurviveLoginTests : IClassFixture<SessionFixture
                        $"row after logout {row.Face}");
         Assert.Equal(expected, atLogin);
         Assert.Equal(expected, (int)row.Face);
+    }
+
+    /// <summary>
+    /// <b>A saved nation wins, unless it is past the crest table</b> (<c>Character.Nations</c>, 0 to 7; the PR #337
+    /// review, F1). A nation of 8 or more falls back to the creation byte when that byte is a nation, as the old login
+    /// made it; 7 is a nation, and stays. With no usable creation byte (9) the saved value stays, as the old login left
+    /// it. The first case is the reviewer's <c>RvNat200</c>.
+    /// <para>The 7 case is red on 45dafed (2, the creation byte). The 200 and 8 cases are red when the login has no
+    /// nation fallback (the saved value).</para>
+    /// </summary>
+    [Theory]
+    [InlineData("NsvNat200", 2, 200, 2)]
+    [InlineData("NsvNat8", 2, 8, 2)]
+    [InlineData("NsvNat7", 2, 7, 7)]
+    [InlineData("NsvNatNo", 9, 200, 200)]
+    public void ASavedNationPastTheCrestTableFallsBackToTheCreationNation(string name, byte creationNation,
+                                                                         byte savedNation, int expected)
+    {
+        int atLogin = LoginOnce(name, Blob(nation: creationNation), NationMap, c => c.Nation = savedNation,
+                                s => s.CharNation, out var row);
+        _out.WriteLine($"[nation] {name}: creation byte {creationNation}, saved {savedNation}; at login {atLogin}, " +
+                       $"row after logout {row.Nation}");
+        Assert.Equal(expected, atLogin);
+        Assert.Equal(expected, (int)row.Nation);
     }
 
     // ---- what creation and the legacy import still decode -----------------------------------------------------

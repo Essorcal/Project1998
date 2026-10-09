@@ -234,7 +234,7 @@ public sealed partial class Session
         T("grace",   (s, a) => s.SetBaseStat("grace", a), "<n>",          "set base grace"),
         T("hp",      (s, a) => s.SetMaxPool(hp: true, a), "<n>",          "set max HP (vita) and refill"),
         T("mp",      (s, a) => s.SetMaxPool(hp: false, a),"<n>",          "set max MP (mana) and refill"),
-        T("nation",  (s, a) => s.SetNationCmd(a),   "<id>",               "set your nation crest (persists)"),
+        T("nation",  (s, a) => s.SetNationCmd(a),   "<0-7>",              "set your nation crest (persists)"),
         T("totem",   (s, a) => s.SetTotemCmd(a),    "<0-3>",              "set your totem crest — 0 JuJak, 1 Baekho, 2 HyunMoo, 3 ChungRyong (persists)"),
         T("karma",   (s, a) => s.SetKarmaCmd(a),    "<value|tier>",       "set karma outright: a number, or a tier (cat, dog, angel, …)"),
         T("dispel",  (s, a) => s.DispelCmd(),       "",                   "strip every buff and debuff on you"),
