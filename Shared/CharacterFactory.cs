@@ -25,7 +25,7 @@ public static class CharacterFactory
         var c = new Character { SchemaVersion = Character.CurrentSchemaVersion };
         c.Name = checkedName;      // stored with the player's chosen CASING; logins match case-insensitively
         c.CreationBlob = body;     // keep the raw body for future re-decoding if the mapping changes
-        ApplyAppearance(c);        // decode gender/face/nation/totem/hair
+        ApplyAppearance(c);        // decode face/sex/nation/totem/hair: creation and the legacy import only
         return c;
     }
 
@@ -46,6 +46,23 @@ public static class CharacterFactory
     // bytes — appearance[2] (face) uses creation byte[0] directly (proven: faceone=00/facetwo=23/
     // facethree=34 gave three distinct correct faces), but hair has no slot in the 4.95 type-0 render
     // form, so Character.Hair is persisted (creation byte[4]) without being drawn anywhere yet.
+    //
+    // Applied once in a character's life and never at a login: by FromCreate, and by CharacterStore's import of
+    // a legacy per-file record.
+    //
+    // Not at a login. Each of these is changed in play without the blob changing: the nation by the town criers,
+    // Rotah and @nation; the face and the sex by the rogue-guild shaman's paid Change Face and Change Gender; the
+    // totem by the shrines' worship and @totem. Applying the blob at every login, as the arrival used to, undid
+    // every one of those changes at the next login (PR #325 re-check 3, F7, and its fix round 1). The hair is
+    // changed by nothing and drawn by neither client, and is treated the same way.
+    //
+    // At the legacy import. Creation decoded only face and sex in 521e49b; nation, totem and hair from 85d423b
+    // (2026-07-25). Older records hold the compiled-in values, and 521e49b's own comments record an earlier
+    // reading of the layout (the face at byte 2, the gender at byte 3), so for those records only the login gave
+    // them their picks. They were files in the per-file store, which 07878cf replaced with SQLite the same day;
+    // its import still brings in, at every start, any file whose name the database lacks. No such file holds a
+    // value changed in play: the first path that changes any of these (the shaman, 5a0b626, 2026-07-27) came
+    // after the last write to that store.
     public static void ApplyAppearance(Character c)
     {
         var b = c.CreationBlob;
@@ -53,13 +70,40 @@ public static class CharacterFactory
         c.Sex  = b[1];   // gender: 0=male, 1=female
         c.Face = b[0];   // -> render appearance[2]
         if (b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
-        // Totem crest, valid range 0..3 (JuJak/Baekho/HyunMoo/ChungRyong). Only apply a VALID pick from the
-        // creation blob: this runs on every login (a migration for pre-appearance records), so a stale or
-        // wrong blob byte of 4 ("none", the legacy default) must NOT re-clobber a totem the player has since
-        // set — otherwise an @totem / shrine change silently reverts on the next relog. Out-of-range simply
-        // leaves the loaded value in place; Session arrival then clamps it into range.
+        // Totem crest, valid range 0..3 (JuJak/Baekho/HyunMoo/ChungRyong). A byte of 4 ("none") keeps the
+        // compiled-in 4, which the arrival then clamps into range (the 5.33 pane-wipe guard).
         if (b.Length > 3 && b[3] <= 3) c.Totem = b[3];
         if (b.Length > 4) c.Hair = b[4];   // persisted; no 4.95 render slot yet
+    }
+
+    /// <summary>
+    /// At a login, put the creation pick back over a saved face, totem or nation that no client can use, exactly as
+    /// the login's old re-derivation did for it. Every usable saved value is kept: that is the whole point of no
+    /// longer applying <see cref="ApplyAppearance"/> at a login.
+    ///
+    /// <list type="bullet">
+    /// <item><b>A face of <paramref name="faceCount"/> or more.</b> The 4.95 client has heads 0 to 89 only. The
+    /// rogue-guild shaman's first version (5a0b626 to 339526b, 2026-07-27 to 2026-08-07) sold RTK's faces 200 to 216,
+    /// and its browse wrote each candidate into the character, so a player who left mid-browse took one into the
+    /// logout's save. The old login replaced either with the creation face, and so does this. The shaman sells 0 to
+    /// 89 now, and no other path writes a face, so a usable saved face is never one the player did not choose.</item>
+    /// <item><b>A totem past 3 whose creation byte is 0 to 3.</b> The old login applied that byte. A saved 4 is the
+    /// compiled-in "none" of a record created before 85d423b, or a value @totem accepted before 744dfd1 clamped it
+    /// (2026-08-17 to 2026-08-22). A totem past 3 with no usable creation byte is left to the arrival's clamp, as
+    /// before.</item>
+    /// <item><b>A nation past the crest table (<see cref="Character.Nations"/>) whose creation byte is in it.</b> The
+    /// old login applied that byte. Such a value came from @nation, which took 0 to 255 until the PR #337 review (F1)
+    /// clamped it to the table; the scripts' setNation passes only 0 to 3. A nation past the table with no usable
+    /// creation byte stays, as the old login left it.</item>
+    /// </list>
+    /// </summary>
+    public static void RestoreUnusableFromCreation(Character c, int faceCount)
+    {
+        var b = c.CreationBlob;
+        if (b is null || b.Length < 2) return;   // the old login did nothing for these either
+        if (c.Face >= faceCount) c.Face = b[0];
+        if (c.Totem > 3 && b.Length > 3 && b[3] <= 3) c.Totem = b[3];
+        if (c.Nation >= Character.Nations.Length && b.Length > 2 && b[2] < Character.Nations.Length) c.Nation = b[2];
     }
 
     // A character's home city — INSIDE the nation's home (RTK Warps.csv door-arrival tiles, not GmWarp's

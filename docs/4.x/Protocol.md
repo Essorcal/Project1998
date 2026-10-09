@@ -1257,11 +1257,15 @@ Creation is two login-channel packets:
    newbieb:   3d 00 02 00 00   M, Buya,    JuJak      (live pick: "JuJak + Buya")
    ```
 
-**Creation → render mapping** (server-side, `Session.ApplyAppearance`): render `appearance[0]` (sex) =
+**Creation → render mapping** (server-side, `CharacterFactory.ApplyAppearance`): render `appearance[0]` (sex) =
 creation `[1]`; render `appearance[2]` (face) = creation `[0]`. `Character.Nation`/`Character.Totem`
-are set directly from creation `[2]`/`[3]` (validated against range). Hair (`[4]`) is persisted but has
-no 4.95 render slot. `Session.PlaceNewCharacter` (run AFTER `ApplyAppearance` so it sees the real
-nation) then routes a brand-new character to their home city — see §11f.
+are set directly from creation `[2]`/`[3]` (validated against range). Hair (`[4]`) is persisted but has no
+4.95 render slot. All five are set once, at creation or when a legacy per-file record is imported, never at
+a login: the nation, face, sex and totem change in play (the town criers, Rotah and `@nation`; the
+rogue-guild shaman; the totem shrines and `@totem`) and a login must keep them. At a login only a saved face,
+totem or nation that no client can use falls back to the creation pick (`CharacterFactory.RestoreUnusableFromCreation`).
+`PlaceNewCharacter` (run AFTER `ApplyAppearance` so it sees the real nation) then routes a brand-new character
+to their home city — see §11f.
 
 Real RTK note: in the *Lua* gameplay layer (`totem_npc.lua`), totem is normally re-assigned later by
 worshipping a totem-animal shrine in the Wilderness, not fixed forever at creation — this server

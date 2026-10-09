@@ -358,8 +358,9 @@ public sealed partial class Session
     /// 90", ids 0..89) and silently draws NOTHING for anything above that — a headless character, no error.
     /// The clamp exists because a face id is persisted player data that can outlive the bug that wrote it:
     /// the shaman's Change Face used to hand out RTK's 200..216 (a later client's id space), so saved
-    /// characters can still carry an unrenderable value. Clamping here un-breaks them on sight instead of
-    /// making them pay 3,000 gold to a shaman to get a head back.</summary>
+    /// characters can still carry an unrenderable value. The arrival puts the creation face back over one
+    /// (<c>CharacterFactory.RestoreUnusableFromCreation</c>); this clamp still covers a creation byte past 89,
+    /// which has nothing better to fall back to, so nobody has to pay 3,000 gold to a shaman to get a head back.</summary>
     internal const int FaceCount = 90;
     private byte FaceLook() => (byte)Math.Clamp((int)_char.Face, 0, FaceCount - 1);
 
