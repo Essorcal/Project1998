@@ -512,7 +512,9 @@ public sealed class BarrierSpellTests
     /// state (the paralysis) after releasing <c>World._lock</c>, inside that player's monitor; each step takes its
     /// own monitor and then <c>World._lock</c>, and is refused (the tile is taken), so neither Poet moves and every
     /// cast lands on the other; the tick reads the barriers under <c>World._lock</c>. Nothing may stall
-    /// (<see cref="StallWatch"/>), and both Poets are held by the other on most rounds. Paralysing inside
+    /// (<see cref="StallWatch"/>), and every cast paralyses the other Poet: before each cast the caster lapses the
+    /// other's hold, which only the caster's own cast writes, so no round depends on which thread ran last (PR
+    /// #338 review, F1: "held on most rounds" failed a loaded runner at 50 of 300). Paralysing inside
     /// <c>World._lock</c> instead is the cycle this pins: one Poet holds the lock and waits for the other's monitor
     /// while the other, mid-step, holds its monitor and waits for the lock.</summary>
     [Fact]
@@ -542,10 +544,11 @@ public sealed class BarrierSpellTests
                 start.Wait();
                 for (int i = 0; i < Rounds; i++)
                 {
-                    // Free this Poet to cast again: its own run, aether and any hold the other put on it.
+                    // Free this Poet to cast again (its own run and aether), and lapse the hold this Poet's last
+                    // cast put on the other, so this cast's paralysis lands whatever the other thread has done.
                     SpellCastSupport.EndBuff(self, sp.Key);
-                    SpellCastSupport.EndBuff(self, $"{sp.Key}:held");
                     SpellCastSupport.ClearAether(self, sp.Key);
+                    SpellCastSupport.EndBuff(other, $"{sp.Key}:held");
                     bool ok = false;
                     self.WithState(() => ok = (bool)applyCast.Invoke(self, new object?[] { sp, null, null })!);
                     if (ok) landed();
@@ -583,11 +586,11 @@ public sealed class BarrierSpellTests
             // Every round's cast landed, on both Poets. (Counted, not read off the pool: the tick's regen beat tops
             // the pools back up while the race runs.)
             Assert.Equal((Rounds, Rounds), (landedA, landedB));
-            // …and the cross-session write ran on most rounds: each Poet was told "X casts Human Barrier on you."
-            // whenever the other's cast found it free of a hold. Neither moved.
+            // …and the cross-session write ran on every round: each Poet was told "X casts Human Barrier on you."
+            // once per cast of the other's. Neither moved.
             int heldA = SpellCastSupport.MiniTexts(aOut).Count(l => l.EndsWith("casts Human Barrier on you.", StringComparison.Ordinal));
             int heldB = SpellCastSupport.MiniTexts(bOut).Count(l => l.EndsWith("casts Human Barrier on you.", StringComparison.Ordinal));
-            Assert.True(heldA > Rounds / 2 && heldB > Rounds / 2, $"held {heldA} and {heldB} times in {Rounds} rounds each");
+            Assert.Equal((Rounds, Rounds), (heldA, heldB));
             Assert.Equal(((ushort)10, (ushort)11), (a.PlayerX, b.PlayerX));
         }
         finally
