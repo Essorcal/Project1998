@@ -192,7 +192,9 @@ public sealed partial class Session
     private const int MailBackstopMs = 30_000;   // defensive re-check of the mail/parcel HUD flag (event-driven otherwise)
 
     /// <summary>One beat of this player's regen step: the mail backstop, the buff expiry pass, the Chung
-    /// Ryong fury wear-off, and — on a beat where <paramref name="regenDue"/> — the natural regeneration.
+    /// Ryong fury wear-off, Second Sight's notice (Session.SecondSight.cs, a fifth job decided the same way as the
+    /// four below, from <c>_secondSightUntil</c>, <c>_secondSightRuns</c> and the tick-thread-owned scan clock), and — on
+    /// a beat where <paramref name="regenDue"/> — the natural regeneration.
     /// <paramref name="regenDue"/> is the world's 25 s clock (<c>World._regenClockMs</c>), so every player
     /// below full regenerates on the same beat.
     /// <para><paramref name="regenDue"/> defaults to false only so the pre-#29 acceptance fact
@@ -241,10 +243,12 @@ public sealed partial class Session
         // 30s, vs the old two-queries-per-stats-packet.
         _mailAccum += ms;
 
+        bool sightDue = SecondSightScanDue();   // Session.SecondSight.cs: no monitor, like the rest
         bool due = regenDue
                 || _mailAccum >= MailBackstopMs
                 || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
-                || Volatile.Read(ref _crRageTier) > 0;
+                || Volatile.Read(ref _crRageTier) > 0
+                || sightDue;
         if (!due) return;   // the common case: no monitor entered at all
 
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
@@ -254,8 +258,10 @@ public sealed partial class Session
         // Chung Ryong's Rage draining vita when it wears out (its price) — checked here so it fires whether the
         // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
         if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
+        // Second Sight's notice, after the expiry pass, so a run that lapsed on this beat says nothing.
+        if (sightDue) SecondSightScan();
 
-        if (!regenDue) return;       // not a regen beat: the three jobs above are all this beat owed
+        if (!regenDue) return;       // not a regen beat: the jobs above are all this beat owed
         if (_char.Hp == 0) return;   // dead: no natural regen (RTK bails on health==0 / state==1)
 
         var eq = Totals();

@@ -104,7 +104,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `WeaponProcs.csv` | 25 | 25 | from file |
 | `Traps.csv` | 8 | 8 | from file |
 | `Morphs.csv` | 29 | 29 | from file |
-| `SpellMods.csv` | 25 | 25 | from file |
+| `SpellMods.csv` | 42 | 42 | from file |
 | `NpcAbilities.csv` | 32 | 32 | from file |
 | `PathGrowth.csv` | 5 | 5 | from file |
 | `DoorObjects.csv` | 50 | 50 | from file |

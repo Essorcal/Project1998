@@ -142,6 +142,13 @@ public sealed partial class Session
             Log.Info($"   -> walk refused: asleep — held at ({_char.X},{_char.Y})");
             return;
         }
+        // PARALYSIS GATE (Human Barrier, #334 — see Session.Barrier.cs): the same refusal, the same snap-back.
+        if (Paralyzed)
+        {
+            SendXy();
+            Log.Info($"   -> walk refused: paralyzed — held at ({_char.X},{_char.Y})");
+            return;
+        }
 
         byte dir = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(dir & 3);   // remember which way we're facing so melee (0x13) knows the front tile
@@ -330,6 +337,7 @@ public sealed partial class Session
             Log.Info($"   -> walk dir={dir} BLOCKED at ({nx},{ny}) obj={obj}{(offMap ? " off-map" : "")}" +
                      $"{((why & BlockReason.Mob) != 0 ? " mob" : "")}" +
                      $"{((why & (BlockReason.Player | BlockReason.Ghost)) != 0 ? " player" : "")}" +
+                     $"{((why & BlockReason.Barrier) != 0 ? " barrier" : "")}" +
                      $" — held at ({_char.X},{_char.Y})");
             return;
         }
@@ -531,8 +539,9 @@ public sealed partial class Session
         // Held players don't pivot either — the same rule the mob side follows (a frozen mob holds its
         // facing). Unlike the walk gate this needs no snap-back: a turn is fire-and-forget on 4.95, with no
         // ack the client is waiting on, so simply not broadcasting it is enough. The turner's own screen has
-        // already pivoted locally; that is cosmetic and rights itself on the next real move.
-        if (Asleep) return;
+        // already pivoted locally; that is cosmetic and rights itself on the next real move. A paralysed player
+        // (Human Barrier, Session.Barrier.cs) is held the same way.
+        if (Asleep || Paralyzed) return;
 
         byte side = dec.Length > 0 ? dec[0] : (byte)0;
         _facing = (byte)(side & 3);

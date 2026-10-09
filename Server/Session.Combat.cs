@@ -136,6 +136,9 @@ public sealed partial class Session
         // SLEEP GATE (the Doze family's PvP branch — see Session.ReceiveSleep). A hold can't stop a 4.95
         // client walking, but it can take every action that goes through the server, and a swing is one.
         if (Asleep) { SendMiniText("You are asleep."); return; }
+        // PARALYSIS GATE (Human Barrier, #334 — see Session.Barrier.cs). Silent, as RTK's is
+        // (clif_parseattack returns on `sd->paralyzed`, clif.c:10190): no source gives a line for it.
+        if (Paralyzed) return;
 
         // MOUNT GATE. No melee from horseback. SILENT, unlike the cast gate's minitext — the live client
         // shows nothing at all for a blocked swing, matching how an over-rate swing is dropped below.

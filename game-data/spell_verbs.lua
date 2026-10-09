@@ -131,10 +131,24 @@ local function apply_buff(ctx, mode, fallbackDur)
   return true
 end
 
+-- BARRIERS (#334). Two buff slots raise a barrier on the four tiles beside the caster once the run is applied:
+-- Barrier and its twins (spell_effects.csv cureCat `barriers`) close them to creatures, Human Barrier and its
+-- twins (`humanBarriers`) to every player but the caster. What stands there at the cast is held until the
+-- barrier wears off, and the tiles stay where they were cast. The Nexus Atlas Poet page (2002-12-30): "4 Way
+-- Invisible Blockade surrounds the caster, disabling any animals [players] from walking next to them. If an
+-- animal [a player] is in one of those spaces, they are paralyzed until the barrier wears off." The engine
+-- half is Server/Session.Barrier.cs.
+local BARRIER_KIND = { barriers = "creatures", humanBarriers = "players" }
+
 -- The two archetype names both still have to exist: Session.ApplyCast dispatches on them by name, and
 -- SpellScript.HasVerb is what decides whether the archetype falls back to its C# handler. The fallback
 -- durations are the only per-archetype DATA, so they're arguments rather than a branch.
-function verbs.arch_buff(ctx, row)       return apply_buff(ctx, "self",   60000)  end
+function verbs.arch_buff(ctx, row)
+  if not apply_buff(ctx, "self", 60000) then return false end
+  local barrier = BARRIER_KIND[buff_slot(ctx)]
+  if barrier then ctx:raiseBarrier(barrier, ctx.durationMs) end
+  return true
+end
 function verbs.arch_targetbuff(ctx, row) return apply_buff(ctx, "target", 300000) end
 
 -- Debuff archetype: the hostile crowd-control family. The export row's `debuff` column says WHICH kind this

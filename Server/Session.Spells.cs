@@ -249,6 +249,9 @@ public sealed partial class Session
         // before the slot is resolved: no spell is exempt, and there is nothing to be gained from letting a
         // sleeping caster pick which one they can't cast.
         if (Asleep) { SendMiniText("You are asleep."); return; }
+        // PARALYSIS GATE (Human Barrier, #334 — see Session.Barrier.cs). Silent, as RTK's is (the 0x0F case is
+        // wrapped in `if (!sd->paralyzed && ...)`, clif.c:11425): no source gives a line for it.
+        if (Paralyzed) return;
         // NO-CASTING MAP GATE (RTK clif.c:11427 — the whole 0x0F opcode is wrapped in
         // `if (map[sd->bl.m].spell || sd->status.gm_level)`, else "That doesn't work here."). This is the
         // rule that keeps magic out of the towns' interiors: taverns, shops, the Gathering halls, the class
@@ -464,7 +467,16 @@ public sealed partial class Session
         // through a SpellParams row, so it now does too: both bind at the top of ApplyCast and never reach
         // this dispatch at all. That also keeps it away from the flat CastRage path below, whose "already
         // benefiting from a fury" block would forbid the climb — the reason for the old interception.)
-        if (Content.RageAmountFor(sp) is int rageAmt) return Lua(CastStanceArch("stance_rage", sp, fx, mana, rageAmt), sp);
+        // A fury whose row carries an aether arms it here, on a cast that landed: this branch returns before the
+        // archetype tail that arms every other row's aether (the last lines of this method). Serpent's Fury is the
+        // one today, 25 s (the Atlas dog page and tswolf from July 2001; #334). The gate above already refuses a
+        // recast inside it.
+        if (Content.RageAmountFor(sp) is int rageAmt)
+        {
+            bool raged = Lua(CastStanceArch("stance_rage", sp, fx, mana, rageAmt), sp);
+            if (raged && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
+            return raged;
+        }
         if (Content.IsStealthSpell(sp))
         {
             // The guard lives HERE (not in CastStealth) because the dispatch prefers the Lua verb
@@ -2953,6 +2965,11 @@ public sealed partial class Session
     private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
+    /// <summary>Is this player invisible right now (RTK's <c>PC_INVIS</c>)? Read by
+    /// <see cref="World.HiddenPlayersNear"/> under <c>World._lock</c> for another player's Second Sight, without
+    /// this session's monitor: one 64-bit deadline, the same unsynchronised scalar read the tick makes of
+    /// <see cref="IsStealthExpired"/>.</summary>
+    public bool IsInvisible => Stealthed;
     /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
     public void RevertStealth()
     {

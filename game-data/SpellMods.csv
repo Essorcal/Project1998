@@ -1,9 +1,30 @@
 key,rage,enchantAmt,enchantMana
+# Rage: a fury's alignment twins are the fury under another alignment's name and take its rage (#334).
+# Nexus Atlas 2002-12-30 Warrior and Rogue pages list each twin only as a name of its fury, x2 / x3 / x4;
+# the Atlas dog page gives Serpent's Fury x4 and Spirit Fury x5 (Sources.csv atlas-2002-12-30-spells-classes,
+# atlas-2002-12-30-spells-warrior-dog; RTK's scripts agree, rtk-lua). Mana and duration are spell_effects.csv's.
 wolfs_fury_warrior,2,,
+souls_rage_warrior,2,,
+spirit_of_the_forest_warrior,2,,
+augmentation_warrior,2,,
 wolfs_fury_rogue,2,,
+souls_rage_rogue,2,,
+spirit_of_the_forest_rogue,2,,
+augmentation_rogue,2,,
 tigers_fury_warrior,3,,
+filling_the_soul_warrior,3,,
+spirit_of_the_wild_warrior,3,,
+ohaengs_grace_warrior,3,,
 tigers_fury_rogue,3,,
+filling_the_soul_rogue,3,,
+spirit_of_the_wild_rogue,3,,
+ohaengs_grace_rogue,3,,
 dragons_fury_warrior,4,,
+strength_of_ancestors_warrior,4,,
+spirit_of_the_dragon_warrior,4,,
+ohaengs_anger_warrior,4,,
+serpents_fury,4,,
+spirit_fury,5,,
 baekhos_rage_rogue,5,,
 enchant_warrior,,1.5,60
 spiritual_aid_warrior,,1.5,60

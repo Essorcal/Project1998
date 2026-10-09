@@ -67,8 +67,9 @@ is deliberately lock-free so the hot path never reaches the gate. `Tests/Session
 **Decide under the lock, act outside it.** `World.Broadcast` snapshots the recipient list under `_lock` and
 sends outside it. `ReconcilePeer` and `SyncGroundItems` decide what to draw under `_viewLock` and build the
 packet outside it. `World.Tick` queues every session-facing call (`hits`, `mobCasts`, `trapDamage`,
-`expiredMorphs`) and applies them after releasing `_lock`. Any of these done the other way round is a cycle,
-because the thing you call out to takes a lock of its own.
+`expiredMorphs`) and applies them after releasing `_lock`. Human Barrier (#334) finds the players on its tiles
+under `_lock` (`World.RaiseBarrier`) and paralyses each after releasing it, inside that player's monitor. Any of
+these done the other way round is a cycle, because the thing you call out to takes a lock of its own.
 
 **Never wait for an outer lock while holding an inner one.** The Lua gate is the worked example. Its fast
 path is `Monitor.TryEnter` with no timeout: acquiring a lock you never *block* on cannot complete a cycle,
@@ -115,7 +116,8 @@ timer tick, which synchronises otherwise-independent threads (contended fraction
   friends. They are unsynchronised on purpose: taking the monitor there would invert row 2 against row 3.
   `IsReplaced` is a volatile read of `_replaced`; its one writer, `KickForReplacement`, latches it under the
   session's own monitor and nothing clears it. `World` reads it under `World._lock` without the session's monitor
-  (#183, #297).
+  (#183, #297). `IsInvisible` is one more of these: `World.HiddenPlayersNear` reads it for Second Sight's scan
+  (#334), which runs on the tick thread inside the caster's own monitor and takes `World._lock` after it.
 * A session's **totals snapshot** (`Session._equipTotals`, an immutable `TotalsSnapshot`: the worn-gear sum plus a
   copy of the timed buffs). The owner builds it under its OWN monitor and publishes it with one `Volatile.Write`:
   `InvalidateEquipTotals` at each gear change and the four `_buffs` writers, or its own first `Totals()` read

@@ -170,6 +170,21 @@ public enum BlockReason
     /// <summary>Another GHOST stands there, and the mover is a PvP ghost. Logged as " player", like the living
     /// case — the log has never distinguished them.</summary>
     Ghost = 4,
+    /// <summary>A running Human Barrier closes the tile to every player but its caster (#334). Logged as
+    /// " barrier".</summary>
+    Barrier = 8,
+}
+
+/// <summary>One Barrier or Human Barrier cast (#334): the four tiles beside (<see cref="X"/>, <see cref="Y"/>),
+/// where the Poet stood when it was cast, are closed until <see cref="Until"/> (a <c>TickCount64</c>). They
+/// stay where they were cast: the Poet may walk away, and the tiles stay closed. <see cref="Players"/> false is
+/// Barrier, which closes them to creatures; true is Human Barrier, which closes them to every player but
+/// <see cref="CasterId"/>. Kept in <c>World.MapState.Barriers</c>, under <c>World._lock</c>.</summary>
+internal readonly record struct BarrierZone(ushort X, ushort Y, long Until, bool Players, uint CasterId)
+{
+    /// <summary>Is (<paramref name="x"/>, <paramref name="y"/>) one of the four tiles beside the cast tile? The
+    /// cast tile itself is not: the barrier surrounds the Poet.</summary>
+    public bool Closes(int x, int y) => Math.Abs(x - X) + Math.Abs(y - Y) == 1;
 }
 
 /// <summary>
@@ -213,6 +228,11 @@ public sealed partial class World
         public readonly List<Mob> Mobs = new();
         public readonly List<GroundItem> Items = new();
         public readonly List<Trap> Traps = new();
+        /// <summary>The Barrier and Human Barrier casts on this map (#334), written by <see cref="RaiseBarrier"/>
+        /// and read by the tick's collision index (<c>MobTickContext</c>) and <see cref="TryMovePlayer"/>, all under
+        /// <c>_lock</c>. Lapsed entries are pruned by the next cast here, and every reader skips them; nothing is
+        /// drawn for one, so no <see cref="ViewGen"/> bump.</summary>
+        public readonly List<BarrierZone> Barriers = new();
         /// <summary>How many player steps this map has ACCEPTED since the process started — a running total,
         /// never reset, published as <c>steps</c> in <c>run/viewport.json</c> so a reader differencing two
         /// documents gets the map's step RATE beside its in-view fraction. The two numbers together are what
@@ -2038,6 +2058,11 @@ public sealed partial class World
                 {
                     why |= BlockReason.Player;
                 }
+                // A running Human Barrier closes the four tiles beside where it was cast to every player but its
+                // caster (#334: the Atlas, "disabling any players from walking next to them"). Like the two
+                // checks above it is occupancy, so @clip waives it.
+                if (m.Barriers.Count > 0 && ClosedToPlayer(m, mover.PlayerId, nx, ny))
+                    why |= BlockReason.Barrier;
             }
             // An unknown map blocks nothing and commits, which is what the three helpers did between them.
             if (otherwiseBlocked || (enforceOccupancy && why != BlockReason.None)) return false;
@@ -2189,6 +2214,135 @@ public sealed partial class World
         {
             if (!_maps.TryGetValue(mapId, out var m)) return null;
             return m.Players.FirstOrDefault(p => p.PlayerX == x && p.PlayerY == y && !p.IsReplaced);
+        }
+    }
+
+    /// <summary>The names of the players on <paramref name="mapId"/> who are invisible and stand within
+    /// <paramref name="range"/> tiles of (<paramref name="x"/>, <paramref name="y"/>) on both axes, in the map's
+    /// player order: Second Sight's scan (<c>Session.SecondSightScan</c>; RTK poet/second_sight.lua reads
+    /// <c>distanceSquare(player, pc, 9)</c> and <c>state == 2</c>). Under <c>_lock</c>, the lock every writer of a
+    /// player's tile holds. <see cref="Session.IsInvisible"/> is the unsynchronised scalar read the tick makes
+    /// here of <c>IsStealthExpired</c>, and the name is one reference read of a string set at arrival. The
+    /// caller holds its own state monitor, which comes before this lock (docs/common/Locking.md).</summary>
+    public List<string> HiddenPlayersNear(ushort mapId, int x, int y, int range)
+    {
+        var names = new List<string>();
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return names;
+            foreach (var p in m.Players)
+                if (!p.IsReplaced && p.IsInvisible
+                    && Math.Abs(p.PlayerX - x) <= range && Math.Abs(p.PlayerY - y) <= range)
+                    names.Add(p.CharName);
+        }
+        return names;
+    }
+
+    /// <summary>The exclusivity slot a Barrier's hold takes on a creature: RTK's own (<c>snares</c>, which
+    /// barrier.lua checks with <c>checkIfCast</c> before it holds anything, Spells/spellTables.lua:287), apart from
+    /// Paralyze's <c>paras</c>, so a creature already paralyzed is still held until the barrier ends.</summary>
+    internal const string BarrierHoldSlot = "snares";
+
+    /// <summary>Raise a Barrier (<paramref name="players"/> false) or a Human Barrier (true) on the four tiles
+    /// beside (<paramref name="x"/>, <paramref name="y"/>) for <paramref name="durMs"/> (#334). One acquisition of
+    /// <c>_lock</c> prunes the map's lapsed barriers, adds this one, and finds what stands on its tiles.
+    /// <list type="bullet">
+    /// <item>Barrier holds every living creature there (NPCs aside, which have no AI to stop) through
+    /// <see cref="ApplyMobStatus"/>, the path every paralyze takes: <c>FrozenUntil</c>, which stops a creature
+    /// moving and attacking, until the barrier ends; one another barrier already holds is held to the later end.
+    /// <paramref name="creaturesHeld"/> counts them.</item>
+    /// <item>Human Barrier returns the living players there instead, and holds nobody itself: holding a player writes
+    /// that player's state under that player's monitor, which may not be taken under this lock
+    /// (docs/common/Locking.md, rows 2 and 3). The caller does it after this returns.</item>
+    /// </list>
+    /// The caller holds its own state monitor, which comes before this lock.</summary>
+    internal List<Session> RaiseBarrier(ushort mapId, ushort x, ushort y, int durMs, bool players, uint casterId,
+                                        string spellKey, out int creaturesHeld)
+    {
+        var standing = new List<Session>();
+        creaturesHeld = 0;
+        if (durMs <= 0) return standing;
+        lock (_lock)
+        {
+            long now = Environment.TickCount64;
+            var m = Map(mapId);
+            m.Barriers.RemoveAll(b => b.Until <= now);
+            var zone = new BarrierZone(x, y, now + durMs, players, casterId);
+            m.Barriers.Add(zone);
+            if (players)
+            {
+                // A ghost is not held (PR #338 review, F4): the dead never block the living here either
+                // (TryMovePlayer), and a hold would keep a ghost from its way back to life for 22 s. It is still
+                // kept off the tiles, like any player.
+                foreach (var p in m.Players)
+                    if (!p.IsReplaced && !p.IsDead && zone.Closes(p.PlayerX, p.PlayerY)) standing.Add(p);
+            }
+            else
+            {
+                long until = now + durMs;
+                foreach (var mob in m.Mobs)
+                {
+                    if (!mob.Alive || mob.IsNpc || !zone.Closes(mob.X, mob.Y)) continue;
+                    // Already held by another barrier (only barriers fill this slot): held to the later of the two
+                    // ends, because it is "paralyzed until the barrier wears off" and this one has not. Not
+                    // ApplyMobStatus's refusal, which keeps an offensive hold from being chained on its victim;
+                    // a barrier's hold belongs to the tile (PR #338 review, F2).
+                    if (mob.HasStatus(BarrierHoldSlot, now))
+                    {
+                        if (mob.Statuses![BarrierHoldSlot].Until < until) mob.SetStatus(BarrierHoldSlot, until, spellKey);
+                        mob.FrozenUntil = Math.Max(mob.FrozenUntil, until);
+                        creaturesHeld++;
+                    }
+                    else if (ApplyMobStatus(mob, BarrierHoldSlot, durMs, hold: true, blind: false, spellKey: spellKey))
+                        creaturesHeld++;
+                }
+            }
+        }
+        return standing;
+    }
+
+    /// <summary>Is (<paramref name="x"/>, <paramref name="y"/>) closed to the player <paramref name="moverId"/> by
+    /// a running Human Barrier on <paramref name="m"/>? Its own caster passes. Caller holds <c>_lock</c>.</summary>
+    private static bool ClosedToPlayer(MapState m, uint moverId, int x, int y)
+    {
+        long now = Environment.TickCount64;
+        foreach (var b in m.Barriers)
+            if (b.Players && b.Until > now && b.CasterId != moverId && b.Closes(x, y)) return true;
+        return false;
+    }
+
+    /// <summary>Add the tiles every running Barrier on <paramref name="m"/> closes to creatures to
+    /// <paramref name="closed"/>: the tick's collision index, which every creature step reads
+    /// (<c>MobTickContext.Occupied</c>). Caller holds <c>_lock</c>.</summary>
+    internal static void AddBarrierTiles(MapState m, HashSet<(ushort, ushort)> closed)
+    {
+        if (m.Barriers.Count == 0) return;
+        long now = Environment.TickCount64;
+        foreach (var b in m.Barriers)
+        {
+            if (b.Players || b.Until <= now) continue;
+            closed.Add((b.X, (ushort)(b.Y + 1)));
+            closed.Add(((ushort)(b.X + 1), b.Y));
+            if (b.Y > 0) closed.Add((b.X, (ushort)(b.Y - 1)));
+            if (b.X > 0) closed.Add(((ushort)(b.X - 1), b.Y));
+        }
+    }
+
+    /// <summary>Test seam: the barriers <paramref name="mapId"/> holds, lapsed ones included.</summary>
+    internal BarrierZone[] BarriersForTest(ushort mapId)
+    {
+        lock (_lock) return _maps.TryGetValue(mapId, out var m) ? m.Barriers.ToArray() : Array.Empty<BarrierZone>();
+    }
+
+    /// <summary>Test seam: end every barrier on <paramref name="mapId"/> now, as its 22 s would, by moving its
+    /// deadline one millisecond into the past.</summary>
+    internal void EndBarriersForTest(ushort mapId)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return;
+            long past = Environment.TickCount64 - 1;
+            for (int i = 0; i < m.Barriers.Count; i++) m.Barriers[i] = m.Barriers[i] with { Until = past };
         }
     }
 
