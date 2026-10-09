@@ -42,8 +42,11 @@ public sealed partial class Session
     /// of the 22 s, with the rest of <c>_buffs</c>. No cure spell frees a held player: the Cure Paralysis rows cure
     /// <c>paras</c>, but <c>arch_cure</c> cures only its own caster, and a held player cannot cast (PR #338 review,
     /// F3). Four things end it: the 22 s; death; <c>@dispel</c>; and another player's Dispell-family cast (Dispell,
-    /// Remove Magic, Return Natural, Restore Balance) on a won roll, whose <c>cleanse</c> verb wipes every timed
-    /// effect, this one included (PR #338 re-check, F7).</summary>
+    /// Remove Magic, Return Natural, Restore Balance) on a won roll (PR #338 re-check, F7). Its <c>cleanse</c> verb
+    /// runs <c>FlushDurations</c>, which clears every entry in the player's buff list, this hold included, and the
+    /// fury, stealth, Backstab, Flank and four-way timers. It does not clear the ward flags (Harden Body), the
+    /// Sanctuary and Cunning damage reductions or the enchant, which <c>@dispel</c> and death do (PR #338 re-check 2,
+    /// F10).</summary>
     internal const string ParalysisSlot = "paras";
 
     /// <summary>Is this player paralysed (a Human Barrier's hold)? Read under this session's own monitor by the
