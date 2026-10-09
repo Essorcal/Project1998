@@ -249,6 +249,9 @@ public sealed partial class Session
         // before the slot is resolved: no spell is exempt, and there is nothing to be gained from letting a
         // sleeping caster pick which one they can't cast.
         if (Asleep) { SendMiniText("You are asleep."); return; }
+        // PARALYSIS GATE (Human Barrier, #334 — see Session.Barrier.cs). Silent, as RTK's is (the 0x0F case is
+        // wrapped in `if (!sd->paralyzed && ...)`, clif.c:11425): no source gives a line for it.
+        if (Paralyzed) return;
         // NO-CASTING MAP GATE (RTK clif.c:11427 — the whole 0x0F opcode is wrapped in
         // `if (map[sd->bl.m].spell || sd->status.gm_level)`, else "That doesn't work here."). This is the
         // rule that keeps magic out of the towns' interiors: taverns, shops, the Gathering halls, the class

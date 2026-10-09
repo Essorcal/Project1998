@@ -116,6 +116,11 @@ internal static class SpellCastSupport
         });
     }
 
+    /// <summary>Drop the aether running under <paramref name="key"/>, as if it had run out. For a fact that has to
+    /// cast the same spell again and again faster than its aether allows.</summary>
+    public static void ClearAether(Session session, string key) =>
+        session.WithState(() => ((Dictionary<string, long>)AetherField.GetValue(session)!).Remove(key));
+
     /// <summary>Milliseconds until Second Sight's next scan may run (<c>Session._secondSightNextScan</c>), or -1
     /// where the field does not exist (a build without the scan).</summary>
     public static long SecondSightNextScanIn(Session session)

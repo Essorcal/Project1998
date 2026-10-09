@@ -88,7 +88,8 @@ public sealed partial class World
         public readonly (ushort Xs, ushort Ys) Dims;
         /// <summary>The map's collision layers, or null when <see cref="Dims"/> is zero.</summary>
         public readonly MapData? Terrain;
-        /// <summary>Every player's tile this beat — a mob never steps onto one.</summary>
+        /// <summary>Every player's tile this beat, and every tile a running Barrier closes (#334,
+        /// <see cref="World.AddBarrierTiles"/>) — a mob never steps onto one.</summary>
         public readonly HashSet<(ushort, ushort)> Occupied;
         /// <summary>Every living mob's tile — kept current as they move, so a mob won't step onto another.</summary>
         public readonly HashSet<(int, int)> MobTiles;
@@ -118,6 +119,9 @@ public sealed partial class World
             Dims = Content.Maps.TryGetValue(mapId, out var mi) ? (mi.Xs, mi.Ys) : ((ushort)0, (ushort)0);
             Terrain = Dims.Item1 > 0 ? MapData.For(mapId, Dims.Item1, Dims.Item2) : null;
             Occupied = map.Players.Select(p => (p.PlayerX, p.PlayerY)).ToHashSet();
+            // …and the tiles a running Barrier closes (#334): "no creature can step onto those four tiles" is the
+            // same never-onto rule as a player's own tile, so every step path that reads this set honours it.
+            World.AddBarrierTiles(map, Occupied);
             // Every living mob's tile — so a mob won't step onto another (kept current as they move below).
             MobTiles = new HashSet<(int, int)>();
             foreach (var mo in map.Mobs) if (mo.Alive) MobTiles.Add((mo.X, mo.Y));

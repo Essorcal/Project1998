@@ -261,6 +261,10 @@ public sealed class SpellContext
 
     /// <summary>Play this spell's cast anim/sound on the caster.</summary>
     public void fxSelf()                => _s.LuaFxSelf(_sp);
+    /// <summary>Raise a barrier on the four tiles beside the caster for <paramref name="durMs"/> (#334):
+    /// <c>"creatures"</c> (Barrier) or <c>"players"</c> (Human Barrier). What stands there is held until it ends,
+    /// and nothing else may step onto them. See Session.Barrier.cs.</summary>
+    public void raiseBarrier(string kind, double durMs) => _s.LuaRaiseBarrier(_sp, kind, (int)durMs);
     // (flavorSelf is gone: applyBuff/applyWard show the flavor line for whoever the cast resolved to, via the
     // one TellTarget that also words an ally's "<caster> casts X on you." A second way to print it is how the
     // self and target halves drifted apart in the first place.)

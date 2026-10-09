@@ -67,8 +67,9 @@ is deliberately lock-free so the hot path never reaches the gate. `Tests/Session
 **Decide under the lock, act outside it.** `World.Broadcast` snapshots the recipient list under `_lock` and
 sends outside it. `ReconcilePeer` and `SyncGroundItems` decide what to draw under `_viewLock` and build the
 packet outside it. `World.Tick` queues every session-facing call (`hits`, `mobCasts`, `trapDamage`,
-`expiredMorphs`) and applies them after releasing `_lock`. Any of these done the other way round is a cycle,
-because the thing you call out to takes a lock of its own.
+`expiredMorphs`) and applies them after releasing `_lock`. Human Barrier (#334) finds the players on its tiles
+under `_lock` (`World.RaiseBarrier`) and paralyses each after releasing it, inside that player's monitor. Any of
+these done the other way round is a cycle, because the thing you call out to takes a lock of its own.
 
 **Never wait for an outer lock while holding an inner one.** The Lua gate is the worked example. Its fast
 path is `Monitor.TryEnter` with no timeout: acquiring a lock you never *block* on cannot complete a cycle,
