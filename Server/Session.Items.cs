@@ -1148,6 +1148,7 @@ public sealed partial class Session
     {
         AssertStateHeld("_buffs");
         _buffs.Add(b);
+        if (b.Category == SecondSightSlot) Interlocked.Increment(ref _secondSightRuns);   // a new run (Session.SecondSight.cs)
         RecomputeNextBuffExpiry();
         PublishBuffTotals();
     }

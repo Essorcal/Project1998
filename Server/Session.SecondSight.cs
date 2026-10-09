@@ -23,9 +23,11 @@ namespace Server;
 /// none: <see cref="RegenTick"/>, the per-player beat, asks <see cref="SecondSightScanDue"/> before it takes the
 /// monitor and runs <see cref="SecondSightScan"/> inside it.</para>
 ///
-/// <para><b>Locks.</b> No new lock and no cross-session write. The pre-check reads two longs without the monitor,
+/// <para><b>Locks.</b> No new lock and no cross-session write. The pre-check reads its fields without the monitor,
 /// as <c>RegenTick</c>'s others do: <see cref="_secondSightUntil"/>, an exact hint the four <c>_buffs</c> writers keep
-/// beside <c>_nextBuffExpiry</c>, and <see cref="_secondSightNextScan"/>, which only the tick thread reads and writes.
+/// beside <c>_nextBuffExpiry</c>; <see cref="_secondSightRuns"/>, the run count <c>BuffAdd</c> keeps with an
+/// interlocked add; and <see cref="_secondSightNextScan"/> and <see cref="_secondSightRunSeen"/>, which only the
+/// tick thread reads and writes.
 /// The scan takes <c>World._lock</c> inside this session's monitor (rows 2 then 3 of docs/common/Locking.md, the
 /// order every cast that touches the world already takes) and reads each player's tile, invisibility and name
 /// there, the unsynchronised scalar reads the tick makes under that lock (<see cref="World.HiddenPlayersNear"/>).
@@ -49,9 +51,21 @@ public sealed partial class Session
     private long _secondSightUntil;
 
     /// <summary>The earliest tick the next scan may run. Tick-thread-owned like <c>_mailAccum</c>: only
-    /// <see cref="RegenTick"/> reads it and only <see cref="SecondSightScan"/> writes it, so it is not shared. 0 until
-    /// the first scan, so a fresh run is told on the next beat.</summary>
+    /// <see cref="RegenTick"/>'s pre-check and <see cref="SecondSightScan"/> touch it, both on the tick thread, so
+    /// it is not shared. 0 at the start of every run (<see cref="_secondSightRuns"/>), so a fresh run is told on its
+    /// first beat.</summary>
     private long _secondSightNextScan;
+
+    /// <summary>How many Second Sight runs this session has started: <c>BuffAdd</c> counts every entry it adds in
+    /// <see cref="SecondSightSlot"/> (a cast, a recast, a relog's restore), under the monitor, with an interlocked
+    /// add. The pre-check compares it with <see cref="_secondSightRunSeen"/>, and a new run starts its clock again
+    /// from 0. Before this, a run cast within 15 s of the last one's final notice waited out that notice's clock
+    /// (PR #338 review, F5). A count and not the run's deadline, because two casts inside one tick of the
+    /// system clock (15.6 ms on Windows) have the same deadline.</summary>
+    private long _secondSightRuns;
+
+    /// <summary>The run count the scan clock belongs to. Tick-thread-owned, like <see cref="_secondSightNextScan"/>.</summary>
+    private long _secondSightRunSeen;
 
     /// <summary>The pre-check, without the monitor: a run is up and the scan's 15 s have passed. A cast that lands
     /// between this read and the return is seen on the next beat, 333 ms later, the benign race
@@ -59,6 +73,8 @@ public sealed partial class Session
     private bool SecondSightScanDue()
     {
         long now = Environment.TickCount64;
+        long runs = Interlocked.Read(ref _secondSightRuns);
+        if (runs != _secondSightRunSeen) { _secondSightRunSeen = runs; _secondSightNextScan = 0; }
         return now < Volatile.Read(ref _secondSightUntil) && now >= _secondSightNextScan;
     }
 

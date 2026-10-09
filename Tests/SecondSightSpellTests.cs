@@ -134,6 +134,38 @@ public sealed class SecondSightSpellTests
         }
     }
 
+    /// <summary>A run cast the moment the last one ends is told on its first beat, though the last run's notice
+    /// set its 15 s clock just before. Red before the clock started again with each run (PR #338 review, F5): the
+    /// new run waited out the old one's 15 s, and its first beat said nothing.</summary>
+    [Fact]
+    public void ARunCastRightAfterTheLastOneIsToldOnItsFirstBeat()
+    {
+        var sp = Content.SpellByKey("second_sight_poet")!;
+        var (poet, outbound, c) = _fx.PlayerWith("SeerAgain", ch => Shape(ch, sp), Map, x: 60, y: 60);
+        var (rogue, _, _) = _fx.PlayerWith("HiderAgain", _ => { }, Map, x: 61, y: 60);
+        try
+        {
+            Hide(rogue);
+            poet.Receive(SpellCastSupport.CastFrame(0));
+            outbound.Clear();
+            poet.RegenTick(333);
+            Assert.Equal(new[] { "HiderAgain is Hidden in the Area" }, SpellCastSupport.MiniTexts(outbound));
+
+            SpellCastSupport.EndBuff(poet, sp.Key);                  // the 325 s are over
+            poet.Receive(SpellCastSupport.CastFrame(0));             // and the Poet casts again at once
+            Assert.Equal(720u, c.Mp);
+            outbound.Clear();
+            poet.RegenTick(333);
+
+            Assert.Equal(new[] { "HiderAgain is Hidden in the Area" }, SpellCastSupport.MiniTexts(outbound));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(poet, Map);
+            _fx.World.LeaveMap(rogue, Map);
+        }
+    }
+
     /// <summary>Invisible for a minute, through the same primitive the Invisible verb (<c>stance_stealth</c>) arms.</summary>
     private static void Hide(Session s) => s.WithState(() => s.LuaSetStealth(60_000));
 

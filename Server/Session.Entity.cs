@@ -193,7 +193,7 @@ public sealed partial class Session
 
     /// <summary>One beat of this player's regen step: the mail backstop, the buff expiry pass, the Chung
     /// Ryong fury wear-off, Second Sight's notice (Session.SecondSight.cs, a fifth job decided the same way as the
-    /// four below, from <c>_secondSightUntil</c> and the tick-thread-owned <c>_secondSightNextScan</c>), and — on
+    /// four below, from <c>_secondSightUntil</c>, <c>_secondSightRuns</c> and the tick-thread-owned scan clock), and — on
     /// a beat where <paramref name="regenDue"/> — the natural regeneration.
     /// <paramref name="regenDue"/> is the world's 25 s clock (<c>World._regenClockMs</c>), so every player
     /// below full regenerates on the same beat.
@@ -243,7 +243,7 @@ public sealed partial class Session
         // 30s, vs the old two-queries-per-stats-packet.
         _mailAccum += ms;
 
-        bool sightDue = SecondSightScanDue();   // Session.SecondSight.cs: two longs, no monitor, like the rest
+        bool sightDue = SecondSightScanDue();   // Session.SecondSight.cs: no monitor, like the rest
         bool due = regenDue
                 || _mailAccum >= MailBackstopMs
                 || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
