@@ -708,7 +708,7 @@ public sealed partial class Session
         // from the character.
         if (!a.Int(0, out var id))
         { Refuse($"{a.Usage()}   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
-        _char.Nation = (byte)Math.Clamp(id, 0, 255);
+        _char.Nation = (byte)Math.Clamp(id, 0, Character.Nations.Length - 1);   // 0..7 only — the crest table; the client has no crest past it, and a login keeps what is saved (PR #337 review F1)
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply($"nation set to {_char.Nation} ({Character.NationName(_char.Nation)}).");

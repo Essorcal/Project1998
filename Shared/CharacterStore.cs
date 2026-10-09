@@ -379,6 +379,9 @@ public sealed class CharacterStore
                     continue;
                 }
                 if (c is null || string.IsNullOrEmpty(c.Name)) continue;
+                // A file from before creation decoded its picks holds compiled-in values, and a login no longer
+                // re-derives them, so they are applied here, once (CharacterFactory.ApplyAppearance says why).
+                CharacterFactory.ApplyAppearance(c);
 
                 using var cn = Open();
                 using var cmd = cn.CreateCommand();
