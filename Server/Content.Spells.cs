@@ -916,8 +916,9 @@ public static partial class Content
     // Rage-tier spells (RTK Scripts/wolfs_fury.lua, tigers_fury.lua, dragons_fury.lua, baekhos_rage.lua —
     // Warrior AND Rogue both progress through some of these, per-class level gates differ) — the flat
     // multiplier `player.rage` swingDamage.lua's _getPlayerSwingDamage multiplies the WHOLE swing by.
-    // Real RTK rejects re-casting ANY fury while one is already active rather than letting a stronger tier
-    // overwrite a weaker one (Session.CastRage). Values/levels straight from the Lua source, since
+    // Any fury is refused while one is already active ("You are already benefiting from a fury."); a stronger
+    // tier never replaces a weaker one (the stance_rage verb, game-data/spell_verbs.lua, as RTK's lesserFuries
+    // checkIfCast). Values/levels straight from the Lua source, since
     // SplLevel is 0 for these in the export (see SpellLevelOverrides below — the real gate lives in each
     // spell's Lua requirements() function, which the CSV export never captured for Type-5 skills).
     // Loaded from game-data/SpellMods.csv (`rage` column) in Load() — see LoadSpellMods. Every fury needs its own
