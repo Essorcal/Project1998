@@ -920,7 +920,9 @@ public static partial class Content
     // overwrite a weaker one (Session.CastRage). Values/levels straight from the Lua source, since
     // SplLevel is 0 for these in the export (see SpellLevelOverrides below — the real gate lives in each
     // spell's Lua requirements() function, which the CSV export never captured for Type-5 skills).
-    // Loaded from game-data/SpellMods.csv (`rage` column) in Load() — see LoadSpellMods.
+    // Loaded from game-data/SpellMods.csv (`rage` column) in Load() — see LoadSpellMods. Every fury needs its own
+    // row, alignment twins included (Soul's Rage is Wolf's Fury for a Kwi-Sin character): a key with none is not a
+    // fury here, and falls to arch_buff, which takes the mana and arms nothing (#334).
     private static IReadOnlyDictionary<string, int> RageAmount
     {
         get => _snapshotBuilder?.RageAmount ?? Snapshot.RageAmount;

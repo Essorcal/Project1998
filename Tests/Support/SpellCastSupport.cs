@@ -7,11 +7,11 @@ namespace Tests.Support;
 
 /// <summary>
 /// The pieces the spell-dispatch facts share: the 0x0F cast frame a client sends, the mini-text lines a cast
-/// answered with, and the two numbers a cast leaves behind that <see cref="Session"/> keeps private (the
-/// enchant multiplier and a spell's aether).
+/// answered with, and what a cast leaves behind that <see cref="Session"/> keeps private (the enchant and rage
+/// multipliers, and a spell's aether).
 ///
 /// <para>Reflection into Session's non-public state is the pattern <c>EnchantSwapOrderTests</c> and
-/// <c>FuryRelogDrainTests</c> already use; both reads run under the session's state monitor, the lock the cast
+/// <c>FuryRelogDrainTests</c> already use; every read runs under the session's state monitor, the lock the cast
 /// itself wrote them under.</para>
 /// </summary>
 internal static class SpellCastSupport
@@ -20,6 +20,10 @@ internal static class SpellCastSupport
         typeof(Session).GetField("_enchantAmount", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo AetherField =
         typeof(Session).GetField("_aether", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo RageAmountField =
+        typeof(Session).GetField("_rageAmount", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo RageUntilField =
+        typeof(Session).GetField("_rageUntil", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     /// <summary>The 0x0F cast frame for 0-based book <paramref name="slot"/> (RTK clif_parsemagic,
     /// <c>Session.HandleCast</c>): the slot byte (slot + 1), then, for a "Which target? &gt;" spell, the target's
@@ -61,5 +65,20 @@ internal static class SpellCastSupport
             if (aether.TryGetValue(key, out long until)) left = Math.Max(0, until - Environment.TickCount64);
         });
         return left;
+    }
+
+    /// <summary>The armed rage multiplier and the milliseconds left on it, as <c>EffRage</c> reads them: a lapsed
+    /// or unarmed fury is (1, 0), RTK's baseline. <c>Session.PlayerSwingDamage</c> multiplies the whole swing by
+    /// the amount.</summary>
+    public static (int Amount, long LeftMs) Rage(Session session)
+    {
+        int amount = 1;
+        long left = 0;
+        session.WithState(() =>
+        {
+            left = Math.Max(0, (long)RageUntilField.GetValue(session)! - Environment.TickCount64);
+            if (left > 0) amount = (int)RageAmountField.GetValue(session)!;
+        });
+        return (amount, left);
     }
 }

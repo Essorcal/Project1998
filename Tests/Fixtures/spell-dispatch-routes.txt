@@ -6,6 +6,9 @@
 # approach_spell and summon_spell, from verb=generic to verb=approach row and verb=summon row: it binds
 # them to their own verbs through SpellParams.csv rows, where before they fell to the generic fallback.
 # The fact's name and doc still say "except Spirit Blade"; these two are the other intended changes.
+# The self-buff slice (#334) then moved seventeen from verb=arch_buff to verb=stance_rage: the fifteen fury
+# twins (Soul's Rage and the rest) and the two dog furies (serpents_fury, spirit_fury), which now have their
+# own rage rows in game-data/SpellMods.csv. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -36,8 +39,8 @@ assault_warrior	1085	verb=arch_damage
 assess_opponent_do	30405	verb=generic
 assess_opponent_spy	30808	verb=generic
 atone_poet	4081	verb=arch_cure
-augmentation_rogue	2044	verb=arch_buff
-augmentation_warrior	1008	verb=arch_buff
+augmentation_rogue	2044	verb=stance_rage
+augmentation_warrior	1008	verb=stance_rage
 augury	31008	verb=generic
 avalanche_mage	3034	verb=area_zap
 awe	31506	verb=generic
@@ -240,8 +243,8 @@ feral_rogue	2005	Become what?
 fertile_soil_poet	4087	verb=arch_heal
 festival_of_souls_mage	3154	verb=arch_heal
 filch_rogue	2077	verb=filch row
-filling_the_soul_rogue	2074	verb=arch_buff
-filling_the_soul_warrior	1031	verb=arch_buff
+filling_the_soul_rogue	2074	verb=stance_rage
+filling_the_soul_warrior	1031	verb=stance_rage
 fire_dance_rogue	2109	verb=arch_heal
 fireworks	108	verb=generic
 fissure	29501	verb=target_area_zap
@@ -524,11 +527,11 @@ ohaeng_mask_rogue	2048	verb=morph
 ohaeng_masos_remedy_rogue	2101	verb=arch_heal
 ohaeng_protector_poet	4714	verb=pet_summon
 ohaeng_warrior_poet	4720	verb=pet_summon
-ohaengs_anger_warrior	1053	verb=arch_buff
+ohaengs_anger_warrior	1053	verb=stance_rage
 ohaengs_armor_rogue	2032	verb=arch_buff
 ohaengs_blessing_mage	3156	verb=arch_heal
-ohaengs_grace_rogue	2076	verb=arch_buff
-ohaengs_grace_warrior	1033	verb=arch_buff
+ohaengs_grace_rogue	2076	verb=stance_rage
+ohaengs_grace_warrior	1033	verb=stance_rage
 ointment_of_light_warrior	1082	verb=arch_heal
 one_with_life_mage	3160	verb=arch_heal
 oneness_warrior	1036	verb=stance_enchant
@@ -644,7 +647,7 @@ seal_fate	31006	verb=generic
 seal_wounds_rogue	2085	verb=arch_heal
 second_life	31503	verb=generic
 second_sight_poet	4089	verb=arch_buff
-serpents_fury	29503	verb=arch_buff
+serpents_fury	29503	verb=stance_rage
 set_bladestorm_trap	2710	verb=bladestorm row
 set_cutting_edge_trap	2713	verb=bladestorm row
 set_dart_trap	2702	verb=set_trap
@@ -698,8 +701,8 @@ soul_spike_mage	3085	verb=arch_damage
 soul_strike_mage	3045	verb=arch_damage
 souls_awakening_rogue	2107	verb=arch_heal
 souls_freedom_warrior	1098	verb=sacrifice
-souls_rage_rogue	2042	verb=arch_buff
-souls_rage_warrior	1006	verb=arch_buff
+souls_rage_rogue	2042	verb=stance_rage
+souls_rage_warrior	1006	verb=stance_rage
 soulstorm_mage	3033	verb=area_zap
 spark_mage	3008	verb=arch_damage
 spark_of_health_poet	4027	verb=area_heal
@@ -710,13 +713,13 @@ spirit_arm_warrior	1043	verb=arch_buff
 spirit_barrier_poet	4098	verb=arch_buff
 spirit_blade	30402	verb=stance_enchant
 spirit_caress_rogue	2086	verb=arch_heal
-spirit_fury	29505	verb=arch_buff
+spirit_fury	29505	verb=stance_rage
 spirit_leash_mage	3117	verb=arch_debuff
-spirit_of_the_dragon_warrior	1052	verb=arch_buff
-spirit_of_the_forest_rogue	2043	verb=arch_buff
-spirit_of_the_forest_warrior	1007	verb=arch_buff
-spirit_of_the_wild_rogue	2075	verb=arch_buff
-spirit_of_the_wild_warrior	1032	verb=arch_buff
+spirit_of_the_dragon_warrior	1052	verb=stance_rage
+spirit_of_the_forest_rogue	2043	verb=stance_rage
+spirit_of_the_forest_warrior	1007	verb=stance_rage
+spirit_of_the_wild_rogue	2075	verb=stance_rage
+spirit_of_the_wild_warrior	1032	verb=stance_rage
 spirit_of_war	30314	verb=generic
 spirit_puppet_poet	4094	verb=arch_damage
 spirit_strength_mage	3003	verb=arch_buff
@@ -763,7 +766,7 @@ storm_crow_poet	4132	verb=arch_damage
 stormstrike	50006	verb=generic
 stormstrike_mage	3132	verb=arch_damage
 stream_of_life_poet	4143	verb=arch_heal
-strength_of_ancestors_warrior	1051	verb=arch_buff
+strength_of_ancestors_warrior	1051	verb=stance_rage
 strength_of_purpose_warrior	1012	verb=arch_buff
 strengthen_mage	3041	verb=arch_targetbuff
 strengthen_poet	4038	verb=arch_targetbuff

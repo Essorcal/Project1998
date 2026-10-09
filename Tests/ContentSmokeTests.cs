@@ -1645,7 +1645,7 @@ public class ContentSmokeTests
         ["WeaponProcs.csv"]        = 20,    // 25 kept today
         ["Traps.csv"]              = 1,     // 8 kept today
         ["Morphs.csv"]             = 23,    // 29 kept today
-        ["SpellMods.csv"]          = 20,    // 25 kept today
+        ["SpellMods.csv"]          = 33,    // 42 kept today
         ["NpcAbilities.csv"]       = 23,    // 29 kept today
         ["PathGrowth.csv"]         = 1,     // 5 kept today
         ["DoorObjects.csv"]        = 40,    // 50 kept today
