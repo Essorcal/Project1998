@@ -356,8 +356,8 @@ public sealed class SpellContext
     /// <summary>Restore a 0-based pack slot to full durability (no-op unless packSlotState is "ok").</summary>
     public void repairPackSlot(double slot)  => _s.LuaRepairPackSlot((int)slot);
 
-    /// <summary>Resolve the targeted PLAYER (explicit id incl. self, else the faced peer) for this cast; all the
-    /// target.* members below then act on it. False — and SILENT — if none.</summary>
+    /// <summary>Resolve the targeted PLAYER (explicit id incl. self, if on the caster's map, else the faced peer) for
+    /// this cast; all the target.* members below then act on it. False — and SILENT — if none.</summary>
     public bool   pcTarget()      => _s.LuaResolvePcTarget(_sp, _targetId);
     /// <summary>Resolved target's current mana.</summary>
     public double targetMana      => _s.LuaTargetMana;
