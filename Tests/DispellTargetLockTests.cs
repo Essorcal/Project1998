@@ -190,11 +190,11 @@ public sealed class DispellTargetLockTests
 
     /// <summary>The casts that clear the caster's own buffs are unchanged. A Dispell on yourself, through the real
     /// frame with your own id, clears your buff list and your fury, takes 200 mana, says "You cast Dispell." and
-    /// tells you nothing else. (Against yourself the rate is at most 95%, so a lost roll is cast again; each cast
-    /// costs 200 either way, since Caleb's rules of 2026-10-10 for a lost roll name a cast at another player:
-    /// <c>DispellRulesTests</c>.) Cure Paralysis clears the caster's own <c>paras</c> entry, Purge its <c>venoms</c>
-    /// entry and Atone its <c>curses</c> entry, each for its row's mana. Not a guard of this fix: green before and
-    /// after it, in both builds.
+    /// tells you nothing else. (Against yourself the rate is at most 95%, so a lost roll is cast again. Since
+    /// Caleb's "Same rules on self" of 2026-10-11 a lost roll on yourself costs nothing, as at another player, so
+    /// the whole run costs the won cast's 200: <c>DispellRulesTests</c>.) Cure Paralysis clears the caster's own
+    /// <c>paras</c> entry, Purge its <c>venoms</c> entry and Atone its <c>curses</c> entry, each for its row's mana.
+    /// Not a guard of this fix: green before and after it, in both builds.
     /// <para><b>Why the cures are not frames.</b> The packet handler lets three gated frames through in each
     /// one-second window and turns the fourth away (<c>Session.ActionAllowed</c>; with the cast queue on, it waits
     /// for a later frame, and none comes). The Dispells are frames at least 400 ms apart, so no window holds more
@@ -230,7 +230,7 @@ public sealed class DispellTargetLockTests
             var lines = SpellCastSupport.MiniTexts(pOut);
             Assert.Null(SpellCastSupport.BuffEntry(p, BuffKey));
             Assert.Equal((1, 0L), SpellCastSupport.Rage(p));
-            Assert.Equal(Mana - Cost * (uint)casts, pc.Mp);
+            Assert.Equal(Mana - Cost, pc.Mp);
             Assert.Contains("You cast Dispell.", lines);
             Assert.DoesNotContain("Dispell isn't working right now.", lines);
             Assert.DoesNotContain(lines, l => l.EndsWith("casts Dispell on you.", StringComparison.Ordinal));

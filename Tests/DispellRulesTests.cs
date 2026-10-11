@@ -18,7 +18,8 @@ namespace Tests;
 /// <item><b>A lost roll matches RTK</b> (<c>poet/dispell.lua:37-40</c>): "Something went wrong." alone, no "You cast
 ///   X.", no cast pose, and no mana.</item>
 /// </list>
-/// A Dispell on yourself is not one of these and is unchanged (<c>DispellTargetLockTests</c> pins it).
+/// On 2026-10-11 Caleb made the second and third hold for a Dispell on yourself too ("Same rules on self", section 4
+/// below). The first stays a rule about another player: a GM's Dispell on themselves still lands.
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, from a caster who casts once, so the
 /// packet handler's action budget (three gated actions a second) never decides a fact. A won roll is certain where
@@ -38,7 +39,8 @@ namespace Tests;
 [Collection("world")]
 public sealed class DispellRulesTests
 {
-    private const ushort StaffMap = 62396, StaffSelfMap = 62397, WakeMap = 62398, HeldMap = 62399, RollMap = 62400;
+    private const ushort StaffMap = 62396, StaffSelfMap = 62397, WakeMap = 62398, HeldMap = 62399, RollMap = 62400,
+                         SelfLostMap = 62401, SelfWonMap = 62402, SelfAsleepMap = 62403;
 
     /// <summary>The staff name and roster every GM class in the suite writes (see <c>ApproachSummonTests</c>).</summary>
     private const string GmName = "cmdgm";
@@ -65,6 +67,8 @@ public sealed class DispellRulesTests
         typeof(Session).GetField("_dmgAmp", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo DamageAmpUntilField =
         typeof(Session).GetField("_dmgAmpUntil", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo PoisonNextTickField =
+        typeof(Session).GetField("_poisonNextTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     public DispellRulesTests(SessionFixture fx)
     {
@@ -134,8 +138,9 @@ public sealed class DispellRulesTests
     }
 
     /// <summary>What the exemption leaves alone. A GM's Dispell on themselves still clears their own buff and fury
-    /// (against yourself the rate is at most 95%, so a lost roll is cast again, each cast 200 either way, as for
-    /// anyone). A GM's Dispell at a player still lands, for 200 and "You cast Dispell.". Green before and after.</summary>
+    /// (against yourself the rate is at most 95%, so a lost roll is cast again; since 2026-10-11 a lost roll on
+    /// yourself is refused at no cost, as for anyone, so only the won cast returns true and pays 200). A GM's Dispell
+    /// at a player still lands, for 200 and "You cast Dispell.". Green before and after the staff rule.</summary>
     [Fact]
     public void AGmStillDispellsThemselvesAndAPlayer()
     {
@@ -151,11 +156,11 @@ public sealed class DispellRulesTests
             {
                 bool ok = false;
                 gm.WithState(() => ok = (bool)ApplyCast.Invoke(gm, new object?[] { sp, gm.PlayerId, null })!);
-                Assert.True(ok, $"the GM's own Dispell {casts + 1} was refused");
+                Assert.Equal(SpellCastSupport.BuffEntry(gm, BuffKey) is null, ok);
                 casts++;
             }
             AssertEffectsCleared(gm);
-            Assert.Equal(Mana - Cost * (uint)casts, gmc.Mp);
+            Assert.Equal(Mana - Cost, gmc.Mp);
             Assert.DoesNotContain("Fizzle.", SpellCastSupport.MiniTexts(gmOut));
 
             GiveEffects(v);
@@ -367,7 +372,183 @@ public sealed class DispellRulesTests
         }
     }
 
+    // ===== 4. on yourself, the same rules =============================================================
+
+    /// <summary>Each of the four, cast on yourself through the real frame with your own id and lost: you read
+    /// "Something went wrong." and nothing else, show no cast pose and keep all 200 mana, and your buff, fury and
+    /// venom stay. Caleb, 2026-10-11: "Same rules on self". RTK's <c>dispell.lua</c> and its three twins make no
+    /// difference between yourself and another player before the roll, which returns ahead of the pose and the
+    /// debit (<c>poet/dispell.lua:37-40</c>). Each attempt is a fresh caster with AC -60, so the rate on yourself is
+    /// 30% and every attempt is one frame from a full action budget; a won attempt is put aside for the next.
+    /// <para>Red on db2a48d: the lost cast reads "Something went wrong." and then "You cast X.", shows the cast
+    /// pose, and costs 200 (on yourself the verb still spent before it rolled).</para></summary>
+    [Theory]
+    [MemberData(nameof(DispellFamily))]
+    public void ADispellFamilyCastOnYourselfThatLosesItsRollSaysOneLineAndCostsNothing(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        var casters = new List<Session>();
+        try
+        {
+            bool lost = false;
+            for (int attempt = 1; attempt <= 60 && !lost; attempt++)
+            {
+                var (p, pOut, pc) = Poet(null, SelfLostMap, (ushort)(10 + attempt), 20, will: 255, sp);
+                casters.Add(p);
+                pc.Ac = -60;
+                GiveOwnEffects(p);
+                GiveVenom(p);
+                pOut.Clear();
+
+                p.Receive(SpellCastSupport.CastFrame(0, p.PlayerId));
+
+                lost = SpellCastSupport.BuffEntry(p, BuffKey) is not null;
+                if (!lost) continue;
+                Assert.Equal(new[] { "Something went wrong." }, SpellCastSupport.MiniTexts(pOut));
+                Assert.Empty(pOut.BodiesOf(ServerOp.Action));
+                Assert.Equal(Mana, pc.Mp);
+                Assert.Equal(3, SpellCastSupport.Rage(p).Amount);
+                Assert.True(p.Poisoned, "a lost Dispell ended your venom");
+                Assert.NotNull(SpellCastSupport.BuffEntry(p, VenomKey));
+            }
+            Assert.True(lost, "60 casts on yourself at 30% never lost a roll");
+        }
+        finally
+        {
+            foreach (var s in casters) _fx.World.LeaveMap(s, SelfLostMap);
+        }
+    }
+
+    /// <summary>Each of the four, cast on yourself through the real frame with your own id and won, ends your venom
+    /// and the harder next hit a Doze left armed, as well as your buff and fury, the same as at another player.
+    /// Caleb, 2026-10-11: "Same rules on self". You read "The poison passes." and "You cast X.", nothing that ends
+    /// "on you.", and pay 200.
+    /// <para>The Doze is the realistic one a caster can still cast under: a venom tick has woken them ("The pain
+    /// wakes you.", <c>TickPoison</c>), which ends the sleep and leaves the multiplier the Doze armed for its
+    /// length. A caster still asleep cannot cast through the frame at all; the next fact covers that. Against
+    /// yourself the rate is at most 95%, so each attempt is a fresh caster and a lost one is put aside.</para>
+    /// <para>Red on db2a48d: the buff and fury go, but you are still poisoned and your next hit is still
+    /// 1.3x.</para></summary>
+    [Theory]
+    [MemberData(nameof(DispellFamily))]
+    public void AWonDispellFamilyCastOnYourselfEndsYourVenomAndYourDozesHarderHit(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        var casters = new List<Session>();
+        try
+        {
+            bool won = false;
+            for (int attempt = 1; attempt <= 20 && !won; attempt++)
+            {
+                var (p, pOut, pc) = Poet(null, SelfWonMap, (ushort)(10 + attempt), 20, will: 255, sp);
+                casters.Add(p);
+                GiveOwnEffects(p);
+                GiveHolds(p);
+                WakeByVenomTick(p);
+                pOut.Clear();
+
+                p.Receive(SpellCastSupport.CastFrame(0, p.PlayerId));
+
+                won = SpellCastSupport.BuffEntry(p, BuffKey) is null;
+                if (!won) continue;
+                var lines = SpellCastSupport.MiniTexts(pOut);
+                Assert.False(p.Poisoned, "a won Dispell on yourself left your venom");
+                Assert.Null(SpellCastSupport.BuffEntry(p, VenomKey));
+                Assert.Equal(1.0, DamageAmp(p));
+                Assert.Equal((1, 0L), SpellCastSupport.Rage(p));
+                Assert.Equal(Mana - Cost, pc.Mp);
+                Assert.Equal(new[] { "The poison passes.", $"You cast {sp.Name}." }, lines);
+            }
+            Assert.True(won, "20 casts on yourself at 95% never won a roll");
+        }
+        finally
+        {
+            foreach (var s in casters) _fx.World.LeaveMap(s, SelfWonMap);
+        }
+    }
+
+    /// <summary>Each of the four, won on yourself while you are asleep, wakes you ("You wake up.") and ends your
+    /// venom and the Doze's harder next hit: the cast HandleCast would make, through <c>ApplyCast</c> under your own
+    /// monitor. The real frame never gets that far for a sleeper, and the fact checks that first: HandleCast answers
+    /// "You are asleep." before it reads the slot, for every spell, at no cost. So the wake is the verb's rule
+    /// (<c>flushTarget(true)</c> on yourself), pinned below the gate.
+    /// <para>Red on db2a48d: the buff entries go, but you are still asleep, still under the harder next hit and
+    /// still poisoned.</para></summary>
+    [Theory]
+    [MemberData(nameof(DispellFamily))]
+    public void AWonDispellFamilyCastOnYourselfWakesYou(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        var casters = new List<Session>();
+        try
+        {
+            bool won = false;
+            for (int attempt = 1; attempt <= 20 && !won; attempt++)
+            {
+                var (p, pOut, pc) = Poet(null, SelfAsleepMap, (ushort)(10 + attempt), 20, will: 255, sp);
+                casters.Add(p);
+                GiveOwnEffects(p);
+                GiveHolds(p);
+                pOut.Clear();
+
+                p.Receive(SpellCastSupport.CastFrame(0, p.PlayerId));
+                Assert.Equal(new[] { "You are asleep." }, SpellCastSupport.MiniTexts(pOut));
+                Assert.Equal(Mana, pc.Mp);
+                Assert.NotNull(SpellCastSupport.BuffEntry(p, BuffKey));
+                AssertHoldsKept(p);
+                pOut.Clear();
+
+                bool ok = false;
+                p.WithState(() => ok = (bool)ApplyCast.Invoke(p, new object?[] { sp, p.PlayerId, null })!);
+
+                won = SpellCastSupport.BuffEntry(p, BuffKey) is null;
+                if (!won) continue;
+                Assert.True(ok, "a won Dispell on yourself was refused");
+                AssertHoldsEnded(p);
+                Assert.Equal((1, 0L), SpellCastSupport.Rage(p));
+                Assert.Equal(Mana - Cost, pc.Mp);
+                Assert.Equal(new[] { "You wake up.", "The poison passes." }, SpellCastSupport.MiniTexts(pOut));
+            }
+            Assert.True(won, "20 casts on yourself at 95% never won a roll");
+        }
+        finally
+        {
+            foreach (var s in casters) _fx.World.LeaveMap(s, SelfAsleepMap);
+        }
+    }
+
     // ===== helpers ====================================================================================
+
+    /// <summary>A caster's own effects before a Dispell on themselves: a stat buff and a fury, each with 10 minutes
+    /// to run. Not the hold <see cref="GiveEffects"/> adds, since a held player cannot cast at all.</summary>
+    private static void GiveOwnEffects(Session p)
+    {
+        p.ReceiveCurse("might", 5, TenMinutes, BuffKey, "Probe Might", "");
+        p.WithState(() =>
+        {
+            RageAmountField.SetValue(p, 3);
+            RageUntilField.SetValue(p, Environment.TickCount64 + TenMinutes);
+        });
+    }
+
+    /// <summary>A venom alone, with 10 minutes to run, through the writer the casts use.</summary>
+    private static void GiveVenom(Session p)
+    {
+        p.ReceivePoison(dps: 1, durMs: TenMinutes, by: 0, anim: 0, key: VenomKey, name: "Probe Venom");
+        Assert.True(p.Poisoned, "the venom did not take");
+    }
+
+    /// <summary>Bring the venom's next tick forward and run it: <c>TickPoison</c>, the world heartbeat's call, takes
+    /// health and wakes a sleeper as damage does ("The pain wakes you."). The Doze's harder next hit stays armed,
+    /// and the venom keeps running.</summary>
+    private static void WakeByVenomTick(Session p)
+    {
+        p.WithState(() => PoisonNextTickField.SetValue(p, 0L));
+        p.TickPoison();
+        Assert.False(p.Asleep, "the venom tick did not wake the caster");
+        Assert.True(p.Poisoned, "the venom ended on its tick");
+        Assert.Equal(DozeAmp, DamageAmp(p));
+    }
 
     /// <summary>The target's effects before a Dispell, as in <c>DispellTargetLockTests</c>: a stat buff, the hold
     /// (a categorised status in the <c>paras</c> slot) and a fury, each with 10 minutes to run.</summary>

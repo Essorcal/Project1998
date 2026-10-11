@@ -2223,13 +2223,15 @@ public sealed partial class Session
     /// <c>StateRank</c> like every peer write (<see cref="ReceiveSleep"/>, <see cref="ReceiveParalysis"/>). On
     /// yourself it is the monitor the cast already holds. The verb decided the cast (its mana and its roll)
     /// under the caster's monitor; nothing here decides it again.
-    /// <para><paramref name="endHolds"/> (a cast at another player; Caleb, 2026-10-10): inside the same section,
-    /// also end the two holds that run on timers of their own and so outlive their slot entries. A Doze's sleep
-    /// ends through <see cref="WakeUp"/> ("You wake up."), and the harder next hit the Doze armed goes with it,
-    /// since a sleep is the only thing that arms one on a player (the <c>arch_debuff</c> verb) and it was armed
-    /// for that sleep's length. A venom ends through <see cref="CurePoison"/> ("The poison passes."). Those are
-    /// the writers the timers' own lapses and the category cures use, under this monitor too. The verb passes
-    /// false on yourself, where a cast is unchanged: you cannot cast asleep, and a venom on you stays.</para>
+    /// <para><paramref name="endHolds"/> (Caleb, 2026-10-10 for another player, and 2026-10-11 for yourself:
+    /// "Same rules on self"): inside the same section, also end the two holds that run on timers of their own and
+    /// so outlive their slot entries. A Doze's sleep ends through <see cref="WakeUp"/> ("You wake up."), and the
+    /// harder next hit the Doze armed goes with it, since a sleep is the only thing that arms one on a player (the
+    /// <c>arch_debuff</c> verb) and it was armed for that sleep's length. A venom ends through
+    /// <see cref="CurePoison"/> ("The poison passes."). Those are the writers the timers' own lapses and the
+    /// category cures use, under this monitor too. The verb passes true on every won cast. On yourself the frame
+    /// never reaches a sleeper (HandleCast answers "You are asleep." first), so what a cast there ends is the venom
+    /// and a Doze's harder next hit that outlived its sleep (a venom tick wakes you and leaves it armed).</para>
     /// <para>Before #339 the caster's thread ran the target's <c>FlushDurations</c> and <c>SendStats</c> without
     /// the target's monitor. In a Debug build the <c>_buffs</c> guard fired inside the verb, so the caster read
     /// "Dispell isn't working right now." with the mana spent and nothing was cleared; in Release it was an
@@ -3242,7 +3244,7 @@ public sealed partial class Session
     // ClearAllTimedEffects: the ward flags (Harden Body), the Sanctuary and Cunning reductions and the enchant
     // stay, and only @dispel and death clear those (PR #338 re-check 2, F10). Nor does it touch the two holds
     // that run on timers of their own: a Doze's _sleepUntil and a venom's _poisonUntil keep running after
-    // their slot entries go, unless ReceiveFlush is asked to end them too (a cast at another player). Reached
+    // their slot entries go, unless ReceiveFlush is asked to end them too (every won Dispell-family cast). Reached
     // from another player's cast only through ReceiveFlush, inside this player's monitor.
     private void FlushDurations()
     {
