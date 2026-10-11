@@ -25,6 +25,8 @@ namespace Tests;
 /// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
 /// profile's legends and gear, the mentor's and the proposer's checks on the other player, and where the other player
 /// stands for <c>@approach</c> and the Approach spell.</item>
+/// <item><b>Mana Gift's lost regen beat</b>: the gift computed the target's new mana before it took their monitor,
+/// so a beat that landed in between was overwritten.</item>
 /// </list>
 ///
 /// <para>Shapes, as in <see cref="PeerWritesLockTests"/>: the action through its real entry (the 0x0F cast, the
@@ -48,6 +50,7 @@ public sealed class PeerSweepLockTests
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452;
+    private const ushort GiftHeldMap = 62443, GiftRaceMap = 62444, GiftPinMap = 62445;
 
     /// <summary>Fen, the Gale Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 230, map 2511): the ceremony's real
     /// entry (Server/NpcAbility.cs, ChapelAbility's "Marriage").</summary>
@@ -1001,6 +1004,140 @@ public sealed class PeerSweepLockTests
     }
 #endif
 
+    // ===== 4. Mana Gift's lost regen beat ===============================================================
+
+    /// <summary>The review's probe P4 as a fact, through the real 0x0F frame: a Mana Gift (Inspire) at another player
+    /// waits for that player's monitor; while it waits, the third thread that holds it adds 500 mana, which is what a
+    /// regen beat does under that monitor. The gift then lands on top of the beat: 1,000 + 500 + 3,000. The caster
+    /// pays the same 3,000 and both read the same lines as any gift.
+    /// <para>Red on 3690542 in both builds: the gift wrote the value it computed before it waited, 4,000, and the beat
+    /// was lost.</para></summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AManaGiftKeepsARegenBeatThatLandsWhileItWaits(bool casterRanksFirst)
+    {
+        var gift = Content.SpellByKey("inspire_poet")!;
+        Session c, v;
+        HeldRecorder cOut, vOut;
+        Character cc, vc;
+        if (casterRanksFirst)
+        {
+            (c, cOut, cc) = Poet(GiftHeldMap, 20, 20, gift, mp: 3_000);
+            (v, vOut, vc) = Player("GiftHeldV", GiftHeldMap, 22, 20, ch => { ch.MaxMp = 10_000; ch.Mp = 1_000; });
+        }
+        else
+        {
+            (v, vOut, vc) = Player("GiftHeldV", GiftHeldMap, 22, 20, ch => { ch.MaxMp = 10_000; ch.Mp = 1_000; });
+            (c, cOut, cc) = Poet(GiftHeldMap, 20, 20, gift, mp: 3_000);
+        }
+        Assert.Equal(casterRanksFirst, c.StateRank < v.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            WhileAnotherThreadHolds(run, v, () => c.Receive(SpellCastSupport.CastFrame(0, v.PlayerId)),
+                                    untouched: () => { bool same = vc.Mp == 1_000; vc.Mp += 500; return same; });
+            AssertWaited(run, "the gift", "the target's mana was written while another thread held its monitor");
+
+            Assert.Equal(4_500u, vc.Mp);
+            Assert.Equal(0u, cc.Mp);
+            Assert.Contains($"You cast {gift.Name}.", cOut.MiniTexts());
+            Assert.Contains(TargetLine(gift, c), vOut.MiniTexts());
+        }
+        finally
+        {
+            if (run.Settled) Leave(GiftHeldMap, c, v);
+        }
+    }
+
+    /// <summary>Two Poets give each other their mana again and again, send each other a party line and step at each
+    /// other's tile after each gift, while each one's own regen beats land under its own monitor (a thread per Poet, beating until both have cast
+    /// their rounds). A gift moves mana and creates none, and a beat adds exactly what it adds, so at the end the two
+    /// pools hold what they started with plus every beat: no beat is lost under a gift. Each gift enters the other's
+    /// monitor from inside the caster's and the Lua gate; each party line enters it from inside the sender's, outside
+    /// Lua, so the gate does not keep it apart from the other's gift. Nothing may stall.
+    /// <para>Red on 3690542 in both builds: a beat that lands between the gift's read of the target's mana and its
+    /// write is overwritten. It stalls with the add under <c>World._lock</c> (one Poet holds the lock and waits for the
+    /// other's monitor while the other, mid-step, holds its own and waits for the lock) and with a plain <c>lock</c> on
+    /// the target's monitor (one Poet's party line holds its own monitor and waits for the other's, while the other,
+    /// mid-gift, holds its own and waits for the first's).</para></summary>
+    [Fact]
+    public void TwoPlayersGivingEachOtherManaKeepEveryRegenBeat()
+    {
+        var gift = Content.SpellByKey("inspire_poet")!;
+        const uint Start = 100_000, Beat = 7;
+        var (a, _, ac) = Poet(GiftRaceMap, 10, 10, gift, mp: Start, maxMp: 10_000_000);
+        var (b, _, bc) = Poet(GiftRaceMap, 11, 10, gift, mp: Start, maxMp: 10_000_000);
+        var race = new Race();
+        long beats = 0;
+
+        void Giver(Session self, Session other)
+        {
+            for (int i = 0; i < Rounds; i++)
+            {
+                self.WithState(() => Cast(self, gift, other.PlayerId));
+                self.WithState(() => other.NotifyGroup(Ping));
+                Step(self, other, GiftRaceMap);
+                race.Progress.Bump();
+            }
+        }
+
+        void Regen(Session self, Character mine)
+        {
+            self.WithState(() => mine.Mp += Beat);
+            Interlocked.Increment(ref beats);
+            Thread.SpinWait(200);
+        }
+
+        try
+        {
+            RunWithTurnover(race, "the two Poets giving each other mana",
+                askers: new Action[] { () => Giver(a, b), () => Giver(b, a) },
+                turnovers: new Action[] { () => Regen(a, ac), () => Regen(b, bc) });
+
+            Assert.Null(race.Fault);
+            ulong expected = 2UL * Start + (ulong)Interlocked.Read(ref beats) * Beat;
+            ulong total = 0;
+            a.WithState(() => total += ac.Mp);
+            b.WithState(() => total += bc.Mp);
+            Assert.Equal(expected, total);
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(GiftRaceMap, a, b);
+        }
+    }
+
+#if DEBUG
+    /// <summary>The gift's add is entered the ordered way, asserted: with <c>World._lock</c> held the lock-order assert
+    /// fires before anything is added; from a lower- and a higher-ranked player's monitor it is silent and adds.
+    /// Debug-only by construction, and it names <c>ReceiveAddMana</c>, so it came with the fix.
+    /// <para>Red without the fix: with no monitor nothing fires.</para></summary>
+    [Fact]
+    public void AddingToAnotherPlayersManaUnderTheWorldLockAsserts()
+    {
+        var (low, _, _) = Player("GiftPinLow", GiftPinMap, 60, 60);
+        var (v, _, vc) = Player("GiftPinV", GiftPinMap, 62, 60, ch => { ch.MaxMp = 10_000; ch.Mp = 1_000; });
+        var (high, _, _) = Player("GiftPinHigh", GiftPinMap, 64, 60);
+        try
+        {
+            Assert.True(low.StateRank < v.StateRank && v.StateRank < high.StateRank);
+            AssertLockOrderFired(Record.Exception(() => _fx.World.UnderWorldLockForTest(() => v.ReceiveAddMana(500))));
+            Assert.Equal(1_000u, vc.Mp);
+            Assert.Null(Record.Exception(() => low.WithState(() => v.ReceiveAddMana(500))));
+            Assert.Equal(1_500u, vc.Mp);
+            Assert.Null(Record.Exception(() => high.WithState(() => v.ReceiveAddMana(500))));
+            Assert.Equal(2_000u, vc.Mp);
+        }
+        finally
+        {
+            Leave(GiftPinMap, low, v, high);
+        }
+    }
+#endif
+
     private static void AssertLockOrderFired(Exception? wrongWay)
     {
         Assert.NotNull(wrongWay);
@@ -1156,6 +1293,12 @@ public sealed class PeerSweepLockTests
     /// <summary>A cast as <c>HandleCast</c> makes it, below the frame: the caller holds the caster's monitor.</summary>
     private static bool Cast(Session s, SpellDef sp, uint? targetId) =>
         (bool)ApplyCast.Invoke(s, new object?[] { sp, targetId, null })!;
+
+    private static string TargetLine(SpellDef sp, Session caster)
+    {
+        var flavor = Content.TargetTextFor(sp.Key);
+        return flavor.Length > 0 ? flavor : $"{caster.CharName} casts {sp.Name} on you.";
+    }
 
     // ===== vows =======================================================================================
 
