@@ -193,9 +193,19 @@ public sealed class DispellTargetLockTests
     /// frame with your own id, clears your buff list and your fury, takes 200 mana, says "You cast Dispell." and
     /// tells you nothing else. (Against yourself the rate is at most 95%, so a lost roll is cast again; each cast
     /// costs 200 either way.) Cure Paralysis clears the caster's own <c>paras</c> entry, Purge its <c>venoms</c>
-    /// entry and Atone its <c>curses</c> entry, each for its row's mana. Cure Paralysis is called as
-    /// <c>HandleCast</c> calls it, past the handler's paralysis gate: a held player cannot cast it through the frame
-    /// (Session.Barrier.cs). Not a guard of this fix: green before and after it, in both builds.</summary>
+    /// entry and Atone its <c>curses</c> entry, each for its row's mana. Not a guard of this fix: green before and
+    /// after it, in both builds.
+    /// <para><b>Why the cures are not frames.</b> The packet handler lets three gated frames through in each
+    /// one-second window and turns the fourth away (<c>Session.ActionAllowed</c>; with the cast queue on, it waits
+    /// for a later frame, and none comes). The Dispells are frames at least 400 ms apart, so no window holds more
+    /// than three of them. The cures used to be frames too, Purge straight after the last Dispell and Atone 400 ms
+    /// later. When the first roll on yourself was lost (5%), the two Dispells, Purge and Atone came within about
+    /// 800 ms, and when one window held all four the handler turned Atone away: "Atone did not cast", master CI run
+    /// 38105790691 attempt 1, whose log has the drop ("op=0x0f dropped: action budget spent (4 this second)"). So
+    /// each cure is called as <c>HandleCast</c> calls it, through <c>ApplyCast</c> under the caster's monitor,
+    /// which spends nothing from that budget; its verdict is the one <c>HandleCast</c> answers "You cast X." on.
+    /// Cure Paralysis was called this way already, for a reason of its own: a held player cannot cast it through
+    /// the frame (Session.Barrier.cs).</para></summary>
     [Fact]
     public void ADispellOnYourselfAndTheCuresStillClearTheCastersOwnBuffs()
     {
@@ -212,7 +222,7 @@ public sealed class DispellTargetLockTests
             int casts = 0;
             while (SpellCastSupport.BuffEntry(p, BuffKey) is not null && casts < 20)
             {
-                if (casts > 0) Thread.Sleep(400);   // the next window of the handler's action budget
+                if (casts > 0) Thread.Sleep(400);   // never more than three frames in one window of the budget
                 pOut.Clear();
                 p.Receive(SpellCastSupport.CastFrame(0, p.PlayerId));
                 casts++;
@@ -225,22 +235,14 @@ public sealed class DispellTargetLockTests
             Assert.DoesNotContain("Dispell isn't working right now.", lines);
             Assert.DoesNotContain(lines, l => l.EndsWith("casts Dispell on you.", StringComparison.Ordinal));
 
-            foreach (var (cure, category, slot) in new[] { (cureParalysis, "paras", 1), (purge, "venoms", 2), (atone, "curses", 3) })
+            foreach (var (cure, category) in new[] { (cureParalysis, "paras"), (purge, "venoms"), (atone, "curses") })
             {
                 string key = $"dispell_probe_{category}";
                 p.ReceiveCurse("", 0, 600_000, key, $"Probe {category}", category);
                 Assert.NotNull(SpellCastSupport.BuffEntry(p, key));
                 uint before = pc.Mp;
                 bool ok = false;
-                if (category == "paras")
-                    p.WithState(() => ok = (bool)ApplyCast.Invoke(p, new object?[] { cure, null, null })!);
-                else
-                {
-                    pOut.Clear();
-                    p.Receive(SpellCastSupport.CastFrame(slot));
-                    ok = SpellCastSupport.MiniTexts(pOut).Contains($"You cast {cure.Name}.");
-                    Thread.Sleep(400);
-                }
+                p.WithState(() => ok = (bool)ApplyCast.Invoke(p, new object?[] { cure, null, null })!);
                 Assert.True(ok, $"{cure.Name} did not cast");
                 Assert.Null(SpellCastSupport.BuffEntry(p, key));
                 Assert.Equal(before - (uint)Content.FxFor(cure)!.Mana, pc.Mp);
