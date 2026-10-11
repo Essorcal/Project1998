@@ -2191,8 +2191,9 @@ public sealed partial class Session
     internal void LuaSetHp(int n)   { _char.Hp = (uint)Math.Clamp(n, IsDead ? 0 : 1, (int)EffMaxHp); SendStats(); }
     internal void LuaSetMana(int n) { _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp); SendStats(); }
 
-    // Resolve the targeted PLAYER for a Tier-3 utility cast (explicit id -> that player incl. self, else faced
-    // peer). Stored for the rest of the cast so the target getters/setters below all act on the same session.
+    // Resolve the targeted PLAYER for a Tier-3 utility cast (explicit id -> that player incl. self, if on the
+    // caster's map, else faced peer; see ResolvePcCastTarget). Stored for the rest of the cast so the target
+    // getters/setters below all act on the same session.
     private Session? _pcSpellTarget;
     internal bool LuaResolvePcTarget(SpellDef sp, uint? targetId)
     {
@@ -3227,12 +3228,21 @@ public sealed partial class Session
 
     // Resolve a spell's PLAYER target: an explicit targetId (client-supplied entity id, same convention as
     // ResolveCastTarget's mob lookup) or else whoever's standing on the tile directly faced.
+    //
+    // An id reaches only a player on the caster's own map (Caleb, 2026-10-11, on PR #340's review, F2). The
+    // lookup is the whole online roster, so an id used to reach a player on any map: a frame carrying one
+    // Dispelled, drained, filled, raised or read a player who was nowhere near. A player elsewhere is now
+    // answered as an id that names nobody: the faced tile, and with nobody there, no target, which every caller
+    // (ctx:pcTarget in the cleanse, mana_steal, mana_gift, revive and divine verbs) refuses silently and at no
+    // cost. The map is a bare read of the other session's character, as the same-map tests of Trade
+    // (Session.Exchange.cs) and Propose (RunProposeAsync) make it. The stock 4.95 client sends the slot alone, so
+    // its casts take the faced tile and never reach the id branch.
     private Session? ResolvePcCastTarget(uint? targetId)
     {
         if (targetId is uint id && id != 0)
         {
             var byId = _world.Online.ById(id);
-            if (byId is not null) return byId;
+            if (byId is not null && byId.CharMap == CharMap) return byId;
         }
         var (fx, fy) = FrontTile();
         return _world.PeerAt(_char.Map, fx, fy);

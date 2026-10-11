@@ -666,7 +666,8 @@ end
 -- =========================================================================================================
 -- TIER-3 UTILITY / TARGET verbs (mana transfer, cleanse, revive, leap, mana battery). Classified in C#
 -- (Content.Is*Spell), so they run against an EMPTY row — RTK constants are the `row.x or <default>` fallbacks
--- (add a SpellParams row later to tune). The target.* primitives all act on the PC resolved by ctx:pcTarget().
+-- (add a SpellParams row later to tune). The target.* primitives all act on the PC resolved by ctx:pcTarget(),
+-- which takes an aimed id only to a player on the caster's own map (Session.ResolvePcCastTarget).
 -- =========================================================================================================
 
 -- Mana Steal (RTK poet inspiration): drain a GROUP member's entire mana into your own pool (capped at your max).
