@@ -22,6 +22,9 @@ namespace Tests;
 /// player's monitor, while their own read loop reads and clears <c>_dlgReply</c> under it.</item>
 /// <item><b>Sends into another player</b> on those paths. No fact here: a send writes nothing a monitor guards
 /// (the report says why), so nothing changed.</item>
+/// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
+/// profile's legends and gear, the mentor's and the proposer's checks on the other player, and where the other player
+/// stands for <c>@approach</c> and the Approach spell.</item>
 /// </list>
 ///
 /// <para>Shapes, as in <see cref="PeerWritesLockTests"/>: the action through its real entry (the 0x0F cast, the
@@ -42,6 +45,9 @@ public sealed class PeerSweepLockTests
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
                          PromptMidMap = 62453;
+    private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
+                         ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
+                         ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452;
 
     /// <summary>Fen, the Gale Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 230, map 2511): the ceremony's real
     /// entry (Server/NpcAbility.cs, ChapelAbility's "Marriage").</summary>
@@ -51,13 +57,24 @@ public sealed class PeerSweepLockTests
     private const string Ping = "peer sweep race ping";
     private const string Declined = "What but love can last forever?";
 
+    /// <summary>The staff name the approach facts run as: the same name and roster content <c>CommandTableTests</c>
+    /// and <c>PeerWritesLockTests</c> write, because <c>StaffAccounts.Load</c> replaces the roster wholesale.</summary>
+    private const string GmName = "cmdgm";
+
     private readonly SessionFixture _fx;
     private static int _serial;
+    private static bool _rosterWritten;
 
+    private static readonly MethodInfo ApplyCast =
+        typeof(Session).GetMethod("ApplyCast", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo DlgReplyField =
         typeof(Session).GetField("_dlgReply", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
-    public PeerSweepLockTests(SessionFixture fx) => _fx = fx;
+    public PeerSweepLockTests(SessionFixture fx)
+    {
+        _fx = fx;
+        EnsureGmRoster();
+    }
 
     // ===== 1. a dialog prompt opened on another player =================================================
 
@@ -510,6 +527,486 @@ public sealed class PeerSweepLockTests
     }
 #endif
 
+    // ===== 3. reads of another player's lists ===========================================================
+
+    /// <summary>Two Poets cast Valor at each other again and again while each one's own buff list turns over: a
+    /// thread per Poet keeps writing that Poet's own short buffs under that Poet's monitor, as its own casts and the
+    /// tick's expiry do, over a list four hundred entries long. The Valor family's slot check reads the TARGET's list from
+    /// the caster's thread (<c>HasStatusCategory</c>, then <c>HasStatusFromSpell</c> once the slot holds the last
+    /// Valor). Every cast either lands or is refused with "You already cast that spell."; none fails with "Valor isn't
+    /// working right now.", which is what an exception inside the verb reads as.
+    /// <para>Red on 3690542 in both builds: the walk of the other player's list throws "Collection was modified" when
+    /// that player's own write lands under it, and the cast fails.</para></summary>
+    [Fact]
+    public void TwoPlayersBuffingEachOtherWhileTheirOwnBuffsTurnOverNeverFail()
+    {
+        var valor = Content.SpellByKey("valor_poet")!;
+        var (a, aOut, _) = Poet(SlotRaceMap, 10, 10, valor);
+        var (b, bOut, _) = Poet(SlotRaceMap, 11, 10, valor);
+        var race = new Race();
+        var stat = new[] { "hit" };
+        var one = new[] { "1" };
+        void Write(Session s, int key)
+        {
+            s.WithState(() => s.ReceiveTimedBuff(stat, one, 600_000, $"sweep_churn_{key}", "Churn", ""));
+            Thread.SpinWait(200);
+        }
+
+        try
+        {
+            const int Buffs = 4 * Ballast, Casts = 3 * Rounds;
+            for (int key = 0; key < Buffs; key++) { Write(a, key); Write(b, key); }
+            int ka = 0, kb = 0;
+            RunWithTurnover(race, "the two Poets buffing each other",
+                askers: new Action[]
+                {
+                    () => { for (int i = 0; i < Casts; i++) { a.WithState(() => Cast(a, valor, b.PlayerId)); race.Progress.Bump(); } },
+                    () => { for (int i = 0; i < Casts; i++) { b.WithState(() => Cast(b, valor, a.PlayerId)); race.Progress.Bump(); } },
+                },
+                turnovers: new Action[] { () => Write(a, ka++ % Buffs), () => Write(b, kb++ % Buffs) });
+
+            Assert.Null(race.Fault);
+            var aLines = aOut.MiniTexts();
+            var bLines = bOut.MiniTexts();
+            Assert.Equal((0, 0), (aLines.Count(l => l == "Valor isn't working right now."),
+                                  bLines.Count(l => l == "Valor isn't working right now.")));
+            Assert.Equal((Casts - 1, Casts - 1), (aLines.Count(l => l == "You already cast that spell."),
+                                                  bLines.Count(l => l == "You already cast that spell.")));
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(SlotRaceMap, a, b);
+        }
+    }
+
+    /// <summary>Clicking another player (the real 0x43) builds their profile card from their character inside their
+    /// monitor: it waits while a third thread holds it, in both orders, and the card comes once it is free. Red on
+    /// 3690542 in both builds: the card was built and sent while the third thread held the monitor.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AClickOnAnotherPlayerWaitsForTheirMonitor(bool viewerRanksFirst)
+    {
+        Session v, t;
+        HeldRecorder vOut;
+        if (viewerRanksFirst)
+        {
+            (v, vOut, _) = Player("HeldViewer", ClickHeldMap, 20, 20);
+            (t, _, _) = Player("HeldClicked", ClickHeldMap, 22, 20);
+        }
+        else
+        {
+            (t, _, _) = Player("HeldClicked", ClickHeldMap, 22, 20);
+            (v, vOut, _) = Player("HeldViewer", ClickHeldMap, 20, 20);
+        }
+        Assert.Equal(viewerRanksFirst, v.StateRank < t.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            WhileAnotherThreadHolds(run, t, () => v.Receive(ClickFrame(t.PlayerId)),
+                                    untouched: () => vOut.Bodies(ServerOp.PeerProfile).Count == 0);
+            AssertWaited(run, "the click", "the card was built while another thread held the clicked player's monitor");
+            Assert.Single(vOut.Bodies(ServerOp.PeerProfile));
+        }
+        finally
+        {
+            if (run.Settled) Leave(ClickHeldMap, v, t);
+        }
+    }
+
+    /// <summary>Two players click each other's profile again and again while each one's own legends come and go: a
+    /// thread per player keeps adding and removing that player's legends under that player's monitor, over a hundred
+    /// legends that stay. Every click answers with exactly one card, and every card is whole: everything before the
+    /// legends is what a quiet card says, and the legend count is the number of legends that follow, to the last byte.
+    /// <para>Red on 3690542 in both builds: a click is lost ("Collection was modified" in the walk, which the handler's
+    /// guard turns into a dropped packet), or a card's count disagrees with its list.</para></summary>
+    [Fact]
+    public void TwoPlayersClickingEachOtherWhileTheirLegendsTurnOverAlwaysGetAWholeCard()
+    {
+        var (a, aOut, ac) = Player("ClickRaceA", ClickRaceMap, 10, 10, WithBallast);
+        var (b, bOut, bc) = Player("ClickRaceB", ClickRaceMap, 11, 10, WithBallast);
+        var race = new Race();
+        try
+        {
+            a.Receive(ClickFrame(b.PlayerId));
+            b.Receive(ClickFrame(a.PlayerId));
+            byte[] quietB = aOut.Bodies(ServerOp.PeerProfile).Single().Body;
+            byte[] quietA = bOut.Bodies(ServerOp.PeerProfile).Single().Body;
+            int bAt = LegendsOffset(quietB, bc), aAt = LegendsOffset(quietA, ac);
+            aOut.Clear();
+            bOut.Clear();
+
+            RunWithTurnover(race, "the two players clicking each other",
+                askers: new Action[]
+                {
+                    () => { for (int i = 0; i < 2 * Rounds; i++) { a.Receive(ClickFrame(b.PlayerId)); race.Progress.Bump(); } },
+                    () => { for (int i = 0; i < 2 * Rounds; i++) { b.Receive(ClickFrame(a.PlayerId)); race.Progress.Bump(); } },
+                },
+                turnovers: new Action[] { () => TurnOver(a, ac), () => TurnOver(b, bc) });
+
+            Assert.Null(race.Fault);
+            AssertWholeCards(aOut, quietB, bAt, "the first player's view of the second");
+            AssertWholeCards(bOut, quietA, aAt, "the second player's view of the first");
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(ClickRaceMap, a, b);
+        }
+    }
+
+    /// <summary>Two players offer each other a mentorship again and again while each one's legends turn over under
+    /// its own monitor (a thread per player, over a hundred legends that stay): each casts Mentor and types the other's
+    /// name. The mentor's checks read the protégé's mentor slot, legends and level from the mentor's thread. Every cast
+    /// reaches the first of its four pages.
+    /// <para>Red on 3690542 in both builds: the walk of the protégé's legends throws "Collection was modified" and the
+    /// conversation dies silently (the async flow faults; nobody is told).</para></summary>
+    [Fact]
+    public void TwoPlayersMentoringEachOtherWhileTheirLegendsTurnOverNeverLoseTheCast()
+    {
+        var mentor = Content.SpellByKey("mentor")!;
+        var (a, aOut, ac) = Player("MentorRaceA", AskRaceMap, 10, 10, c => { c.Level = 5; WithBallast(c); });
+        var (b, bOut, bc) = Player("MentorRaceB", AskRaceMap, 11, 10, c => { c.Level = 5; WithBallast(c); });
+        var race = new Race();
+
+        void Asker(Session self, Session other)
+        {
+            for (int i = 0; i < Rounds; i++)
+            {
+                self.WithState(() => Cast(self, mentor, null));
+                self.Receive(InputFrame(other.CharName));
+                race.Progress.Bump();
+            }
+        }
+
+        try
+        {
+            RunWithTurnover(race, "the two players mentoring each other",
+                askers: new Action[] { () => Asker(a, b), () => Asker(b, a) },
+                turnovers: new Action[] { () => TurnOver(a, ac), () => TurnOver(b, bc) });
+
+            Assert.Null(race.Fault);
+            Assert.Equal((Rounds, Rounds), (aOut.BoxesStarting(FirstMentorPage), bOut.BoxesStarting(FirstMentorPage)));
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(AskRaceMap, a, b);
+        }
+    }
+
+    private const string FirstMentorPage = "Mentoring someone is a great way to show your knowledge of the lands";
+
+    /// <summary>A player proposes again and again to a player whose legends turn over under their own monitor (a
+    /// thread of their own, over a hundred legends that stay): the proposer casts Propose and types the beloved's name,
+    /// and the proposal's checks read the beloved's legends and ring from the proposer's thread. Every proposal reaches
+    /// the beloved's menu. One way only: a proposal opens a prompt on the beloved, which would orphan the beloved's own
+    /// name prompt if they were proposing too (both ways is <see cref="TwoPlayersOpeningPromptsOnEachOtherNeverStall"/>'s
+    /// job).
+    /// <para>Red on 3690542 in both builds: the walk of the beloved's legends throws and the proposal dies
+    /// silently.</para></summary>
+    [Fact]
+    public void AProposalToAPlayerWhoseLegendsTurnOverNeverLosesTheAsking()
+    {
+        var propose = Content.SpellByKey("propose")!;
+        var (p, _, _) = Player("ProposeRaceP", AskRaceMap, 20, 10);
+        var (b, bOut, bc) = Player("ProposeRaceB", AskRaceMap, 21, 10, WithBallast);
+        var race = new Race();
+        try
+        {
+            GiveRing(b);
+            RunWithTurnover(race, "the proposer and the turning-over beloved",
+                askers: new Action[]
+                {
+                    () =>
+                    {
+                        for (int i = 0; i < Rounds; i++)
+                        {
+                            p.WithState(() => Cast(p, propose, null));
+                            p.Receive(InputFrame(b.CharName));
+                            race.Progress.Bump();
+                        }
+                    },
+                },
+                turnovers: new Action[] { () => TurnOver(b, bc) });
+
+            Assert.Null(race.Fault);
+            Assert.Equal(Rounds, bOut.MenusWith($"{p.CharName} proposes marriage."));
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(AskRaceMap, p, b);
+        }
+    }
+
+    /// <summary>How many entries the turnover races keep in the list another thread walks, so a walk takes long enough
+    /// to meet a write.</summary>
+    private const int Ballast = 100;
+
+    /// <summary>A hundred legends that stay, so a walk of the list takes a while.</summary>
+    private static void WithBallast(Character c)
+    {
+        for (int k = 0; k < Ballast; k++) c.Legends.Add(new Legend(1, 1, $"Ballast {k}", "sweep_ballast"));
+    }
+
+    /// <summary>One turn of a player's own legends, as their own handler makes it: one added and one removed, each
+    /// inside their monitor, then a pause outside it so a thread waiting for the monitor can have it.</summary>
+    private static void TurnOver(Session s, Character c)
+    {
+        s.WithState(() => c.Legends.Add(new Legend(1, 1, "Turnover", "sweep_turnover")));
+        s.WithState(() => c.Legends.RemoveAll(l => l.Name == "sweep_turnover"));
+        Thread.SpinWait(200);
+    }
+
+    /// <summary>A race whose <paramref name="askers"/> run their rounds while each of <paramref name="turnovers"/> runs
+    /// again and again on a thread of its own until every asker is done. Only an asker's round counts as progress: a
+    /// turnover that keeps running beside two askers stuck on each other must not hide the stall from
+    /// <see cref="StallWatch"/>.</summary>
+    private void RunWithTurnover(Race race, string what, Action[] askers, Action[] turnovers, bool tick = false)
+    {
+        int left = askers.Length;
+        var workers = askers.Select(ask => (Action)(() =>
+            {
+                try { ask(); }
+                finally { Interlocked.Decrement(ref left); }
+            }))
+            .Concat(turnovers.Select(turn => (Action)(() =>
+            {
+                while (Volatile.Read(ref left) > 0 && !race.Done) turn();
+            })))
+            .ToArray();
+        RunRace(race, what, tick, workers);
+    }
+
+    /// <summary><c>@approach</c> through the GM's real chat line, at a player caught mid-warp: a third thread holds the
+    /// player's monitor and has written the first half of a warp (the new map and its size, as
+    /// <c>Session.EnterMap</c> does first) but not yet the tile. The command waits for that monitor, in both orders,
+    /// and once the warp is finished and the monitor let go the GM lands beside the player on the new map.
+    /// <para>Red on 3690542 in both builds: the command read the new map with the old tile while the warp was half
+    /// done, and the GM landed on that tile clamped onto the new map, (19,19), where the player never stood.</para></summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnApproachReadsAPlayerMidWarpWhole(bool gmRanksFirst)
+    {
+        Session gm, t;
+        Character gc, tc;
+        if (gmRanksFirst)
+        {
+            (gm, _, gc) = Gm(ApproachFrom, 10, 10);
+            (t, _, tc) = Player("WarpingT", ApproachFrom, 90, 90);
+        }
+        else
+        {
+            (t, _, tc) = Player("WarpingT", ApproachFrom, 90, 90);
+            (gm, _, gc) = Gm(ApproachFrom, 10, 10);
+        }
+        Assert.Equal(gmRanksFirst, gm.StateRank < t.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            WhileAnotherThreadHolds(run, t, () => gm.Receive(ChatFrame($"@approach {t.CharName}")),
+                untouched: () =>
+                {
+                    bool still = gc.Map == ApproachFrom && gc.X == 10 && gc.Y == 10;
+                    tc.X = 5; tc.Y = 5;   // the warp's second half: the tile on the new map
+                    return still;
+                },
+                begin: () => { tc.Map = ApproachTo; tc.MapXs = 20; tc.MapYs = 20; });
+            AssertWaited(run, "the approach", "the GM moved while the player's warp was half done");
+            gm.WithState(() => Assert.True(Beside(gc, ApproachTo, 20, 5, 5),
+                $"the GM landed on map {gc.Map} ({gc.MapXs}x{gc.MapYs}) at ({gc.X},{gc.Y})"));
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Leave(ApproachFrom, t);
+                Leave(gc.Map, gm);
+            }
+        }
+    }
+
+    /// <summary>The Approach spell through the real 0x0F frame with the player's name typed in, at a group member caught
+    /// mid-warp the same way. The move waits for the member's monitor, in both orders, and the caster lands beside them
+    /// on the new map, paying the spell's mana once.
+    /// <para>Red on 3690542 in both builds: the move read the new map with the old tile and landed the caster at
+    /// (19,19).</para></summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnApproachSpellReadsAPlayerMidWarpWhole(bool casterRanksFirst)
+    {
+        var approach = Content.SpellByKey("approach_spell")!;
+        Session c, t;
+        HeldRecorder tOut;
+        Character cc, tc;
+        void Shape(Character ch) { ch.Level = 30; ch.Nation = 1; ch.Grouped = true; }
+        if (casterRanksFirst)
+        {
+            (c, _, cc) = Player("ApproachC", ApproachSpellFrom, 10, 10, ch => { Shape(ch); ch.Spells.Add(approach.Id); ch.MaxMp = ch.Mp = 1_000; });
+            (t, tOut, tc) = Player("ApproachT", ApproachSpellFrom, 90, 90, Shape);
+        }
+        else
+        {
+            (t, tOut, tc) = Player("ApproachT", ApproachSpellFrom, 90, 90, Shape);
+            (c, _, cc) = Player("ApproachC", ApproachSpellFrom, 10, 10, ch => { Shape(ch); ch.Spells.Add(approach.Id); ch.MaxMp = ch.Mp = 1_000; });
+        }
+        Assert.Equal(casterRanksFirst, c.StateRank < t.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            SessionFixture.FormParty(c, t);
+            Assert.Contains($"{t.CharName} is joining the group.", tOut.MiniTexts());
+
+            WhileAnotherThreadHolds(run, t, () => c.Receive(TypedCastFrame(0, t.CharName)),
+                untouched: () =>
+                {
+                    bool still = cc.Map == ApproachSpellFrom && cc.X == 10 && cc.Y == 10;
+                    tc.X = 5; tc.Y = 5;
+                    return still;
+                },
+                begin: () => { tc.Map = ApproachSpellTo; tc.MapXs = 20; tc.MapYs = 20; });
+            AssertWaited(run, "the Approach", "the caster moved while the member's warp was half done");
+            c.WithState(() =>
+            {
+                Assert.True(Beside(cc, ApproachSpellTo, 20, 5, 5), $"the caster landed on map {cc.Map} ({cc.MapXs}x{cc.MapYs}) at ({cc.X},{cc.Y})");
+                Assert.Equal(1_000u - (uint)Content.FxFor(approach)!.Mana, cc.Mp);
+            });
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Leave(ApproachSpellFrom, t);
+                Leave(cc.Map, c);
+            }
+        }
+    }
+
+    /// <summary>A GM approaches a player again and again while that player warps between a 100x100 map (at 90,90) and a
+    /// 20x20 one (at 5,5) on a thread of their own, a third thread keeps sending the GM a party line from inside the
+    /// player's monitor, and the world ticks (which holds <c>World._lock</c>, so a warp waits for it between writing
+    /// the map and writing the tile). Every
+    /// approach that moves the GM lands beside the player on one of the two maps, never at a mix of the two. The player
+    /// is created first, so the GM's read descends. An approach that finds the player between maps is refused, as
+    /// before ("isn't online"), and is not judged.
+    /// <para>Red on 3690542 in both builds: a GM lands at the old tile clamped onto the new map, (19,19), or at the new
+    /// tile on the old map, (5,4). It stalls with the read under <c>World._lock</c> (the GM holds the lock and waits for
+    /// the player's monitor while the player, mid-warp, holds it and waits for the lock) and with a plain <c>lock</c>
+    /// on the player's monitor (the GM holds its own and waits for the player's, while the party line holds the
+    /// player's and waits for the GM's).</para></summary>
+    [Fact]
+    public void AGmApproachingAPlayerWhoWarpsAndWritesBackAlwaysLandsBesideThem()
+    {
+        const int Approaches = 10_000;
+        var (t, _, _) = Player("RaceWarpT", ApproachRaceFrom, 90, 90);
+        var (gm, gmOut, gc) = Gm(ApproachRaceFrom, 10, 10);
+        Assert.True(t.StateRank < gm.StateRank);
+        var race = new Race();
+        int moved = 0, mixed = 0;
+        var mixes = new List<string>();
+        try
+        {
+            RunWithTurnover(race, "the GM approaching the warping player", tick: true,
+                askers: new Action[]
+                {
+                    () =>
+                    {
+                        for (int i = 0; i < Approaches; i++)
+                        {
+                            gmOut.Clear();
+                            gm.Receive(ChatFrame($"@approach {t.CharName}"));
+                            if (gmOut.Bodies(ServerOp.MapInfo).Count > 0)
+                            {
+                                moved++;
+                                bool whole = false;
+                                gm.WithState(() => whole = Beside(gc, ApproachRaceFrom, 100, 90, 90) || Beside(gc, ApproachRaceTo, 20, 5, 5));
+                                if (!whole) { mixed++; if (mixes.Count < 5) mixes.Add($"map {gc.Map} ({gc.MapXs}x{gc.MapYs}) at ({gc.X},{gc.Y})"); }
+                            }
+                            race.Progress.Bump();
+                        }
+                    },
+                },
+                turnovers: new Action[]
+                {
+                    () =>
+                    {
+                        Warp(t, ApproachRaceTo, 20, 20, 5, 5);
+                        Warp(t, ApproachRaceFrom, 100, 100, 90, 90);
+                    },
+                    () =>
+                    {
+                        t.WithState(() => gm.NotifyGroup(Ping));
+                        Thread.SpinWait(500);
+                    },
+                });
+
+            Assert.Null(race.Fault);
+            Assert.True(moved > Approaches / 10, $"only {moved} of {Approaches} approaches moved the GM");
+            Assert.True(mixed == 0, $"{mixed} of {moved} approaches landed at a mix of two places: {string.Join("; ", mixes)}");
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled)
+            {
+                Leave(t.CharMap, t);
+                Leave(gc.Map, gm);
+            }
+        }
+    }
+
+    /// <summary>Whether <paramref name="c"/> stands on <paramref name="map"/> (square, <paramref name="size"/> a side)
+    /// on or beside (<paramref name="x"/>, <paramref name="y"/>).</summary>
+    private static bool Beside(Character c, ushort map, ushort size, int x, int y) =>
+        c.Map == map && c.MapXs == size && c.MapYs == size && Math.Abs(c.X - x) + Math.Abs(c.Y - y) <= 1;
+
+    private static readonly MethodInfo EnterMapMethod =
+        typeof(Session).GetMethod("EnterMap", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    /// <summary>A warp as a door or a Gateway makes it, on the player's own thread: <c>Session.EnterMap</c> inside their
+    /// monitor.</summary>
+    private static void Warp(Session s, ushort map, ushort xs, ushort ys, ushort x, ushort y) =>
+        s.WithState(() => EnterMapMethod.Invoke(s, new object[] { map, xs, ys, x, y, $"Sweep {map}", ArrivalPolicy.Clamp }));
+
+#if DEBUG
+    /// <summary>A player's place is read the ordered way, asserted: with <c>World._lock</c> held the lock-order assert
+    /// fires; from a lower- and a higher-ranked player's monitor it is silent and reads the place. Debug-only by
+    /// construction, and it names <c>PlaceForPeer</c>, so it came with the fix.
+    /// <para>Red without the fix: with no monitor nothing fires.</para></summary>
+    [Fact]
+    public void ReadingAnotherPlayersPlaceUnderTheWorldLockAsserts()
+    {
+        var (low, _, _) = Player("PlacePinLow", ApproachPinMap, 60, 60);
+        var (v, _, _) = Player("PlacePinV", ApproachPinMap, 62, 60);
+        var (high, _, _) = Player("PlacePinHigh", ApproachPinMap, 64, 60);
+        try
+        {
+            Assert.True(low.StateRank < v.StateRank && v.StateRank < high.StateRank);
+            AssertLockOrderFired(Record.Exception(() => _fx.World.UnderWorldLockForTest(() => v.PlaceForPeer())));
+            var expected = (ApproachPinMap, (ushort)100, (ushort)100, (ushort)62, (ushort)60);
+            Assert.Null(Record.Exception(() => low.WithState(() => Assert.Equal(expected, v.PlaceForPeer()))));
+            Assert.Null(Record.Exception(() => high.WithState(() => Assert.Equal(expected, v.PlaceForPeer()))));
+        }
+        finally
+        {
+            Leave(ApproachPinMap, low, v, high);
+        }
+    }
+#endif
+
+    private static void AssertLockOrderFired(Exception? wrongWay)
+    {
+        Assert.NotNull(wrongWay);
+        Assert.Contains("lock order violated: World._lock is held while entering a session monitor", wrongWay!.Message);
+    }
+
     // ===== the held-monitor run =======================================================================
 
     /// <summary>What <see cref="WhileAnotherThreadHolds"/> saw. <see cref="Settled"/> is false while either thread may
@@ -522,11 +1019,12 @@ public sealed class PeerSweepLockTests
         public Exception? HolderFault, ActorFault;
     }
 
-    /// <summary>A third thread takes <paramref name="target"/>'s monitor; then <paramref name="act"/> runs on a thread
-    /// of its own until it finishes or sits blocked for 100 ms; then, still inside the third thread's section,
-    /// <paramref name="untouched"/> says whether the state is as it was. Then the third thread lets go and both are
-    /// joined.</summary>
-    private static void WhileAnotherThreadHolds(HeldRun run, Session target, Action act, Func<bool> untouched)
+    /// <summary>A third thread takes <paramref name="target"/>'s monitor and runs <paramref name="begin"/> inside it (a
+    /// write it is in the middle of); then <paramref name="act"/> runs on a thread of its own until it finishes or sits
+    /// blocked for 100 ms; then, still inside the third thread's section, <paramref name="untouched"/> says whether the
+    /// state is as it was. Then the third thread lets go and both are joined.</summary>
+    private static void WhileAnotherThreadHolds(HeldRun run, Session target, Action act, Func<bool> untouched,
+                                                Action? begin = null)
     {
         var held = new ManualResetEventSlim();
         var letGo = new ManualResetEventSlim();
@@ -536,6 +1034,7 @@ public sealed class PeerSweepLockTests
             {
                 target.WithState(() =>
                 {
+                    begin?.Invoke();
                     held.Set();
                     letGo.Wait();
                     run.UntouchedWhileHeld = untouched();
@@ -654,6 +1153,10 @@ public sealed class PeerSweepLockTests
         while (clock.ElapsedTicks < Stopwatch.Frequency / 5_000) Thread.SpinWait(20);
     }
 
+    /// <summary>A cast as <c>HandleCast</c> makes it, below the frame: the caller holds the caster's monitor.</summary>
+    private static bool Cast(Session s, SpellDef sp, uint? targetId) =>
+        (bool)ApplyCast.Invoke(s, new object?[] { sp, targetId, null })!;
+
     // ===== vows =======================================================================================
 
     /// <summary>An engagement ring in <paramref name="s"/>'s bag, given under its own monitor.</summary>
@@ -698,12 +1201,61 @@ public sealed class PeerSweepLockTests
         s.Receive(MenuFrame(1));
     }
 
+    // ===== cards ======================================================================================
+
+    /// <summary>Every card is whole: the bytes before the legends are the quiet card's, and the legend count is the
+    /// number of legends that follow, ending on the last byte. One card per click.</summary>
+    private static void AssertWholeCards(HeldRecorder o, byte[] quiet, int legendsAt, string what)
+    {
+        var cards = o.Bodies(ServerOp.PeerProfile);
+        int torn = 0;
+        foreach (var (body, _) in cards)
+        {
+            if (body.Length <= legendsAt || !body.AsSpan(0, legendsAt).SequenceEqual(quiet.AsSpan(0, legendsAt)))
+            { torn++; continue; }
+            int count = body[legendsAt], i = legendsAt + 1, seen = 0;
+            while (i + 3 <= body.Length && seen < count) { i += 3 + body[i + 2]; seen++; }
+            if (seen != count || i != body.Length) torn++;
+        }
+        Assert.True(cards.Count == 2 * Rounds && torn == 0,
+                    $"{what}: {cards.Count} cards for {2 * Rounds} clicks, {torn} of them not whole");
+    }
+
+    /// <summary>Where the legend section starts on a quiet card about <paramref name="about"/>: the count byte, after
+    /// which each legend is icon, colour, u8 length and its text, to the end of the card.</summary>
+    private static int LegendsOffset(byte[] quiet, Character about)
+    {
+        int at = quiet.Length - 1 - about.Legends.Sum(l => 3 + Encoding.ASCII.GetByteCount(l.Text));
+        Assert.Equal(about.Legends.Count, quiet[at]);
+        return at;
+    }
+
     // ===== frames =====================================================================================
 
     /// <summary>The 0x43 click on an entity: 01 id(u32BE) 00.</summary>
     private static byte[] ClickFrame(uint id) =>
         SessionFixture.Frame(ClientOp.ClickInfo,
             new byte[] { 0x01, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id, 0x00 });
+
+    /// <summary>A command the way the read loop runs one: a framed 0x0E chat line.</summary>
+    private static byte[] ChatFrame(string text)
+    {
+        var bytes = Encoding.ASCII.GetBytes(text);
+        var body = new byte[2 + bytes.Length];
+        body[1] = (byte)bytes.Length;
+        bytes.CopyTo(body, 2);
+        return SessionFixture.Frame(ClientOp.Chat, body);
+    }
+
+    /// <summary>The 0x0F cast frame for a type-1 (typed answer) spell: <c>slot+1</c>, the answer, a NUL.</summary>
+    private static byte[] TypedCastFrame(int slot, string answer)
+    {
+        byte[] text = Encoding.ASCII.GetBytes(answer);
+        byte[] body = new byte[text.Length + 2];
+        body[0] = (byte)(slot + 1);
+        text.CopyTo(body, 1);
+        return SessionFixture.Frame(ClientOp.Cast, body);
+    }
 
     /// <summary>The client's "next" on a text box (0x3A kind 1).</summary>
     private static byte[] NextFrame()
@@ -771,13 +1323,14 @@ public sealed class PeerSweepLockTests
     /// <summary>A level-50 player on a 100x100 walkable map, whose outbound records whether each frame was handed over
     /// inside their own monitor. <paramref name="shape"/> runs last.</summary>
     private (Session session, HeldRecorder outbound, Character c) Player(string name, ushort map, ushort x, ushort y,
-                                                                       Action<Character>? shape = null)
+                                                                       Action<Character>? shape = null,
+                                                                       bool exactName = false)
     {
         var c = new Character
         {
             SchemaVersion = Character.CurrentSchemaVersion,
             Id = _fx.World.AllocatePlayerId(),
-            Name = $"{name}{Interlocked.Increment(ref _serial)}",
+            Name = exactName ? name : $"{name}{Interlocked.Increment(ref _serial)}",
             Map = map,
             X = x,
             Y = y,
@@ -794,6 +1347,35 @@ public sealed class PeerSweepLockTests
         o.Clear();
         return (s, o, c);
     }
+
+    /// <summary>A GM on <paramref name="map"/>. The roster names one account, so every GM session shares its name;
+    /// nothing here looks the GM up by it.</summary>
+    private (Session session, HeldRecorder outbound, Character c) Gm(ushort map, ushort x, ushort y) =>
+        Player(GmName, map, x, y, ch => ch.Level = 99, exactName: true);
+
+    private static void EnsureGmRoster()
+    {
+        lock (TestProcessState.Gate)
+        {
+            if (_rosterWritten) return;
+            Directory.CreateDirectory(TestProcessState.StateDirectory);
+            File.WriteAllText(Path.Combine(TestProcessState.StateDirectory, "gm_accounts.txt"), GmName + "\n");
+            StaffAccounts.Load();
+            _rosterWritten = true;
+        }
+    }
+
+    /// <summary>A level-99 Poet with <paramref name="sp"/> in slot 0.</summary>
+    private (Session session, HeldRecorder outbound, Character c) Poet(ushort map, ushort x, ushort y, SpellDef sp,
+                                                                     uint mp = 10_000_000, uint maxMp = 0) =>
+        Player("SweepPoet", map, x, y, ch =>
+        {
+            ch.Level = 99;
+            ch.MaxMp = maxMp > 0 ? maxMp : mp;
+            ch.Mp = mp;
+            ch.Will = 50;
+            ch.Spells.Add(sp.Id);
+        });
 
     private void Leave(ushort map, params Session[] sessions)
     {

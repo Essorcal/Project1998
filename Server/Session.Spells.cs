@@ -1646,13 +1646,24 @@ public sealed partial class Session
 
     // Is a status of this category (or its broader family) active on THIS player? Used for the checkIfCast
     // exclusivity guard, so it uses the SYMMETRIC family collapse (a minor curse blocks a full curse and vice
-    // versa). (Reused across sessions to check any curse target.)
+    // versa).
+    //
+    // Reused across sessions: a caster's thread asks it of the TARGET for the Valor family, the wards, the curses,
+    // the holds and venom, holding the caster's monitor and the Lua gate but not the target's. The PeerTotals
+    // shape: a thread that holds this player's monitor (their own handler, the tick inside it, a pair) walks the
+    // live list as it always did; any other thread reads the buffs this player last published (PublishedBuffs),
+    // never the list the owner may be writing. Before this a caster walked that list bare: a write landing mid-walk
+    // threw "Collection was modified" on the caster's thread, and the cast failed with "X isn't working right
+    // now." in both builds.
     internal bool HasStatusCategory(string category)
     {
         if (string.IsNullOrEmpty(category)) return false;
         long now = Environment.TickCount64;
         string fam = CatFamily(category);
-        return _buffs.Any(b => b.Category.Length > 0 && CatFamily(b.Category) == fam && b.Expires > now);
+        if (StateHeld) return _buffs.Any(b => b.Category.Length > 0 && CatFamily(b.Category) == fam && b.Expires > now);
+        foreach (var b in PublishedBuffs())
+            if (b.Category.Length > 0 && CatFamily(b.Category) == fam && b.Expires > now) return true;
+        return false;
     }
 
     // ---- "You already cast that spell." vs "Another spell of this type is in effect." -------------------------
@@ -1670,12 +1681,17 @@ public sealed partial class Session
 
     /// <summary>Is a still-running categorised status on THIS player the work of <paramref name="key"/>? Only
     /// categorised entries count: an ordinary buff (Might &amp;c) refreshes rather than blocks, so it never
-    /// produces a refusal that would need this wording.</summary>
+    /// produces a refusal that would need this wording. Asked of another player from a caster's thread, so it reads
+    /// as <see cref="HasStatusCategory"/> does: the live list under this player's monitor, the published buffs from
+    /// any other thread.</summary>
     internal bool HasStatusFromSpell(string key)
     {
         if (string.IsNullOrEmpty(key)) return false;
         long now = Environment.TickCount64;
-        return _buffs.Any(b => b.Category.Length > 0 && b.Key == key && b.Expires > now);
+        if (StateHeld) return _buffs.Any(b => b.Category.Length > 0 && b.Key == key && b.Expires > now);
+        foreach (var b in PublishedBuffs())
+            if (b.Category.Length > 0 && b.Key == key && b.Expires > now) return true;
+        return false;
     }
 
     /// <summary>Was the slot that just blocked this cast filled by this same spell? <paramref name="category"/>
@@ -3431,9 +3447,16 @@ public sealed partial class Session
         // for "nearby", matching the gate Trade already uses for its own "must be present" check.
         if (target.CharMap != CharMap)
         { SendMiniText("Your beloved must be near you when you make this commitment."); return; }
-        if (target.HasLegend("engaged") || target.HasLegend("married"))
+        // The beloved's legends and ring, read in one section inside the beloved's monitor (#29), as the mentor's
+        // checks are (Mentorship.cs): this runs on the proposer's thread, under the proposer's monitor and never
+        // World._lock. Before this the walks were bare, and an edit of the beloved's legends landing mid-walk threw
+        // "Collection was modified": the proposal died with nothing said.
+        var (committed, rings) = target.WithState(() => (
+            target.HasLegend("engaged") || target.HasLegend("married"),
+            target.CountItem("engagement_ring")));
+        if (committed)
         { SendMiniText($"{target.Snapshot().Name} is already committed to someone else!"); return; }
-        if (target.CountItem("engagement_ring") < 1)
+        if (rings < 1)
         { SendMiniText("You have not given them an engagement ring yet."); return; }
 
         ForgetOneSpell(sp.Id);

@@ -2031,8 +2031,17 @@ public sealed partial class Session
     // the target's own character/equipment, which is legal to read cross-instance here since WeaponLook,
     // ShieldLook, ProfileCellIcon and GearListText are all private instance methods of this same Session
     // class — calling target.WeaponLook() runs them against the target's own _char, not the viewer's.
+    //
+    // Legal to read, but not without the target's monitor (#29). The card walks the target's legends and worn
+    // gear and copies their scalars, on the VIEWER's thread (the 0x43 handler or @click, under the viewer's
+    // monitor), while the target's own handler edits those lists under the target's. Before this it read them
+    // bare: an edit landing mid-walk threw "Collection was modified", which Handle's guard turns into a dropped
+    // packet, so the click showed nothing. The whole card is now read inside the target's monitor, taken by
+    // StateRank; on yourself it is the monitor already held. Never World._lock: ById and FindPlayer release it
+    // before they return.
     private void SendClickProfile(Session target)
     {
+        using var _ = target.EnterState();   // #29: cross-thread entry into this session's state
         var tc = target._char;
         var d = new List<byte>();
 
