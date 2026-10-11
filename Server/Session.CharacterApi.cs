@@ -1118,21 +1118,46 @@ public sealed partial class Session : QuestState.ISessionStore
 
     /// <summary>Break off an engagement on BOTH sides, if the fiancé is reachable — RTK's own script only
     /// clears the clicking player's registry, leaving the other party's "engaged" legend dangling forever if
-    /// they never separately visit a Chapel; clearing both sides avoids that permanently-stuck state.</summary>
+    /// they never separately visit a Chapel; clearing both sides avoids that permanently-stuck state.
+    /// <para>Runs in the clicking player's Chapel dialog, on their read loop and under their monitor. The fiancé
+    /// is found by name; if they are offline nothing of theirs is touched, and their saved row keeps its half until
+    /// something else clears it. Each side's half is <see cref="EndEngagement"/>, inside that side's monitor.</para></summary>
     internal void BreakOffEngagement()
     {
         var fiance = _world.Online.FindPlayer(_char.Fiance);
-        RemoveLegend("engaged"); ClearEngagement();
-        if (fiance is not null) { fiance.RemoveLegend("engaged"); fiance.ClearEngagement(); }
+        EndEngagement();
+        fiance?.EndEngagement();
     }
 
-    /// <summary>Finalize a divorce on BOTH sides (same "don't dangle the other party" reasoning as
-    /// <see cref="BreakOffEngagement"/>).</summary>
+    /// <summary>THIS player's half of a broken engagement: the "engaged" legend and the engagement fields, each
+    /// saved as before. One critical section on this player, taken here (#29). From the clicking player's own
+    /// dialog it is the monitor already held; on the fiancé it is a cross-session entry from the clicker's thread,
+    /// which holds the clicker's monitor and never <c>World._lock</c>, so it is taken by <c>StateRank</c>. Before
+    /// this the clicker's thread wrote the fiancé's legend and engagement without the fiancé's monitor: in a Debug
+    /// build <c>SaveChar</c>'s <c>_char</c> guard (a <c>Debug.Assert</c>, which ends a game process) fired, and in
+    /// Release it was an unguarded write.</summary>
+    internal void EndEngagement()
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        RemoveLegend("engaged"); ClearEngagement();
+    }
+
+    /// <summary>Finalize a divorce on BOTH sides (same "don't dangle the other party" reasoning, and the same
+    /// offline rule, as <see cref="BreakOffEngagement"/>). Each side's half is <see cref="EndMarriage"/>.</summary>
     internal void FinishDivorce()
     {
         var spouse = _world.Online.FindPlayer(_char.Spouse);
+        EndMarriage();
+        spouse?.EndMarriage();
+    }
+
+    /// <summary>THIS player's half of a divorce: the "married" legend, the spouse and one love keepsake, each saved
+    /// as before, in one critical section on this player taken here (the <see cref="EndEngagement"/> shape and
+    /// reasons).</summary>
+    internal void EndMarriage()
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         RemoveLegend("married"); SetSpouse(""); TakeItem("love", 1);
-        if (spouse is not null) { spouse.RemoveLegend("married"); spouse.SetSpouse(""); spouse.TakeItem("love", 1); }
     }
 
     /// <summary>Spend coin if the player can afford it (refresh HUD + persist); false, unchanged, if they can't.</summary>

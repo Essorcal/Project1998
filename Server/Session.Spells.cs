@@ -2208,11 +2208,22 @@ public sealed partial class Session
     internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
     internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.PeerTotals().armor;  // effective AC (lower=better)
     internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
-    internal void LuaSetTargetMana(int n)
+    internal void LuaSetTargetMana(int n)    => _pcSpellTarget?.ReceiveSetMana(n);
+
+    /// <summary>A Mana Gift or a Mana Steal sets THIS player's mana (the verbs' <c>setTargetMana</c>), clamped to its
+    /// effective maximum, and pushes the stats that show it. Cross-session: called on the target from the caster's
+    /// thread, which holds the caster's monitor and the Lua gate and never <c>World._lock</c>, so this takes the
+    /// target's monitor here, by <c>StateRank</c>, the <see cref="ReceiveFlush"/> shape. On yourself it is the
+    /// monitor the cast already holds. The verb computed <paramref name="n"/> under the caster's monitor, from its own
+    /// read of the target's mana (<see cref="LuaTargetMana"/>, made without the target's monitor, as it always was);
+    /// nothing here decides it again.
+    /// <para>Before this the caster's thread wrote the target's <c>_char.Mp</c> without the target's monitor. No guard
+    /// covers <c>Mp</c> (the write marks nothing dirty), so it was unguarded in both builds.</para></summary>
+    internal void ReceiveSetMana(int n)
     {
-        if (_pcSpellTarget is null) return;
-        _pcSpellTarget._char.Mp = (uint)Math.Clamp(n, 0, (int)_pcSpellTarget.EffMaxMp);
-        _pcSpellTarget.SendStats();
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp);
+        SendStats();
     }
     internal void LuaTellTarget(SpellDef sp) { if (_pcSpellTarget is not null) TellTarget(_pcSpellTarget, sp); }
     internal void LuaFlushTarget(bool endHolds) => _pcSpellTarget?.ReceiveFlush(endHolds);
@@ -2839,10 +2850,19 @@ public sealed partial class Session
     ///
     /// <para><paramref name="category"/> is the RTK checkIfCast exclusivity slot, and passing it is what makes
     /// <see cref="HasStatusCategory"/> see the buff at all. A categorised buff lands even with no stat of its
-    /// own — the slot IS the effect — while an uncategorised one with nothing to apply stays a no-op.</para></summary>
+    /// own — the slot IS the effect — while an uncategorised one with nothing to apply stays a no-op.</para>
+    /// <para>Cross-session for a TargetBuff cast at another player (the Valor family): <see cref="LuaApplyBuff"/>
+    /// calls this on the target from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>. So it takes this player's monitor here, at its definition, by <c>StateRank</c> like
+    /// <see cref="ReceiveCurse"/>; on a self-cast it is the monitor the cast already holds. The verb decided the cast
+    /// (the slot check and the mana) under the caster's monitor; nothing here decides it again. Before this the
+    /// caster's thread wrote the target's list without the target's monitor: in a Debug build the <c>_buffs</c> guard
+    /// (a <c>Debug.Assert</c>, which ends a game process) fired in <c>BuffRemoveAll</c> with the mana already spent,
+    /// and in Release it was an unguarded write.</para></summary>
     internal void ReceiveTimedBuff(IReadOnlyList<string> stats, IReadOnlyList<string> amounts,
                                    int durMs, string key, string name, string category)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0) return;
         category ??= "";
         BuffRemoveAll(b => b.Key == key);   // refresh, don't stack — once, for every stat
@@ -2922,8 +2942,13 @@ public sealed partial class Session
 
     // Sanctuary-line deduction (sanctuary/protect_soul/magic_shield/guard_life) cast on us/self — overrides any
     // active Cunning for its whole duration. `mult` is the incoming-damage multiplier (0.5 = take half).
+    // Cross-session when cast at another player: LuaApplyDeduction calls this on the target from the caster's
+    // thread (the caster's monitor and the Lua gate, never World._lock), so it takes this player's monitor here,
+    // by StateRank; from a self-cast or a potion (ItemApplyWard) it is the monitor already held. No guard covers
+    // the _sancDeduct* fields, so before this the caster's thread wrote them unguarded in both builds.
     internal void ApplySanctuaryDeduction(double mult, int durMs, string name)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0) return;
         _sancDeduct = Math.Clamp(mult, 0.0, 1.0);
         _sancDeductUntil = Environment.TickCount64 + durMs;
