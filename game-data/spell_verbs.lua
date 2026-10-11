@@ -700,17 +700,35 @@ end
 
 -- Cleanse (RTK poet dispell): chance-based FULL buff/debuff wipe on a targeted player (self-castable). Success =
 -- (120 + clamp(targetAC,-60,70) - floor((targetWill-casterWill)/10)) / 2, floored at 10%. 200 mana, no cooldown.
+-- Cast at ANOTHER player it keeps three rules Caleb set on 2026-10-10, on the source survey
+-- (briefs/reports/dispell-sources-survey-2026-10-10.md in the coordination workspace):
+--   * Staff are exempt. A cast at a GM fizzles: "Fizzle.", nothing spent, nothing cleared. The staff test is
+--     Approach and Summon's (ctx.targetIsGm, the GM roster), but a GM caster is refused too: the exemption is about
+--     the target. @ban and @mute refuse a GM target whoever asks; Approach and Summon's GM pass is RTK's rule for
+--     moving staff (approach.lua, summon.lua), and RTK's dispell.lua has no staff rule at all.
+--   * A won roll also ends the two holds that outlive their slot entries: a Doze's sleep (with the harder next hit
+--     it armed) and a venom. tswolf and the Atlas say Dispell removes all spells on the target, and RTK's
+--     flushDuration ends both. flushTarget(true) does it in the same section of the target's monitor.
+--   * A lost roll is RTK's (dispell.lua:37-40 and its three twins): "Something went wrong." and nothing else, no
+--     cast pose and no mana. So the roll comes before the spend, and the false return keeps HandleCast's "You cast
+--     X." and pose back. No era source says a Dispell could fail at all; RTK is the only one for the line and cost.
+-- A Dispell on yourself is unchanged, as the rules name another player: it pays before its roll, a lost one still
+-- says "You cast X.", and a venom on you stays.
 function verbs.cleanse(ctx, row)
   local cost = row.mana or 200
   if ctx.mp < cost then ctx:say("You do not have enough mana."); return false end
   if not ctx:pcTarget() then return false end
+  local other = not ctx.targetIsSelf
+  if other and ctx.targetIsGm then ctx:say("Fizzle."); return false end
   local armor = math.max(-60, math.min(70, ctx.targetArmor))
   local prot  = math.floor((ctx.targetWill - ctx.will) / 10)
   local rate  = math.max(10, math.ceil((120 + armor - prot) / 2))
+  local won   = ctx:roll(rate)
+  if not won and other then ctx:say("Something went wrong."); return false end
   ctx:setMana(ctx.mp - cost)
-  if not ctx:roll(rate) then ctx:say("Something went wrong."); return true end
-  ctx:flushTarget()
-  if not ctx.targetIsSelf then ctx:tellTarget() end
+  if not won then ctx:say("Something went wrong."); return true end
+  ctx:flushTarget(other)
+  if other then ctx:tellTarget() end
   ctx:fx(6, 34)
   return true
 end

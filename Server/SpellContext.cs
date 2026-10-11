@@ -379,8 +379,9 @@ public sealed class SpellContext
     public void   tellTarget()    => _s.LuaTellTarget(_sp);
     /// <summary>Clear the resolved target's buff list and timed stances (RTK flushDuration; not the ward flags,
     /// the Sanctuary and Cunning reductions or the enchant), inside the target's own monitor
-    /// (<c>Session.ReceiveFlush</c>).</summary>
-    public void   flushTarget()   => _s.LuaFlushTarget();
+    /// (<c>Session.ReceiveFlush</c>). With <paramref name="endHolds"/>, the same section also wakes them from a
+    /// Doze (the sleep and the harder next hit it armed) and ends a venom.</summary>
+    public void   flushTarget(bool endHolds) => _s.LuaFlushTarget(endHolds);
     /// <summary>Revive the resolved (dead) target in place at full health.</summary>
     public void   reviveTarget()  => _s.LuaReviveTarget(_sp);
     /// <summary>Leap up to <paramref name="maxDist"/> tiles in the faced direction (collision-stopped); returns
