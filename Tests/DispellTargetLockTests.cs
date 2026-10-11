@@ -34,8 +34,7 @@ namespace Tests;
 [Collection("world")]
 public sealed class DispellTargetLockTests
 {
-    private const ushort CastMap = 62390, HeldMap = 62391, SelfMap = 62392, RaceMap = 62393, RollMap = 62394,
-                         PinMap = 62395;
+    private const ushort CastMap = 62390, HeldMap = 62391, SelfMap = 62392, RaceMap = 62393, PinMap = 62395;
 
     /// <summary>The probe entries a target carries before a Dispell: a stat buff, and a categorised status in
     /// the <c>paras</c> slot (a Human Barrier's hold), both written by the same writer a curse uses.</summary>
@@ -192,7 +191,8 @@ public sealed class DispellTargetLockTests
     /// <summary>The casts that clear the caster's own buffs are unchanged. A Dispell on yourself, through the real
     /// frame with your own id, clears your buff list and your fury, takes 200 mana, says "You cast Dispell." and
     /// tells you nothing else. (Against yourself the rate is at most 95%, so a lost roll is cast again; each cast
-    /// costs 200 either way.) Cure Paralysis clears the caster's own <c>paras</c> entry, Purge its <c>venoms</c>
+    /// costs 200 either way, since Caleb's rules of 2026-10-10 for a lost roll name a cast at another player:
+    /// <c>DispellRulesTests</c>.) Cure Paralysis clears the caster's own <c>paras</c> entry, Purge its <c>venoms</c>
     /// entry and Atone its <c>curses</c> entry, each for its row's mana. Not a guard of this fix: green before and
     /// after it, in both builds.
     /// <para><b>Why the cures are not frames.</b> The packet handler lets three gated frames through in each
@@ -254,58 +254,6 @@ public sealed class DispellTargetLockTests
         }
     }
 
-    // ===== mana on a cast that does not land ===========================================================
-
-    /// <summary>Today's Release behaviour, kept. A Dispell that loses its roll still costs its 200 mana (the verb
-    /// spends before it rolls) and says "Something went wrong."; the target is told nothing and keeps everything.
-    /// One refused before the roll costs nothing: with too little mana ("You do not have enough mana.") and with
-    /// nobody to aim at (silent). The roll is made unlikely to win (caster Will 0 against Will 255 and AC -60: 18%)
-    /// and cast until it loses. Not a guard of this fix: green before and after it, in Release.</summary>
-    [Fact]
-    public void ADispellThatLosesItsRollStillCostsItsManaAndARefusedOneCostsNothing()
-    {
-        var sp = Content.SpellByKey("dispell_poet")!;
-        var (v, vOut, _) = Plain("DispellRollV", RollMap, 50, 50, c => { c.Will = 255; c.Ac = -60; });
-        var (d, dOut, dc) = Poet(RollMap, 50, 52, will: 0, sp);
-        var (poor, poorOut, poorc) = Poet(RollMap, 54, 50, will: 255, sp);
-        try
-        {
-            poorc.Mp = Cost - 1;
-            poor.Receive(SpellCastSupport.CastFrame(0, v.PlayerId));
-            Assert.Equal(Cost - 1, poorc.Mp);
-            Assert.Equal(new[] { "You do not have enough mana." }, SpellCastSupport.MiniTexts(poorOut));
-
-            // An id nobody online has, and nobody on the faced tile: nothing resolves.
-            d.Receive(SpellCastSupport.CastFrame(0, 0x7FFF_FFF0));
-            Assert.Equal(Mana, dc.Mp);
-            Assert.Empty(SpellCastSupport.MiniTexts(dOut));
-
-            GiveEffects(v);
-            vOut.Clear();
-            bool lost = false;
-            for (int casts = 1; casts <= 200 && !lost; casts++)
-            {
-                dOut.Clear();
-                uint before = dc.Mp;
-                bool ok = false;
-                d.WithState(() => ok = (bool)ApplyCast.Invoke(d, new object?[] { sp, v.PlayerId, null })!);
-                Assert.True(ok, $"cast {casts} was refused");
-                Assert.Equal(before - Cost, dc.Mp);
-                lost = SpellCastSupport.BuffEntry(v, BuffKey) is not null;
-                if (!lost) { GiveEffects(v); vOut.Clear(); continue; }
-                Assert.Equal(new[] { "Something went wrong." }, SpellCastSupport.MiniTexts(dOut));
-                Assert.Empty(SpellCastSupport.MiniTexts(vOut));
-                Assert.NotNull(SpellCastSupport.BuffEntry(v, HoldKey));
-                Assert.True(SpellCastSupport.Rage(v).LeftMs > 0);
-            }
-            Assert.True(lost, "200 casts at 18% never lost a roll");
-        }
-        finally
-        {
-            foreach (var s in new[] { v, d, poor }) _fx.World.LeaveMap(s, RollMap);
-        }
-    }
-
     // ===== locks ======================================================================================
 
     /// <summary>Two Poets Dispell each other again and again while each also buffs itself, sends the other a party
@@ -315,10 +263,11 @@ public sealed class DispellTargetLockTests
     /// monitor from inside the sender's, outside Lua, so the gate does not keep it apart from the other's Dispell;
     /// each step takes the stepper's monitor and then <c>World._lock</c>, and is refused (the tile is taken); the
     /// tick's regen beat takes each monitor to expire buffs. Nothing may stall (<see cref="StallWatch"/>). Every
-    /// cast and party line goes through and every won roll is told to
-    /// its target; no self-buff disappears inside its own caster's critical section (held a fifth of a
-    /// millisecond past the cast, as a handler's other work would), which is what a write from outside the
-    /// monitor does; and each buff list ends whole, its expiry hint the real minimum.
+    /// self-buff and party line goes through; every Dispell either wins (the cast goes through and its target is
+    /// told) or loses (it is refused, at no cost, and its caster is told, Caleb's rule of 2026-10-10); no self-buff
+    /// disappears inside its own caster's critical section (held a fifth of a millisecond past the cast, as a
+    /// handler's other work would), which is what a write from outside the monitor does; and each buff list ends
+    /// whole, its expiry hint the real minimum.
     /// <para>Red on 08ed6ff in both builds. Debug: the guard fires inside every won Dispell, so only the lost
     /// rolls go through. Release: a Poet enumerating its own list inside its own monitor (lapsing its Might)
     /// throws "Collection was modified", because the other Poet's Dispell cleared that list from outside it.</para>
@@ -396,7 +345,6 @@ public sealed class DispellTargetLockTests
             Assert.Null(fault);
             Assert.Equal(0, lostInSection);
             Assert.Equal((Rounds, Rounds), (buffsA, buffsB));
-            Assert.Equal((Rounds, Rounds), (dispellsA, dispellsB));
             var aLines = SpellCastSupport.MiniTexts(aOut);
             var bLines = SpellCastSupport.MiniTexts(bOut);
             Assert.DoesNotContain("Dispell isn't working right now.", aLines);
@@ -407,6 +355,7 @@ public sealed class DispellTargetLockTests
             int lostA = aLines.Count(l => l == "Something went wrong.");
             int lostB = bLines.Count(l => l == "Something went wrong.");
             Assert.Equal((Rounds, Rounds), (wonA + lostA, wonB + lostB));
+            Assert.Equal((wonA, wonB), (dispellsA, dispellsB));   // a lost roll is refused, a won one goes through
             Assert.True(wonA > 0 && wonB > 0, $"no Dispell won ({wonA}, {wonB})");
             Assert.Equal((Rounds, Rounds), (aLines.Count(l => l == Ping), bLines.Count(l => l == Ping)));
             AssertBuffListWhole(a);
@@ -445,16 +394,16 @@ public sealed class DispellTargetLockTests
             Assert.True(low.StateRank < v.StateRank && v.StateRank < high.StateRank);
             GiveEffects(v);
 
-            var wrongWay = Record.Exception(() => _fx.World.UnderWorldLockForTest(v.ReceiveFlush));
+            var wrongWay = Record.Exception(() => _fx.World.UnderWorldLockForTest(() => v.ReceiveFlush(endHolds: true)));
             Assert.NotNull(wrongWay);
             Assert.Contains("lock order violated: World._lock is held while entering a session monitor", wrongWay!.Message);
             Assert.NotNull(SpellCastSupport.BuffEntry(v, BuffKey));
 
-            Assert.Null(Record.Exception(() => low.WithState(v.ReceiveFlush)));
+            Assert.Null(Record.Exception(() => low.WithState(() => v.ReceiveFlush(endHolds: true))));
             AssertEffectsCleared(v);
 
             GiveEffects(v);
-            Assert.Null(Record.Exception(() => high.WithState(v.ReceiveFlush)));
+            Assert.Null(Record.Exception(() => high.WithState(() => v.ReceiveFlush(endHolds: true))));
             AssertEffectsCleared(v);
         }
         finally

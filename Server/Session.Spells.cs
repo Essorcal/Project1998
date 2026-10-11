@@ -2214,7 +2214,7 @@ public sealed partial class Session
         _pcSpellTarget.SendStats();
     }
     internal void LuaTellTarget(SpellDef sp) { if (_pcSpellTarget is not null) TellTarget(_pcSpellTarget, sp); }
-    internal void LuaFlushTarget()           => _pcSpellTarget?.ReceiveFlush();
+    internal void LuaFlushTarget(bool endHolds) => _pcSpellTarget?.ReceiveFlush(endHolds);
 
     /// <summary>A won Dispell-family cast lands on THIS player (the cleanse verb's <c>flushTarget</c>): strip
     /// the buff list and the timed stances (<see cref="FlushDurations"/>) and push the stats that show it.
@@ -2223,14 +2223,27 @@ public sealed partial class Session
     /// <c>StateRank</c> like every peer write (<see cref="ReceiveSleep"/>, <see cref="ReceiveParalysis"/>). On
     /// yourself it is the monitor the cast already holds. The verb decided the cast (its mana and its roll)
     /// under the caster's monitor; nothing here decides it again.
-    /// <para>Before this the caster's thread ran the target's <c>FlushDurations</c> and <c>SendStats</c> without
+    /// <para><paramref name="endHolds"/> (a cast at another player; Caleb, 2026-10-10): inside the same section,
+    /// also end the two holds that run on timers of their own and so outlive their slot entries. A Doze's sleep
+    /// ends through <see cref="WakeUp"/> ("You wake up."), and the harder next hit the Doze armed goes with it,
+    /// since a sleep is the only thing that arms one on a player (the <c>arch_debuff</c> verb) and it was armed
+    /// for that sleep's length. A venom ends through <see cref="CurePoison"/> ("The poison passes."). Those are
+    /// the writers the timers' own lapses and the category cures use, under this monitor too. The verb passes
+    /// false on yourself, where a cast is unchanged: you cannot cast asleep, and a venom on you stays.</para>
+    /// <para>Before #339 the caster's thread ran the target's <c>FlushDurations</c> and <c>SendStats</c> without
     /// the target's monitor. In a Debug build the <c>_buffs</c> guard fired inside the verb, so the caster read
     /// "Dispell isn't working right now." with the mana spent and nothing was cleared; in Release it was an
     /// unguarded write to another session's list (PR #338 re-checks, "Pre-existing").</para></summary>
-    internal void ReceiveFlush()
+    internal void ReceiveFlush(bool endHolds)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         FlushDurations();
+        if (endHolds)
+        {
+            WakeUp(byDamage: false);
+            _dmgAmp = 0; _dmgAmpUntil = 0;
+            CurePoison();
+        }
         SendStats();
     }
     internal void LuaReviveTarget(SpellDef sp)
@@ -3229,8 +3242,8 @@ public sealed partial class Session
     // ClearAllTimedEffects: the ward flags (Harden Body), the Sanctuary and Cunning reductions and the enchant
     // stay, and only @dispel and death clear those (PR #338 re-check 2, F10). Nor does it touch the two holds
     // that run on timers of their own: a Doze's _sleepUntil and a venom's _poisonUntil keep running after
-    // their slot entries go. Reached from another player's cast only through ReceiveFlush, inside this
-    // player's monitor.
+    // their slot entries go, unless ReceiveFlush is asked to end them too (a cast at another player). Reached
+    // from another player's cast only through ReceiveFlush, inside this player's monitor.
     private void FlushDurations()
     {
         BuffClear();
