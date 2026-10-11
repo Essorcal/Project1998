@@ -136,9 +136,14 @@ public sealed partial class Session
     }
 
     /// <summary>Apply a mute/unmute to an ALREADY-ONLINE session, so a GM's command takes effect on the next
-    /// line the player types rather than at their next login.</summary>
+    /// line the player types rather than at their next login.
+    /// <para>Cross-session: <c>@mute</c> and <c>@unmute</c> call this on the target from the GM's thread, which holds
+    /// the GM's monitor and never <c>World._lock</c> (<c>FindPlayer</c> releases it before returning), so it takes the
+    /// target's monitor here, by <c>StateRank</c>; the database record is written before, outside it. Before this the
+    /// GM's thread wrote the target's mute fields, which no guard covers, without the target's monitor.</para></summary>
     internal void ApplyMute(long until, string reason)
     {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
         _mutedUntil = until;
         _muteReason = reason ?? "";
         if (IsMuted()) ReportMuted();
