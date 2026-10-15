@@ -13,10 +13,11 @@ namespace Tests;
 /// Before the guards (#289's shape) the throw ended the whole phase and everything after it waited until
 /// the content was fixed. <see cref="TickPhaseGuardTests"/> has the three-point fact.
 ///
-/// <para>The map-entry path is NOT guarded (<c>SpawnDirector.EnsureMaterialized</c>, from
-/// <c>World.EnterMap</c>), and the last two facts here pin what a throw there does today, so that the
-/// follow-up which changes it has to change them on purpose: the throw leaves <c>World.EnterMap</c>, the
-/// entering player is on no map's roster, and the rows after the bad one are lost.</para>
+/// <para>The map-entry path (<c>SpawnDirector.EnsureMaterialized</c> with a newcomer, from
+/// <c>World.EnterMap</c>) has the same two guards, the #292 follow-up: the entry goes ahead, every other row is
+/// placed, and the fault is written once per entry by the entering thread after the lock, never through the
+/// tick's throttle, with its stack only when one is due. <c>@reload</c>'s re-materialise (the same method with
+/// no newcomer) is still unguarded, and the last fact pins that, for the follow-up that changes it.</para>
 ///
 /// <para>The throws are real lines reached with synthetic content that no loader produces. A point whose
 /// creature has a null key makes <c>Materialize</c>'s <c>MobSpawnRules.TryGetValue(d.Key, ...)</c> throw
@@ -29,7 +30,9 @@ namespace Tests;
 /// <c>world</c> collection, so every seated player is removed and every registration undone in
 /// <c>finally</c>. The fault throttle is per world, so each fact uses creature ids no other fact uses: a
 /// fact that reused another's (phase, map, creature, exception type) inside the throttle's quiet window
-/// would see its first throw counted rather than stacked.</para>
+/// would see its first throw counted rather than stacked. The map-entry path's record of which stacks it
+/// has written is per world as well; <c>ForgetMapForTest</c> clears a map's, and the ids stay unique
+/// anyway.</para>
 /// </summary>
 [Collection("world")]
 public class SpawnRowGuardTests
@@ -40,7 +43,7 @@ public class SpawnRowGuardTests
 
     // Content-free maps for the points (no registry row, no terrain, no spawns); map 485 for the groups,
     // which need a real box to roll in (SpawnDirectorTests' map, asserted empty below).
-    private const ushort ThrottleMap = 60200, EntryPointMap = 60201, ObserverMap = 60202;
+    private const ushort ThrottleMap = 60200, EntryPointMap = 60201, ObserverMap = 60202, ReloadMap = 60221;
     private const ushort GroupMap = 485;
 
     private const string RowRepeatNeedle = "spawn rows still throwing";
@@ -190,65 +193,93 @@ public class SpawnRowGuardTests
     }
 
     // =====================================================================================================
-    // The map-entry path, unguarded: what a throw there does TODAY (item 4 of the spawn-row-guards packet).
+    // The map-entry path: the same two guards, written by the entering thread (the #292 follow-up).
     // =====================================================================================================
 
-    /// <summary>A due group whose middle member throws, met on map ENTRY rather than on the tick. The throw
-    /// leaves <c>World.EnterMap</c> (so a real entry's per-packet catch, or the login path's, is what logs
-    /// it), after the member before the bad one was filled and before the one after it; the group's clock is
-    /// not stamped; the entering player is on no map's roster; and because the group stays due, the NEXT
-    /// entry throws the same way. While the content is broken, nobody can enter the map, and the tick never
-    /// refills it either, since phase (1.1) skips a map with nobody on it.
+    private const int GroupEntrants = 3;
+
+    /// <summary>A due group whose middle member throws, met on map ENTRY by three players in turn. Every
+    /// entry goes ahead: the first fills the member before the bad one AND the member after it to their caps,
+    /// the bad one places nothing, and all three players end up on the map's roster. The group's clock is not
+    /// stamped, the tick path's rule, so the group stays due and each later entry meets the bad member again.
+    /// The fault is written once per entry, at Error, by the entering thread with the lock released: the
+    /// first entry writes it with its stack, and each entry after that names it on one line with no stack.
+    /// That is the bound on a broken map entered again and again: one stack, then one short line an entry.
     ///
-    /// <para>A characterisation, not a guard: it pins that this slice left the entry path as it was. The
-    /// follow-up that guards it will turn it red on purpose. Shown live by passing <c>guarded: true</c> on
-    /// <c>EnsureMaterialized</c>'s <c>RefillGroups</c> call: red, "Assert.Throws() Failure: No exception was
-    /// thrown".</para></summary>
+    /// <para>Falsified, Debug and Release (the w2-map-entry report): the guard off on the entry path
+    /// (<c>guarded: false</c> on <c>EnsureMaterialized</c>'s <c>RefillGroups</c> call) is red, the first
+    /// entry throws <see cref="ArgumentOutOfRangeException"/>; the stack written on every entry
+    /// (<c>AdmitEntryStack</c> always true) is red on the second entry's line; the clock stamped whatever
+    /// happened (<c>if (!threw)</c> dropped in <c>RefillGroups</c>) is red on the clock.</para></summary>
     [Fact]
-    public void OnEntryABadGroupMemberFailsTheEntryAndEveryEntryAfterIt()
+    public void OnEntryABadGroupMemberCostsOnlyThatMember()
     {
         AssertGroupMapIsEmptyContent();
         var before = Creature(990_131, "test_entry_before");
-        var broken = Creature(990_132, "test_entry_broken", moveTime: -1);
+        var broken = Creature(990_132, "test_entry_broken", moveTime: -1);   // BuildMob throws for it
         var after = Creature(990_133, "test_entry_after");
 
         var (observer, _) = _fx.Player("EntryGroupObserver", ObserverMap, x: 5, y: 10);   // reads GroupMap from elsewhere
+        var entrants = new List<Session>();
         try
         {
             _fx.World.UnderWorldLockForTest(() =>
                 Spawns.AddGroupForTest(GroupMap, timerSec: 300, (before, 2), (broken, 1), (after, 2)));
 
-            Assert.Throws<ArgumentOutOfRangeException>(() => _fx.Player("EntryGroupVictim1", GroupMap, x: 1, y: 1));
+            IReadOnlyList<LogLineSink.Entry> lines;
+            using (var sink = LogLineSink.Acquire(probe: () => _fx.World.HoldsWorldLock))
+            {
+                for (int i = 0; i < GroupEntrants; i++)
+                    entrants.Add(_fx.Player($"EntryGroupEntrant{i}", GroupMap, x: (ushort)(1 + i), y: 1).session);
+                lines = sink.Lines;
+            }
 
-            Assert.Equal(2, MobsOf(observer, GroupMap, before).Count);   // filled before the throw
-            Assert.Empty(MobsOf(observer, GroupMap, after));              // never reached
-            Assert.Equal(0, Locked(() => Spawns.GroupClockForTest(GroupMap)));
-            Assert.Empty(_fx.World.View(observer, GroupMap).peers);       // the victim is on no roster here
+            Assert.Equal(2, MobsOf(observer, GroupMap, before).Count);
+            Assert.Equal(2, MobsOf(observer, GroupMap, after).Count);   // reached, past the bad member
+            Assert.Empty(MobsOf(observer, GroupMap, broken));
+            Assert.Equal(0, Locked(() => Spawns.GroupClockForTest(GroupMap)));   // the batch did not finish
+            Assert.Equal(entrants.Select(s => s.PlayerId).OrderBy(id => id),
+                         _fx.World.View(observer, GroupMap).peers.Select(p => p.Id).OrderBy(id => id));
 
-            Assert.Throws<ArgumentOutOfRangeException>(() => _fx.Player("EntryGroupVictim2", GroupMap, x: 1, y: 1));
-            Assert.Empty(_fx.World.View(observer, GroupMap).peers);
-            Assert.Empty(MobsOf(observer, GroupMap, after));
+            var ours = lines.Where(e => e.Line.Contains($"creature id {broken.Id}")).ToList();
+            Assert.Equal(GroupEntrants, ours.Count);   // once per entry
+            Assert.All(ours, e => Assert.Equal(LogLevel.Error, e.Level));
+            Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+            var first = ours[0];
+            Assert.Contains($"map entry: a spawn group member threw — 'test_entry_broken' (creature id {broken.Id}) on map {GroupMap}", first.Line);
+            Assert.Contains(nameof(ArgumentOutOfRangeException), first.Line);
+            Assert.Contains("\n      ", first.Line);   // Log.Detail's continuation: the stack is on it
+
+            foreach (var later in ours.Skip(1))
+            {
+                Assert.Contains("map entry: spawn rows still throwing", later.Line);
+                Assert.Contains($"a spawn group member 'test_entry_broken' (creature id {broken.Id}) on map {GroupMap} {nameof(ArgumentOutOfRangeException)} x1", later.Line);
+                Assert.DoesNotContain("\n", later.Line);   // named, with no stack
+            }
         }
         finally
         {
+            foreach (var s in entrants) _fx.World.LeaveMap(s, GroupMap);
             _fx.World.LeaveMap(observer, ObserverMap);
             _fx.World.UnderWorldLockForTest(() => Spawns.ForgetMapForTest(GroupMap));
         }
     }
 
-    /// <summary>Three points, the middle one bad, met on a map's FIRST entry. The first entry throws out of
-    /// <c>World.EnterMap</c> with the first point materialised; the map is already marked materialised
-    /// (the flag is set before the walk), so the second entry succeeds but never walks the points again;
-    /// and the third point never appears, not on that entry and not on the beats after it, because a point
-    /// that was never materialised has no respawn clock for phase (1) to find. It stays missing until an
-    /// <c>@reload</c> rebuilds the rosters.
+    /// <summary>Three points, the middle one bad, met on a map's FIRST entry. The entry goes ahead with the
+    /// point before the bad one AND the point after it materialised on their tiles; the bad one places
+    /// nothing, and is written once, at Error with its stack, by the entering thread with the lock released.
+    /// The bad point keeps no clock, so nothing retries it: the beats after the entry write nothing more for
+    /// it, and a second entry does not walk the points again. It costs itself until an <c>@reload</c>
+    /// rebuilds the roster, where before the guard every point after it was lost with it.
     ///
-    /// <para>A characterisation, not a guard, like the fact above.</para></summary>
+    /// <para>Falsified, Debug and Release (the w2-map-entry report), by the point guard's catch filter made
+    /// false on the entry path: red, the entry throws <see cref="ArgumentNullException"/>.</para></summary>
     [Fact]
-    public void OnFirstEntryABadPointFailsTheEntryAndLosesThePointsAfterIt()
+    public void OnFirstEntryABadPointCostsOnlyThatPoint()
     {
         var before = Creature(990_141, "test_entry_point_before");
-        var broken = Creature(990_142, null!);
+        var broken = Creature(990_142, null!);   // Materialize's first line refuses it
         var after = Creature(990_143, "test_entry_point_after");
 
         _fx.World.UnderWorldLockForTest(() =>
@@ -257,24 +288,87 @@ public class SpawnRowGuardTests
             Spawns.AddPointForTest(EntryPointMap, broken, 5, 5, respawnEvery: 1);
             Spawns.AddPointForTest(EntryPointMap, after, 7, 5, respawnEvery: 1);
         });
-        Session? watcher = null;
+        Session? first = null, second = null;
         try
         {
-            Assert.Throws<ArgumentNullException>(() => _fx.Player("EntryPointVictim", EntryPointMap, x: 5, y: 10));
+            IReadOnlyList<LogLineSink.Entry> lines;
+            using (var sink = LogLineSink.Acquire(probe: () => _fx.World.HoldsWorldLock))
+            {
+                (first, _) = _fx.Player("EntryPointFirst", EntryPointMap, x: 5, y: 10);
+                for (int beat = 0; beat < 3; beat++) _fx.World.TickOnceForTest();
+                (second, _) = _fx.Player("EntryPointSecond", EntryPointMap, x: 6, y: 10);
+                lines = sink.Lines;
+            }
+
             Assert.True(Locked(() => Spawns.IsMaterializedForTest(EntryPointMap)));
+            var b = Assert.Single(MobsOf(first, EntryPointMap, before));
+            Assert.Equal(((ushort)3, (ushort)5), (b.X, b.Y));
+            var a = Assert.Single(MobsOf(first, EntryPointMap, after));   // the same entry, past the bad point
+            Assert.Equal(((ushort)7, (ushort)5), (a.X, a.Y));
+            Assert.Empty(MobsOf(first, EntryPointMap, broken));
+            Assert.Contains(_fx.World.View(second, EntryPointMap).peers, p => p.Session == first);   // on the roster
 
-            (watcher, _) = _fx.Player("EntryPointWatcher", EntryPointMap, x: 5, y: 10);   // succeeds now
-            for (int beat = 0; beat < 3; beat++) _fx.World.TickOnceForTest();
-
-            Assert.Single(MobsOf(watcher, EntryPointMap, before));
-            Assert.Empty(MobsOf(watcher, EntryPointMap, broken));
-            Assert.Empty(MobsOf(watcher, EntryPointMap, after));   // lost until a reload
-            Assert.DoesNotContain(_fx.World.View(watcher, EntryPointMap).peers, p => p.Session.CharName == "EntryPointVictim");
+            var ours = lines.Where(e => e.Line.Contains($"(creature id {broken.Id}) on map {EntryPointMap}")).ToList();
+            var stack = Assert.Single(ours);   // the entry's; not the beats', not the second entry's
+            Assert.Contains($"map entry: a spawn point threw — '' (creature id {broken.Id}) on map {EntryPointMap}", stack.Line);
+            Assert.Contains(nameof(ArgumentNullException), stack.Line);
+            Assert.Contains("\n      ", stack.Line);
+            Assert.Equal(LogLevel.Error, stack.Level);
+            Assert.False(stack.Probe, $"written with World._lock held: {stack.Line}");
         }
         finally
         {
-            if (watcher is not null) _fx.World.LeaveMap(watcher, EntryPointMap);
+            if (first is not null) _fx.World.LeaveMap(first, EntryPointMap);
+            if (second is not null) _fx.World.LeaveMap(second, EntryPointMap);
             _fx.World.UnderWorldLockForTest(() => Spawns.ForgetMapForTest(EntryPointMap));
+        }
+    }
+
+    // =====================================================================================================
+    // @reload's re-materialise: still unguarded (acceptance item 4 of the map-entry packet; a follow-up).
+    // =====================================================================================================
+
+    /// <summary>The call <c>@reload</c>'s re-materialise makes for each populated map
+    /// (<c>World.RebuildPopulation</c>: <c>EnsureMaterialized(mapId)</c>, with no newcomer), on a roster
+    /// whose middle point is bad. It throws, as it always has: the point before the bad one is materialised
+    /// and the one after it is not. The same roster met by a map entry costs only the bad point
+    /// (<see cref="OnFirstEntryABadPointCostsOnlyThatPoint"/>).
+    ///
+    /// <para>A characterisation, not a guard. The map-entry guard is in the same method, but this call keeps
+    /// the unguarded walk on purpose. Its faults would have to be written by <c>RebuildPopulation</c> after it
+    /// releases the lock (nothing is formatted under it, #109), which is a change to that method; and catching
+    /// here would turn a failed <c>@reload</c> into one reported as done, a visible change of its own. Both
+    /// belong to the follow-up, which will turn this red on purpose. Driven through the method rather than
+    /// through <c>RebuildPopulation</c>, because the rebuild re-reads its rows from <see cref="Content"/>, so
+    /// a test-registered bad row does not survive to the re-materialise.</para></summary>
+    [Fact]
+    public void OnReloadABadPointStillFailsTheRematerialise()
+    {
+        var before = Creature(990_151, "test_reload_point_before");
+        var broken = Creature(990_152, null!);
+        var after = Creature(990_153, "test_reload_point_after");
+
+        var (observer, _) = _fx.Player("ReloadObserver", ObserverMap, x: 5, y: 10);   // reads ReloadMap from elsewhere
+        try
+        {
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                Spawns.AddPointForTest(ReloadMap, before, 3, 5, respawnEvery: 1);
+                Spawns.AddPointForTest(ReloadMap, broken, 5, 5, respawnEvery: 1);
+                Spawns.AddPointForTest(ReloadMap, after, 7, 5, respawnEvery: 1);
+            });
+
+            Assert.Throws<ArgumentNullException>(() =>
+                _fx.World.UnderWorldLockForTest(() => Spawns.EnsureMaterialized(ReloadMap)));
+
+            Assert.Single(MobsOf(observer, ReloadMap, before));
+            Assert.Empty(MobsOf(observer, ReloadMap, broken));
+            Assert.Empty(MobsOf(observer, ReloadMap, after));   // never reached
+        }
+        finally
+        {
+            _fx.World.LeaveMap(observer, ObserverMap);
+            _fx.World.UnderWorldLockForTest(() => Spawns.ForgetMapForTest(ReloadMap));
         }
     }
 }

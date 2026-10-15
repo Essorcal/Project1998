@@ -1371,7 +1371,9 @@ public sealed partial class World
     // ---- players joining / leaving a map ------------------------------------------------------
 
     /// <summary>Register <paramref name="s"/> on <paramref name="mapId"/>, broadcast it to everyone
-    /// already there, and return the peers + mobs the caller should draw for the newcomer.</summary>
+    /// already there, and return the peers + mobs the caller should draw for the newcomer. A spawn row that
+    /// throws while the room is filled costs only itself: the entry goes ahead, and the fault is logged once,
+    /// after the lock (<see cref="SpawnDirector.EnsureMaterialized"/>).</summary>
     public (PeerTile[] peers, Mob[] mobs) EnterMap(Session s, ushort mapId)
     {
         // BEFORE the lock: first entry to a map runs EnsureMaterialized, whose spawn placement reads the
@@ -1381,12 +1383,13 @@ public sealed partial class World
         MapData.Prewarm(mapId);
 
         PeerTile[] peers; Mob[] mobs; PeerTile newcomer;
+        List<EntryFault>? faults = null;   // spawn rows that threw on this entry; null on an ordinary one
         lock (_lock)
         {
             // The room is filled BEFORE the newcomer joins the player list below, and that order stays. The
             // tile they are arriving on is handed to the fill instead, as taken, so no creature, ambush trap or
             // cold tile is placed on it (#122). Read under the lock, like the newcomer snapshot further down.
-            _spawnDirector.EnsureMaterialized(mapId, (s.PlayerX, s.PlayerY));   // instantiate this map's spawns on first entry
+            faults = _spawnDirector.EnsureMaterialized(mapId, (s.PlayerX, s.PlayerY));   // instantiate this map's spawns on first entry
             var m = Map(mapId);
             if (!m.Players.Contains(s)) m.Players.Add(s);
             m.ViewGen++;                    // a player roster change — the peer sweep reads this list
@@ -1405,6 +1408,9 @@ public sealed partial class World
         // the same reason: this loop is once per peer per map entry, and a capture here is a display class
         // plus a delegate on each of them.
         foreach (var p in peers) Try((p, newcomer), static t => t.p.Session.SyncPeer(t.newcomer), "SyncPeer (EnterMap)");   // tell the room about the newcomer (view-gated + tracked)
+        // A spawn row that threw while the room was filled was skipped and the entry went ahead. Its fault is
+        // written now, by this thread, with the lock released (World.MobFaults.cs), never under it (#109).
+        if (faults is not null) LogEntryFaults(faults);
         return (peers, mobs);
     }
 

@@ -8,7 +8,8 @@ namespace Server;
 // phase (1)-(1.7) (#106), one per spawn row inside phases (1) and (1.1) (World.SpawnDirector.cs), and two
 // in the mob-AI sweep, one per creature and one per map (#36, #109); this file is what happens to a caught
 // throw afterwards, once the lock is released. Its own file so the tick body keeps only the lines that queue
-// a fault.
+// a fault. The spawn row guards also run on map entry (World.EnterMap), on the entering session's thread;
+// those faults are written at the end of this file, by that thread, and never through the tick's throttles.
 public sealed partial class World
 {
     /// <summary>One throw caught by the mob-AI sweep, as the guard saw it. Queued under <c>_lock</c> —
@@ -134,7 +135,13 @@ public sealed partial class World
     ///
     /// <para>A row fault is a phase fault narrowed to one row, which is why it shares this record rather
     /// than being a sibling like <see cref="MobFault"/>: same phase names, same lock rule, same log path,
-    /// and the beat's one list of them already runs from the phase guards to the flush's finally.</para></summary>
+    /// and the beat's one list of them already runs from the phase guards to the flush's finally.</para>
+    ///
+    /// <para>The same two row guards also run on MAP ENTRY (<see cref="SpawnDirector.EnsureMaterialized"/>
+    /// with a newcomer), where no tick phase is running and <paramref name="Phase"/> only names the kind of row:
+    /// <see cref="PhRespawns"/> for a point, <see cref="PhRefills"/> for a group member. Those records are
+    /// carried in an <see cref="EntryFault"/> and written by <see cref="LogEntryFaults"/>, never by
+    /// <see cref="LogPhaseFaults"/>.</para></summary>
     internal readonly record struct PhaseFault(int Phase, Exception Error, bool Row = false, ushort Map = 0, MobDef? Def = null);
 
     /// <summary>What the throttle counts as "the same phase fault": the phase and the exception's type, so a
@@ -233,4 +240,66 @@ public sealed partial class World
 
     /// <summary>What a spawn row is in each phase that has them, for the log.</summary>
     private static string RowKind(int phase) => phase == PhRespawns ? "a spawn point" : "a spawn group member";
+
+    // ---- the map-entry path (World.EnterMap) ---------------------------------------------------------
+    //
+    // A map entry runs the spawn row guards under World._lock too (SpawnDirector.EnsureMaterialized), but on
+    // the ENTERING session's thread. Its faults are written here by that thread once it has released the lock,
+    // and never through the two throttles above: each has one owner, the tick thread, and neither is touched.
+
+    /// <summary>One spawn row that threw while a player entered a map: the row fault as the guard recorded it
+    /// (a <see cref="PhaseFault"/> whose <see cref="PhaseFault.Phase"/> names the kind of row), and whether
+    /// this entry writes its stack. That second half needs a record shared between entries, so it is decided
+    /// under <c>_lock</c> by <see cref="SpawnDirector"/>, where every entry already is; see
+    /// <see cref="LogEntryFaults"/> for what the two cost the log.</summary>
+    internal readonly record struct EntryFault(PhaseFault Row, bool Stack);
+
+    /// <summary>
+    /// Write one map entry's spawn row faults, on the entering session's thread, after <c>_lock</c> is
+    /// released. Every fault is written ONCE for the entry, at Error, naming the row's kind, its creature
+    /// (content key and id) and the map: in full, with the exception and its stack, when its stack is due —
+    /// the first time the fault is met on any entry, an hour after its last stack, or the first time after an
+    /// <c>@reload</c> — and otherwise named, with a count, on ONE line for the whole entry.
+    ///
+    /// <para><b>Bounded when a broken map is entered again and again, by any number of players.</b> An entry
+    /// costs the log at most one stack per fault whose stack is due, plus one line, however many rows threw.
+    /// A group with a bad member does not stamp its clock, so it stays due and every entry meets the bad
+    /// member again: N entries in an hour write its stack once and N short lines, never N stacks. A bad point
+    /// throws only on the entry that materialises its map, so once per process or per <c>@reload</c>. The
+    /// record behind "is the stack due" is bounded by the content, like the tick's throttle tables.</para>
+    /// </summary>
+    private void LogEntryFaults(List<EntryFault> faults)
+    {
+        Debug.Assert(!HoldsWorldLock, "map-entry faults are formatted after World._lock is released, never under it");
+
+        List<(PhaseFault First, PhaseFaultKey Key, int Count)>? repeats = null;
+        foreach (var (f, stack) in faults)
+        {
+            int defId = f.Def?.Id ?? 0;
+            if (stack)
+            {
+                Log.Error($"map entry: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {defId}) on map {f.Map} is skipped, the entry and the map's other spawns go ahead (a repeat on a later entry is named, not re-logged)",
+                    f.Error);
+                continue;
+            }
+
+            var key = new PhaseFaultKey(f.Phase, f.Error.GetType(), Row: true, f.Map, defId);
+            repeats ??= new();
+            int i = 0;
+            while (i < repeats.Count && !repeats[i].Key.Equals(key)) i++;
+            if (i == repeats.Count) repeats.Add((f, key, 1));
+            else repeats[i] = (repeats[i].First, key, repeats[i].Count + 1);
+        }
+        if (repeats is null) return;
+
+        var sb = new StringBuilder("map entry: spawn rows still throwing — each skipped with no stack (each fault's stack is logged at its first throw on an entry, and again hourly): ");
+        for (int i = 0; i < repeats.Count; i++)
+        {
+            var (f, k, n) = repeats[i];
+            if (i > 0) sb.Append(", ");
+            sb.Append(RowKind(k.Phase)).Append(" '").Append(f.Def?.Key).Append("' (creature id ").Append(k.DefId)
+              .Append(") on map ").Append(k.Map).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
+        }
+        Log.Error(sb.ToString());
+    }
 }
