@@ -28,7 +28,7 @@ public class SpawnDirectorTests
 
     public SpawnDirectorTests(SessionFixture fx) => _fx = fx;
 
-    private const ushort PointMap = 60040, LockMap = 60041, BossMap = 60043;
+    private const ushort PointMap = 60040, LockMap = 60041, BossMap = 60043, FirstEntryMap = 60222;
     private const ushort GroupMap = 485;   // Buya Legend: 8x8, a map file on disk, nothing spawns on it
 
     private World.SpawnDirector Spawns => _fx.World.SpawnsForTest;
@@ -113,6 +113,48 @@ public class SpawnDirectorTests
         {
             _fx.World.LeaveMap(watcher, PointMap);
             _fx.World.UnderWorldLockForTest(() => Spawns.ForgetMapForTest(PointMap));
+        }
+    }
+
+    /// <summary>A map's first entry materialises every ordinary point on its own tile, and leaves a rare boss
+    /// point pending rather than lost: the boss is absent straight after the entry and appears on its tile
+    /// when its first-appearance clock comes round, inside its window (one beat after the entry plus up to
+    /// <c>RespawnEvery - 1</c> more; three beats here). The map-entry row guard wraps each ordinary point's
+    /// <c>Materialize</c> and leaves the rare branch as it was, which is what this pins.
+    ///
+    /// <para>Falsified by deleting the rare branch in <c>SpawnDirector.EnsureMaterialized</c>: red, the boss
+    /// is on the map straight after the entry.</para></summary>
+    [Fact]
+    public void AFirstEntryMaterialisesEveryOrdinaryPointAndLeavesARareOnePending()
+    {
+        const int bossWindow = 3;   // beats
+        var west = Creature(990_203, "test_first_entry_west");
+        var east = Creature(990_204, "test_first_entry_east");
+        var boss = Creature(990_205, "test_first_entry_rare");
+        _fx.World.UnderWorldLockForTest(() =>
+        {
+            Spawns.AddPointForTest(FirstEntryMap, west, 3, 5, respawnEvery: 1);
+            Spawns.AddPointForTest(FirstEntryMap, boss, 5, 5, respawnEvery: bossWindow, rare: true);
+            Spawns.AddPointForTest(FirstEntryMap, east, 7, 5, respawnEvery: 1);
+        });
+        var (watcher, _) = _fx.Player("FirstEntryWatcher", FirstEntryMap, x: 5, y: 10);
+        try
+        {
+            var w = Assert.Single(MobsOf(watcher, FirstEntryMap, west));
+            Assert.Equal(((ushort)3, (ushort)5), (w.X, w.Y));
+            var e = Assert.Single(MobsOf(watcher, FirstEntryMap, east));
+            Assert.Equal(((ushort)7, (ushort)5), (e.X, e.Y));
+            Assert.Empty(MobsOf(watcher, FirstEntryMap, boss));   // pending, not materialised
+
+            for (int beat = 0; beat < bossWindow && MobsOf(watcher, FirstEntryMap, boss).Count == 0; beat++)
+                _fx.World.TickOnceForTest();
+            var b = Assert.Single(MobsOf(watcher, FirstEntryMap, boss));   // and not lost: its clock came round
+            Assert.Equal(((ushort)5, (ushort)5), (b.X, b.Y));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(watcher, FirstEntryMap);
+            _fx.World.UnderWorldLockForTest(() => Spawns.ForgetMapForTest(FirstEntryMap));
         }
     }
 

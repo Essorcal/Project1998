@@ -92,6 +92,15 @@ public sealed partial class World
         /// MobSpawnRules row asks for a cooldown are recorded, so this stays a handful of entries rather than one
         /// per kill. Deliberately NOT persisted: a restart is already a world reset for spawns.</summary>
         private readonly Dictionary<(ushort Map, string Key), long> _lastDeath = new();
+        /// <summary>When each map-entry spawn fault last had its stack written, in unix seconds
+        /// (<see cref="AdmitEntryStack"/>). The map-entry path's only shared log state, and it lives here, under
+        /// the lock, rather than in a <see cref="FaultThrottle{TKey}"/>: entries come from every session thread,
+        /// and that type has one owner thread. Bounded by the content (one entry per row kind, exception type,
+        /// map and creature) and emptied by <see cref="Clear"/> on <c>@reload</c>. The tick never reads it.</summary>
+        private readonly Dictionary<PhaseFaultKey, long> _entryStacks = new();
+        /// <summary>An entry fault's stack is written again once its last one is this old: an hour, the span the
+        /// tick's throttle re-stacks a fault that never stops (<c>MobFaultRestackBeats</c>).</summary>
+        private const long EntryRestackSec = 3600;
 
         /// <summary>Build the <c>_spawns</c> + <c>_groups</c> rosters from the current <see cref="Content.Spawns"/>
         /// and <see cref="Content.AreaSpawns"/>. Caller holds <c>_lock</c> and has already cleared both if
@@ -177,47 +186,88 @@ public sealed partial class World
             list.Add(sp);
         }
 
-        /// <summary>Instantiate a map's spawn roster the first time anyone enters it (idempotent). Until this runs
-        /// the map's mobs don't exist, so a newcomer must trigger it BEFORE the room's mob list is read for them.
-        /// Caller holds <c>_lock</c>.
+        /// <summary>Instantiate a map's spawn roster the first time anyone enters it (idempotent), and top up its
+        /// due batch groups, ambush traps and cold tiles on every entry. Until this runs the map's mobs don't
+        /// exist, so a newcomer must trigger it BEFORE the room's mob list is read for them. Called by
+        /// <c>World.EnterMap</c> with the newcomer's tile, and by <c>@reload</c>'s re-materialise
+        /// (<c>World.RebuildPopulation</c>) with none. Caller holds <c>_lock</c>.
         ///
-        /// <para><b>No spawn row guard here, deliberately.</b> A group member or a point that throws on this
-        /// path throws out of <c>World.EnterMap</c>, as it always has: the player is not added to the map's
-        /// roster, and the session's per-packet catch (or the login path's) logs it. The tick's row guards
-        /// are not extended to it for two reasons. Their faults are logged through a throttle that only the
-        /// tick thread may touch (<see cref="FaultThrottle{TKey}"/>), and this runs on a session thread; and
-        /// catching here would turn a failed entry into a successful one, a player-visible change of its own.
-        /// Both are left as a follow-up (the spawn-row-guards report), with the facts in
-        /// <c>Tests/SpawnRowGuardTests.cs</c> pinning today's behaviour until then.</para>
+        /// <para><b>On map entry, one guard per spawn row, as on the tick.</b> A group member whose fill
+        /// throws, or a point whose <see cref="Materialize"/> throws, costs only itself: it is returned as a
+        /// fault, the walk goes on to the next member, group and point, and the player is added to the map as
+        /// usual. Before the guard (the #292 follow-up) the throw left <c>World.EnterMap</c> with the player on
+        /// no map's roster; and because a group with a bad member stays due, every later entry threw the same
+        /// way, so one broken group member made its map impossible to enter. The group with the bad member
+        /// does not stamp its clock, the tick path's rule (<see cref="RefillGroups"/>), so the tick retries it
+        /// once someone is on the map. A point that threw keeps no clock, so nothing retries it until an
+        /// <c>@reload</c> rebuilds the roster: before the guard that was the fate of every point after the
+        /// bad one, and now it is the bad point's alone.</para>
         ///
-        /// <para><paramref name="arriving"/> is the entering player's tile (<c>World.EnterMap</c>), null on the
-        /// <c>@reload</c> re-materialise. The entering player is not on the map's player list until this
-        /// returns, so the three placements below that avoid that list's tiles (the group fill, the ambush
-        /// traps, the cold tiles) are handed their tile as taken (#122). The points are not:
+        /// <para><b>Logged by the entering thread, never through the tick's throttle.</b> That throttle
+        /// (<see cref="FaultThrottle{TKey}"/>, behind <c>LogPhaseFaults</c>) has one owner, the tick thread,
+        /// and this runs on a session thread. <c>World.EnterMap</c> writes the returned faults itself, after it
+        /// releases the lock (<c>World.LogEntryFaults</c>). The one decision that needs state shared between
+        /// entries, whether a fault's stack is due, is made here, under the lock every entry already holds
+        /// (<see cref="AdmitEntryStack"/>); nothing the tick reads or writes is involved. Null when nothing
+        /// threw, which is every ordinary entry: that path allocates nothing for the guard.</para>
+        ///
+        /// <para><b><c>@reload</c> keeps the unguarded walk.</b> With no <paramref name="arriving"/> the catch
+        /// filters are false, so a row that throws there throws out of the rebuild, as it always has, and the
+        /// return is always null. Guarding it is a follow-up of its own: its faults would have to be written by
+        /// <c>RebuildPopulation</c> after it releases the lock, and that method is outside this change.</para>
+        ///
+        /// <para><paramref name="arriving"/> is the entering player's tile. They are not on the map's player list
+        /// until this returns, so the three placements below that avoid that list's tiles (the group fill, the
+        /// ambush traps, the cold tiles) are handed their tile as taken (#122). The points are not:
         /// <see cref="Materialize"/> places through <c>FreeSpawnTile</c>, which has never looked at players on
         /// any path.</para></summary>
-        internal void EnsureMaterialized(ushort mapId, (int X, int Y)? arriving = null)
+        internal List<EntryFault>? EnsureMaterialized(ushort mapId, (int X, int Y)? arriving = null)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
+            bool entry = arriving is not null;   // a newcomer is what makes this the map-entry path, and guarded
+            List<PhaseFault>? rows = null;       // stays null on @reload: the filters are false, nothing is caught
+
             // Batch groups get a chance to fill BEFORE the entering player's room list is read, so a room whose
             // timer came due while nobody was in it is already full when they walk in rather than popping into
             // existence around them. Not inside the _materialized guard: this has to be reconsidered on every
             // entry, since that is the only moment a due group on an unwatched map gets looked at.
-            List<PhaseFault>? unguarded = null;   // stays null: guarded is false, so nothing is caught
-            RefillGroups(mapId, guarded: false, ref unguarded, arriving);
+            RefillGroups(mapId, guarded: entry, ref rows, arriving);
             world.RefillAmbushLocked(mapId, arriving);   // top up this map's hidden ambush traps (also every entry, same reason)
             world.RefillFrigidLocked(mapId, arriving);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
 
-            if (!_materialized.Add(mapId)) return;              // already done
-            if (!_spawns.TryGetValue(mapId, out var list)) return;
-            foreach (var sp in list)
-            {
-                // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
-                // with a random first-appearance somewhere in its respawn window; the Tick refill loop spawns it
-                // once due (and only while the map is being hunted, since that loop skips empty maps).
-                if (sp.Rare) { sp.RespawnTick = world._tick + 1 + Random.Shared.Next(sp.RespawnEvery); continue; }
-                Materialize(mapId, sp);
-            }
+            if (_materialized.Add(mapId) && _spawns.TryGetValue(mapId, out var list))   // first entry only
+                foreach (var sp in list)
+                {
+                    // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
+                    // with a random first-appearance somewhere in its respawn window; the Tick refill loop spawns it
+                    // once due (and only while the map is being hunted, since that loop skips empty maps).
+                    if (sp.Rare) { sp.RespawnTick = world._tick + 1 + Random.Shared.Next(sp.RespawnEvery); continue; }
+                    // The point guard, phase (1)'s shape. The map is already marked materialised, so a point this
+                    // skips is not walked again: it costs itself, and only itself.
+                    try { Materialize(mapId, sp); }
+                    catch (Exception e) when (entry) { (rows ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, mapId, sp.Def)); }
+                }
+
+            if (rows is null) return null;                      // the ordinary entry: nothing threw
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var faults = new List<EntryFault>(rows.Count);
+            foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now)));
+            return faults;
+        }
+
+        /// <summary>Whether a map-entry fault's stack is written on this entry: yes the first time the fault is
+        /// met on any entry, and again once its last stack is <see cref="EntryRestackSec"/> old (a log rotation
+        /// must not leave its named repeats pointing at a stack that is no longer on disk), and again after an
+        /// <c>@reload</c>, which empties the record (<see cref="Clear"/>). Otherwise the entry names the fault
+        /// without its stack. Keyed as the tick keys its row faults: the row kind, the exception type, the
+        /// roster map and the creature's content id. Caller holds <c>_lock</c>.</summary>
+        private bool AdmitEntryStack(PhaseFault f, long now)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            var key = new PhaseFaultKey(f.Phase, f.Error.GetType(), Row: true, f.Map, f.Def?.Id ?? 0);
+            if (_entryStacks.TryGetValue(key, out long last) && now - last < EntryRestackSec) return false;
+            _entryStacks[key] = now;
+            return true;
         }
 
         /// <summary>Run every due batch group on one map: RTK's <c>spawnMob</c>. Caller holds <c>_lock</c>.
@@ -235,11 +285,12 @@ public sealed partial class World
         /// 10s every 10s on a mob-free map, roughly halving the wait on a fully cleared room). Continuity across
         /// a visit is worth more than the re-randomisation, and a cleared room is supposed to stay dead.
         ///
-        /// <para><b>One guard per group member, on the tick's path only.</b> With <paramref name="guarded"/>
-        /// (phase (1.1), <see cref="RefillDueGroups"/>) a member whose <see cref="FillMember"/> throws is
-        /// recorded in <paramref name="faults"/> and the batch goes on to the next member, the next group and
-        /// the next map. Before the guard the throw ended the whole phase, so every member and every group
-        /// after the bad one waited too, for as long as the content stayed broken.</para>
+        /// <para><b>One guard per group member, on the tick's path and on map entry.</b> With
+        /// <paramref name="guarded"/> (phase (1.1), <see cref="RefillDueGroups"/>, and
+        /// <see cref="EnsureMaterialized"/> when a newcomer is entering) a member whose <see cref="FillMember"/>
+        /// throws is recorded in <paramref name="faults"/> and the batch goes on to the next member, the next
+        /// group and the next map. Before the guard the throw ended the whole phase, so every member and every
+        /// group after the bad one waited too, for as long as the content stayed broken.</para>
         ///
         /// <para><b>A group with a member that threw does not stamp its clock</b>, which is what the unguarded
         /// throw did too: the batch did not finish. So the group stays due and is run again on the next
@@ -249,13 +300,15 @@ public sealed partial class World
         /// beats where nothing throws, which is a decision this guard does not make. Nothing else is unwound:
         /// whatever the member placed before it threw stands, as it did.</para>
         ///
-        /// <para>Unguarded on the map-entry path (<see cref="EnsureMaterialized"/>, from
-        /// <c>World.EnterMap</c>): the filter below is false there, so a throw leaves this method exactly as
-        /// it always did. That path runs on a session thread, and the throttle behind <c>LogPhaseFaults</c>
-        /// has one owner, the tick thread; see the entry path's own note.</para>
+        /// <para>The map-entry path records its faults in the same list shape, but they are written by the
+        /// entering thread after it releases the lock (<c>World.LogEntryFaults</c>), never through the throttle
+        /// behind <c>LogPhaseFaults</c>, whose one owner is the tick thread. Unguarded only on <c>@reload</c>'s
+        /// re-materialise (<see cref="EnsureMaterialized"/> with no newcomer): the filter below is false there,
+        /// so a throw leaves this method exactly as it always did.</para>
         ///
         /// <para><paramref name="arriving"/>: the entering player's tile on the map-entry path, taken for the
-        /// whole fill (#122); null on the tick's, whose players are all on the map's list already.</para></summary>
+        /// whole fill (#122); null on the tick's and on <c>@reload</c>'s, whose players are all on the map's
+        /// list already.</para></summary>
         private void RefillGroups(ushort mapId, bool guarded, ref List<PhaseFault>? faults, (int X, int Y)? arriving)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -575,7 +628,10 @@ public sealed partial class World
         /// <para><c>_mobSpawn</c> goes with the rosters (#121). The rebuild has already torn down every
         /// creature it indexes, and mob ids are never reused, so after a reload no lookup can ever hit one of
         /// its entries again; kept, they only held every pre-reload point mob's entry, and the old
-        /// <c>Spawn</c> behind it, for the life of the process.</para></summary>
+        /// <c>Spawn</c> behind it, for the life of the process.</para>
+        ///
+        /// <para>The record of which map-entry faults have had their stack written goes too: the rows are
+        /// re-read, so a row that still throws after a reload is news and writes its stack again.</para></summary>
         internal void Clear()
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -583,6 +639,7 @@ public sealed partial class World
             _groups.Clear();
             _materialized.Clear();
             _mobSpawn.Clear();
+            _entryStacks.Clear();
         }
 
         /// <summary>How many maps carry at least one spawn point / batch group — the start-up log lines.</summary>
@@ -596,11 +653,13 @@ public sealed partial class World
         /// <summary>Register one spawn point with a fixed home tile and its own respawn delay, the way
         /// <see cref="Build"/> registers a <c>Spawns.csv</c> row. <paramref name="dueAt"/>, when non-zero,
         /// registers it as a point whose creature is dead and whose respawn clock falls due on that beat, so
-        /// the tick's phase (1) materialises it without a map entry first. Caller holds <c>_lock</c>.</summary>
-        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery, long dueAt = 0)
+        /// the tick's phase (1) materialises it without a map entry first. <paramref name="rare"/> registers
+        /// it as a rare boss point (an <c>AreaSpawnsTrap.csv</c> row with a <c>RespawnSec</c>), which a map's
+        /// first entry leaves pending rather than materialising. Caller holds <c>_lock</c>.</summary>
+        internal void AddPointForTest(ushort mapId, MobDef def, ushort x, ushort y, int respawnEvery, long dueAt = 0, bool rare = false)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
-            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery, RespawnTick = dueAt });
+            AddSpawn(mapId, new Spawn { Def = def, X = x, Y = y, RespawnEvery = respawnEvery, RespawnTick = dueAt, Rare = rare });
         }
 
         /// <summary>How many live creatures the mob-to-point index holds, on every map. Caller holds
@@ -657,9 +716,9 @@ public sealed partial class World
             _lastDeath[(mapId, key)] = unixSeconds;
         }
 
-        /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag, death stamps
-        /// and every world-spawned creature on it, so the shared fixture World is as it was. Caller holds
-        /// <c>_lock</c>.</summary>
+        /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag, death stamps,
+        /// map-entry stack stamps and every world-spawned creature on it, so the shared fixture World is as it
+        /// was. Caller holds <c>_lock</c>.</summary>
         internal void ForgetMapForTest(ushort mapId)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -668,6 +727,7 @@ public sealed partial class World
             _groups.Remove(mapId);
             _materialized.Remove(mapId);
             foreach (var stamp in _lastDeath.Keys.Where(k => k.Map == mapId).ToList()) _lastDeath.Remove(stamp);
+            foreach (var stamp in _entryStacks.Keys.Where(k => k.Map == mapId).ToList()) _entryStacks.Remove(stamp);
             var fm = world.Map(mapId);
             fm.Mobs.RemoveAll(m => m.WorldSpawned);
             fm.ViewGen++;                   // a mob roster change — a test seam, bumped for the same reason

@@ -43,7 +43,7 @@ Not comments. Each rule has an assert, and each assert has a test in `Tests/Sess
 * `Session.EnterScriptGate` asserts `!Session.HoldsAnyViewLock` and `!World.HoldsAnyWorldLock` (#90): see
   the note on the gate and `World._lock` below.
 * `World.MobAiTick.Step` (the per-mob half of the tick) asserts `World.HoldsWorldLock`: the AI runs under row 3 and nowhere else. Debug builds only, like the rest of this list; `Tests/MobAiTickTests.cs` (`StepOutsideTheWorldLockAsserts`) pins it firing.
-* `World.SpawnDirector` (the spawn points and batch groups, #37) asserts `World.HoldsWorldLock` at the top of every method that touches map state — twelve of them, the tick's two sweeps, map entry and the death path included — and takes no lock of its own. `Tests/SpawnDirectorTests.cs` (`DirectorMethodsRefuseToRunOutsideTheWorldLock`) pins the five entry points firing.
+* `World.SpawnDirector` (the spawn points and batch groups, #37) asserts `World.HoldsWorldLock` at the top of every method that touches map state — thirteen of them, the tick's two sweeps, map entry and the death path included — and takes no lock of its own. `Tests/SpawnDirectorTests.cs` (`DirectorMethodsRefuseToRunOutsideTheWorldLock`) pins the five entry points firing.
 * `Session.EnterState` sorts by `StateRank`; a descending nested acquisition drops what it holds, retakes in
   order, and restores the caller's holdings.
 * The viewport lock is *counted*, not merely locked (`_viewDepth`), because the lock that breaks the rule
