@@ -67,6 +67,15 @@ public sealed class SessionFixture
             X = x,
             Y = y,
         };
+        // "Listen to advice" (0x1b sub-4) OFF, where a real fresh character has it ON. World.FlushTick sends
+        // every player with it on a 0x0A type-11 hint whenever the beat counter is a multiple of AdviceTicks
+        // (2702 beats at 333 ms, ~15 minutes; FlushTickForTest at such a count sends it too, and 0 is one).
+        // On a live server that counter is a clock. On the shared test World it is not: it counts every beat
+        // every earlier fact drove, the race facts' free-running tick threads included, so which fact owns
+        // the next multiple changes from run to run. A fact that compares a whole frame stream across beats
+        // then gets one extra 0x0A in one arm and not the other — the TickSweepSkipTests sequence-fact
+        // flake. A fact that wants the hint turns the bit back on in its configure.
+        character.SettingFlags &= ~Character.SettingBit(4);
         configure(character);
 
         var outbound = new RecordingOutbound($"recorder:{name}");
