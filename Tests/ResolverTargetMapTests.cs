@@ -14,9 +14,10 @@ namespace Tests;
 ///
 /// <para>Both resolvers now follow #342's rule, the one <c>ResolvePcCastTarget</c> already keeps: an id resolves
 /// to a player only when that player is on the caster's map. A player elsewhere is answered by the faced tile, as
-/// a cast with no id is; with nothing faced, the cast gets the answer an id that names nobody gets (the damage
-/// resolver: no target; the buff resolver: the caster, for a hostile status on a PvP map, else no target). Each
-/// caller's answer to that is its own and unchanged.</para>
+/// a cast with no id is; with nothing faced, the cast resolves to nobody. That is the answer an id that names nobody
+/// gets, with one exception: for a hostile status on a PvP map the buff resolver gives an unknown id the caster, and
+/// an off-map id no longer (<see cref="OffMapIdNoCasterFallbackTests"/>). Each caller's answer is its own and
+/// unchanged.</para>
 ///
 /// <para>Only a client that sends a target id reaches this. The stock 4.95 client casts with the slot alone
 /// (docs/4.x/Protocol.md, "Live-confirmed"), which takes the faced tile and never reaches the id branch.</para>
@@ -79,8 +80,10 @@ public sealed class ResolverTargetMapTests
 
     /// <summary>Each family, cast through the real frame at the id of a player on another map, with nothing on the
     /// caster's faced tile. The far player is untouched: their HP, their status list, their venom and their sleep,
-    /// and they are told nothing. The caster gets exactly what a cast at an id nobody has gets. Then the control: the
-    /// same cast, by id, at a player on the caster's own map, lands.
+    /// and they are told nothing. The caster gets exactly what a cast at an id nobody has gets, except a Venom or a
+    /// Vex, which an id nobody has lands on its caster in the arena and an off-map id no longer does
+    /// (<see cref="OffMapIdNoCasterFallbackTests"/> pins both answers). Then the control: the same cast, by id, at a
+    /// player on the caster's own map, lands.
     /// <para>Red on df98c3a for all 15: the cast lands on the other map. From an arena it damages, venoms, curses or
     /// dozes a player standing in a town or in another arena; from anywhere it heals or wards them. Valor reaches
     /// them too: in Release the far player carries it, and in Debug its write trips the <c>_buffs</c> guard
@@ -98,7 +101,15 @@ public sealed class ResolverTargetMapTests
 
         string offMap = CastWithNothingFaced(sp, casterMap, farMap, aimAtFar: true);
         string nobody = CastWithNothingFaced(sp, casterMap, farMap, aimAtFar: false);
-        Assert.Equal(nobody, offMap);
+        // A Venom or a Vex at an id nobody has lands on its caster in the arena; at an off-map id it resolves to
+        // nobody. The Vex caster carries its own running Vex from the setup above.
+        string expected = sp.Key switch
+        {
+            "venom_mage" => "caster lines=[It doesn't work.] spent=0 hp=0 pose=0 carries=False poisoned=False asleep=False",
+            "vex_mage" => "caster lines=[] spent=0 hp=0 pose=0 carries=True poisoned=False asleep=False",
+            _ => nobody,
+        };
+        Assert.Equal(expected, offMap);
 
         Assert.True(LandsByIdOnTheCastersMap(sp, casterMap),
                     $"the control: {sp.Name} by id at a target on the caster's own map did not land");

@@ -1529,17 +1529,21 @@ public sealed partial class Session
     /// curse, a venom or a Doze on a player standing in a town, because every hostile gate here reads the
     /// caster's map; and a heal, a buff or a ward reached anyone anywhere. A player on another map is now
     /// answered by the faced tile, as a cast with no id is (the fallback Caleb kept for #342, "Merge as is
-    /// (fallback)"); with nothing faced, the last line answers it as it answers an id that names nobody. The map
-    /// is a bare read of the other session's character, as #342's is.</remarks>
+    /// (fallback)"). With nothing faced it resolves to nobody: the caster line below is for a cast aimed at
+    /// nothing, and this one was aimed, at someone who is not here. Before, that line answered it as it answers an
+    /// id nobody has, so in an arena a Venom or a curse aimed at a player who had just left landed on its caster
+    /// (#343's mutant M5, which Caleb sent to the follow-up slice to be considered). An id nobody has, and a cast
+    /// with no id, keep the line. The map is a bare read of the other session's character, as #342's is.</remarks>
     private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp = false)
     {
         pc = null; mob = null;
-        bool byFacedTile = true;
+        bool byFacedTile = true, offMapId = false;
         if (targetId is uint tid && tid != 0)
         {
             var byId = _world.Online.ById(tid);
             if (byId is null) { mob = _world.MobById(_char.Map, tid); byFacedTile = false; }
             else if (byId.CharMap == CharMap) { pc = byId; byFacedTile = false; }
+            else offMapId = true;
         }
         if (byFacedTile)
         {
@@ -1547,7 +1551,7 @@ public sealed partial class Session
             pc = _world.PeerAt(_char.Map, fxT, fyT);
             if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
         }
-        if (selfIfUnaimedInPvp && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
+        if (selfIfUnaimedInPvp && !offMapId && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
     }
     internal string LuaTargetBuffKind(uint? targetId)
     {
