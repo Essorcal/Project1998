@@ -1265,7 +1265,8 @@ public sealed partial class Session : QuestState.ISessionStore
 
         bool ended = married ? EndMarriage(partner) : EndEngagement(partner);
         if (!ended) return;   // the partner's own Chapel visit ended it meanwhile, from inside this monitor's gap
-        Log.Info($"   -> ARRIVAL: '{me}' was in a {kind} with '{partner}' ({where}), who no longer names them back — ended, free");
+        Log.Info($"   -> ARRIVAL: '{me}' was in {(married ? "a marriage" : "an engagement")} with '{partner}' ({where}), " +
+                 "who no longer names them back — ended, free");
         SendMiniText($"Your {kind} to {partner} has ended.");
     }
 
