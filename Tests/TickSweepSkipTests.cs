@@ -40,6 +40,7 @@ public class TickSweepSkipTests
     private const ushort ChangeMap = 60164, ChangeAwayMap = 60165, HopFromMap = 60166, HopToMap = 60167;
     private const ushort MidSweepMap = 60168, ParkedShowMap = 60169;
     private const ushort CountOffMap = 60170, CountOnMap = 60171;
+    private const ushort AdviceViewMap = 60173, AdviceProbeMap = 60174;
 
     // The maps are 100x100, so the viewer's rect is the plain edge-aware one: vx = 8, vy = 7, origin
     // (22,13), strict rect x in [22,39) and y in [13,28), drawn rect x in [21,40) and y in [12,29).
@@ -284,6 +285,53 @@ public class TickSweepSkipTests
             foreach (var s in new[] { viewer, walker, visitor }) _fx.World.LeaveMap(s, map);
             _fx.World.LeaveMap(visitor, away);
         }
+    }
+
+    /// <summary>(a, its guard) THE ADVICE BEAT REACHES NO FIXTURE PLAYER. <c>World.FlushTick</c> sends the
+    /// "Listen to advice" hint, <c>0x0A</c> type 11, to every player with that option on whenever the beat
+    /// counter is a multiple of <c>AdviceTicks</c>. The shared world's counter is not a clock: it is every
+    /// beat every earlier fact drove, the race facts' free-running tick threads included, so (a) owned that
+    /// beat on some runs and not on others, and failed on them with one extra <c>0x0A</c> in one arm.
+    /// <c>SessionFixture.PlayerWith</c> now builds its players with the option off. This fact drives the
+    /// world to its next advice beat, proven by a probe that turned the option back on hearing it, and
+    /// requires that the fixture viewer heard nothing on <c>0x0A</c> at all.
+    ///
+    /// <para>Falsified by deleting the <c>SettingBit(4)</c> line from <c>PlayerWith</c>: red on the viewer's
+    /// <c>0x0A</c>, type 11, an advice line.</para></summary>
+    [Fact]
+    public void TheAdviceBeatReachesNoFixturePlayer()
+    {
+        var (viewer, outbound, _) = _fx.PlayerWith("AdviceViewer", Wide, AdviceViewMap, ViewerX, ViewerY);
+        var (probe, probeOut, _) = _fx.PlayerWith("AdviceProbe",
+            c => { Wide(c); c.SettingFlags |= Character.SettingBit(4); }, AdviceProbeMap, ViewerX, ViewerY);
+        try
+        {
+            // One advice period at most, 2702 beats at the default 333 ms beat. The cap is only there so that
+            // an advice beat that never comes fails instead of hanging.
+            for (int beats = 0; !probeOut.Frames.Any(f => f[3] == 0x0A && Body(f)[0] == 11); beats++)
+            {
+                Assert.True(beats < 20_000,
+                    "the probe with advice on never heard an advice beat — the arrangement is wrong, not the fixture");
+                _fx.World.TickOnceForTest();
+            }
+
+            var heard = outbound.Frames.Where(f => f[3] == 0x0A).Select(MiniText).ToList();
+            Assert.True(heard.Count == 0,
+                $"a fixture player heard the advice beat at tick {_fx.World.TickForTest}: {string.Join(" | ", heard)}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(viewer, AdviceViewMap);
+            _fx.World.LeaveMap(probe, AdviceProbeMap);
+        }
+    }
+
+    /// <summary>A <c>0x0A</c> mini-text frame as "type N: text" (body <c>type(u8) len(u16BE) text</c>).</summary>
+    private static string MiniText(byte[] frame)
+    {
+        byte[] body = Body(frame);
+        int len = BinaryPrimitives.ReadUInt16BigEndian(body.AsSpan(1));
+        return $"type {body[0]}: {System.Text.Encoding.ASCII.GetString(body, 3, len)}";
     }
 
     // ---- (b) the skip fires ---------------------------------------------------------------------------

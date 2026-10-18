@@ -141,8 +141,10 @@ public class PeerTileIdTests
 
             _fx.World.FlushTickForTest(new World.TickQueues());
 
-            // Only the viewport frames: a real beat also carries the tick's own unrelated chatter (a 0x0A
-            // status refresh), which is not what this fact is about.
+            // Only the viewport frames: a real beat can also carry the tick's own unrelated chatter (the hour's
+            // 0x20, a weather change's 0x1F), which is not what this fact is about. The 0x0A once seen here was
+            // the advice line, which every flush at a beat count of 0 sends (any multiple of AdviceTicks does);
+            // fixture players have advice off now (SessionFixture.PlayerWith).
             var seq = Wire(outbound).Where(f => f.op is 0x33 or 0x0E).ToList();
             var expected = new List<(byte, uint)> { (0x0E, peer.PlayerId) };
             Assert.True(seq.SequenceEqual(expected),
