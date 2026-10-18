@@ -899,6 +899,10 @@ public sealed class PeerSweepLockTests
     /// approach that moves the GM lands beside the player on one of the two maps, never at a mix of the two. The player
     /// is created first, so the GM's read descends. An approach that finds the player between maps is refused, as
     /// before ("isn't online"), and is not judged.
+    /// <para>The floor counts what the race exercised, never how fast it ran: every approach met the player, either on
+    /// a map (it moved the GM and is judged) or between maps (it was refused), and the judged approaches followed the
+    /// player from one map to the other at least once, so the warps overlapped them. How the approaches split between
+    /// the two is the scheduler's: on four oversubscribed CPUs as few as 130 of the 10,000 moved the GM.</para>
     /// <para>Red on 3690542 in both builds: a GM lands at the old tile clamped onto the new map, (19,19), or at the new
     /// tile on the old map, (5,4). It stalls with the read under <c>World._lock</c> (the GM holds the lock and waits for
     /// the player's monitor while the player, mid-warp, holds it and waits for the lock) and with a plain <c>lock</c>
@@ -911,8 +915,10 @@ public sealed class PeerSweepLockTests
         var (t, _, _) = Player("RaceWarpT", ApproachRaceFrom, 90, 90);
         var (gm, gmOut, gc) = Gm(ApproachRaceFrom, 10, 10);
         Assert.True(t.StateRank < gm.StateRank);
+        string offline = $"'{t.CharName}' isn't online.";
         var race = new Race();
-        int moved = 0, mixed = 0;
+        int moved = 0, refused = 0, crossings = 0, mixed = 0;
+        ushort lastLanded = 0;
         var mixes = new List<string>();
         try
         {
@@ -928,10 +934,20 @@ public sealed class PeerSweepLockTests
                             if (gmOut.Bodies(ServerOp.MapInfo).Count > 0)
                             {
                                 moved++;
-                                bool whole = false;
-                                gm.WithState(() => whole = Beside(gc, ApproachRaceFrom, 100, 90, 90) || Beside(gc, ApproachRaceTo, 20, 5, 5));
-                                if (!whole) { mixed++; if (mixes.Count < 5) mixes.Add($"map {gc.Map} ({gc.MapXs}x{gc.MapYs}) at ({gc.X},{gc.Y})"); }
+                                ushort landed = 0;
+                                gm.WithState(() =>
+                                {
+                                    if (Beside(gc, ApproachRaceFrom, 100, 90, 90)) landed = ApproachRaceFrom;
+                                    else if (Beside(gc, ApproachRaceTo, 20, 5, 5)) landed = ApproachRaceTo;
+                                });
+                                if (landed == 0) { mixed++; if (mixes.Count < 5) mixes.Add($"map {gc.Map} ({gc.MapXs}x{gc.MapYs}) at ({gc.X},{gc.Y})"); }
+                                else
+                                {
+                                    if (lastLanded != 0 && landed != lastLanded) crossings++;
+                                    lastLanded = landed;
+                                }
                             }
+                            else if (gmOut.Said(offline)) refused++;
                             race.Progress.Bump();
                         }
                     },
@@ -950,9 +966,13 @@ public sealed class PeerSweepLockTests
                     },
                 });
 
+            string counts = $"of {Approaches} approaches {moved} moved the GM, {crossings} of them onto the other map from "
+                            + $"the one before, and {refused} found the player between maps";
             Assert.Null(race.Fault);
-            Assert.True(moved > Approaches / 10, $"only {moved} of {Approaches} approaches moved the GM");
-            Assert.True(mixed == 0, $"{mixed} of {moved} approaches landed at a mix of two places: {string.Join("; ", mixes)}");
+            Assert.True(mixed == 0, $"{mixed} of {moved} approaches landed at a mix of two places: {string.Join("; ", mixes)} ({counts})");
+            // The floor: what the race exercised, not a rate (see the summary).
+            Assert.True(moved + refused == Approaches, $"some approaches neither moved the GM nor were refused ({counts})");
+            Assert.True(crossings > 0, $"the approaches never followed the player from one map to the other ({counts})");
         }
         finally
         {
@@ -1604,6 +1624,11 @@ public sealed class PeerSweepLockTests
 
         /// <summary>How many mini-text lines (any channel) say exactly <paramref name="line"/>.</summary>
         public int Count(string line) => MiniTexts().Count(l => l == line);
+
+        /// <summary>Whether any 0x0D speech frame, where a command's refusal lands (<c>SendLog</c>), carries
+        /// <paramref name="line"/>: a containment check on the body's ASCII, as <c>ResolveOnlinePlayerTests</c> makes it.</summary>
+        public bool Said(string line) =>
+            Bodies(ServerOp.Speech).Any(b => Encoding.ASCII.GetString(b.Body).Contains(line, StringComparison.Ordinal));
 
         /// <summary>Whether any 0x30 menu carried <paramref name="prompt"/>.</summary>
         public bool HasMenu(string prompt) => MenusWith(prompt) > 0;
