@@ -1590,26 +1590,18 @@ public sealed partial class Session
     /// exception</b> (<see cref="Content.HoldHitsPlayers"/>) and lands on another player in a PvP map — see
     /// <see cref="ReceiveSleep"/> for what a hold can and can't mean against a 4.95 client.</para>
     /// False (with the RTK notice, no mana spent) if there's no legal target, or the slot is already occupied —
-    /// which is what stops the same hold being chain-cast to keep something locked down forever.</summary>
+    /// which is what stops the same hold being chain-cast to keep something locked down forever. Those refusals
+    /// are <see cref="HoldRefused"/>, which the verbs also ask first, through <see cref="LuaCanHoldTarget"/>.</summary>
     internal bool LuaHoldTarget(string category, int durMs, bool hold, bool blind, int repeatFxMs,
                                 SpellDef sp, uint? targetId)
     {
         ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (HoldRefused(category, sp, pc, mob)) return false;
 
-        // PLAYER target — legal for the Doze family only.
+        // PLAYER target — the Doze family on a PvP map, with its slot free (HoldRefused said no otherwise).
         if (pc is not null)
         {
             bool onSelf = ReferenceEquals(pc, this);
-            if (!Content.HoldHitsPlayers(sp))
-            { SendMiniText("It doesn't work."); Log.Info($"      -x {sp.Name}: holds don't work on players (only the Doze family does)"); return false; }
-            // PvP is required to hold ANY player (RTK's `canPK`), yourself included — the same boundary the
-            // curse and damage paths draw. A self-doze is harmless in isolation, but off a PvP map it has no
-            // opponent to be a tactic against, so every one that landed there was an unaimed cast falling
-            // through onto its caster rather than something anybody meant to do.
-            if (!Content.IsPvpMap(_char.Map))
-            { SendMiniText("You can't attack that target."); Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't hold a player here"); return false; }
-            if (pc.HasStatusCategory(category))
-            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); Log.Info($"      -x {sp.Name}: '{pc._char.Name}' already carries a [{category}]"); return false; }
             var pfx  = Content.FxFor(sp);
             int pAnim = pfx is not null ? Content.EffectAnim(pfx, sp.PathId) : 0;
             int pSnd  = pfx is not null ? Content.EffectSound(pfx, sp.PathId) : 0;
@@ -1621,24 +1613,68 @@ public sealed partial class Session
             return true;
         }
 
-        // "It doesn't work." for an NPC too — it has no AI to take away in the first place.
-        if (mob is null || mob.IsNpc)
-        {
-            if (mob is null) LogNoTarget(sp); else SendMiniText("It doesn't work.");
-            Log.Info($"      -x {sp.Name}: {(mob is null ? "no target resolved (no id sent and nothing on the faced tile)" : "target is an NPC")}");
-            return false;
-        }
         var fx = Content.FxFor(sp);
         int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
         int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
         // RTK shortens a hold on a boss to a token 2s (doze/sleep both do `if target.isBoss ~= 0 then
         // duration = 2000`) — you can interrupt one, you can't lock it down.
-        if (mob.IsBoss && durMs > BossHoldMs) durMs = BossHoldMs;
+        if (mob!.IsBoss && durMs > BossHoldMs) durMs = BossHoldMs;
+        // The slot is asked again here, under the world lock, because HoldRefused's read of it is not: another
+        // caster's hold may have filled it since.
         if (!_world.ApplyMobStatus(mob, category, durMs, hold, blind, anim, snd, repeatFxMs, sp.Key))
         { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, category) == sp.Key)); Log.Info($"      -x {sp.Name}: mob {mob.Id} already carries a [{category}]"); return false; }
         if (fx is not null) BroadcastFx(mob.Id, anim, snd);
         Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' [{category}] {durMs}ms hold={hold} blind={blind} anim={anim} repeat={repeatFxMs}ms");
         return true;
+    }
+
+    /// <summary>May this hold land on what the cast resolves to? <see cref="LuaHoldTarget"/>'s own refusals, asked
+    /// without holding anything, each with its line and none with a cost. The verbs ask it before anything that can
+    /// charge, the deflect and the take-hold roll, as <c>curse</c> asks <see cref="LuaCanCurseTarget"/> before its
+    /// roll.
+    /// <para>#343's review, F4. <c>arch_debuff</c> and <c>blind</c> rolled first and charged for a loss, so a target
+    /// they could never hold cost them the mana whenever the roll lost: facing a player in a town, a Doze answered
+    /// "You can't attack that target." for free about four times in five, and the fifth time "Something went
+    /// wrong.", "You cast Doze.", the pose, 30 mana and Doze's 36-second aether. A Blind at a player or an NPC did the
+    /// same one time in four.</para></summary>
+    internal bool LuaCanHoldTarget(string category, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        return !HoldRefused(category, sp, pc, mob);
+    }
+
+    /// <summary>The refusals a hold makes before it lands, in order, each with the line it has always had. True when
+    /// it refused. One body for <see cref="LuaCanHoldTarget"/> (the verb's gate) and <see cref="LuaHoldTarget"/>
+    /// (the authority, which asks again because the faced tile can change between the two), so the gate and the
+    /// hold cannot drift apart.</summary>
+    private bool HoldRefused(string category, SpellDef sp, Session? pc, Mob? mob)
+    {
+        // PLAYER target — legal for the Doze family only.
+        if (pc is not null)
+        {
+            if (!Content.HoldHitsPlayers(sp))
+            { SendMiniText("It doesn't work."); Log.Info($"      -x {sp.Name}: holds don't work on players (only the Doze family does)"); return true; }
+            // PvP is required to hold ANY player (RTK's `canPK`), yourself included — the same boundary the
+            // curse and damage paths draw. A self-doze is harmless in isolation, but off a PvP map it has no
+            // opponent to be a tactic against, so every one that landed there was an unaimed cast falling
+            // through onto its caster rather than something anybody meant to do.
+            if (!Content.IsPvpMap(_char.Map))
+            { SendMiniText("You can't attack that target."); Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't hold a player here"); return true; }
+            if (pc.HasStatusCategory(category))
+            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); Log.Info($"      -x {sp.Name}: '{pc._char.Name}' already carries a [{category}]"); return true; }
+            return false;
+        }
+
+        // "It doesn't work." for an NPC too — it has no AI to take away in the first place.
+        if (mob is null || mob.IsNpc)
+        {
+            if (mob is null) LogNoTarget(sp); else SendMiniText("It doesn't work.");
+            Log.Info($"      -x {sp.Name}: {(mob is null ? "no target resolved (no id sent and nothing on the faced tile)" : "target is an NPC")}");
+            return true;
+        }
+        if (_world.MobHasStatus(mob, category))
+        { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, category) == sp.Key)); Log.Info($"      -x {sp.Name}: mob {mob.Id} already carries a [{category}]"); return true; }
+        return false;
     }
 
     /// <summary>RTK's boss cap on a hold, shared by doze and sleep (<c>duration = 2000</c>).</summary>

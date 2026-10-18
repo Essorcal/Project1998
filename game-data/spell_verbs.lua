@@ -222,6 +222,12 @@ function verbs.arch_debuff(ctx, row)
   -- is the cheap early out.)
   if ctx:hasStatus(d.cat) then ctx:say(blockMsg(d.cat, ctx:alreadyCast(d.cat))); return false end
 
+  -- Then the target itself, before the deflect and the roll below can charge, as curse asks canCurse before its
+  -- roll: holdTarget's own refusals (a player for anything but the Doze family, a player off a PvP map, an NPC),
+  -- each free. The roll used to come first, so a Doze at a player in a town lost it one time in five and paid for
+  -- a target it could never have held: "Something went wrong.", the pose, 30 mana and Doze's aether.
+  if not ctx:canHold(d.cat) then return false end
+
   -- A DEFLECT STILL COSTS THE MANA: the spell was cast and the power left you, and the target resisting it
   -- is their achievement, not a refund. (RTK returns before its debit; a free deflect would mean a resistant
   -- target costs nothing to keep hammering.)
@@ -234,8 +240,8 @@ function verbs.arch_debuff(ctx, row)
   if ch >= 100 then ch = HOLD_CHANCE[kind] or 100 end
   if ch < 100 and not ctx:roll(ch) then ctx:debitMana(ctx.mana); ctx:say("Something went wrong."); return true end
 
-  -- holdTarget owns the boss cap, the PvP gate on the Doze family, and the "It doesn't work." for everything
-  -- else aimed at a player. It returns false without spending anything.
+  -- holdTarget owns the boss cap, and asks canHold's questions again in case the faced tile changed since. It
+  -- returns false without spending anything.
   if not ctx:holdTarget(d.cat, dur, d.hold, d.blind, d.repeatMs) then return false end
   local amp = AMP_BY_SPELL[ctx.spellKey] or d.amp
   if amp > 1.0 then ctx:amplify(amp, dur) end   -- the next hit on them lands harder, then the hold breaks
@@ -501,6 +507,7 @@ end
 function verbs.blind(ctx, row)
   local mana = row.mana or 300
   if not ctx:enoughMana(mana) then return false end
+  if not ctx:canHold("blinds") then return false end   -- the target first, free, before the roll (see arch_debuff)
   local ch = row.chance or 75
   if ch < 100 and not ctx:roll(ch) then ctx:debitMana(mana); ctx:say("Something went wrong."); return true end
   if not ctx:holdTarget("blinds", row.duration or 10000, false, true, 0) then return false end

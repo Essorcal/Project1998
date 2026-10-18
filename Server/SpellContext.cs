@@ -197,6 +197,13 @@ public sealed class SpellContext
     public bool holdTarget(string category, double durMs, bool hold, bool blind, double repeatFxMs) =>
         _s.LuaHoldTarget(category, (int)durMs, hold, blind, (int)repeatFxMs, _sp, _targetId);
 
+    /// <summary>May <see cref="holdTarget"/> land on what this cast resolves to? Its own refusals, asked without
+    /// holding anything: a player for anything but the Doze family ("It doesn't work."), a player off a PvP map
+    /// ("You can't attack that target."), an NPC ("It doesn't work."), nothing at all (silent), and an occupied
+    /// <paramref name="category"/> slot. Each says its line and spends nothing. Ask it before anything that can
+    /// charge — the deflect, the take-hold roll — as <c>curse</c> asks <see cref="canCurse"/> before its roll.</summary>
+    public bool canHold(string category) => _s.LuaCanHoldTarget(category, _sp, _targetId);
+
     /// <summary>Arm the sleep-family damage amplifier on whatever this cast just held: the NEXT attack on
     /// them is multiplied by <paramref name="mult"/> (Doze 1.3x, Sleep 1.5x per NexusAtlas), then it's
     /// spent. Works on a player or a creature.</summary>
