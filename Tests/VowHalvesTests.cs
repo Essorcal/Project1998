@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using Protocol.Tk495;
 using Server;
@@ -39,8 +40,8 @@ namespace Tests;
 /// player's monitor for an online player and into the row for an offline one.</para>
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
-/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62430-62437, which no other
-/// class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its own
+/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62430-62437, 62470 and
+/// 62471, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its own
 /// (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
@@ -48,6 +49,13 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 {
     private const ushort StaleMap = 62430, HeldMap = 62431, ProposeMap = 62432, SceneMap = 62433,
                          WrongVowMap = 62434, ArrivalRaceMap = 62435, UnreadableMap = 62436, HeldArrivalMap = 62437;
+    private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
+
+    /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
+    /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
+    /// free.</summary>
+    private static readonly FieldInfo StateField =
+        typeof(Session).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     /// <summary>Crystal, the Crystalline Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 397, map 3815, tile 9,9).</summary>
     private const int ChapelNpcId = 397;
@@ -296,6 +304,72 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Assert.True(VowGone(bS, married), $"B kept its half after reading A: {VowState(bS)}");
             Assert.Equal(1, SpellCastSupport.MiniTexts(bOut).Count(l => l == Line(married, a)));
             Assert.True(Vowed(aS, c, married, keepsakes: 1), $"A's own vow changed: {VowState(aS)}");
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <b>The arrival lets go of its own monitor while it waits for a partner who ranks before it.</b> A is online,
+    /// married (or engaged) to C, and ranks before B; B's row still names A. A third thread takes A's monitor, as A's
+    /// Chapel visit does, and B's arrival, on a thread of its own, waits to read A. Then the third thread, still inside
+    /// A, takes B's monitor, which is what A's visit does next when it ends B's half (an ascending entry, so it keeps
+    /// A's). It gets it at once: the read is entered by <c>StateRank</c>, and <c>EnterState</c>'s descending case
+    /// drops B's own monitor while it waits for A's. Once the third thread lets go, B's half ends. Deterministic, and
+    /// bounded: the take is a <c>Monitor.TryEnter</c> with a 5 s timeout, so a monitor that never comes free fails
+    /// the fact instead of hanging it. A and B stand on different maps, so B's own map entry does not reach A.
+    /// <para>Red with the read under a plain lock on A's monitor object (<c>lock (online._state)</c>, the review's
+    /// NC1), Debug and Release: B keeps its own monitor while it waits, and the third thread cannot take it in 5 s.
+    /// In play that is A's Chapel visit and B's arrival waiting on each other for good. The held fact above does not
+    /// see it, since it asks only that the arrival waits (PR #344 review, F2).</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheArrivalDropsItsOwnMonitorWhileItWaitsForALowerRankedPartner(bool married)
+    {
+        using var db = new IsolatedDatabase();
+        string a = Name("A"), b = Name("B"), c = Name("C");
+        var aRow = NewCharacter(a, RankedHeldMap, 5, 5);
+        var bRow = NewCharacter(b, RankedArrivalMap, 5, 5);
+        var cRow = NewCharacter(c, RankedHeldMap, 7, 5);
+        VowRow(aRow, c, married);
+        VowRow(cRow, a, married);
+        VowRow(bRow, a, married);
+        Seed(db, aRow, bRow, cRow);
+
+        var (aS, _) = Arrive(db.Store, a);
+        var (bS, bOut) = NewSession(db.Store, b);
+        Assert.True(aS.StateRank < bS.StateRank, "A must rank before B, so that B's read of A is the descending entry");
+        object bMonitor = StateField.GetValue(bS)!;
+
+        var run = new HeldRun();
+        bool tookB = false;
+        long waitedMs = -1;
+        try
+        {
+            // The check runs inside the third thread's section on A, once the arrival is seen waiting.
+            WhileAnotherThreadHolds(run, aS, () => bS.Receive(ArrivalFrame(b)), untouched: () =>
+            {
+                var clock = Stopwatch.StartNew();
+                tookB = Monitor.TryEnter(bMonitor, TimeSpan.FromSeconds(5));
+                waitedMs = clock.ElapsedMilliseconds;
+                if (tookB) Monitor.Exit(bMonitor);
+                return tookB;
+            });
+            _out.WriteLine($"[{Kind(married)}] the arrival waited: {!run.FinishedWhileHeld}; the third thread, inside A, " +
+                           $"took B's monitor: {tookB} after {waitedMs} ms; B after: {VowState(bS)}");
+
+            AssertWaited(run, "the arrival",
+                "B kept its own monitor while it waited for A's: A's Chapel visit, which takes B's next, would deadlock with it");
+            Assert.False(bOut.Closed, "the arrival was refused");
+            Assert.True(VowGone(bS, married), $"B kept its half after reading A: {VowState(bS)}");
         }
         finally
         {
