@@ -1,4 +1,5 @@
 using MoonSharp.Interpreter;
+using Shared;
 
 namespace Server;
 
@@ -19,6 +20,22 @@ public sealed class SpellContext
     private readonly SpellDef _sp;
     private readonly uint? _targetId;
     private readonly SpellFx? _fx;   // the spell's export row (buff stats / duration / chance) for archetype verbs
+
+    /// <summary>What this cast strikes, resolved ONCE: the damage resolver's answer (<c>Session.ResolveDamageTarget</c>
+    /// — an aimed id directly, else the faced tile, creature first), taken the first time a verb asks and kept for
+    /// the rest of the cast. <see cref="hasTarget"/>, <see cref="targetHp"/>, <see cref="fxTarget"/> and
+    /// <see cref="damage"/> all read it, so a verb that reads its victim and then strikes it names one victim, or
+    /// none.
+    /// <para>They used to resolve separately, and the resolvers disagree on an id (#343's review, F2). Drain read its
+    /// creature's HP through the cast-target resolver, which falls back to the faced creature for an id that names no
+    /// creature, then struck through this one, which does not: aimed at an id nobody has, it healed its caster off
+    /// the creature it was facing and left that creature untouched, for 60 mana, as often as you liked. Kamikaze
+    /// asked the same cast-target resolver whether it had a target, then blasted nothing and left its caster on
+    /// 10 HP. The damage resolver is the one whose answer the blow always used, so it is the one kept.</para>
+    /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
+    /// a queued or proc cast included.</para></summary>
+    private (Mob? mob, Session? pc) Victim => _victim ??= _s.LuaDamageVictim(_targetId);
+    private (Mob? mob, Session? pc)? _victim;
 
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
@@ -69,7 +86,9 @@ public sealed class SpellContext
     public double hp        => _s.LuaHp;
     public double maxHp     => _s.LuaMaxHp;
     public double mp        => _s.LuaMp;
-    public bool   hasTarget => _s.LuaHasTarget(_targetId);
+    /// <summary>Is this cast's victim (<see cref="Victim"/>) a creature? Mobs only: an id naming a player is a
+    /// victim, but not one this answers yes to.</summary>
+    public bool   hasTarget => _s.LuaHasTarget(Victim);
     /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (PvP map, unaimed) you?
     /// Use this and not <see cref="hasTarget"/> in front of a <c>ctx:damage</c>, which resolves mobs only.</summary>
     public bool   hasDamageTarget => _s.LuaHasDamageTarget(_targetId);
@@ -79,8 +98,9 @@ public sealed class SpellContext
     // ---- primitives (Lua: ctx:spendMana(n), ctx:damage(n), ...) ----
     /// <summary>Check + debit the caster's mana; false (with a "not enough mana" notice) if short.</summary>
     public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
-    /// <summary>Damage the resolved target mob (handles deflect/HP-bar/death/XP). False if no target.</summary>
-    public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, _targetId);
+    /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
+    /// and the PvP gate for a player). False if there is none.</summary>
+    public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → resolve target →
     /// deflect roll (no mana spent on a deflect) → spend mana → apply. Returns false if the cast couldn't happen
     /// (no mana / no target — a notice was sent), true otherwise (including a deflect). Used by arch_damage.</summary>
@@ -92,11 +112,11 @@ public sealed class SpellContext
     /// spell's fx drawn over them. Type-5 self-skills always heal the caster; only Type-2 "Which target? &gt;"
     /// spells redirect. Falls back to the caster when nothing is targeted.</summary>
     public void healTarget(double amt)  => _s.LuaHealTarget((int)System.Math.Round(amt), _sp, _targetId);
-    /// <summary>Current HP of the targeted mob (0 if it isn't a living mob) — Drain's "is it weak enough" test
-    /// and the amount of life it yields.</summary>
-    public double targetHp              => _s.LuaTargetMobHp(_targetId);
-    /// <summary>Play this spell's own anim/sound over the TARGET instead of the caster.</summary>
-    public void fxTarget()              => _s.LuaFxTarget(_sp, _targetId);
+    /// <summary>Current HP of this cast's victim (<see cref="Victim"/>), 0 if it isn't a living mob — Drain's "is it
+    /// weak enough" test and the amount of life it yields.</summary>
+    public double targetHp              => _s.LuaTargetMobHp(Victim);
+    /// <summary>Play this spell's own anim/sound over this cast's victim (<see cref="Victim"/>) instead of the caster.</summary>
+    public void fxTarget()              => _s.LuaFxTarget(_sp, Victim);
     /// <summary>Restore the caster's own mana (capped at max).</summary>
     public void restoreMana(double amt) => _s.LuaRestoreMana((int)System.Math.Round(amt));
     /// <summary>Apply a timed stat buff (e.g. "might"/"dam"/"hit") of <paramref name="amount"/> for

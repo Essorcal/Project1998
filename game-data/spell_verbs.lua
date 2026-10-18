@@ -655,7 +655,7 @@ end
 function verbs.kamikaze(ctx, row)
   local mana = row.mana or 120
   if not ctx:enoughMana(mana) then ctx:say("You do not have enough mana.") return false end
-  if not ctx.hasTarget then return false end          -- silent
+  if not ctx.hasTarget then return false end          -- silent; the creature ctx:damage below then strikes
   ctx:debitMana(mana)
   ctx:talk("Kamikaze~!")
   ctx:damage(math.ceil(ctx.hp * (row.coeff or 1.75)))
@@ -1053,6 +1053,8 @@ end
 function verbs.drain(ctx, row)
   local mana = row.mana or 60
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
+  -- targetHp, fxTarget and damage all read ONE victim, resolved here once (SpellContext.Victim), so the life
+  -- you take and the creature you kill are the same one. An id that names no creature you could strike reads 0.
   local hp = ctx.targetHp
   if hp <= 0 or hp > (row.amount or 1000) then ctx:say("It doesn't work."); return false end
   ctx:debitMana(mana)

@@ -706,7 +706,13 @@ public sealed partial class Session
     private void LogNoTarget(SpellDef sp) =>
         Log.Info($"      -x {sp.Name}: no target at ({_char.X},{_char.Y}) facing {_facing} — silent refusal");
 
-    internal bool LuaHasTarget(uint? targetId) => ResolveCastTarget(targetId) is not null;
+    /// <summary>The victim a damage verb reads and then strikes: the damage resolver's answer, which
+    /// <c>SpellContext</c> takes once per cast and hands back to <see cref="LuaHasTarget"/>,
+    /// <see cref="LuaTargetMobHp"/>, <see cref="LuaFxTarget"/> and <see cref="LuaDamageTarget"/>, so the read
+    /// and the blow cannot name two targets (#343's review, F2).</summary>
+    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId) => ResolveDamageTarget(targetId);
+
+    internal bool LuaHasTarget((Mob? mob, Session? pc) victim) => victim.mob is not null;
 
     /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (in a PvP map, unaimed)
     /// yourself? Distinct from <see cref="LuaHasTarget"/>, which resolves mobs only and would therefore
@@ -743,9 +749,9 @@ public sealed partial class Session
     // exists for either, and guessing would move balance with nothing behind it).
     private static int SpellNet(int amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
 
-    internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
+    internal bool LuaDamageTarget(int amt, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
-        var (mob, pc) = ResolveDamageTarget(targetId);
+        var (mob, pc) = victim;
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null) return HitPlayerWithSpell(pc, amt, 0, sp);   // PvP / self-cast (verb already spent mana)
         if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("Your magic has been deflected."); return true; }
@@ -1133,15 +1139,16 @@ public sealed partial class Session
     /// <c>game-data/ServerTuning.csv</c>.</summary>
     private static byte HealBarCritByte => Content.HealCritByte;
 
-    /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
-    /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>
-    internal int LuaTargetMobHp(uint? targetId) => ResolveCastTarget(targetId) is { Alive: true } m ? m.Hp : 0;
+    /// <summary>Current HP of this cast's victim (0 if it isn't a living mob) — Drain reads it to decide whether
+    /// the creature is weak enough to absorb, and how much life that yields. The victim is the one the blow then
+    /// strikes (<see cref="LuaDamageVictim"/>).</summary>
+    internal int LuaTargetMobHp((Mob? mob, Session? pc) victim) => victim.mob is { Alive: true } m ? m.Hp : 0;
 
-    /// <summary>Play THIS spell's own animation/sound on the resolved target rather than on the caster — for
+    /// <summary>Play THIS spell's own animation/sound on this cast's victim rather than on the caster — for
     /// spells whose documented effect is drawn over the victim (Drain's atlas gif is the target's).</summary>
-    internal void LuaFxTarget(SpellDef sp, uint? targetId)
+    internal void LuaFxTarget(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
+        var (mob, pc) = victim;
         uint? id = pc?._char.Id ?? mob?.Id;
         if (id is null) return;
         var fx = Content.FxFor(sp);
