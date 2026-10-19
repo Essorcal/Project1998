@@ -3516,7 +3516,12 @@ public sealed partial class Session
     {
         var fiance = _world.Online.FindPlayer(_char.Fiance);
         if (fiance is null) return "Both parties must be present for the ceremony to commence";
-        if (fiance.HasLegend("married")) return "The person is already married.";
+        // The fiancé's legends, read inside the fiancé's monitor (#29), as the proposer's checks of the beloved are
+        // (RunProposeAsync): this runs on the bride's thread, under the bride's monitor and never World._lock, and
+        // FindPlayer searches every map, so the fiancé may be anywhere with his own handlers editing that list. Read
+        // bare, an edit landing mid-walk threw "Collection was modified" and the bride's Chapel dialog ended with
+        // nothing said.
+        if (fiance.WithState(() => fiance.HasLegend("married"))) return "The person is already married.";
 
         string me = _char.Name, them = fiance.Snapshot().Name;
         int choice = await fiance.DlgMenu(MarriageVirtualNpc,

@@ -23,8 +23,8 @@ namespace Tests;
 /// <item><b>Sends into another player</b> on those paths. No fact here: a send writes nothing a monitor guards
 /// (the report says why), so nothing changed.</item>
 /// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
-/// profile's legends and gear, the mentor's and the proposer's checks on the other player, and where the other player
-/// stands for <c>@approach</c> and the Approach spell.</item>
+/// profile's legends and gear, the mentor's and the proposer's checks on the other player, the wedding's check of the
+/// fiancé, and where the other player stands for <c>@approach</c> and the Approach spell.</item>
 /// <item><b>Mana Gift's lost regen beat</b>: the gift computed the target's new mana before it took their monitor,
 /// so a beat that landed in between was overwritten.</item>
 /// </list>
@@ -43,13 +43,14 @@ namespace Tests;
 [Collection("world")]
 public sealed class PeerSweepLockTests
 {
-    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62453, one line per group.
+    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group.
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
                          PromptMidMap = 62453;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
-                         ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452;
+                         ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
+                         WeddingCheckMap = 62454, WeddingCheckRaceMap = 62455;
     private const ushort GiftHeldMap = 62443, GiftRaceMap = 62444, GiftPinMap = 62445;
 
     /// <summary>Fen, the Gale Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 230, map 2511): the ceremony's real
@@ -745,6 +746,102 @@ public sealed class PeerSweepLockTests
         }
     }
 
+    private const string AlreadyMarried = "The person is already married.";
+
+    /// <summary>The wedding through Fen's real dialog, at a fiancé who has married someone else since the engagement
+    /// (the stale engagement the check is for), on another map, while a third thread holds his monitor, in both
+    /// <c>StateRank</c> orders. The bride's "Yes" reaches the ceremony's check of his legends, which waits for his
+    /// monitor; once it is let go the Chapel tells her "The person is already married." and nothing is asked of him.
+    /// <para>Red in both builds with the check as it was from 3690542 to 6ede66b: it walked the fiancé's legends from the
+    /// bride's thread without his monitor, and answered while another thread held it.</para></summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void TheWeddingsCheckOfTheFianceWaitsForHisMonitor(bool brideRanksFirst)
+    {
+        var (npc, def) = ChapelNpc();
+        Session br, fi;
+        HeldRecorder brOut, fiOut;
+        static void MarriedElsewhere(Character c) => c.Legends.Add(new Legend(6, 1, "Married to Someone Else", "married"));
+        if (brideRanksFirst)
+        {
+            (br, brOut, _) = Player("CheckBride", def.Map, (ushort)(def.X - 1), (ushort)(def.Y + 2), c => Wide(c, def.Map));
+            (fi, fiOut, _) = Player("CheckFiance", WeddingCheckMap, 20, 20, MarriedElsewhere);
+        }
+        else
+        {
+            (fi, fiOut, _) = Player("CheckFiance", WeddingCheckMap, 20, 20, MarriedElsewhere);
+            (br, brOut, _) = Player("CheckBride", def.Map, (ushort)(def.X - 1), (ushort)(def.Y + 2), c => Wide(c, def.Map));
+        }
+        Assert.Equal(brideRanksFirst, br.StateRank < fi.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            Engage(br, fi, proposee: true);
+            OnOwnThread(() => UpToTheConfirm(br, brOut, npc, def));
+            WhileAnotherThreadHolds(run, fi, () => br.Receive(MenuFrame(1)),   // "Yes": the ceremony checks the fiancé
+                untouched: () => !brOut.Bodies(ServerOp.NpcDialog).Any(f => HeldRecorder.IsBox(f.Body, AlreadyMarried)));
+            AssertWaited(run, "the wedding's check of the fiancé", "the Chapel answered while the fiancé's monitor was held");
+
+            LastBox(brOut, AlreadyMarried);
+            Assert.Equal(0, fiOut.MenusWith("as your partner?"));
+            OnOwnThread(() => br.Receive(NextFrame()));
+            Assert.False(br.DialogBusy);
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Leave(def.Map, br);
+                Leave(WeddingCheckMap, fi);
+            }
+        }
+    }
+
+    /// <summary>A bride confirms her wedding again and again while her fiancé's legends turn over under his own monitor
+    /// (a thread of his own, over a hundred legends that stay): the ceremony runs as the Chapel's continuation runs it,
+    /// inside her monitor, and checks his legends from her thread; he answers "I don't" through the real 0x3A. Every
+    /// confirmation reaches his question, and every decline tells her.
+    /// <para>Red in both builds with the check as it was from 3690542 to 6ede66b: the walk of the fiancé's legends throws
+    /// "Collection was modified" and the ceremony dies before it asks him (through Fen, the bride's dialog ends with
+    /// nothing said).</para></summary>
+    [Fact]
+    public void AWeddingWithAFianceWhoseLegendsTurnOverNeverLosesTheAsking()
+    {
+        var (fi, fiOut, fc) = Player("CheckRaceFiance", WeddingCheckRaceMap, 20, 10, WithBallast);
+        var (br, brOut, _) = Player("CheckRaceBride", WeddingCheckRaceMap, 21, 10);
+        var race = new Race();
+        try
+        {
+            Engage(br, fi, proposee: true);
+            Engage(fi, br, proposee: false);
+            RunWithTurnover(race, "the bride and the turning-over fiancé",
+                askers: new Action[]
+                {
+                    () =>
+                    {
+                        for (int i = 0; i < Rounds; i++)
+                        {
+                            br.WithState(() => _ = br.RunMarriageCeremony());
+                            fi.Receive(MenuFrame(2));   // "I don't."
+                            race.Progress.Bump();
+                        }
+                    },
+                },
+                turnovers: new Action[] { () => TurnOver(fi, fc) });
+
+            Assert.Null(race.Fault);
+            Assert.Equal(Rounds, fiOut.MenusWith($"Do you, {fi.CharName} take {br.CharName} as your partner?"));
+            Assert.Equal(Rounds, brOut.Count($"{fi.CharName} regretably must decline."));
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled) Leave(WeddingCheckRaceMap, fi, br);
+        }
+    }
+
     /// <summary>How many entries the turnover races keep in the list another thread walks, so a walk takes long enough
     /// to meet a write.</summary>
     private const int Ballast = 100;
@@ -1355,13 +1452,20 @@ public sealed class PeerSweepLockTests
     /// the ceremony then asks the fiancé.</summary>
     private static void OpenCeremony(Session s, HeldRecorder o, Mob npc, NpcDef def)
     {
+        UpToTheConfirm(s, o, npc, def);
+        s.Receive(MenuFrame(1));
+    }
+
+    /// <summary>Click <paramref name="npc"/> (the real 0x43) and pick "Marriage" by its label on the wire, up to the
+    /// Chapel's "Are you certain" menu, whose "Yes" starts the ceremony.</summary>
+    private static void UpToTheConfirm(Session s, HeldRecorder o, Mob npc, NpcDef def)
+    {
         s.Receive(ClickFrame(npc.Id));
         var labels = LastMenu(o, $"{def.Name}: How can I help you today?").Labels;
         int pick = labels.IndexOf("Marriage") + 1;
         Assert.True(pick > 0, $"no Marriage in [{string.Join(", ", labels)}]");
         s.Receive(MenuFrame((byte)pick));
         LastMenu(o, "Are you certain you wish to devote yourself to this man or woman for life?");
-        s.Receive(MenuFrame(1));
     }
 
     // ===== cards ======================================================================================
