@@ -31,10 +31,12 @@ namespace Tests;
 /// and from their saved row through the arrival's own store when they are not. A consistent pair, and a partner whose
 /// row cannot be read, are left as they are.</para>
 ///
-/// <para><b>And then</b> (#344's Follow-ups; Caleb, 2026-10-18, "As recommended"). A partner whose half a Chapel
-/// visit ends while they are online reads the login line, "Your marriage to X has ended." (or engagement), sent from
-/// inside their monitor where the end runs; a partner who is offline reads it once, at their next login, and a partner
-/// whose half names someone else, or nobody, reads nothing.</para>
+/// <para><b>And then</b> (#344's Follow-ups; Caleb, 2026-10-18, "As recommended"). A confirm whose vow the partner
+/// already ended is free: the dialog re-checks the clicker's own half, under the clicker's own monitor, before it
+/// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead. And a partner whose half
+/// a Chapel visit ends while they are online reads the login line, "Your marriage to X has ended." (or engagement),
+/// sent from inside their monitor where the end runs; a partner who is offline reads it once, at their next login, and
+/// a partner whose half names someone else, or nobody, reads nothing.</para>
 ///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
@@ -602,8 +604,8 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// <para>Red on 3690542, Debug and Release: A's late "Yes" runs A's own half whatever it holds and takes A's
     /// bought love (A ends with 0). B keeps its own: A's half is empty by then, so the partner looked up by that
     /// empty name is nobody. The partner's side of a crossing is the race below.</para>
-    /// <para>What A pays for the late "Yes" is not asserted: the Chapel charges it as before (see the PR's
-    /// Follow-ups).</para>
+    /// <para>What A pays and reads for the late "Yes" is <see cref="AConfirmWhoseVowThePartnerAlreadyEndedIsFree"/>'s
+    /// business; this fact pins the keepsake only.</para>
     /// </summary>
     [Fact]
     public void AConfirmAfterThePartnerEndedTheMarriageTakesNoSecondKeepsake()
@@ -644,7 +646,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             });
             _out.WriteLine($"after A's late Yes: A {VowState(aS)}, B {VowState(bS)}; A paid {aExp - aS.CharExp}");
 
-            Assert.Equal(1, Shown(aOut, "You are now divorced."));
+            Assert.False(aS.DialogBusy, "A's dialog did not close");
             Assert.Equal(1, aS.WithState(() => aS.CountItem("love")));
             Assert.Equal(1, bS.WithState(() => bS.CountItem("love")));
             Assert.True(VowGone(aS, married: true));
@@ -657,7 +659,142 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
-    // ===== the Chapel's follow-up: an online partner is told ==============================================
+    // ===== the Chapel's follow-ups: a late confirm is free, and an online partner is told ==================
+
+    /// <summary>Where the late player's Chapel dialog waits while the partner ends the vow.</summary>
+    public enum LateConfirm
+    {
+        /// <summary>Break Off Engagement's "Are you sure you want to end the engagement?".</summary>
+        BreakAtTheQuestion,
+        /// <summary>Crystal's top menu, which offered Break Off Engagement.</summary>
+        BreakAtTheMenu,
+        /// <summary>Divorce's "It will cost N experience. Are you sure you want this divorce?", experience enough.</summary>
+        DivorceAtTheQuestion,
+        /// <summary>Crystal's top menu, which offered Divorce, experience enough.</summary>
+        DivorceAtTheMenu,
+        /// <summary>The same question with too little experience, so a "Yes" leads to the base-pool sacrifice.</summary>
+        SacrificeAtTheQuestion,
+        /// <summary>The sacrifice's last question, "It will cost you 8000 base Vita as a penalty. Continue?".</summary>
+        SacrificeAtTheConfirm,
+    }
+
+    /// <summary>
+    /// <b>A confirm whose vow the partner already ended is free.</b> A and B stand beside Crystal, engaged (or married)
+    /// to each other. A's dialog is left waiting (<see cref="LateConfirm"/>), and B ends the vow at Crystal meanwhile,
+    /// which ends both halves. Then A answers yes to everything, to the end of the dialog. A pays nothing (experience,
+    /// base Vita and base Mana, in memory and in A's row) and reads Crystal's "Your engagement to B has already ended."
+    /// (or marriage) once, never "It is done." / "You are now divorced." and never the sacrifice's offer; A read the
+    /// status line "Your engagement to B has ended." (or marriage) once, when B's visit ended A's half. B pays and
+    /// reads as before, and reads no status line.
+    /// <para>Red on c7878f2, Debug and Release: A is charged (<c>MaxMp * 1000</c> or <c>MaxHp * 2550</c> exp, or
+    /// 8000 base Vita on the sacrifice path) and reads "It is done." or "You are now divorced."; A reads no status
+    /// line.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(LateConfirm.BreakAtTheQuestion)]
+    [InlineData(LateConfirm.BreakAtTheMenu)]
+    [InlineData(LateConfirm.DivorceAtTheQuestion)]
+    [InlineData(LateConfirm.DivorceAtTheMenu)]
+    [InlineData(LateConfirm.SacrificeAtTheQuestion)]
+    [InlineData(LateConfirm.SacrificeAtTheConfirm)]
+    public void AConfirmWhoseVowThePartnerAlreadyEndedIsFree(LateConfirm when)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        bool married = when is not (LateConfirm.BreakAtTheQuestion or LateConfirm.BreakAtTheMenu);
+        bool sacrifice = when is LateConfirm.SacrificeAtTheQuestion or LateConfirm.SacrificeAtTheConfirm;
+        bool atTheMenu = when is LateConfirm.BreakAtTheMenu or LateConfirm.DivorceAtTheMenu;
+        string a = Name("A"), b = Name("B");
+        // On the sacrifice path A has 10,000 Vita, so a divorce costs 25,500,000 exp, against 1,000 held, and the
+        // 8000 Vita sacrifice is allowed.
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y, maxHp: sacrifice ? 10_000u : 1_000u);
+        if (sacrifice) aRow.Exp = 1_000;
+        Seed(db, aRow, NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            var (bS, bOut) = Arrive(db.Store, b);
+            bHeld = bS;
+            Vow(aS, b, married);
+            Vow(bS, a, married);
+            var aPools = Pools(aS);
+            var aRowPools = Pools(Row(db.Store, a));
+            uint bExp = bS.CharExp;
+
+            int entry = 0;
+            OnOwnThread(() =>
+            {
+                if (atTheMenu)
+                {
+                    Click(aS, npc);
+                    entry = LastMenu(aOut, $"{def.Name}: How can I help you today?")
+                        .IndexOf(married ? "Divorce" : "Break Off Engagement") + 1;
+                }
+                else
+                {
+                    OpenVowEntry(aS, aOut, npc, def, married);
+                    if (when == LateConfirm.SacrificeAtTheConfirm)
+                    {
+                        aS.Receive(MenuFrame(1));   // "Yes": too little experience, so "Hmmm.. ..."
+                        aS.Receive(NextFrame());
+                        aS.Receive(MenuFrame(1));   // "Sacrifice 8000 Vita"
+                        LastMenu(aOut, "It will cost you 8000 base Vita as a penalty. Continue?");
+                    }
+                }
+            });
+            Assert.True(aS.DialogBusy, $"A's dialog is not waiting at {when}");
+            if (atTheMenu) Assert.True(entry > 0, "Crystal's top menu did not offer A the entry");
+            aOut.Clear();
+            bOut.Clear();
+
+            OnOwnThread(() =>
+            {
+                OpenVowEntry(bS, bOut, npc, def, married);
+                bS.Receive(MenuFrame(1));
+                bS.Receive(NextFrame());
+            });
+            Assert.True(VowGone(aS, married), $"B's visit did not end A's half: {VowState(aS)}");
+
+            OnOwnThread(() =>
+            {
+                aS.Receive(MenuFrame((byte)(atTheMenu ? entry : 1)));
+                AnswerYesToTheEnd(aS, aOut);
+            });
+            var aLines = SpellCastSupport.MiniTexts(aOut);
+            var aNow = Pools(aS);
+            _out.WriteLine($"[{when}] A paid exp {aPools.Exp - aNow.Exp}, Vita {aPools.MaxHp - aNow.MaxHp}, " +
+                           $"Mana {aPools.MaxMp - aNow.MaxMp}; A read: already {Shown(aOut, AlreadyLine(married, b))}, " +
+                           $"done {Shown(aOut, DonePage(married))}, offer {Shown(aOut, SacrificeOffer)}; " +
+                           $"A's lines: [{string.Join(" | ", aLines)}]; A {VowState(aS)}, B {VowState(bS)}");
+
+            Assert.Equal(aPools, aNow);
+            Assert.Equal(aRowPools, Pools(Row(db.Store, a)));
+            Assert.Equal(1, Shown(aOut, AlreadyLine(married, b)));
+            Assert.Equal(0, Shown(aOut, DonePage(married)));
+            Assert.Equal(0, Shown(aOut, SacrificeOffer));
+            Assert.Equal(1, aLines.Count(l => l == Line(married, b)));
+            Assert.Equal(1, aLines.Count(l => l.Contains(" has ended.")));
+            Assert.True(VowGone(aS, married), $"A holds a half again: {VowState(aS)}");
+
+            Assert.True(VowGone(bS, married), $"B's own visit did not end B's half: {VowState(bS)}");
+            Assert.Equal(bExp - Price(married), bS.CharExp);
+            Assert.Equal(1, Shown(bOut, DonePage(married)));
+            Assert.DoesNotContain(SpellCastSupport.MiniTexts(bOut), l => l.Contains(" has ended."));
+            if (married)
+            {
+                Assert.Equal(0, aS.WithState(() => aS.CountItem("love")));
+                Assert.Equal(0, bS.WithState(() => bS.CountItem("love")));
+            }
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
 
     /// <summary>Where the partner whose half A's Chapel visit is about stands, and what their half names.</summary>
     public enum PartnerAtTheVisit
@@ -802,6 +939,14 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// partner's half is run again by the other's answer, whomever it names by then. When one answer finishes first, the
     /// other's own half is run again, whatever it holds. The engagement has no keepsake, so its round ends the same
     /// either way: it pins that nothing stalls.</para>
+    /// <para><b>And no answer pays for a vow it did not end</b> (#344's Follow-ups). Each side's answer is either the
+    /// one that ended its own half, which pays the price once, reads "It is done." (or "You are now divorced.") and
+    /// reads no status line; or it came after the partner's answer had already ended it, which pays nothing, reads
+    /// Crystal's "has already ended." and read the partner's status line once. A side whose half was already gone just
+    /// before it answered must be the second kind, and every round someone pays. When the answers cross, both pay:
+    /// each one ended its own half before the other's reached it.</para>
+    /// <para>Red on c7878f2, Debug and Release, both kinds: a side whose half was already gone before it answered is
+    /// charged and reads the paid line, and no side reads a status line.</para>
     /// </summary>
     [Theory]
     [InlineData(false)]
@@ -816,8 +961,10 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
         Session? aHeld = null, bHeld = null;
         var race = new Race();
-        int wrong = 0;
+        int wrong = 0, staleBeforeTheirYes = 0, free = 0;
+        var payers = new int[ChapelRaceRounds];
         string? firstWrong = null;
+        uint price = Price(married, maxHp: 100);
         try
         {
             var (aS, aOut) = Arrive(db.Store, a);
@@ -837,13 +984,27 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                     OpenVowEntry(self, selfOut, npc, def, married);
                     barrier.SignalAndWait(race.Cancel.Token);
                     if (i % 2 == side) Spin(Stagger(i, stepMs: 1.0));
+                    bool goneBefore = VowGone(self, married);   // a half, once gone, stays gone this round
+                    uint before = self.WithState(() => self.CharExp);
                     self.Receive(MenuFrame(1));
                     self.Receive(NextFrame());
                     barrier.SignalAndWait(race.Cancel.Token);
                     string state = VowState(self);
-                    bool right = VowGone(self, married) && !self.DialogBusy &&
+                    uint paid = before - self.WithState(() => self.CharExp);
+                    int done = Shown(selfOut, DonePage(married)), already = Shown(selfOut, AlreadyLine(married, other));
+                    int lines = SpellCastSupport.MiniTexts(selfOut).Count(l => l.Contains(" has ended."));
+                    int toldRight = SpellCastSupport.MiniTexts(selfOut).Count(l => l == Line(married, other));
+                    bool ended = VowGone(self, married) && !self.DialogBusy &&
                                  (!married || self.WithState(() => self.CountItem("love")) == 1);
-                    if (!right && Interlocked.Increment(ref wrong) == 1) firstWrong = $"round {i}: {self.CharName} {state}";
+                    bool endedIt = paid == price && done == 1 && already == 0 && lines == 0;
+                    bool cameAfter = paid == 0 && done == 0 && already == 1 && lines == 1 && toldRight == 1;
+                    bool right = ended && (endedIt || cameAfter) && !(goneBefore && paid != 0);
+                    if (goneBefore) Interlocked.Increment(ref staleBeforeTheirYes);
+                    if (cameAfter) Interlocked.Increment(ref free);
+                    if (paid != 0) Interlocked.Increment(ref payers[i]);
+                    if (!right && Interlocked.Increment(ref wrong) == 1)
+                        firstWrong = $"round {i}: {self.CharName} {state}, half gone before its Yes: {goneBefore}, paid {paid} " +
+                                     $"of {price}, read done {done} / already {already}, status lines {lines}";
                     barrier.SignalAndWait(race.Cancel.Token);
                     race.Progress.Bump();
                 }
@@ -851,11 +1012,15 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
             RunRace(race, married ? "the two spouses divorcing at the Chapel at once" : "the two partners breaking it off at once",
                     () => Partnered(aS, aOut, b, side: 0), () => Partnered(bS, bOut, a, side: 1));
-            _out.WriteLine($"[{Kind(married)}] {race.Progress.Rounds} partner-rounds, {wrong} wrong; first: {firstWrong ?? "none"}");
+            int crossed = payers.Count(p => p == 2), unpaid = payers.Count(p => p == 0);
+            _out.WriteLine($"[{Kind(married)}] {race.Progress.Rounds} partner-rounds, {wrong} wrong; rounds where both paid " +
+                           $"(crossed) {crossed}, one paid {payers.Count(p => p == 1)}, nobody paid {unpaid}; answers free {free}, " +
+                           $"half gone before the Yes {staleBeforeTheirYes}; first wrong: {firstWrong ?? "none"}");
 
             Assert.Null(race.Fault);
             Assert.Equal(2 * ChapelRaceRounds, race.Progress.Rounds);
             Assert.True(wrong == 0, $"{wrong} partner-rounds ended wrong; the first: {firstWrong}");
+            Assert.True(unpaid == 0, $"{unpaid} rounds ended the vow with nobody paying");
         }
         finally
         {
@@ -982,12 +1147,26 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     private static string Line(bool married, string partner) =>
         married ? $"Your marriage to {partner} has ended." : $"Your engagement to {partner} has ended.";
 
+    /// <summary>What Crystal says to a confirm whose vow the partner already ended.</summary>
+    private static string AlreadyLine(bool married, string partner) =>
+        married ? $"Your marriage to {partner} has already ended." : $"Your engagement to {partner} has already ended.";
+
     /// <summary>The Chapel's last line for a paid break or divorce.</summary>
     private static string DonePage(bool married) => married ? "You are now divorced." : "It is done.";
+
+    /// <summary>The divorce's page for a player with too little experience, before the sacrifice is offered.</summary>
+    private const string SacrificeOffer =
+        "Hmmm.. you don't have the experience to divorce, but there is something else you can offer.";
 
     /// <summary>What the Chapel charges in experience: a divorce <c>MaxHp * 2550</c>, a break <c>MaxMp * 1000</c>
     /// (<see cref="NewCharacter"/> gives 100 Mana).</summary>
     private static uint Price(bool married, uint maxHp = 1_000) => married ? maxHp * 2550 : 100u * 1000;
+
+    /// <summary>Experience and the two base pools: everything the Chapel's price can be paid in.</summary>
+    private static (uint Exp, uint MaxHp, uint MaxMp) Pools(Session s) =>
+        s.WithState(() => (s.CharExp, s.CharMaxHp, s.CharMaxMp));
+
+    private static (uint Exp, uint MaxHp, uint MaxMp) Pools(Character c) => (c.Exp, c.MaxHp, c.MaxMp);
 
     /// <summary>A character as creation writes it, standing on <paramref name="map"/>, with experience enough for the
     /// Chapel's prices (a divorce is <c>MaxHp * 2550</c>, a broken engagement <c>MaxMp * 1000</c>).</summary>
@@ -1232,6 +1411,19 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Assert.True(s.DialogBusy, "the Chapel's last question is not waiting");
         var question = LastMenu(o, divorce ? "Are you sure you want this divorce?" : "Are you sure you want to end the engagement?");
         Assert.Equal(2, question.Count);
+    }
+
+    /// <summary>Answer every prompt the dialog sends from here on as a player who says yes to everything: the first
+    /// option of a menu (<c>0x30</c> kind <c>02 02</c>), "next" on a text box; until the dialog closes, at most
+    /// <paramref name="steps"/> answers. The prompt already waiting is the caller's to answer.</summary>
+    private static void AnswerYesToTheEnd(Session s, RecordingOutbound o, int steps = 8)
+    {
+        for (int i = 0; i < steps && s.DialogBusy; i++)
+        {
+            var last = o.BodiesOf(ServerOp.NpcDialog).Last();
+            s.Receive(last[0] == 0x02 ? MenuFrame(1) : NextFrame());
+        }
+        Assert.False(s.DialogBusy, "the dialog was still open after answering yes to everything");
     }
 
     /// <summary>The labels of the last 0x30 menu whose prompt ends with <paramref name="promptTail"/>: after the

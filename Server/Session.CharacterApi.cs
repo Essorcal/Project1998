@@ -1191,8 +1191,9 @@ public sealed partial class Session : QuestState.ISessionStore
 
     /// <summary>Does a vow half (a fiancé or spouse name) name <paramref name="name"/>? An empty half names nobody.
     /// Case-insensitive, as <c>World.Online.FindPlayer</c> matches the same name when the Chapel looks the partner
-    /// up.</summary>
-    private static bool VowNames(string half, string name) =>
+    /// up. Also the Chapel dialog's re-check before it charges (<c>NpcContext.IsEngagedTo</c>,
+    /// <c>IsMarriedTo</c>).</summary>
+    internal static bool VowNames(string half, string name) =>
         !string.IsNullOrEmpty(half) && string.Equals(half, name, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
