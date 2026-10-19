@@ -16,7 +16,9 @@ namespace Tests;
 ///
 /// <para>The stream is in-memory and hands back exactly one pushed chunk per read, so "one byte per read"
 /// and "two frames plus half of a third in one read" are things a test can state exactly. Every wait is
-/// bounded.</para>
+/// bounded, and no wait is on the clock while the reader is right: the harness runs the reader inside the
+/// call that feeds it (see <see cref="Harness"/>), so everything a push lets the reader do is done before
+/// the push returns, and a bound only decides how long a broken reader takes to go red.</para>
 /// </summary>
 public sealed class FrameReaderTests
 {
@@ -162,9 +164,10 @@ public sealed class FrameReaderTests
     ///
     /// <para>Falsified by deleting the head-byte block: nothing drops the tail, no further bytes arrive, the
     /// pump sits in ReadAsync and the wait in Completion times out. Falsified a second way, for the bound
-    /// itself, by deleting BOTH blocks and pushing filler without end (300,000 bytes): the buffer peaked at
-    /// 234,462B and the last assertion went red. With the cap block alone put back, the same stream stays
-    /// inside the bound and is dropped — which is the layering its doc claims.</para></summary>
+    /// itself, by deleting BOTH blocks, pushing 300,000 bytes of filler and then closing the stream: the
+    /// buffer peaked at 234,462B and the last assertion went red (left open, that stream is red on the
+    /// Completion wait instead, before the bound is read). With the cap block alone put back, the same stream
+    /// stays inside the bound and is dropped — which is the layering its doc claims.</para></summary>
     [Fact]
     public async Task APeerThatOpensAMaximumHeaderAndStreamsFillerIsDroppedWithABoundedBuffer()
     {
@@ -479,9 +482,27 @@ public sealed class FrameReaderTests
 
     // ---- harness -------------------------------------------------------------------------------------
 
-    /// <summary>A reader wired to an in-memory stream, with every hook recorded. Hook state is written on
-    /// the pump thread and read on the test thread only after <see cref="NextReadAsync"/> has handed over,
-    /// which is the barrier.</summary>
+    /// <summary>A reader wired to an in-memory stream, with every hook recorded.
+    ///
+    /// <para><b>The reader runs inside the call that feeds it.</b> <see cref="Start"/> runs the enumeration up
+    /// to its first read, and every <see cref="ChunkStream.Push"/> and <see cref="ChunkStream.Eof"/> resumes it on
+    /// the calling thread: the stream's channel completes the waiting read synchronously, and the call clears the
+    /// thread's SynchronizationContext while it does (<see cref="Inline"/>). The call returns once the reader has
+    /// done everything those bytes let it do (framed, dropped, or parked in its next read), and Push asserts
+    /// exactly that. So on the green path every <see cref="NextReadAsync"/> and every wait on
+    /// <see cref="Completion"/> is already satisfied when it starts, and its bound only decides how long a broken
+    /// reader takes to go red.</para>
+    ///
+    /// <para><b>Why.</b> The reader used to run under Task.Run, so each fact's green path waited for a
+    /// thread-pool work item against five seconds of wall clock. The wait's own timeout is a pool callback too,
+    /// and with the pool backed up it ran ahead of a reader queued five seconds before it: fork run 39193449842
+    /// failed fact 3d with a TimeoutException, and the reader's own drop line was logged a few milliseconds
+    /// after it. Holding every pool thread for six seconds did the same to 3d every time, in Debug and
+    /// Release; with the reader driven inline the same hold leaves it green.</para>
+    ///
+    /// <para>Hook state is written on the thread that fed the reader, before that call returns, so the test
+    /// reads it with no barrier of its own. The handshake watchdog is the exception: it fires on a timer thread,
+    /// so <see cref="TimeoutCalls"/> is interlocked and read with Volatile.</para></summary>
     private sealed class Harness : IAsyncDisposable
     {
         public readonly ChunkStream Stream = new();
@@ -497,6 +518,7 @@ public sealed class FrameReaderTests
 
         private readonly int _handshakeMs;
         private readonly SemaphoreSlim _reads = new(0);
+        private readonly TaskCompletionSource _timedOut = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _established;
         private Task _pump = Task.CompletedTask;
 
@@ -504,7 +526,8 @@ public sealed class FrameReaderTests
 
         public Task Completion => _pump;
 
-        /// <summary>Begin reading. Separate from the constructor so a test can queue bytes BEFORE the
+        /// <summary>Begin reading, inline: the reader runs to its first read before this returns, and takes
+        /// anything already pushed. Separate from the constructor so a test can queue bytes BEFORE the
         /// handshake budget starts, which is what makes the short-budget facts deterministic.</summary>
         public void Start()
         {
@@ -512,7 +535,11 @@ public sealed class FrameReaderTests
             {
                 Established = () => Volatile.Read(ref _established) != 0,
                 OnEstablished = () => Volatile.Write(ref _established, 1),
-                OnHandshakeTimeout = () => Interlocked.Increment(ref TimeoutCalls),
+                OnHandshakeTimeout = () =>
+                {
+                    Interlocked.Increment(ref TimeoutCalls);
+                    _timedOut.TrySetResult();
+                },
                 OnRead = n => ReadSizes.Add(n),
                 OnBufferedAsync = buf =>
                 {
@@ -523,27 +550,47 @@ public sealed class FrameReaderTests
                 AfterRead = () => { AfterReads++; _reads.Release(); },
             };
             var reader = new FrameReader(Stream, 2005, "test-peer", hooks, _handshakeMs);
-            _pump = Task.Run(async () =>
-            {
-                await foreach (var pkt in reader.ReadFramesAsync()) Frames.Add(pkt);
-            });
+            Inline(() => _pump = PumpAsync(reader));
+            Stream.ReaderEnded = () => _pump.IsCompleted;
         }
 
-        /// <summary>Wait for one more read to finish end to end (frames delivered, latch set, dumps done).
-        /// False on timeout, which is a failed fact, never a hang.</summary>
+        private async Task PumpAsync(FrameReader reader)
+        {
+            await foreach (var pkt in reader.ReadFramesAsync()) Frames.Add(pkt);
+        }
+
+        /// <summary>Run <paramref name="feed"/> with the thread's SynchronizationContext cleared, then put the
+        /// context back. The reader's awaits are the production loop's and have no ConfigureAwait(false), so a
+        /// read that parked while xUnit's context was current would post the rest of the next read to that
+        /// context instead of running it here.</summary>
+        public static void Inline(Action feed)
+        {
+            var outer = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try { feed(); }
+            finally { SynchronizationContext.SetSynchronizationContext(outer); }
+        }
+
+        /// <summary>Take one more finished read (frames delivered, latch set, dumps done). On the green path
+        /// the push that caused it has already run it. False after five seconds, which is a failed fact, never
+        /// a hang.</summary>
         public Task<bool> NextReadAsync() => _reads.WaitAsync(TimeSpan.FromSeconds(5));
 
+        /// <summary>Wait for the handshake watchdog, the one thing in this class that IS on the clock: it fires
+        /// from a timer. This waits on the hook's own signal and answers from <see cref="TimeoutCalls"/> after
+        /// the wait, never from the clock alone. The poll it replaces returned false whenever it resumed past its
+        /// five-second deadline, without looking again, though the watchdog could have fired while it waited
+        /// for a thread. The bound is a minute: a watchdog that fires ends the wait then, so only one that never
+        /// fires spends it.</summary>
         public async Task<bool> WaitForTimeoutAsync()
         {
-            var deadline = Environment.TickCount64 + 5_000;
-            while (Environment.TickCount64 < deadline)
-            {
-                if (Volatile.Read(ref TimeoutCalls) > 0) return true;
-                await Task.Delay(10);
-            }
-            return false;
+            try { await _timedOut.Task.WaitAsync(TimeSpan.FromMinutes(1)); }
+            catch (TimeoutException) { /* answered from the count below */ }
+            return Volatile.Read(ref TimeoutCalls) > 0;
         }
 
+        /// <summary>Close the stream, which runs a parked reader to its end inline. The wait is for a reader
+        /// that does not end there.</summary>
         public async ValueTask DisposeAsync()
         {
             Stream.Eof();
@@ -554,27 +601,46 @@ public sealed class FrameReaderTests
 
     /// <summary>An in-memory stream that returns exactly one pushed chunk per read and blocks until one is
     /// pushed — the two things a socket does that a MemoryStream does not, and the two the framing facts are
-    /// about. No sockets: this is framing, not networking.</summary>
+    /// about. No sockets: this is framing, not networking.
+    ///
+    /// <para>Its channel completes a waiting read synchronously, on the thread that pushed. That, with the
+    /// cleared context in <see cref="Harness.Inline"/>, is what runs the reader inside the push.</para></summary>
     private sealed class ChunkStream : Stream
     {
-        private readonly Channel<byte[]> _chunks = Channel.CreateUnbounded<byte[]>();
+        private readonly Channel<byte[]> _chunks = Channel.CreateUnbounded<byte[]>(
+            new UnboundedChannelOptions { AllowSynchronousContinuations = true });
         private byte[] _pending = Array.Empty<byte>();
         private int _offset;
+        private volatile bool _parked;   // a read is waiting for a chunk
+
+        /// <summary>Set by <see cref="Harness.Start"/>: whether the reader's enumeration has ended. Null until
+        /// then, because bytes pushed before Start are taken as the reader starts, not by the push.</summary>
+        public Func<bool>? ReaderEnded { get; set; }
 
         public void Push(byte[] data)
         {
             Assert.NotEmpty(data);   // an empty chunk would read as EOF, which is Eof()'s job
-            Assert.True(_chunks.Writer.TryWrite(data));
+            Harness.Inline(() => Assert.True(_chunks.Writer.TryWrite(data)));
+            // The reader ran inside that write: it has ended, or it has read everything pushed so far and is
+            // parked in its NEXT read. Anything else means it is running somewhere else, and the waits in this
+            // class are back on the wall clock.
+            if (ReaderEnded is { } ended)
+                Assert.True(ended() || (_parked && _chunks.Reader.Count == 0 && _offset >= _pending.Length),
+                    "the reader had not finished with the push when Push returned: the harness is no longer inline");
         }
 
-        /// <summary>The peer closed: the next read returns 0.</summary>
-        public void Eof() => _chunks.Writer.TryComplete();
+        /// <summary>The peer closed: the next read returns 0. A parked reader takes it inline, as with
+        /// Push.</summary>
+        public void Eof() => Harness.Inline(() => _chunks.Writer.TryComplete());
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
         {
             while (_offset >= _pending.Length)
             {
-                if (!await _chunks.Reader.WaitToReadAsync(ct).ConfigureAwait(false)) return 0;
+                _parked = true;
+                bool more = await _chunks.Reader.WaitToReadAsync(ct).ConfigureAwait(false);
+                _parked = false;
+                if (!more) return 0;
                 if (!_chunks.Reader.TryRead(out var next)) continue;
                 _pending = next;
                 _offset = 0;
