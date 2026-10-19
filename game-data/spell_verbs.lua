@@ -19,7 +19,8 @@ verbs = {}
 -- Damage archetype: the standard direct magic attack. ctx:magicDamage does the whole sequence (mana check ->
 -- resolve target -> spend mana -> deflect roll -> apply + XP). A DEFLECT still costs the mana: the spell was
 -- cast, the target resisted it. Returns false only if the cast couldn't happen at all (no mana / no target),
--- so the cast animation is suppressed for those and those only.
+-- so the cast animation is suppressed for those and those only. The target is the cast's one victim, and an NPC
+-- is none (no blow can hurt it), so a cast at one is refused like a cast at nothing, silently and free.
 function verbs.arch_damage(ctx, row)
   return ctx:magicDamage(ctx.amount, ctx.mana)
 end
@@ -266,7 +267,12 @@ end
 
 -- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
+-- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
+-- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
+-- archetype and the generic damage spells give a cast that finds nothing. Only an NPC: a cast at nothing still
+-- charges here, as it always has.
 function verbs.magic_damage(ctx, row)
+  if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
   if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true
@@ -1159,6 +1165,9 @@ end
 -- half). Refunding first — which this used to do — halved LS's refund and wiped DA's mana refund entirely.
 --
 -- NOTE: casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
+-- An NPC in front is refused before anything is spent, silently: no blow can hurt it, and the strike used to land
+-- nothing on one for the mana, the aether and its HP cost. Kamikaze, the other self-sacrificing blow, refuses an NPC
+-- the same way. (RTK's strikes look for a BL_MOB only, so there an NPC is empty air: the mana and aether, no HP.)
 function verbs.sacrifice(ctx, row)
   local fam = ctx.sacrificeFamily
   local mana, aether
@@ -1170,6 +1179,9 @@ function verbs.sacrifice(ctx, row)
 
   if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
   if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+  -- What is in front, read once and before anything is spent (see the NOTE above for an NPC).
+  local struck = ctx:sacFrontMob()
+  if ctx.sacFrontNpc then return false end                  -- silent, free: an NPC is no victim
 
   local preHp, preMp = ctx.hp, ctx.mp
   -- Chin-Baek-Ho-Ryung: the Black Potion's 10s ward, x1.5 on Berserk and Whirlwind (RTK berserk.lua:45,
@@ -1187,7 +1199,7 @@ function verbs.sacrifice(ctx, row)
   ctx:setMana(ctx.mp - mana)                             -- spent even if nothing is in front (RTK)
   ctx:setCooldown(ctx.spellKey, aether)
 
-  if ctx:sacFrontMob() then
+  if struck then
     local overkill = ctx:sacApply(damage)
 
     -- 1. the strike's own cost. Charged FIRST -- see the ORDER note in the header.
@@ -1348,7 +1360,8 @@ function verbs.generic(ctx, row)
 
   if kind == "damage" then
     -- hasDamageTarget, not hasTarget: the latter resolves MOBS only and would refuse a legal self-zap
-    -- (unaimed in a PvP map resolves to you) before the damage path ever saw it.
+    -- (unaimed in a PvP map resolves to you) before the damage path ever saw it. It reads the victim the blow
+    -- strikes, so an NPC (which no blow can hurt) is no target here either.
     if not ctx.hasDamageTarget then return false end  -- silent
     if not ctx:spendMana(cost) then return false end
     ctx:fxRawTarget(4, 56)                                -- generic unaligned zap

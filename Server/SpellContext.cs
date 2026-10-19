@@ -35,10 +35,22 @@ public sealed class SpellContext
     /// <para>A victim the blow cannot hurt is none: an NPC resolves, but <c>World.TryDamage</c> refuses it, so
     /// <c>Session.LuaDamageVictim</c> answers no victim for one (#348's review, F1). Drain and Kamikaze then refuse it
     /// as they refuse no creature, before they spend anything.</para>
+    /// <para>So do the other verbs that strike it (#349's review, F1). <see cref="hasDamageTarget"/> (the
+    /// <c>generic</c> verb's gate) and <see cref="magicDamage"/> (<c>arch_damage</c>) read this victim too, so each
+    /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> charges for a cast that finds
+    /// nothing, so it asks <see cref="victimIsNpc"/> before it spends.</para>
     /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
     /// a queued or proc cast included.</para></summary>
-    private (Mob? mob, Session? pc) Victim => _victim ??= _s.LuaDamageVictim(_targetId);
+    private (Mob? mob, Session? pc) Victim
+    {
+        get
+        {
+            if (_victim is null) { _victim = _s.LuaDamageVictim(_targetId, out bool npc); _victimIsNpc = npc; }
+            return _victim.Value;
+        }
+    }
     private (Mob? mob, Session? pc)? _victim;
+    private bool _victimIsNpc;
 
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
@@ -93,8 +105,13 @@ public sealed class SpellContext
     /// victim, but not one this answers yes to. An NPC is no victim, so this answers no for one.</summary>
     public bool   hasTarget => _s.LuaHasTarget(Victim);
     /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (PvP map, unaimed) you?
-    /// Use this and not <see cref="hasTarget"/> in front of a <c>ctx:damage</c>, which resolves mobs only.</summary>
-    public bool   hasDamageTarget => _s.LuaHasDamageTarget(_targetId);
+    /// Use this and not <see cref="hasTarget"/> in front of a <c>ctx:damage</c>, which resolves mobs only.
+    /// It reads this cast's victim (<see cref="Victim"/>), the one the blow strikes, so an NPC is no target.</summary>
+    public bool   hasDamageTarget => _s.LuaHasDamageTarget(Victim);
+    /// <summary>Did this cast's victim (<see cref="Victim"/>) resolve to an NPC, which no blow can hurt and which the
+    /// victim therefore answers as none? For a verb that charges for a cast that finds nothing (<c>magic_damage</c>),
+    /// so it can refuse an NPC before it spends without changing what a cast at nothing costs.</summary>
+    public bool   victimIsNpc { get { _ = Victim; return _victimIsNpc; } }
     /// <summary>The player's typed answer to the spell's question prompt (empty if none).</summary>
     public string answer    { get; }
 
@@ -104,11 +121,12 @@ public sealed class SpellContext
     /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
     /// and the PvP gate for a player). False if there is none.</summary>
     public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
-    /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → resolve target →
-    /// deflect roll (no mana spent on a deflect) → spend mana → apply. Returns false if the cast couldn't happen
-    /// (no mana / no target — a notice was sent), true otherwise (including a deflect). Used by arch_damage.</summary>
+    /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
+    /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
+    /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
+    /// arch_damage.</summary>
     public bool magicDamage(double amt, double manaCost) =>
-        _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, _targetId);
+        _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, Victim);
     /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Heal whoever this cast is AIMED at — another player, a mob (your pet), or yourself — with the
@@ -550,8 +568,11 @@ public sealed class SpellContext
     /// <summary>The caster's alignment stat (Whirlwind's damage factor + HP cost + cooldown branch on it).</summary>
     public double alignment       => _s.LuaAlignment;
     /// <summary>Resolve + stash the mob on the faced tile for a sacrifice strike (alive). False if none — the
-    /// strike lands nothing (no HP cost), though the mana/cooldown were already spent.</summary>
+    /// strike lands nothing (no HP cost), though the verb still spends the mana/cooldown.</summary>
     public bool   sacFrontMob()   => _s.LuaSacFrontMob();
+    /// <summary>Is the mob <see cref="sacFrontMob"/> just stashed an NPC? No blow can hurt one, so the sacrifice verb
+    /// refuses it before it spends anything, where nothing in front still costs the mana and the aether (RTK).</summary>
+    public bool   sacFrontNpc     => _s.LuaSacFrontNpc;
     /// <summary>Apply <paramref name="damage"/> (armor-netted) to the stashed sacrifice target; plays the family
     /// fx, awards kill XP. Returns the overkill (net damage minus the mob's pre-hit HP; may be negative).</summary>
     public double sacApply(double damage) => _s.LuaSacApply(_sp, (int)System.Math.Round(damage));

@@ -23,10 +23,10 @@ namespace Tests;
 /// <para>A victim the blow cannot hurt is now no victim (<c>Session.LuaDamageVictim</c>), so the verbs refuse it as they
 /// refuse no creature at all, before anything is spent: Drain with "It doesn't work.", Kamikaze silently.</para>
 ///
-/// <para>The controls: a Kamikaze proc at a creature still lands, and Bolt (<c>magic_damage</c>) and the <c>generic</c>
-/// verb, whose blow reads the same victim but whose cost and lines never depended on it, are unchanged at an NPC. The
-/// creature rows (the slot alone, a creature's id, #343's off-map fallback) are <see cref="DrainKamikazeVictimTests"/>'
-/// controls and are not repeated here.</para>
+/// <para>The control: a Kamikaze proc at a creature still lands. The creature rows (the slot alone, a creature's id,
+/// #343's off-map fallback) are <see cref="DrainKamikazeVictimTests"/>' controls and are not repeated here. The other
+/// damage verbs at an NPC (Bolt, the <c>generic</c> verb, the Damage archetype and the rest), which this class pinned
+/// unchanged, now refuse one too: see <see cref="NpcDamageVerbTests"/>.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, and every swing the real 0x13 frame, by a fresh
 /// caster facing a fresh target. The NPC is built as <c>World.PlaceNpc</c> builds one: 1 HP, <c>IsNpc</c>, no Will and
@@ -99,37 +99,6 @@ public sealed class NpcVictimTests
         Assert.True(r.Lines == expectLines && r.Spent == 0 && r.HpDelta == 0 && r.Pose == 0 && r.Speech == 0 && r.Fx == 0,
                     $"{sp!.Name} at {aim} on map {map}, an NPC faced: {r}");
         Assert.True(r.NpcHp == 1 && r.FarHp == Hp && r.FarLines == "", $"{sp.Name} at {aim} on map {map}: {r}");
-    }
-
-    public static TheoryData<string, ushort> OtherDamageVerbCases
-    {
-        get
-        {
-            var data = new TheoryData<string, ushort>();
-            foreach (var key in new[] { "bolt_mage", "ambush" })
-                foreach (var map in new[] { Arena, Town })
-                    data.Add(key, map);
-            return data;
-        }
-    }
-
-    /// <summary>The control for the verbs whose blow reads the same victim. Bolt (<c>magic_damage</c>, 4 mana) and the NPC
-    /// Ambush (<c>generic</c>, its 5-mana floor) at a faced NPC, by the slot alone, are what they were: "You cast X.",
-    /// the mana, the pose, the NPC untouched. Bolt draws nothing; Ambush draws its zap over the NPC, which it reads from
-    /// the cast-target resolver, not from the victim. Neither verb reads what <c>ctx:damage</c> returns.
-    /// <para>Green on c7878f2 as well.</para></summary>
-    [Theory]
-    [MemberData(nameof(OtherDamageVerbCases))]
-    public void BoltAndTheGenericVerbAtAnNpcAreUnchanged(string key, ushort map)
-    {
-        var sp = Content.SpellByKey(key);
-        Assert.NotNull(sp);
-        var r = Cast(sp!, map, Aim.Slot);
-        bool bolt = key == "bolt_mage";
-        Assert.True(r.Lines == $"You cast {sp!.Name}." && r.Spent == (bolt ? 4u : 5u) && r.HpDelta == 0 && r.Pose == 1
-                    && r.Speech == 0 && r.Fx == (bolt ? 0 : 1) && r.FxOverNpc == (bolt ? 0 : 1),
-                    $"{sp.Name} on map {map}, an NPC faced: {r}");
-        Assert.True(r.NpcHp == 1 && r.FarHp == Hp && r.FarLines == "", $"{sp.Name} on map {map}: {r}");
     }
 
     /// <summary>The Ilbon knife's Kamikaze proc, through real swings at a faced NPC, costs nothing: three procs or more
