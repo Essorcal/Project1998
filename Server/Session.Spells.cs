@@ -706,7 +706,13 @@ public sealed partial class Session
     private void LogNoTarget(SpellDef sp) =>
         Log.Info($"      -x {sp.Name}: no target at ({_char.X},{_char.Y}) facing {_facing} — silent refusal");
 
-    internal bool LuaHasTarget(uint? targetId) => ResolveCastTarget(targetId) is not null;
+    /// <summary>The victim a damage verb reads and then strikes: the damage resolver's answer, which
+    /// <c>SpellContext</c> takes once per cast and hands back to <see cref="LuaHasTarget"/>,
+    /// <see cref="LuaTargetMobHp"/>, <see cref="LuaFxTarget"/> and <see cref="LuaDamageTarget"/>, so the read
+    /// and the blow cannot name two targets (#343's review, F2).</summary>
+    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId) => ResolveDamageTarget(targetId);
+
+    internal bool LuaHasTarget((Mob? mob, Session? pc) victim) => victim.mob is not null;
 
     /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (in a PvP map, unaimed)
     /// yourself? Distinct from <see cref="LuaHasTarget"/>, which resolves mobs only and would therefore
@@ -743,9 +749,9 @@ public sealed partial class Session
     // exists for either, and guessing would move balance with nothing behind it).
     private static int SpellNet(int amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
 
-    internal bool LuaDamageTarget(int amt, SpellDef sp, uint? targetId)
+    internal bool LuaDamageTarget(int amt, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
-        var (mob, pc) = ResolveDamageTarget(targetId);
+        var (mob, pc) = victim;
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null) return HitPlayerWithSpell(pc, amt, 0, sp);   // PvP / self-cast (verb already spent mana)
         if (sp.CanFail && RollDeflect(mob!)) { SendMiniText("Your magic has been deflected."); return true; }
@@ -1133,15 +1139,16 @@ public sealed partial class Session
     /// <c>game-data/ServerTuning.csv</c>.</summary>
     private static byte HealBarCritByte => Content.HealCritByte;
 
-    /// <summary>Current HP of the mob this cast is aimed at (0 if the target isn't a living mob) — Drain reads it
-    /// to decide whether the creature is weak enough to absorb, and how much life that yields.</summary>
-    internal int LuaTargetMobHp(uint? targetId) => ResolveCastTarget(targetId) is { Alive: true } m ? m.Hp : 0;
+    /// <summary>Current HP of this cast's victim (0 if it isn't a living mob) — Drain reads it to decide whether
+    /// the creature is weak enough to absorb, and how much life that yields. The victim is the one the blow then
+    /// strikes (<see cref="LuaDamageVictim"/>).</summary>
+    internal int LuaTargetMobHp((Mob? mob, Session? pc) victim) => victim.mob is { Alive: true } m ? m.Hp : 0;
 
-    /// <summary>Play THIS spell's own animation/sound on the resolved target rather than on the caster — for
+    /// <summary>Play THIS spell's own animation/sound on this cast's victim rather than on the caster — for
     /// spells whose documented effect is drawn over the victim (Drain's atlas gif is the target's).</summary>
-    internal void LuaFxTarget(SpellDef sp, uint? targetId)
+    internal void LuaFxTarget(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
+        var (mob, pc) = victim;
         uint? id = pc?._char.Id ?? mob?.Id;
         if (id is null) return;
         var fx = Content.FxFor(sp);
@@ -1522,17 +1529,21 @@ public sealed partial class Session
     /// curse, a venom or a Doze on a player standing in a town, because every hostile gate here reads the
     /// caster's map; and a heal, a buff or a ward reached anyone anywhere. A player on another map is now
     /// answered by the faced tile, as a cast with no id is (the fallback Caleb kept for #342, "Merge as is
-    /// (fallback)"); with nothing faced, the last line answers it as it answers an id that names nobody. The map
-    /// is a bare read of the other session's character, as #342's is.</remarks>
+    /// (fallback)"). With nothing faced it resolves to nobody: the caster line below is for a cast aimed at
+    /// nothing, and this one was aimed, at someone who is not here. Before, that line answered it as it answers an
+    /// id nobody has, so in an arena a Venom or a curse aimed at a player who had just left landed on its caster
+    /// (#343's mutant M5, which Caleb sent to the follow-up slice to be considered). An id nobody has, and a cast
+    /// with no id, keep the line. The map is a bare read of the other session's character, as #342's is.</remarks>
     private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp = false)
     {
         pc = null; mob = null;
-        bool byFacedTile = true;
+        bool byFacedTile = true, offMapId = false;
         if (targetId is uint tid && tid != 0)
         {
             var byId = _world.Online.ById(tid);
             if (byId is null) { mob = _world.MobById(_char.Map, tid); byFacedTile = false; }
             else if (byId.CharMap == CharMap) { pc = byId; byFacedTile = false; }
+            else offMapId = true;
         }
         if (byFacedTile)
         {
@@ -1540,7 +1551,7 @@ public sealed partial class Session
             pc = _world.PeerAt(_char.Map, fxT, fyT);
             if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
         }
-        if (selfIfUnaimedInPvp && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
+        if (selfIfUnaimedInPvp && !offMapId && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
     }
     internal string LuaTargetBuffKind(uint? targetId)
     {
@@ -1583,26 +1594,18 @@ public sealed partial class Session
     /// exception</b> (<see cref="Content.HoldHitsPlayers"/>) and lands on another player in a PvP map — see
     /// <see cref="ReceiveSleep"/> for what a hold can and can't mean against a 4.95 client.</para>
     /// False (with the RTK notice, no mana spent) if there's no legal target, or the slot is already occupied —
-    /// which is what stops the same hold being chain-cast to keep something locked down forever.</summary>
+    /// which is what stops the same hold being chain-cast to keep something locked down forever. Those refusals
+    /// are <see cref="HoldRefused"/>, which the verbs also ask first, through <see cref="LuaCanHoldTarget"/>.</summary>
     internal bool LuaHoldTarget(string category, int durMs, bool hold, bool blind, int repeatFxMs,
                                 SpellDef sp, uint? targetId)
     {
         ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        if (HoldRefused(category, sp, pc, mob)) return false;
 
-        // PLAYER target — legal for the Doze family only.
+        // PLAYER target — the Doze family on a PvP map, with its slot free (HoldRefused said no otherwise).
         if (pc is not null)
         {
             bool onSelf = ReferenceEquals(pc, this);
-            if (!Content.HoldHitsPlayers(sp))
-            { SendMiniText("It doesn't work."); Log.Info($"      -x {sp.Name}: holds don't work on players (only the Doze family does)"); return false; }
-            // PvP is required to hold ANY player (RTK's `canPK`), yourself included — the same boundary the
-            // curse and damage paths draw. A self-doze is harmless in isolation, but off a PvP map it has no
-            // opponent to be a tactic against, so every one that landed there was an unaimed cast falling
-            // through onto its caster rather than something anybody meant to do.
-            if (!Content.IsPvpMap(_char.Map))
-            { SendMiniText("You can't attack that target."); Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't hold a player here"); return false; }
-            if (pc.HasStatusCategory(category))
-            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); Log.Info($"      -x {sp.Name}: '{pc._char.Name}' already carries a [{category}]"); return false; }
             var pfx  = Content.FxFor(sp);
             int pAnim = pfx is not null ? Content.EffectAnim(pfx, sp.PathId) : 0;
             int pSnd  = pfx is not null ? Content.EffectSound(pfx, sp.PathId) : 0;
@@ -1614,24 +1617,68 @@ public sealed partial class Session
             return true;
         }
 
-        // "It doesn't work." for an NPC too — it has no AI to take away in the first place.
-        if (mob is null || mob.IsNpc)
-        {
-            if (mob is null) LogNoTarget(sp); else SendMiniText("It doesn't work.");
-            Log.Info($"      -x {sp.Name}: {(mob is null ? "no target resolved (no id sent and nothing on the faced tile)" : "target is an NPC")}");
-            return false;
-        }
         var fx = Content.FxFor(sp);
         int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
         int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
         // RTK shortens a hold on a boss to a token 2s (doze/sleep both do `if target.isBoss ~= 0 then
         // duration = 2000`) — you can interrupt one, you can't lock it down.
-        if (mob.IsBoss && durMs > BossHoldMs) durMs = BossHoldMs;
+        if (mob!.IsBoss && durMs > BossHoldMs) durMs = BossHoldMs;
+        // The slot is asked again here, under the world lock, because HoldRefused's read of it is not: another
+        // caster's hold may have filled it since.
         if (!_world.ApplyMobStatus(mob, category, durMs, hold, blind, anim, snd, repeatFxMs, sp.Key))
         { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, category) == sp.Key)); Log.Info($"      -x {sp.Name}: mob {mob.Id} already carries a [{category}]"); return false; }
         if (fx is not null) BroadcastFx(mob.Id, anim, snd);
         Log.Info($"      (lua) {sp.Name} -> mob {mob.Id} '{mob.Name}' [{category}] {durMs}ms hold={hold} blind={blind} anim={anim} repeat={repeatFxMs}ms");
         return true;
+    }
+
+    /// <summary>May this hold land on what the cast resolves to? <see cref="LuaHoldTarget"/>'s own refusals, asked
+    /// without holding anything, each with its line and none with a cost. The verbs ask it before anything that can
+    /// charge, the deflect and the take-hold roll, as <c>curse</c> asks <see cref="LuaCanCurseTarget"/> before its
+    /// roll.
+    /// <para>#343's review, F4. <c>arch_debuff</c> and <c>blind</c> rolled first and charged for a loss, so a target
+    /// they could never hold cost them the mana whenever the roll lost: facing a player in a town, a Doze answered
+    /// "You can't attack that target." for free about four times in five, and the fifth time "Something went
+    /// wrong.", "You cast Doze.", the pose, 30 mana and Doze's 36-second aether. A Blind at a player or an NPC did the
+    /// same one time in four.</para></summary>
+    internal bool LuaCanHoldTarget(string category, SpellDef sp, uint? targetId)
+    {
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        return !HoldRefused(category, sp, pc, mob);
+    }
+
+    /// <summary>The refusals a hold makes before it lands, in order, each with the line it has always had. True when
+    /// it refused. One body for <see cref="LuaCanHoldTarget"/> (the verb's gate) and <see cref="LuaHoldTarget"/>
+    /// (the authority, which asks again because the faced tile can change between the two), so the gate and the
+    /// hold cannot drift apart.</summary>
+    private bool HoldRefused(string category, SpellDef sp, Session? pc, Mob? mob)
+    {
+        // PLAYER target — legal for the Doze family only.
+        if (pc is not null)
+        {
+            if (!Content.HoldHitsPlayers(sp))
+            { SendMiniText("It doesn't work."); Log.Info($"      -x {sp.Name}: holds don't work on players (only the Doze family does)"); return true; }
+            // PvP is required to hold ANY player (RTK's `canPK`), yourself included — the same boundary the
+            // curse and damage paths draw. A self-doze is harmless in isolation, but off a PvP map it has no
+            // opponent to be a tactic against, so every one that landed there was an unaimed cast falling
+            // through onto its caster rather than something anybody meant to do.
+            if (!Content.IsPvpMap(_char.Map))
+            { SendMiniText("You can't attack that target."); Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't hold a player here"); return true; }
+            if (pc.HasStatusCategory(category))
+            { SendMiniText(BlockedStatusMsg(pc.HasStatusFromSpell(sp.Key))); Log.Info($"      -x {sp.Name}: '{pc._char.Name}' already carries a [{category}]"); return true; }
+            return false;
+        }
+
+        // "It doesn't work." for an NPC too — it has no AI to take away in the first place.
+        if (mob is null || mob.IsNpc)
+        {
+            if (mob is null) LogNoTarget(sp); else SendMiniText("It doesn't work.");
+            Log.Info($"      -x {sp.Name}: {(mob is null ? "no target resolved (no id sent and nothing on the faced tile)" : "target is an NPC")}");
+            return true;
+        }
+        if (_world.MobHasStatus(mob, category))
+        { SendMiniText(BlockedStatusMsg(_world.MobStatusKey(mob, category) == sp.Key)); Log.Info($"      -x {sp.Name}: mob {mob.Id} already carries a [{category}]"); return true; }
+        return false;
     }
 
     /// <summary>RTK's boss cap on a hold, shared by doze and sleep (<c>duration = 2000</c>).</summary>
