@@ -709,8 +709,21 @@ public sealed partial class Session
     /// <summary>The victim a damage verb reads and then strikes: the damage resolver's answer, which
     /// <c>SpellContext</c> takes once per cast and hands back to <see cref="LuaHasTarget"/>,
     /// <see cref="LuaTargetMobHp"/>, <see cref="LuaFxTarget"/> and <see cref="LuaDamageTarget"/>, so the read
-    /// and the blow cannot name two targets (#343's review, F2).</summary>
-    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId) => ResolveDamageTarget(targetId);
+    /// and the blow cannot name two targets (#343's review, F2).
+    /// <para>An NPC is no victim (#348's review, F1). The resolver takes any living mob, and an NPC is one, but
+    /// <c>World.TryDamage</c> refuses it, so a blow at one strikes nothing. Read as a victim, it let Drain heal its
+    /// caster off an NPC's 1 HP for 60 mana and the pose, and let Kamikaze take 120 mana and leave its caster on
+    /// 10 HP, with the NPC untouched both times; the stock client met the second through the Ilbon knife's
+    /// Kamikaze proc, which casts at whatever is faced. Answered as no victim, both verbs refuse it as they refuse
+    /// no creature at all, before anything is spent. The resolver itself is unchanged: an NPC on the faced tile
+    /// still ends the search, so a cast at one never falls through to a player on its tile or, on a PvP map, to
+    /// the caster. The other verbs that strike this victim (<c>magic_damage</c>, <c>generic</c>) charge before the
+    /// blow and ignore its answer, so at an NPC they say and cost what they did.</para></summary>
+    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId)
+    {
+        var victim = ResolveDamageTarget(targetId);
+        return victim.mob is { IsNpc: true } ? (null, null) : victim;
+    }
 
     internal bool LuaHasTarget((Mob? mob, Session? pc) victim) => victim.mob is not null;
 
