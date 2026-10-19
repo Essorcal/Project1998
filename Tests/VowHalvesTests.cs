@@ -40,15 +40,15 @@ namespace Tests;
 /// player's monitor for an online player and into the row for an offline one.</para>
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
-/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62430-62437, 62470 and
-/// 62471, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its own
+/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62470-62479, which no other
+/// class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its own
 /// (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
 public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 {
-    private const ushort StaleMap = 62430, HeldMap = 62431, ProposeMap = 62432, SceneMap = 62433,
-                         WrongVowMap = 62434, ArrivalRaceMap = 62435, UnreadableMap = 62436, HeldArrivalMap = 62437;
+    private const ushort StaleMap = 62472, HeldMap = 62473, ProposeMap = 62474, SceneMap = 62475,
+                         WrongVowMap = 62476, ArrivalRaceMap = 62477, UnreadableMap = 62478, HeldArrivalMap = 62479;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
