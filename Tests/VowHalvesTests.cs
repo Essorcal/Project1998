@@ -35,8 +35,9 @@ namespace Tests;
 /// already ended is free: the dialog re-checks the clicker's own half, under the clicker's own monitor, before it
 /// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead. And a partner whose half
 /// a Chapel visit ends while they are online reads the login line, "Your marriage to X has ended." (or engagement),
-/// sent from inside their monitor where the end runs; a partner who is offline reads it once, at their next login, and
-/// a partner whose half names someone else, or nobody, reads nothing.</para>
+/// sent from inside their monitor where the end runs; a partner who is offline, or whose logout reaches their monitor
+/// before the end does, reads it once, at their next login; and a partner whose half names someone else, or nobody,
+/// reads nothing.</para>
 ///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
@@ -48,8 +49,8 @@ namespace Tests;
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
 /// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62430-62437, 62470,
-/// 62471 and 62456, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database
-/// of its own (<see cref="IsolatedDatabase"/>).</para>
+/// 62471, 62456 and 62457, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a
+/// database of its own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
 public sealed class VowHalvesTests : IClassFixture<SessionFixture>
@@ -57,13 +58,21 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     private const ushort StaleMap = 62430, HeldMap = 62431, ProposeMap = 62432, SceneMap = 62433,
                          WrongVowMap = 62434, ArrivalRaceMap = 62435, UnreadableMap = 62436, HeldArrivalMap = 62437;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
-    private const ushort PartnerAwayMap = 62456;
+    private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
     /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
     /// free.</summary>
     private static readonly FieldInfo StateField =
         typeof(Session).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    /// <summary>A session's read-loop exit in its two parts, so a fact can stop between them: the teardown
+    /// (<c>TearDownWorldState</c>, run under the session's monitor) and the close that <c>EndReadLoopAsync</c> makes
+    /// after it lets go (<c>CloseConnection(string)</c>).</summary>
+    private static readonly MethodInfo TearDownWorldState =
+        typeof(Session).GetMethod("TearDownWorldState", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly MethodInfo CloseConnection =
+        typeof(Session).GetMethod("CloseConnection", BindingFlags.NonPublic | BindingFlags.Instance, new[] { typeof(string) })!;
 
     /// <summary>Crystal, the Crystalline Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 397, map 3815, tile 9,9).</summary>
     private const int ChapelNpcId = 397;
@@ -921,6 +930,146 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Release(a, aHeld);
             Release(b, bHeld);
             Release(c, cHeld);
+        }
+    }
+
+    /// <summary>How far the partner's logout has got when the Chapel's end reaches their monitor.</summary>
+    public enum LogoutAt
+    {
+        /// <summary>The whole read-loop exit has run (<c>EndReadLoopAsync</c>): the teardown, then the close.</summary>
+        Closed,
+        /// <summary>The teardown has run and let go of the monitor (<c>TearDownWorldState</c>: <c>_leaving</c>, off the
+        /// map, the slot parked, the row saved); the connection is closed only after the end, as
+        /// <c>EndReadLoopAsync</c> closes it after the section.</summary>
+        BeforeTheClose,
+    }
+
+    /// <summary>How the partner whose logout won their monitor comes back.</summary>
+    public enum Relog
+    {
+        /// <summary>At once: the arrival is handed the departed session and fences it
+        /// (<c>ClaimAccountSlot</c>, <c>KickForReplacement</c>).</summary>
+        Fenced,
+        /// <summary>After the departed entry is gone, an autosave interval later: the arrival loads the row as it
+        /// stands.</summary>
+        Later,
+    }
+
+    /// <summary>
+    /// <b>A partner whose logout reaches their monitor before the Chapel's end does is told once, at the next
+    /// login.</b> A, beside Crystal, and B, on another map, are engaged (or married) to each other. A's "Yes" finds B on
+    /// its map, charges A and ends A's own half, then waits for B's monitor, which a third thread holds. Inside that
+    /// section the third thread runs B's real read-loop exit (<c>EndReadLoopAsync</c>: off the map, the slot parked,
+    /// the final save, the close) and then lets go, so A's end reaches B only once B is leaving. B's half is left as
+    /// the offline path leaves it, in memory and in the row; B, logging back in at once (fenced) or later, reads
+    /// "Your engagement to A has ended." (or marriage) exactly once, at that login, and holds no half after it. A pays
+    /// and reads as before. Both kinds and both <c>StateRank</c> orders. Two cases stop B's logout between the
+    /// teardown and the close (<see cref="LogoutAt.BeforeTheClose"/>), the gap in which B is leaving but its
+    /// connection is not yet closed: the line sent there would not be read either, since the client has gone.
+    /// <para>Red on 453e459, Debug and Release (PR #350's verdict F1; the blind check's D1): A's end ran on the departed
+    /// session, so B's half ended in memory and in the row, the line went into the closed connection (or, before the
+    /// close, into a connection about to close), and the next login had nothing left to settle: B was never told. The
+    /// two cases before the close are also red with the check made on the closed connection instead of the leaving
+    /// flag.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false, false, Relog.Fenced, LogoutAt.Closed)]
+    [InlineData(false, true, Relog.Fenced, LogoutAt.Closed)]
+    [InlineData(true, false, Relog.Fenced, LogoutAt.Closed)]
+    [InlineData(true, true, Relog.Fenced, LogoutAt.Closed)]
+    [InlineData(false, true, Relog.Later, LogoutAt.Closed)]
+    [InlineData(true, true, Relog.Later, LogoutAt.Closed)]
+    [InlineData(false, false, Relog.Fenced, LogoutAt.BeforeTheClose)]
+    [InlineData(true, true, Relog.Later, LogoutAt.BeforeTheClose)]
+    public void APartnerWhoseLogoutWinsTheirMonitorIsToldOnceAtTheNextLogin(bool married, bool partnerRanksFirst, Relog relog,
+                                                                             LogoutAt logout)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, LeavingPartnerMap, 5, 5);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        Seed(db, aRow, bRow);
+
+        Session aS, bS;
+        RecordingOutbound aOut, bOut;
+        if (partnerRanksFirst)
+        {
+            (bS, bOut) = Arrive(db.Store, b);
+            (aS, aOut) = Arrive(db.Store, a);
+        }
+        else
+        {
+            (aS, aOut) = Arrive(db.Store, a);
+            (bS, bOut) = Arrive(db.Store, b);
+        }
+        Assert.Equal(partnerRanksFirst, bS.StateRank < aS.StateRank);
+        Assert.True(Vowed(aS, b, married, keepsakes: 1) && Vowed(bS, a, married, keepsakes: 1), "the pair did not log in vowed");
+
+        var run = new HeldRun();
+        Session? bBack = null;
+        try
+        {
+            uint aExp = aS.CharExp;
+            OnOwnThread(() => OpenVowEntry(aS, aOut, npc, def, married));
+            aOut.Clear();
+            bOut.Clear();
+
+            bool foundWhileAWaited = false, aPaidAndEndedFirst = false, rowKeptThroughTeardown = false, goneFromMap = false;
+            WhileAnotherThreadHolds(run, bS, () =>
+            {
+                aS.Receive(MenuFrame(1));   // "Yes": the re-check, the charge, A's own half, then B's (waits for B)
+                aS.Receive(NextFrame());
+            }, untouched: () =>
+            {
+                // Inside B's section, once A's thread is seen waiting for it: the window, then B's real logout.
+                foundWhileAWaited = ReferenceEquals(_fx.World.Online.FindPlayer(b), bS);
+                var aNow = Row(db.Store, a);
+                aPaidAndEndedFirst = aNow.Exp == aExp - Price(married) && RowVowGone(db.Store, a, married, keepsakes: 0);
+                if (logout == LogoutAt.Closed) Logout(bS);
+                else TearDownWorldState.Invoke(bS, null);
+                rowKeptThroughTeardown = RowVowed(db.Store, b, a, married);
+                goneFromMap = _fx.World.Online.FindPlayer(b) is null;
+                return foundWhileAWaited && aPaidAndEndedFirst && rowKeptThroughTeardown && goneFromMap;
+            });
+            _out.WriteLine($"[{Kind(married)}, B ranks first {partnerRanksFirst}, relog {relog}, {logout}] A waited for B: " +
+                           $"{!run.FinishedWhileHeld}; B found then {foundWhileAWaited}; A charged and its half saved first " +
+                           $"{aPaidAndEndedFirst}; through B's teardown B's row kept its half {rowKeptThroughTeardown}, B off its map " +
+                           $"{goneFromMap}");
+            AssertWaited(run, "A's end", "the window was not opened as described");
+            if (logout == LogoutAt.BeforeTheClose) CloseConnection.Invoke(bS, new object[] { "read-loop exit" });
+
+            string bAfterVisit = VowState(bS), bRowAfterVisit = RowVowState(db.Store, b);
+            bool bKeptItsHalf = Vowed(bS, a, married, keepsakes: 1) && RowVowed(db.Store, b, a, married);
+            int toldAtVisit = SpellCastSupport.MiniTexts(bOut).Count(l => l.Contains(" has ended."));
+
+            if (relog == Relog.Later) Release(b, bS);   // the departed entry pruned, as the sweep does an interval later
+            (bBack, var bBackOut) = Arrive(db.Store, b);
+            var atLogin = SpellCastSupport.MiniTexts(bBackOut);
+            _out.WriteLine($"   after A's end: B {bAfterVisit}, B's row {bRowAfterVisit}; B's lines then {toldAtVisit}; " +
+                           $"B back {VowState(bBack)}, row {RowVowState(db.Store, b)}; lines at login [{string.Join(" | ", atLogin)}]; " +
+                           $"A paid {aExp - aS.CharExp}, A {VowState(aS)}");
+
+            Assert.Equal(aExp - Price(married), aS.CharExp);
+            Assert.Equal(1, Shown(aOut, DonePage(married)));
+            Assert.True(VowGone(aS, married), $"A holds a half: {VowState(aS)}");
+            Assert.Equal(1, toldAtVisit + atLogin.Count(l => l.Contains(" has ended.")));
+            Assert.Equal(1, atLogin.Count(l => l == Line(married, a)));
+            Assert.True(bKeptItsHalf, $"A's end ran on B's departed session: B {bAfterVisit}, B's row {bRowAfterVisit}");
+            Assert.True(VowGone(bBack, married), $"B logged back in still holding its half: {VowState(bBack)}");
+            Assert.True(RowVowGone(db.Store, b, married, keepsakes: 0), $"B's row: {RowVowState(db.Store, b)}");
+            Assert.True(RowVowGone(db.Store, a, married, keepsakes: 0), $"A's row: {RowVowState(db.Store, a)}");
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+                Release(b, bBack);
+            }
         }
     }
 
