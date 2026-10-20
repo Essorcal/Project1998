@@ -717,24 +717,30 @@ public sealed partial class Session
     /// Kamikaze proc, which casts at whatever is faced. Answered as no victim, both verbs refuse it as they refuse
     /// no creature at all, before anything is spent. The resolver itself is unchanged: an NPC on the faced tile
     /// still ends the search, so a cast at one never falls through to a player on its tile or, on a PvP map, to
-    /// the caster. The other verbs that strike this victim (<c>magic_damage</c>, <c>generic</c>) charge before the
-    /// blow and ignore its answer, so at an NPC they say and cost what they did.</para></summary>
-    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId)
+    /// the caster.</para>
+    /// <para>The other verbs that strike this victim refuse an NPC the same way (#349's review, F1). They charged for a
+    /// blow that struck nothing: Bolt 4 mana and the Poet whip's Freeze proc 800, the NPC Ambush and the other
+    /// <c>generic</c> damage spells 5, and Call Lightning 120, Hellfire and Dooms Fire most or all of the pool, and
+    /// Assault half its caster's HP. <see cref="LuaHasDamageTarget"/> (the <c>generic</c> gate) and <see cref="LuaMagicDamage"/>
+    /// (<c>arch_damage</c>) now take this victim instead of resolving their own, so each refuses an NPC as it refuses
+    /// a cast that finds nothing, silently and free. <c>magic_damage</c> charges for a cast that finds nothing, so it
+    /// reads <paramref name="npc"/> (<c>ctx.victimIsNpc</c>) and refuses an NPC alone.</para></summary>
+    /// <param name="npc">True when the resolver ended at an NPC, which this answers as no victim.</param>
+    internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId, out bool npc)
     {
         var victim = ResolveDamageTarget(targetId);
-        return victim.mob is { IsNpc: true } ? (null, null) : victim;
+        npc = victim.mob is { IsNpc: true };
+        return npc ? (null, null) : victim;
     }
 
     internal bool LuaHasTarget((Mob? mob, Session? pc) victim) => victim.mob is not null;
 
     /// <summary>Is there anything a DAMAGE spell could land on — a mob, a peer, or (in a PvP map, unaimed)
     /// yourself? Distinct from <see cref="LuaHasTarget"/>, which resolves mobs only and would therefore
-    /// refuse a legal self-zap before it ever reached the damage path.</summary>
-    internal bool LuaHasDamageTarget(uint? targetId)
-    {
-        var (m, p) = ResolveDamageTarget(targetId);
-        return m is not null || p is not null;
-    }
+    /// refuse a legal self-zap before it ever reached the damage path. It answers for this cast's victim
+    /// (<see cref="LuaDamageVictim"/>), the one the blow then strikes, so an NPC is nothing to land on: the
+    /// <c>generic</c> verb's gate used to resolve again for itself and answer yes for one.</summary>
+    internal bool LuaHasDamageTarget((Mob? mob, Session? pc) victim) => victim.mob is not null || victim.pc is not null;
 
     internal bool LuaSpendMana(int amt, SpellDef sp)
     {
@@ -790,11 +796,16 @@ public sealed partial class Session
     // mana, then apply. Takes a pre-evaluated amount (the engine already ran the spell_effects.csv formula) so the
     // verb stays pure logic. Returns false only when the cast can't happen (no mana / no target); a deflect still
     // returns true (the cast "happened", just resisted). Byte-identical to CastDamage so the Lua route can't drift.
-    internal bool LuaMagicDamage(int amt, int mana, SpellDef sp, uint? targetId)
+    // The target is this cast's victim (LuaDamageVictim, through SpellContext), not a resolution of its own: an NPC
+    // is no victim, so a cast at one is refused here as a cast at nothing is, before the debit and the archetype's
+    // tail (ApplyCast: the pool drain, the vita cost, the shout, the aether), which all wait on this returning true.
+    // Resolving for itself, it struck the NPC with a blow World.TryDamage refused, for the full price (#349's review,
+    // F1).
+    internal bool LuaMagicDamage(int amt, int mana, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (mana < 0) mana = 0;
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
-        var (mob, pc) = ResolveDamageTarget(targetId);
+        var (mob, pc) = victim;
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
         if (pc is not null)   // PvP / self-cast
         {
@@ -1270,7 +1281,12 @@ public sealed partial class Session
             return true;
         }
 
-        if (mob is null) { SendMiniText("It doesn't work."); return false; }
+        // An NPC gets the answer nothing gets (#349's review, F1), as Endear, Amnesia, Confuse and the holds already
+        // answer one, before the verb spends anything. The poison engine used to take it: 60 mana (the book, or a Blood
+        // weapon's proc) or 200 (Flamefang's Burn proc), "You cast X.", and a venom that could never tick (the mage
+        // Venom family's animation repeating over the NPC for the whole window; Burn and the proc's Venom draw none).
+        // A tick strikes through World.TryDamage, which refuses an NPC, and a placed NPC's 1 HP leaves no tick to take.
+        if (mob is null || mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
         // The animation is handed to the poison engine as well as played once here: RTK's while_cast_1500
         // re-sends it on EVERY damage tick, so the venom keeps flashing for its whole window. Sound is
         // deliberately not repeated — a zap sfx every 1.5s for 30s is unbearable; only the graphic loops.
@@ -2773,6 +2789,13 @@ public sealed partial class Session
         _frontStrikeX = fx; _frontStrikeY = fy;
         _frontStrikePc = null;
         var m = _world.MobAt(_char.Map, fx, fy);
+        // An NPC is no victim (#349's review, F1): World.TryDamage refuses it, so a strike at one landed nothing. It
+        // was stashed and struck anyway: the strike's HP cost, its animation and an HP bar over the NPC, and at a
+        // later EraDate the overkill off the NPC's 1 HP, splashed onto the creatures beside it or refunded to the
+        // caster. An NPC in front is now nothing in front, RTK's reading (its strikes look for a BL_MOB only), as
+        // Caleb chose on 2026-10-19: the verb still spends its mana and aether, and strikes nothing. It ends the
+        // search, so the strike never falls through to a player on its tile.
+        if (m is { IsNpc: true }) { _frontStrikeMob = null; return false; }
         _frontStrikeMob = (m is not null && m.Alive) ? m : null;
         if (_frontStrikeMob is not null) return true;
         // No mob on the faced tile: in a PvP map a player standing there is a legal target too (RTK canPK),
