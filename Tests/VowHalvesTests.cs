@@ -49,7 +49,7 @@ namespace Tests;
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
 /// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62430-62437, 62470,
-/// 62471, 62456 and 62457, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a
+/// 62471 and 62456-62458, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a
 /// database of its own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
@@ -58,7 +58,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     private const ushort StaleMap = 62430, HeldMap = 62431, ProposeMap = 62432, SceneMap = 62433,
                          WrongVowMap = 62434, ArrivalRaceMap = 62435, UnreadableMap = 62436, HeldArrivalMap = 62437;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
-    private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457;
+    private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457, MonitorProbeMap = 62458;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
     /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
@@ -1073,6 +1073,81 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
+    /// <summary>
+    /// <b>The Chapel's line to the partner is sent inside the partner's monitor.</b> A, beside Crystal, ends the vow; B,
+    /// online on another map and naming A, reads the line. B's outbound records, for every frame, whether the thread
+    /// that handed it over held B's monitor at that moment (<c>Session.StateHeld</c>; a send reaches the outbound
+    /// synchronously, on the sending thread). B's line, and every other frame the end sends B (for a marriage the
+    /// keepsake's <c>0x10</c>), must be sent with B's monitor held: the send numbers the packet with B's own counter,
+    /// which that monitor guards. Both <c>StateRank</c> orders.
+    /// <para>Green on 453e459. Red, Debug and Release, with the send moved to just after the section that ends B's half
+    /// (PR #350 review A, probe P1; the blind check's MOUT): A's thread sends B's line after it has let go of B's
+    /// monitor. No other fact in this class sees that move.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void TheChapelSendsThePartnersLineInsideThePartnersMonitor(bool married, bool partnerRanksFirst)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, MonitorProbeMap, 5, 5);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        Seed(db, aRow, bRow);
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            Session aS, bS;
+            RecordingOutbound aOut;
+            HeldOutbound bOut;
+            if (partnerRanksFirst)
+            {
+                (bS, bOut) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+                (aS, aOut) = Arrive(db.Store, a);
+                aHeld = aS;
+            }
+            else
+            {
+                (aS, aOut) = Arrive(db.Store, a);
+                aHeld = aS;
+                (bS, bOut) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+            }
+            Assert.Equal(partnerRanksFirst, bS.StateRank < aS.StateRank);
+            bOut.Clear();
+
+            OnOwnThread(() =>
+            {
+                OpenVowEntry(aS, aOut, npc, def, married);
+                aS.Receive(MenuFrame(1));
+                aS.Receive(NextFrame());
+            });
+            var sent = bOut.Sent();
+            var lines = sent.Where(s => s.Op == ServerOp.MiniText).Select(s => (Text: MiniTextOf(s.Body), s.Held)).ToList();
+            _out.WriteLine($"[{Kind(married)}, B ranks first {partnerRanksFirst}] B's frames: " +
+                           $"[{string.Join(" ", sent.Select(s => $"0x{s.Op:x2}:held={s.Held}"))}]; B's lines: " +
+                           $"[{string.Join(" | ", lines.Select(l => $"'{l.Text}' held={l.Held}"))}]");
+
+            Assert.True(VowGone(bS, married), $"A's visit did not end B's half: {VowState(bS)}");
+            var line = Assert.Single(lines, l => l.Text.Contains(" has ended."));
+            Assert.Equal(Line(married, a), line.Text);
+            Assert.True(line.Held, "B's line was sent by a thread that did not hold B's monitor");
+            Assert.All(sent, s => Assert.True(s.Held, $"B's frame 0x{s.Op:x2} was sent without B's monitor"));
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
     // ===== races ===========================================================================================
 
     /// <summary>
@@ -1402,6 +1477,64 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Assert.Contains(s, _fx.World.Online.All());
         return (s, outbound);
     }
+
+    /// <summary>A session that has logged in through the real <c>0x10</c> arrival, on a <see cref="HeldOutbound"/>.</summary>
+    private (Session Session, HeldOutbound Outbound) ArriveHeld(CharacterStore store, string name)
+    {
+        var outbound = new HeldOutbound($"held:{name}");
+        var s = new Session(outbound, 2005, store, _fx.World);
+        outbound.Owner = s;
+        s.Receive(ArrivalFrame(name));
+        Assert.False(outbound.Closed, $"the arrival for '{name}' was refused");
+        Assert.Contains(s, _fx.World.Online.All());
+        return (s, outbound);
+    }
+
+    /// <summary>An outbound that keeps every frame and whether the thread that handed it over held the owner's state
+    /// monitor at that moment (<c>Session.StateHeld</c>, <c>Monitor.IsEntered</c>): <c>Session.Send</c> hands each
+    /// frame to <see cref="IOutbound.Send"/> synchronously, on the sending thread.</summary>
+    private sealed class HeldOutbound : IOutbound
+    {
+        private readonly List<(byte[] Frame, bool Held)> _frames = new();
+        private readonly object _gate = new();
+        public Session? Owner;
+
+        public HeldOutbound(string remote) => Remote = remote;
+        public string Remote { get; }
+        public int Capacity => int.MaxValue;
+        public int QueueDepth => 0;
+        public bool Closed { get; private set; }
+
+        public bool Send(byte[] frame)
+        {
+            bool held = Owner?.StateHeld ?? false;
+            lock (_gate) _frames.Add((frame, held));
+            return true;
+        }
+
+        public void Close() => Closed = true;
+
+        public void Clear()
+        {
+            lock (_gate) _frames.Clear();
+        }
+
+        /// <summary>Every frame so far, decrypted as <see cref="RecordingOutbound.BodiesOf"/> does, with its flag.</summary>
+        public List<(byte Op, byte[] Body, bool Held)> Sent()
+        {
+            List<(byte[] Frame, bool Held)> snap;
+            lock (_gate) snap = _frames.ToList();
+            var sent = new List<(byte Op, byte[] Body, bool Held)>();
+            foreach (var (frame, held) in snap)
+                if (TkPacket.TryParse(frame, out var pkt, out _))
+                    sent.Add((pkt.Opcode, TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey), held));
+            return sent;
+        }
+    }
+
+    /// <summary>A <c>0x0A</c> body's text: the type, the u16BE length, the ASCII (<c>SpellCastSupport.MiniTexts</c>).</summary>
+    private static string MiniTextOf(byte[] body) =>
+        body.Length < 3 ? "" : Encoding.ASCII.GetString(body, 3, Math.Min((body[1] << 8) | body[2], body.Length - 3));
 
     /// <summary>The read loop's exit on a socket-free session: the teardown leaves the map, parks the slot and saves.
     /// Its only await is on an already-completed writer, so it runs to its end here.</summary>
