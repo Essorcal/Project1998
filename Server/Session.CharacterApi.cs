@@ -1125,9 +1125,10 @@ public sealed partial class Session : QuestState.ISessionStore
     /// inside that side's monitor, and only if it still names the other side (PR #341 review, F1): a fiancé who has
     /// since got engaged to someone else keeps that engagement, and a half the fiancé already ended is not ended
     /// again. An online fiancé whose half this ends is told so, with the line their next login would have sent them
-    /// (PR #344's Follow-ups; Caleb, 2026-10-18); the clicker reads the Chapel's own. A fiancé found here whose logout
-    /// reaches their monitor first is left as an offline one is: their next login ends the half and tells them (PR #350
-    /// review, F1; <see cref="EndEngagement"/>).</para></summary>
+    /// (PR #344's Follow-ups; Caleb, 2026-10-18); the clicker reads the Chapel's own. A fiancé found here who is
+    /// already going away, their logout under way or their connection closed by the server, is left as an offline one
+    /// is: their next login ends the half and tells them (PR #350 review, F1, and its re-check, Finding 1;
+    /// <see cref="EndEngagement"/>).</para></summary>
     internal void BreakOffEngagement()
     {
         string fianceName = _char.Fiance;
@@ -1152,21 +1153,31 @@ public sealed partial class Session : QuestState.ISessionStore
     /// engagement to X has ended.", sent here, inside the section: a send numbers the packet with this session's own
     /// counter, which this monitor guards, and it goes out in order with the clear. Told: the partner's half at the
     /// Chapel, and the arrival's settle (<see cref="SettleVowHalves"/>). A half that is not ended sends nothing.</para>
-    /// <para><b>A told end ends nothing on a player who is leaving</b> (PR #350 review, F1). The Chapel finds the
-    /// partner by name and only then, after the clicker's own half, enters the partner's monitor. If the partner's
-    /// logout takes that monitor first (<c>TearDownWorldState</c> sets <c>_leaving</c> under it, then leaves the map,
-    /// parks the slot and saves the row with the half), an end that ran after it would write the row without the half
-    /// and send the line into a closed connection, and the next login would have nothing left to settle: the partner
-    /// would never be told. So the half is left exactly where the offline path leaves it, in memory and in the row
-    /// the teardown saved, and the next login's settle ends it, free, with the line. <c>_leaving</c>, not
-    /// <c>_closed</c>: the close comes only after the teardown lets go of the monitor. The arrival's own told end never
-    /// runs on a leaving session (the teardown runs after the read loop ends), and an untold end is the clicker's own
-    /// half, in its own dialog.</para>
+    /// <para><b>A told end ends nothing on a player who is going away</b> (PR #350 review, F1, and its re-check,
+    /// Finding 1). The Chapel finds the partner by name and only then, after the clicker's own half, enters the
+    /// partner's monitor. An end that ran on a partner who is going away would write their row without the half and
+    /// send the line into a closed connection; their teardown would save that row, and the next login would have
+    /// nothing left to settle, so they would never be told. Instead the half is left exactly where the offline path
+    /// leaves it, in memory and in the row the teardown saves, and the next login's settle ends it, free, with the
+    /// line. Two flags say "going away", each first on a different path, so both are checked:</para>
+    /// <list type="bullet">
+    /// <item><c>_leaving</c>: on the read loop's own exit, <c>TearDownWorldState</c> sets it first, under this
+    /// monitor, and <c>EndReadLoopAsync</c> closes the connection only after the teardown lets go. In between,
+    /// <c>_closed</c> is still clear.</item>
+    /// <item><c>_closed</c>: a connection the server closes itself sets it first, from another thread and without
+    /// this monitor: a GM kick or ban (<c>Disconnect</c>), the slow-client drop in <c>Send</c>, and the writer's exit
+    /// after a failed write. The read loop's teardown, and <c>_leaving</c>, come only once the loop wakes to it.</item>
+    /// </list>
+    /// <para>What neither can see: a close that lands, without this monitor, after the check and before the send (the
+    /// stretch holds the end's own saves), and a client that has gone while the server has not yet seen its connection
+    /// die. Either way the half ends and the line is lost. The arrival's own told end meets <c>_closed</c> the same way,
+    /// for a connection closed while it arrives, and never meets <c>_leaving</c> (its teardown runs after the read
+    /// loop ends). An untold end is the clicker's own half, in its own dialog.</para>
     /// </summary>
     internal bool EndEngagement(string with, bool tell = false)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        if (tell && _leaving) return false;   // logging out: the next login's settle ends it and tells them (F1)
+        if (tell && (_leaving || Volatile.Read(ref _closed) != 0)) return false;   // going away: the next login tells them
         string fiance = _char.Fiance;
         if (!VowNames(fiance, with)) return false;
         RemoveLegend("engaged"); ClearEngagement();
@@ -1175,7 +1186,7 @@ public sealed partial class Session : QuestState.ISessionStore
     }
 
     /// <summary>Finalize a divorce on BOTH sides (same "don't dangle the other party" reasoning, the same offline
-    /// rule, the same name check and the same leaving rule, as <see cref="BreakOffEngagement"/>). Each side's half is
+    /// rule, the same name check and the same going-away rule, as <see cref="BreakOffEngagement"/>). Each side's half is
     /// <see cref="EndMarriage"/>.</summary>
     internal void FinishDivorce()
     {
@@ -1187,7 +1198,7 @@ public sealed partial class Session : QuestState.ISessionStore
 
     /// <summary>THIS player's half of a divorce: the "married" legend, the spouse and one love keepsake, each saved
     /// as before, but only while this player's spouse is <paramref name="with"/>; in one critical section on this
-    /// player taken here (the <see cref="EndEngagement"/> shape, check, reasons, leaving rule and
+    /// player taken here (the <see cref="EndEngagement"/> shape, check, reasons, going-away rule and
     /// <paramref name="tell"/> line, "Your marriage to X has ended.", which follows the client's own "Love removed."
     /// for the keepsake). Returns
     /// whether it ended anything. The check is also what keeps a second keepsake: the Chapel sells the same "love"
@@ -1196,7 +1207,7 @@ public sealed partial class Session : QuestState.ISessionStore
     internal bool EndMarriage(string with, bool tell = false)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        if (tell && _leaving) return false;   // logging out: the next login's settle ends it and tells them (F1)
+        if (tell && (_leaving || Volatile.Read(ref _closed) != 0)) return false;   // going away: the next login tells them
         string spouse = _char.Spouse;
         if (!VowNames(spouse, with)) return false;
         RemoveLegend("married"); SetSpouse(""); TakeItem("love", 1);
