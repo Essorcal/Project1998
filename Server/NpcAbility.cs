@@ -354,6 +354,13 @@ public sealed class NpcContext
     // ---- marriage (ChapelAbility; RTK NPCs/Common/chapel_npc.lua + Spells/common/propose.lua) -----
     /// <summary>Is the player currently engaged (not yet married)?</summary>
     public bool IsEngaged => !string.IsNullOrEmpty(_s.CharFiance);
+    /// <summary>The player's fiancé's name ("" if not engaged).</summary>
+    public string FianceName => _s.CharFiance;
+    /// <summary>Is the player still engaged to <paramref name="fiance"/>? The match the Chapel's own ends use
+    /// (<c>Session.VowNames</c>): an empty name matches nobody, and case is ignored.</summary>
+    public bool IsEngagedTo(string fiance) => Session.VowNames(_s.CharFiance, fiance);
+    /// <summary>Is the player still married to <paramref name="spouse"/>? (The same match.)</summary>
+    public bool IsMarriedTo(string spouse) => Session.VowNames(_s.CharSpouseName, spouse);
     /// <summary>Did THIS player accept the proposal (RTK's "only the proposee may start the ceremony")?</summary>
     public bool IsProposee => _s.CharIsProposee;
     /// <summary>The player's spouse's name ("" if unmarried).</summary>
@@ -1371,7 +1378,19 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// with a message, matching RTK's "only the proposee starts the ceremony" rule). NOT ported: RTK's
 /// <c>Config.shotgunWeddingEnabled</c> (no config system here — the 3-day wait always applies) and
 /// <c>Config.bossDropSalesEnabled</c> (Sell always shows nothing extra, matching the lua's own "else return
-/// {}" branch).</summary>
+/// {}" branch).
+/// <para><b>A confirm whose vow the partner already ended is free</b> (PR #344's Follow-ups; Caleb, 2026-10-18, "As
+/// recommended"). Break Off Engagement and Divorce are offered for the vow the player holds when the top menu is built,
+/// and the dialog then waits on the player for several answers. Meanwhile the partner can end the same vow at a
+/// Chapel of their own, which ends this player's half too when they are online (<c>Session.FinishDivorce</c>). So
+/// before it charges, the dialog asks again whether the player's own half still names the partner the entry was
+/// offered for. It runs on the player's read loop under the player's own monitor (the reply completes the await
+/// inline, inside <c>Handle</c>), and nothing between that check, the charge and the player's own half ending lets go
+/// of the monitor, so the partner's end of this half (which needs the same monitor) lands either before the check or
+/// after this half has ended. A half already ended costs nothing, and the Chapel says so instead of the paid line, in
+/// the shape of the login line (<c>Session.SettleVowHalves</c>). The player has by then read the status line the partner's
+/// visit sent them; RTK has no equivalent to follow (its divorce never touches the other side), so the words are
+/// ours.</para></summary>
 public sealed class ChapelAbility : INpcAbility
 {
     public static readonly ChapelAbility Instance = new();
@@ -1381,10 +1400,12 @@ public sealed class ChapelAbility : INpcAbility
         yield return ("Buy Engagement Ring", BuyRing);
         if (ctx.IsEngaged)
         {
-            yield return ("Break Off Engagement", BreakOffEngagement);
+            string fiance = ctx.FianceName;   // the engagement this entry is offered for
+            yield return ("Break Off Engagement", c => BreakOffEngagement(c, fiance));
             yield return ("Marriage", RunCeremony);
         }
-        if (!string.IsNullOrEmpty(ctx.SpouseName)) yield return ("Divorce", Divorce);
+        string spouse = ctx.SpouseName;       // the marriage this entry is offered for
+        if (!string.IsNullOrEmpty(spouse)) yield return ("Divorce", c => Divorce(c, spouse));
     }
 
     private static async Task BuyRing(NpcContext ctx)
@@ -1414,12 +1435,14 @@ public sealed class ChapelAbility : INpcAbility
         await ctx.Say("To propose, cast this spell near your beloved. Then follow the directions. Make sure you have your ring with you!");
     }
 
-    private static async Task BreakOffEngagement(NpcContext ctx)
+    private static async Task BreakOffEngagement(NpcContext ctx, string fiance)
     {
         await ctx.Say("How sad this is necessary. At least you reached this decision before marriage.");
         int c = await ctx.Menu("Are you sure you want to end the engagement?",
             new[] { "Yes, it is necessary (You will lose some XP)", "No, I need to consider further." });
         if (c != 1) { await ctx.Say("I hope you can salvage your relationship."); return; }
+        // The fiancé may have broken it off while this question waited: free (see the class doc).
+        if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
 
         uint penalty = ctx.MaxMp * 1000;   // RTK: player.baseMagic * 1000
         ctx.SpendExp(Math.Min(ctx.Exp, penalty));
@@ -1442,7 +1465,7 @@ public sealed class ChapelAbility : INpcAbility
         if (!string.IsNullOrEmpty(result)) await ctx.Say(result);
     }
 
-    private static async Task Divorce(NpcContext ctx)
+    private static async Task Divorce(NpcContext ctx, string spouse)
     {
         await ctx.Say("Oh no! You made a horrible mistake!", "However, I can help you get that divorce you want.");
         uint expCost = ctx.MaxHp * 2550;   // RTK: player.baseHealth * 2550
@@ -1450,6 +1473,8 @@ public sealed class ChapelAbility : INpcAbility
             new[] { "Yes", "No" });
         if (choice != 1)
         { await ctx.Say("Patience and love will save your marriage.\n\nDivorce is not something to take lightly."); return; }
+        // The spouse may have divorced while this question waited: free, and no sacrifice offered (see the class doc).
+        if (!ctx.IsMarriedTo(spouse)) { await ctx.Say(AlreadyEnded("marriage", spouse)); return; }
 
         if (ctx.Exp >= expCost)
         {
@@ -1470,6 +1495,8 @@ public sealed class ChapelAbility : INpcAbility
         int confirm = await ctx.Menu($"It will cost you {penalty} base {stat} as a penalty. Continue?",
             new[] { "Yes, do it", "No, nevermind" });
         if (confirm != 1) return;
+        // Asked again: the spouse may have divorced while the sacrifice's questions waited.
+        if (!ctx.IsMarriedTo(spouse)) { await ctx.Say(AlreadyEnded("marriage", spouse)); return; }
 
         if (c2 == 1 && ctx.MaxHp < vitaPenalty)
         { await ctx.Say("You need to gain more experience in your health before you can make this sacrifice."); return; }
@@ -1480,6 +1507,10 @@ public sealed class ChapelAbility : INpcAbility
         ctx.Divorce();
         await ctx.Say("You are now divorced.");
     }
+
+    /// <summary>What the Chapel says to a confirm whose vow the partner already ended: the login line's shape
+    /// ("Your marriage to X has ended."), with "already", since the vow ended before this answer.</summary>
+    private static string AlreadyEnded(string kind, string partner) => $"Your {kind} to {partner} has already ended.";
 }
 
 /// <summary>Tells the current server date + time (a real, self-contained feature many NPCs share).</summary>
