@@ -22,14 +22,17 @@ namespace Tests;
 /// cannot tick (Venom's animation repeating over it).</item>
 /// <item><b>Whirlwind and the other sacrifice strikes</b> (<c>sacrifice</c>): "You cast X.", the mana, the aether, the
 /// swing, the strike's animation and an HP bar over the NPC, and for most of them the shout and the strike's own HP
-/// cost.</item>
+/// cost. At a later <c>EraDate</c> the strike's overkill off the NPC's 1 HP was splashed onto the creatures beside it or
+/// refunded to the caster (<see cref="NpcSacrificeEraTests"/>).</item>
 /// <item><b>The stock client reaches them through procs</b> as well: the Poet whip's Freeze (800 mana a proc), the
 /// Blood weapons' Venom (60) and Flamefang's Burn (200), each at whatever is faced.</item>
 /// </list>
 ///
 /// <para>Each verb now refuses an NPC with its own answer to "nothing there", before it spends anything: silence for
-/// Bolt, Freeze, the <c>generic</c> damage spells, the Damage archetype and the sacrifice strikes, and Venom's
-/// "It doesn't work.".</para>
+/// Bolt, Freeze, the <c>generic</c> damage spells and the Damage archetype, and Venom's "It doesn't work.". The
+/// sacrifice strikes take RTK's reading instead, as Caleb chose (2026-10-19): an NPC in front is nothing in front. It
+/// costs exactly what a strike at nothing costs, the mana, the aether, the swing and the shout, and strikes
+/// nothing.</para>
 ///
 /// <para>The controls: each verb still strikes a creature (by the slot alone, by its id, and through #343's off-map
 /// fallback), each proc still lands on one, a cast at nothing still costs what it did (Bolt and the sacrifice strikes
@@ -69,14 +72,21 @@ public sealed class NpcDamageVerbTests
 
     // ===== at an NPC ===================================================================================
 
-    /// <summary>One spell per damage verb and per kind of tail, from the book: Bolt and Freeze (<c>magic_damage</c>),
+    /// <summary>One spell per refusing verb and per kind of tail, from the book: Bolt and Freeze (<c>magic_damage</c>),
     /// the NPC Ambush (<c>generic</c>), Call Lightning, Assault and Hellfire (<c>arch_damage</c>: plain, the shout and
-    /// vita tail, the pool drain), Venom and Burn (<c>venom</c>), and Whirlwind and Desperate Attack
-    /// (<c>sacrifice</c>).</summary>
+    /// vita tail, the pool drain), and Venom and Burn (<c>venom</c>).</summary>
     private static readonly string[] BookSpells =
     {
         "bolt_mage", "freeze", "ambush", "call_lightning_mage", "assault_warrior", "hellfire_mage",
-        "venom_mage", "burn", "whirlwind_warrior", "desperate_attack_rogue",
+        "venom_mage", "burn",
+    };
+
+    /// <summary>One sacrifice strike per family: Whirlwind, Berserk, Lethal Strike, Desperate Attack, Siege and Focused
+    /// Blow.</summary>
+    private static readonly string[] Strikes =
+    {
+        "whirlwind_warrior", "berserk_warrior", "lethal_strike_rogue", "desperate_attack_rogue", "siege_warrior",
+        "focused_blow_rogue",
     };
 
     /// <summary>The spells a client can aim by id ("Which target? &gt;"), one per verb that reads an aimed id.</summary>
@@ -175,6 +185,39 @@ public sealed class NpcDamageVerbTests
         }
     }
 
+    public static TheoryData<string, ushort> StrikeCases
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort>();
+            foreach (var map in new[] { Arena, Town })
+                foreach (var key in Strikes) data.Add(key, map);
+            return data;
+        }
+    }
+
+    /// <summary>A sacrifice strike at a faced NPC costs exactly what the same strike at nothing costs, RTK's reading
+    /// (Caleb, 2026-10-19): the same lines ("You cast X."), mana, aether, swing and shout, and the caster's HP kept. The
+    /// strike lands nothing on the NPC: no animation and no HP bar over it, and the NPC untouched and carrying nothing.
+    /// The control is the same strike, by a fresh caster, with nothing in front.
+    /// <para>Red on 63efdd8: the strike's HP cost (Whirlwind left its caster on 10, Desperate Attack took all the mana),
+    /// and its animation and an HP bar over the NPC. Red on 1f08f20 too, which refused the NPC for free.</para></summary>
+    [Theory]
+    [MemberData(nameof(StrikeCases))]
+    public void ASacrificeStrikeAtAnNpcCostsWhatNothingInFrontCosts(string key, ushort map)
+    {
+        var sp = Spell(key);
+        var atNpc = Cast(sp, map, Aim.Slot, npc: true);
+        var atNothing = Cast(sp, map, Aim.Slot, npc: null);
+        string what = $"{sp.Name} on map {map}: at an NPC {atNpc}; at nothing {atNothing}";
+        Assert.True(atNothing.Lines == $"You cast {sp.Name}." && atNothing.Spent > 0 && atNothing.Aether > 0, what);
+        Assert.True(atNpc.Lines == atNothing.Lines && atNpc.Spent == atNothing.Spent && atNpc.HpDelta == atNothing.HpDelta
+                    && atNpc.Pose == atNothing.Pose && atNpc.Speech == atNothing.Speech && atNpc.Fx == atNothing.Fx
+                    && atNpc.Bars == atNothing.Bars && Math.Abs(atNpc.Aether - atNothing.Aether) < 2_000, what);
+        Assert.True(atNpc.HpDelta == 0 && atNpc.Fx == 0 && atNpc.Bars == 0 && atNpc.TargetHp == 1 && atNpc.TargetState == ""
+                    && !atNpc.Moved, what);
+    }
+
     // ===== the controls ================================================================================
 
     public static TheoryData<string, ushort, Aim> CreatureCases
@@ -184,7 +227,8 @@ public sealed class NpcDamageVerbTests
             var data = new TheoryData<string, ushort, Aim>();
             foreach (var map in new[] { Arena, Town })
             {
-                foreach (var key in BookSpells) data.Add(key, map, Aim.Slot);
+                foreach (var key in BookSpells.Concat(new[] { "whirlwind_warrior", "desperate_attack_rogue" }))
+                    data.Add(key, map, Aim.Slot);
                 foreach (var key in AimedSpells)
                     foreach (var aim in new[] { Aim.TargetId, Aim.OffMapPlayerId })
                         data.Add(key, map, aim);
@@ -341,8 +385,8 @@ public sealed class NpcDamageVerbTests
 
     private const int Creature = 10_000_000;
 
-    private sealed record Outcome(string Lines, long Spent, int HpDelta, int Pose, int Speech, int Fx, long Aether,
-                                  bool Moved, int TargetHp, string TargetState, uint FarHp, string FarLines);
+    private sealed record Outcome(string Lines, long Spent, int HpDelta, int Pose, int Speech, int Fx, int Bars,
+                                  long Aether, bool Moved, int TargetHp, string TargetState, uint FarHp, string FarLines);
 
     /// <summary>A fresh caster on <paramref name="map"/> faces a fresh NPC (<paramref name="npc"/> true), a fresh
     /// creature (false) or nothing (null), with a fresh player on a content-free map, and casts <paramref name="sp"/>
@@ -369,7 +413,8 @@ public sealed class NpcDamageVerbTests
 
             return new Outcome(string.Join(" | ", SpellCastSupport.MiniTexts(cOut)), (long)mp0 - cc.Mp, (int)cc.Hp - (int)hp0,
                                cOut.BodiesOf(ServerOp.Action).Count, cOut.BodiesOf(ServerOp.Speech).Count,
-                               cOut.BodiesOf(ServerOp.Effect).Count, SpellCastSupport.AetherLeft(caster, sp.Key),
+                               cOut.BodiesOf(ServerOp.Effect).Count, cOut.BodiesOf(ServerOp.Damage).Count,
+                               SpellCastSupport.AetherLeft(caster, sp.Key),
                                cc.X != CX || cc.Y != CY, target?.Hp ?? 0, target is null ? "" : State(target),
                                farc.Hp, string.Join(" | ", SpellCastSupport.MiniTexts(farOut)));
         }

@@ -1283,9 +1283,9 @@ public sealed partial class Session
 
         // An NPC gets the answer nothing gets (#349's review, F1), as Endear, Amnesia, Confuse and the holds already
         // answer one, before the verb spends anything. The poison engine used to take it: 60 mana (the book, or a Blood
-        // weapon's proc) or 200 (Flamefang's Burn proc), "You cast X.", and a venom that could never tick, its
-        // animation repeating over the NPC for the whole window. A tick strikes through World.TryDamage, which refuses
-        // an NPC, and a placed NPC's 1 HP leaves no tick to take.
+        // weapon's proc) or 200 (Flamefang's Burn proc), "You cast X.", and a venom that could never tick (the mage
+        // Venom family's animation repeating over the NPC for the whole window; Burn and the proc's Venom draw none).
+        // A tick strikes through World.TryDamage, which refuses an NPC, and a placed NPC's 1 HP leaves no tick to take.
         if (mob is null || mob.IsNpc) { SendMiniText("It doesn't work."); return false; }
         // The animation is handed to the poison engine as well as played once here: RTK's while_cast_1500
         // re-sends it on EVERY damage tick, so the venom keeps flashing for its whole window. Sound is
@@ -2772,7 +2772,6 @@ public sealed partial class Session
     private Mob? _frontStrikeMob;
     private Session? _frontStrikePc;
     private int  _frontStrikeX, _frontStrikeY;
-    private bool _frontStrikeNpc;   // the mob the last LuaSacFrontMob stashed is an NPC (LuaSacFrontNpc)
 
     internal string LuaSacrificeFamily(SpellDef sp) => Content.SacrificeFamilyFor(sp)?.ToString() ?? "";
     internal int    LuaAlignment  => _char.Alignment;
@@ -2790,11 +2789,14 @@ public sealed partial class Session
         _frontStrikeX = fx; _frontStrikeY = fy;
         _frontStrikePc = null;
         var m = _world.MobAt(_char.Map, fx, fy);
+        // An NPC is no victim (#349's review, F1): World.TryDamage refuses it, so a strike at one landed nothing. It
+        // was stashed and struck anyway: the strike's HP cost, its animation and an HP bar over the NPC, and at a
+        // later EraDate the overkill off the NPC's 1 HP, splashed onto the creatures beside it or refunded to the
+        // caster. An NPC in front is now nothing in front, RTK's reading (its strikes look for a BL_MOB only), as
+        // Caleb chose on 2026-10-19: the verb still spends its mana and aether, and strikes nothing. It ends the
+        // search, so the strike never falls through to a player on its tile.
+        if (m is { IsNpc: true }) { _frontStrikeMob = null; return false; }
         _frontStrikeMob = (m is not null && m.Alive) ? m : null;
-        // An NPC is no victim (#349's review, F1): World.TryDamage refuses it, so a strike at one landed nothing, yet the
-        // verb charged its mana, its aether and the strike's own HP cost, and drew the strike's animation and an HP bar
-        // over the NPC. The verb asks LuaSacFrontNpc and refuses one before it spends anything.
-        _frontStrikeNpc = _frontStrikeMob is { IsNpc: true };
         if (_frontStrikeMob is not null) return true;
         // No mob on the faced tile: in a PvP map a player standing there is a legal target too (RTK canPK),
         // so Whirlwind/Berserk & the rogue strikes land the same one-tile hit against a peer as against a mob.
@@ -2802,9 +2804,6 @@ public sealed partial class Session
         if (Content.IsPvpMap(_char.Map)) _frontStrikePc = _world.PeerAt(_char.Map, fx, fy);
         return _frontStrikePc is not null;
     }
-    /// <summary>Is the mob the last <see cref="LuaSacFrontMob"/> stashed an NPC? The sacrifice verb asks before it
-    /// spends: an NPC is refused for free, where nothing in front still costs the mana and the aether.</summary>
-    internal bool LuaSacFrontNpc => _frontStrikeNpc;
     internal int LuaSacApply(SpellDef sp, int damage)
     {
         var fam = Content.SacrificeFamilyFor(sp) ?? Content.SacrificeFamily.Berserk;

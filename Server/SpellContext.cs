@@ -568,11 +568,9 @@ public sealed class SpellContext
     /// <summary>The caster's alignment stat (Whirlwind's damage factor + HP cost + cooldown branch on it).</summary>
     public double alignment       => _s.LuaAlignment;
     /// <summary>Resolve + stash the mob on the faced tile for a sacrifice strike (alive). False if none — the
-    /// strike lands nothing (no HP cost), though the verb still spends the mana/cooldown.</summary>
+    /// strike lands nothing (no HP cost), though the mana/cooldown were already spent. An NPC is none: no blow can
+    /// hurt it, so an NPC in front is nothing in front (RTK's reading).</summary>
     public bool   sacFrontMob()   => _s.LuaSacFrontMob();
-    /// <summary>Is the mob <see cref="sacFrontMob"/> just stashed an NPC? No blow can hurt one, so the sacrifice verb
-    /// refuses it before it spends anything, where nothing in front still costs the mana and the aether (RTK).</summary>
-    public bool   sacFrontNpc     => _s.LuaSacFrontNpc;
     /// <summary>Apply <paramref name="damage"/> (armor-netted) to the stashed sacrifice target; plays the family
     /// fx, awards kill XP. Returns the overkill (net damage minus the mob's pre-hit HP; may be negative).</summary>
     public double sacApply(double damage) => _s.LuaSacApply(_sp, (int)System.Math.Round(damage));

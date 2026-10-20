@@ -1165,9 +1165,9 @@ end
 -- half). Refunding first — which this used to do — halved LS's refund and wiped DA's mana refund entirely.
 --
 -- NOTE: casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
--- An NPC in front is refused before anything is spent, silently: no blow can hurt it, and the strike used to land
--- nothing on one for the mana, the aether and its HP cost. Kamikaze, the other self-sacrificing blow, refuses an NPC
--- the same way. (RTK's strikes look for a BL_MOB only, so there an NPC is empty air: the mana and aether, no HP.)
+-- An NPC in front is empty air too (ctx:sacFrontMob answers false for one): no blow can hurt it, and RTK's strikes
+-- look for a BL_MOB only. So it costs the mana and aether, the swing and the shout, and strikes nothing: no HP cost,
+-- and no overkill to splash or refund at a later era (Caleb, 2026-10-19).
 function verbs.sacrifice(ctx, row)
   local fam = ctx.sacrificeFamily
   local mana, aether
@@ -1179,9 +1179,6 @@ function verbs.sacrifice(ctx, row)
 
   if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
   if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
-  -- What is in front, read once and before anything is spent (see the NOTE above for an NPC).
-  local struck = ctx:sacFrontMob()
-  if ctx.sacFrontNpc then return false end                  -- silent, free: an NPC is no victim
 
   local preHp, preMp = ctx.hp, ctx.mp
   -- Chin-Baek-Ho-Ryung: the Black Potion's 10s ward, x1.5 on Berserk and Whirlwind (RTK berserk.lua:45,
@@ -1199,7 +1196,7 @@ function verbs.sacrifice(ctx, row)
   ctx:setMana(ctx.mp - mana)                             -- spent even if nothing is in front (RTK)
   ctx:setCooldown(ctx.spellKey, aether)
 
-  if struck then
+  if ctx:sacFrontMob() then
     local overkill = ctx:sacApply(damage)
 
     -- 1. the strike's own cost. Charged FIRST -- see the ORDER note in the header.
