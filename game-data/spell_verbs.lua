@@ -19,7 +19,8 @@ verbs = {}
 -- Damage archetype: the standard direct magic attack. ctx:magicDamage does the whole sequence (mana check ->
 -- resolve target -> spend mana -> deflect roll -> apply + XP). A DEFLECT still costs the mana: the spell was
 -- cast, the target resisted it. Returns false only if the cast couldn't happen at all (no mana / no target),
--- so the cast animation is suppressed for those and those only.
+-- so the cast animation is suppressed for those and those only. The target is the cast's one victim, and an NPC
+-- is none (no blow can hurt it), so a cast at one is refused like a cast at nothing, silently and free.
 function verbs.arch_damage(ctx, row)
   return ctx:magicDamage(ctx.amount, ctx.mana)
 end
@@ -266,7 +267,12 @@ end
 
 -- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
+-- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
+-- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
+-- archetype and the generic damage spells give a cast that finds nothing. Only an NPC: a cast at nothing still
+-- charges here, as it always has.
 function verbs.magic_damage(ctx, row)
+  if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
   if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true
@@ -662,7 +668,7 @@ end
 function verbs.kamikaze(ctx, row)
   local mana = row.mana or 120
   if not ctx:enoughMana(mana) then ctx:say("You do not have enough mana.") return false end
-  if not ctx.hasTarget then return false end          -- silent; the creature ctx:damage below then strikes
+  if not ctx.hasTarget then return false end          -- silent, free: no creature to strike (an NPC is none)
   ctx:debitMana(mana)
   ctx:talk("Kamikaze~!")
   ctx:damage(math.ceil(ctx.hp * (row.coeff or 1.75)))
@@ -1063,7 +1069,8 @@ function verbs.drain(ctx, row)
   local mana = row.mana or 60
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
   -- targetHp, fxTarget and damage all read ONE victim, resolved here once (SpellContext.Victim), so the life
-  -- you take and the creature you kill are the same one. An id that names no creature you could strike reads 0.
+  -- you take and the creature you kill are the same one. No creature you could strike reads 0: an id that names
+  -- none, a player, or an NPC (which no blow can hurt, so it is no victim).
   local hp = ctx.targetHp
   if hp <= 0 or hp > (row.amount or 1000) then ctx:say("It doesn't work."); return false end
   ctx:debitMana(mana)
@@ -1158,6 +1165,9 @@ end
 -- half). Refunding first — which this used to do — halved LS's refund and wiped DA's mana refund entirely.
 --
 -- NOTE: casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
+-- An NPC in front is empty air too (ctx:sacFrontMob answers false for one): no blow can hurt it, and RTK's strikes
+-- look for a BL_MOB only. So it costs the mana and aether, the swing and the shout, and strikes nothing: no HP cost,
+-- and no overkill to splash or refund at a later era (Caleb, 2026-10-19).
 function verbs.sacrifice(ctx, row)
   local fam = ctx.sacrificeFamily
   local mana, aether
@@ -1347,7 +1357,8 @@ function verbs.generic(ctx, row)
 
   if kind == "damage" then
     -- hasDamageTarget, not hasTarget: the latter resolves MOBS only and would refuse a legal self-zap
-    -- (unaimed in a PvP map resolves to you) before the damage path ever saw it.
+    -- (unaimed in a PvP map resolves to you) before the damage path ever saw it. It reads the victim the blow
+    -- strikes, so an NPC (which no blow can hurt) is no target here either.
     if not ctx.hasDamageTarget then return false end  -- silent
     if not ctx:spendMana(cost) then return false end
     ctx:fxRawTarget(4, 56)                                -- generic unaligned zap
