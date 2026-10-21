@@ -1160,14 +1160,17 @@ public sealed partial class Session : QuestState.ISessionStore
     /// send the line into a closed connection; their teardown would save that row, and the next login would have
     /// nothing left to settle, so they would never be told. Instead the half is left exactly where the offline path
     /// leaves it, in memory and in the row the teardown saves, and the next login's settle ends it, free, with the
-    /// line. Two flags say "going away", each first on a different path, so both are checked:</para>
+    /// line. Two flags say "going away", and which is set first depends on the path, so both are checked:</para>
     /// <list type="bullet">
     /// <item><c>_leaving</c>: on the read loop's own exit, <c>TearDownWorldState</c> sets it first, under this
     /// monitor, and <c>EndReadLoopAsync</c> closes the connection only after the teardown lets go. In between,
     /// <c>_closed</c> is still clear.</item>
-    /// <item><c>_closed</c>: a connection the server closes itself sets it first, from another thread and without
-    /// this monitor: a GM kick or ban (<c>Disconnect</c>), the slow-client drop in <c>Send</c>, and the writer's exit
-    /// after a failed write. The read loop's teardown, and <c>_leaving</c>, come only once the loop wakes to it.</item>
+    /// <item><c>_closed</c>: a connection the server closes itself sets it, from another thread and without this
+    /// monitor. A GM kick or ban (<c>Disconnect</c>) and the slow-client drop in <c>Send</c> set it first, before the
+    /// socket closes, so the read loop's teardown, and <c>_leaving</c>, come only once the loop wakes to it. The
+    /// writer's exit after a failed write closes the socket first and sets <c>_closed</c> after
+    /// (<c>TcpOutbound.RunWriterAsync</c>), so there it races the read loop's teardown: <c>_closed</c> is usually
+    /// first, and when the teardown wins, <c>_leaving</c> is first instead. Either one keeps the half.</item>
     /// </list>
     /// <para>What neither can see: a close that lands, without this monitor, after the check and before the send (the
     /// stretch holds the end's own saves), and a client that has gone while the server has not yet seen its connection
@@ -1306,7 +1309,10 @@ public sealed partial class Session : QuestState.ISessionStore
 
         // The status line is sent from inside the end (tell): the line a partner's Chapel visit sends an online player.
         bool ended = married ? EndMarriage(partner, tell: true) : EndEngagement(partner, tell: true);
-        if (!ended) return;   // the partner's own Chapel visit ended it meanwhile, from inside this monitor's gap
+        // Not ended for one of two reasons. The partner's own Chapel visit ended it meanwhile, from inside this
+        // monitor's gap. Or this connection was closed while it arrived (the end's going-away rule): the half is kept,
+        // in memory and in the row the teardown saves, and the next login settles it.
+        if (!ended) return;
         Log.Info($"   -> ARRIVAL: '{me}' was in {(married ? "a marriage" : "an engagement")} with '{partner}' ({where}), " +
                  "who no longer names them back — ended, free");
     }
