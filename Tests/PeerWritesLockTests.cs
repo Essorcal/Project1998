@@ -37,8 +37,9 @@ namespace Tests;
 /// monitor, as the packet handler does, below its action budget. A dialog is driven from a thread of its own: the
 /// dialog's awaits resume inline on the thread that delivers the reply (<c>Session.HandleNpcDialog</c>), which is
 /// the read loop in production, and a test thread's synchronization context would move them elsewhere.
-/// Content-free maps no other class uses; the Chapel facts stand the clicker on the Crystalline Chapel (3815),
-/// which no other class uses either.</para>
+/// Content-free maps no other class uses; the Chapel facts stand the clicker on the Crystalline Chapel (3815), which
+/// no other class uses on this collection's shared World. <see cref="VowHalvesTests"/> stands players beside Crystal
+/// on 3815 too, on a World of its own (its <see cref="SessionFixture"/> is a class fixture).</para>
 /// </summary>
 [Collection("world")]
 public sealed class PeerWritesLockTests
