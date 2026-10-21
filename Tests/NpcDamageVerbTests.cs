@@ -1,4 +1,5 @@
 using System.Reflection;
+using Protocol.Tk495;
 using Server;
 using Shared;
 using Tests.Support;
@@ -216,6 +217,66 @@ public sealed class NpcDamageVerbTests
                     && atNpc.Bars == atNothing.Bars && Math.Abs(atNpc.Aether - atNothing.Aether) < 2_000, what);
         Assert.True(atNpc.HpDelta == 0 && atNpc.Fx == 0 && atNpc.Bars == 0 && atNpc.TargetHp == 1 && atNpc.TargetState == ""
                     && !atNpc.Moved, what);
+    }
+
+    public static TheoryData<string, bool> NpcTileCases
+    {
+        get
+        {
+            var data = new TheoryData<string, bool>();
+            foreach (var key in Strikes)
+                foreach (var byPlayerId in new[] { false, true }) data.Add(key, byPlayerId);
+            return data;
+        }
+    }
+
+    /// <summary>A sacrifice strike at a faced NPC never falls through to a player on the NPC's tile (PR #351 re-check,
+    /// F1). On the arena, a PvP map, a strike with only a player in front takes that player (the PvP fallback in
+    /// <c>Session.LuaSacFrontMob</c>); with an NPC in front the search ends at the NPC. So a player placed on the NPC's
+    /// tile (a walk onto an NPC is refused, so only a placement or a no-clipper shares one) keeps every point of HP and
+    /// mana and sees exactly what a bystander sees, frame for frame and byte for byte: the swing, and the shout where
+    /// the strike has one. Cast by the slot alone, and aimed at that player's id.
+    /// <para>Red under the re-check's mutant FT, which skips the NPC and lets the search go on
+    /// (<c>if (m is { IsNpc: true }) m = null;</c>): every strike took the player, who lost HP or read more than the
+    /// bystander.</para></summary>
+    [Theory]
+    [MemberData(nameof(NpcTileCases))]
+    public void ASacrificeStrikeAtAnNpcNeverStrikesAPlayerOnItsTile(string key, bool byPlayerId)
+    {
+        var sp = Spell(key);
+        Assert.True(Content.IsPvpMap(Arena));
+        var npc = Npc(Arena, CX + 1);
+        var (onTile, tOut, tc) = Onlooker("NdvOnTile", CX + 1, CY);
+        var (by, bOut, _) = Onlooker("NdvBy", CX, CY + 3);
+        var (caster, cOut, _) = Caster(Arena, ch => ch.Spells.Add(sp.Id));
+        try
+        {
+            Assert.True(ReferenceEquals(_fx.World.MobAt(Arena, CX + 1, CY), npc)
+                        && ReferenceEquals(_fx.World.PeerAt(Arena, CX + 1, CY), onTile),
+                        $"{sp.Name}: the NPC and the player are not both on the faced tile");
+            uint hp0 = tc.Hp, mp0 = tc.Mp;
+            cOut.Clear(); tOut.Clear(); bOut.Clear();
+
+            caster.Receive(SpellCastSupport.CastFrame(0, byPlayerId ? onTile.PlayerId : null));
+
+            var seen = Wire(tOut);
+            var bySeen = Wire(bOut);
+            string what = $"{sp.Name} on map {Arena}{(byPlayerId ? ", aimed at the player's id" : "")}: caster " +
+                          $"[{string.Join(" | ", SpellCastSupport.MiniTexts(cOut))}]; the player on the NPC's tile on " +
+                          $"{tc.Hp}/{tc.Mp} (was {hp0}/{mp0}), saw [{string.Join(" ", seen)}]; the bystander saw " +
+                          $"[{string.Join(" ", bySeen)}]; the NPC on {npc.Hp}, carrying [{State(npc)}]";
+            Assert.True(SpellCastSupport.MiniTexts(cOut).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && bOut.BodiesOf(ServerOp.Action).Count == 1, what);
+            Assert.True(tc.Hp == hp0 && tc.Mp == mp0 && seen.SequenceEqual(bySeen), what);
+            Assert.True(npc.Hp == 1 && State(npc) == "", what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Arena);
+            _fx.World.LeaveMap(by, Arena);
+            _fx.World.LeaveMap(onTile, Arena);
+            Remove(Arena, npc);
+        }
     }
 
     // ===== the controls ================================================================================
@@ -530,6 +591,29 @@ public sealed class NpcDamageVerbTests
             ch.MaxMp = 1_000; ch.Mp = 1_000;
             Wide(ch, map);
         }, map, CX, CY);
+
+    /// <summary>A level-50 player on the arena at (<paramref name="x"/>, <paramref name="y"/>), with an HP pool no
+    /// strike here can empty, so a strike that lands shows as lost HP and not as a death.</summary>
+    private (Session session, RecordingOutbound outbound, Character c) Onlooker(string name, ushort x, ushort y) =>
+        _fx.PlayerWith($"{name}{Interlocked.Increment(ref _serial)}", ch =>
+        {
+            ch.Level = 50;
+            ch.MaxHp = Creature; ch.Hp = Creature;
+            ch.MaxMp = 1_000; ch.Mp = 1_000;
+            Wide(ch, Arena);
+        }, Arena, x, y);
+
+    /// <summary>Every frame the recorder was sent, in order, as its opcode and its decrypted body in hex.</summary>
+    private static List<string> Wire(RecordingOutbound o)
+    {
+        var frames = new List<string>();
+        foreach (var frame in o.Frames)
+        {
+            Assert.True(TkPacket.TryParse(frame, out var pkt, out _));
+            frames.Add($"{pkt.Opcode:x2}:{Convert.ToHexString(TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey))}");
+        }
+        return frames;
+    }
 
     /// <summary>The arena carries its own size if its row gives one; content-free maps have none, and the handlers
     /// need one.</summary>
