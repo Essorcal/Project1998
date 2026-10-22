@@ -67,6 +67,15 @@ otherwise pass for the recorded one. Before -Status calls a slot alive or -Stop 
 behind the PID must be the slot's role executable (LoginServer.exe for LOGIN, Server.exe for GAME) at the
 recorded path, created within 1 s of the recorded time, and currently listening on the slot's ports.
 
+HOW A START IS JUDGED. Each slot waits for its first port (Wait-ForListener). A listener there that descends
+from the slot's console is its server; one that does not is a stranger. The console's command counts as
+finished without binding only when that is certain: the console has closed, or the child process seen under
+it has gone, or no child has appeared in about 15 s over several queries in a row. A console that has not
+started dotnet yet is not finished, and a process query that fails says nothing either way, so the wait goes
+on through both. Before any verdict other than "ok" is printed, the slot's ports are looked at once more, and
+a listener from its console found there is recorded as its server (Resolve-LateListener): a pair that did
+come up is never left running with no session file for -Stop to find.
+
 HOW -Stop CLOSES THEM. A console signal first, not TerminateProcess: the game server's Ctrl+C /
 ProcessExit handler (Server/Net.cs) flushes connected players before exiting, and a hard kill would skip
 it. A short-lived helper PowerShell (Windows PowerShell by absolute path, else PowerShell 7; see
@@ -591,14 +600,37 @@ function Start-Console([string]$BatchPath, [string]$WorkingDirectory) {
     return (Start-Process -FilePath $env:ComSpec -ArgumentList $args -WorkingDirectory $WorkingDirectory -PassThru)
 }
 
+# How many processes a console has running under it, conhost.exe aside, or -1 when the query failed. A
+# failed query is not an answer of "none": with -ErrorAction SilentlyContinue it used to come back as an
+# empty list, and an empty list is what calls a console finished.
+function Get-ConsoleChildCount([int]$ConsolePid) {
+    try {
+        $kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ConsolePid" -ErrorAction Stop |
+                  Where-Object { $_.Name -ine 'conhost.exe' })
+        return $kids.Count
+    } catch {
+        Write-Verbose "Could not list the processes under console $ConsolePid ($($_.Exception.Message)); still waiting."
+        return -1
+    }
+}
+
 # Wait for a listener on the port that descends from our console. Result.Outcome is one of:
 #   'ok'       Result.ProcessId is the server
 #   'stranger' something else took the port first (Result.ProcessId)
 #   'exited'   our console's command finished without binding it - read the window
 #   'timeout'
-function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
+# The console is "cmd /k" running the batch file, so once its command has ended it is a prompt with no child
+# process. No child reads as 'exited' only when that is certain: the child that was seen has gone, or, while
+# none has been seen yet, $EmptyPolls queries in a row have found none and $GraceSec have passed since the
+# wait began. Until then a console with no child may simply not have started dotnet yet. The rule this
+# replaces (no child 3 s in means finished) once called a LOGIN console "finished without binding" while
+# both servers came up and held their ports with no session file (a review of PR #345, 2026-10-18). A query
+# that fails is unknown, not empty: it breaks the run of empty answers and the wait goes on.
+function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec, [int]$GraceSec = 15, [int]$EmptyPolls = 3) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     $startedAt = Get-Date
+    $seenChild = $false
+    $empty = 0
     while ((Get-Date) -lt $deadline) {
         foreach ($l in (Get-Listeners @($Port))) {
             if (Test-Descendant -ProcessId $l.ProcessId -AncestorId $ConsolePid) {
@@ -607,14 +639,37 @@ function Wait-ForListener([int]$Port, [int]$ConsolePid, [int]$TimeoutSec) {
             return [pscustomobject]@{ Outcome = 'stranger'; ProcessId = $l.ProcessId }
         }
         if (-not (Test-Alive $ConsolePid)) { return [pscustomobject]@{ Outcome = 'exited'; ProcessId = 0 } }
-        if (((Get-Date) - $startedAt).TotalSeconds -gt 3) {
-            $kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ConsolePid" -ErrorAction SilentlyContinue |
-                      Where-Object { $_.Name -ine 'conhost.exe' })
-            if ($kids.Count -eq 0) { return [pscustomobject]@{ Outcome = 'exited'; ProcessId = 0 } }
+        $kids = Get-ConsoleChildCount $ConsolePid
+        if ($kids -gt 0) {
+            $seenChild = $true
+            $empty = 0
+        } elseif ($kids -lt 0) {
+            $empty = 0
+        } else {
+            $empty++
+            if ($seenChild -or ($empty -ge $EmptyPolls -and ((Get-Date) - $startedAt).TotalSeconds -ge $GraceSec)) {
+                return [pscustomobject]@{ Outcome = 'exited'; ProcessId = 0 }
+            }
         }
         Start-Sleep -Milliseconds 500
     }
     return [pscustomobject]@{ Outcome = 'timeout'; ProcessId = 0 }
+}
+
+# The last look Invoke-Start takes before it prints a verdict other than 'ok'. A listener on the slot's
+# ports that descends from its console is its server, whatever the wait concluded (it bound after the wait
+# gave up, or a query the wait relied on failed), so it is said and recorded rather than left running with
+# no session file for -Stop to find. Returns the result to use: an 'ok' one for such a listener, else
+# $Result unchanged.
+function Resolve-LateListener([string]$Label, $Result, [int[]]$Ports, [int]$ConsolePid) {
+    if ($Result.Outcome -eq 'ok') { return $Result }
+    foreach ($l in (Get-Listeners $Ports)) {
+        if (Test-Descendant -ProcessId $l.ProcessId -AncestorId $ConsolePid) {
+            Write-Host "$Label port $($l.Port) is held by PID $($l.ProcessId), from the console this script opened, after all (the wait had ended '$($Result.Outcome)'); recording it."
+            return [pscustomobject]@{ Outcome = 'ok'; ProcessId = $l.ProcessId }
+        }
+    }
+    return $Result
 }
 
 # Deliver Ctrl+C, then Ctrl+Break if the process is still there after WaitMs, to the console a process is
@@ -1140,6 +1195,8 @@ function Invoke-Start([string]$Root, $Plan, [string[]]$TesterNames, [string[]]$G
     # 7. Find the two server processes by the ports they bind, and make sure they are ours.
     $login = Wait-ForListener -Port $Plan.Login[0] -ConsolePid $loginConsole.Id -TimeoutSec 60
     $game  = Wait-ForListener -Port $Plan.Game[0]  -ConsolePid $gameConsole.Id  -TimeoutSec 180
+    $login = Resolve-LateListener -Label 'LOGIN' -Result $login -Ports $Plan.Login -ConsolePid $loginConsole.Id
+    $game  = Resolve-LateListener -Label 'GAME'  -Result $game  -Ports $Plan.Game  -ConsolePid $gameConsole.Id
     $problem = $false
     foreach ($pair in @(@('LOGIN', $login, $Plan.Login[0]), @('GAME', $game, $Plan.Game[0]))) {
         $label = $pair[0]; $r = $pair[1]; $port = $pair[2]
