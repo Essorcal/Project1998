@@ -292,7 +292,7 @@ public class HandoffTokenTests : IDisposable
     }
 
     /// <summary>
-    /// The two facts that read their Warn line from the log, run in <c>"log"</c> rather than this class's
+    /// The facts that read their Warn or Error line from the log, run in <c>"log"</c> rather than this class's
     /// <c>"db"</c>. Each takes the log line sink, which is one process-wide slot, and a capture collects every
     /// running test's lines. <c>"db"</c> runs beside the rest of the parallel phase; <c>"log"</c> runs alone,
     /// after it (<c>Tests/Support/ExclusiveCollections.cs</c>). <see cref="TestSeamCollectionTests"/> fails a
@@ -347,6 +347,36 @@ public class HandoffTokenTests : IDisposable
             Assert.True(entered, "a failed purge stopped the mint");
             Assert.Equal(LogLevel.Warn, warning.Level);
             Assert.Contains("test trigger refuses this delete", warning.Line);
+        }
+
+        /// <summary>#332: a consume the database refuses is logged once, at Error, with the account and the
+        /// exception, and still answers false, so the arrival is refused as it always was. The line carries
+        /// neither the token's bytes nor the stored hash. Before this the fault was swallowed and the
+        /// arrival's "invalid/expired handoff token" line was all an operator saw.</summary>
+        [Fact]
+        public void AConsumeTheDatabaseRefusesIsAnErrorAndStillRefuses()
+        {
+            using var db = new IsolatedDatabase();
+            var user = Fresh(7);   // four nonce bytes survive: the most a line could leak
+            var echo = MintAt(db.Open, user, T0);
+            Exec(db.Open, "CREATE TRIGGER refuse_consume BEFORE UPDATE ON handoff_tokens " +
+                          "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this update'); END;");
+            bool entered;
+            LogLineSink.Entry[] errors;
+            using (var sink = LogLineSink.Acquire())
+            {
+                entered = ConsumeAt(db.Open, echo, user, T0);
+                errors = sink.Lines.Where(l => l.Line.Contains($"handoff token for '{user}' could not be checked",
+                                                               StringComparison.Ordinal)).ToArray();
+            }
+            Assert.False(entered, "a consume the database refused let the arrival in");
+            var error = Assert.Single(errors);
+            Assert.Equal(LogLevel.Error, error.Level);
+            Assert.Contains("test trigger refuses this update", error.Line);
+            Assert.Contains(typeof(SqliteException).FullName!, error.Line);
+            var surviving = echo[..HandoffTokens.SurvivingBytes(user)];
+            Assert.DoesNotContain(Convert.ToHexString(surviving), error.Line, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(PreviousHash(user, echo), error.Line, StringComparison.OrdinalIgnoreCase);
         }
     }
 
