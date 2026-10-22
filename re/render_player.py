@@ -2,6 +2,8 @@
 so the rules in docs/4.x/Protocol.md section 8.2 can be checked by eye.
 
 What it implements (each rule is the doc's, with the address that decides it there):
+  * the look parser's one rewrite: armor [3] of 0 becomes 1 when sex [0] is not 0 (0x436120, the jne at
+    0x436162), so an unarmored female draws on body art 1, not art 0;
   * the per-pose layer order from DrwOrder.tbl (Inter.dat; 100 five-byte records, 0x431a44 loads it,
     0x432f90 looks it up, out of range -> "bh00");
   * the pose index p and each layer's frame from the resolver 0x433040: body = Body.Starting + p,
@@ -15,6 +17,8 @@ writes nothing but the PNGs you ask for.
 Usage:
   python re/render_player.py sheets <outdir> [scale]     # the evidence set: facings, walks, swings, mount...
   python re/render_player.py one <out.png> sex form face armor colour weapon shield dir phase [action frame]
+
+The look is given as the WIRE bytes [0]..[6] of the 0x33 type-0 form; compose() applies parse_look() to it.
 """
 import os
 import struct
@@ -49,11 +53,28 @@ def weapon_class(b):
 
 
 def pak(path):
+    """{lower-case name: bytes} for a Nexon PAK (.dat): u32 count, then count * {u32 offset, char name[13]}.
+    An entry runs to the next entry's offset, the last one to end of file. In NexusTK.dat and Inter.dat the
+    directory's last entry is a nameless end marker (offset = file size - 8); it is skipped by its empty name,
+    not by its position, so no named entry can be dropped."""
     d = open(path, "rb").read()
     n, = struct.unpack_from("<I", d, 0)
     ents = [(struct.unpack_from("<I", d, 4 + 17 * i)[0],
              d[8 + 17 * i:21 + 17 * i].split(b"\0")[0].decode("latin1")) for i in range(n)]
-    return {nm.lower(): d[s:ents[i + 1][0]] for i, (s, nm) in enumerate(ents[:-1])}
+    out = {}
+    for i, (s, nm) in enumerate(ents):
+        if nm:
+            out[nm.lower()] = d[s:ents[i + 1][0] if i + 1 < n else len(d)]
+    return out
+
+
+def parse_look(look):
+    """The look as 0x436120 stores it: the wire bytes, except that armor [3] becomes 1 when it is 0 and sex [0]
+    is not 0 (0x436160..0x43616c). Nothing later in the draw reads the sex byte."""
+    lk = list(look)
+    if lk[3] == 0 and lk[0] != 0:
+        lk[3] = 1
+    return lk
 
 
 class Epf:
@@ -102,7 +123,8 @@ class Assets:
 
 
 def resolve(a, look, d, phase=0, action=0, f=0):
-    """-> (order string, {letter: (archive, frame, family-for-palette)}). Mirrors 0x433040 + 0x432320."""
+    """-> (order string, {letter: (archive, frame, family-for-palette)}). Mirrors 0x433040 + 0x432320.
+    `look` is the PARSED look (see parse_look)."""
     sex, form, face, armor, colour, weapon, shield = look
     if form == 2 or form >= 6:
         return "", {}
@@ -171,7 +193,11 @@ def palette_for(a, fam, look):
     return pals[p] if 0 <= p < len(pals) else pals[0]
 
 
-def compose(a, look, d, phase=0, action=0, f=0, size=(128, 112), origin=(64, 88), order_override=None):
+def compose(a, look, d, phase=0, action=0, f=0, size=(128, 112), origin=(64, 88), order_override=None,
+            skip_parse=False):
+    """`look` is the wire look; skip_parse=True draws it WITHOUT the parser's armor rule (a control only)."""
+    if not skip_parse:
+        look = parse_look(look)
     order, layers = resolve(a, look, d, phase, action, f)
     if order_override is not None:
         order = order_override
@@ -325,6 +351,22 @@ def sheets(outdir, scale=2):
         cells.append(("same, fixed bhws", alt))
     grid(cells, 6, scale, "control: DrwOrder.tbl order (left of each pair) vs a fixed b,h,w,s order (right)",
          os.path.join(outdir, "07_order_control.png"))
+
+    # 11. the sex byte: it matters only through the parser's armor rule (armor 0 + sex != 0 -> body 1)
+    rows = [("female, armor 0 (-> body 1)", look(sex=1, armor=0), False),
+            ("same, rule skipped (body 0)", look(sex=1, armor=0), True),
+            ("male, armor 0 (body 0)", look(sex=0, armor=0), False),
+            ("female, armor 4", look(sex=1, armor=4), False),
+            ("male, armor 4", look(sex=0, armor=4), False),
+            ("female, armor 15, sword8+shield2", look(sex=1, armor=15, weapon=8, shield=2), False),
+            ("female, armor 0, sword8+shield2", look(sex=1, armor=0, weapon=8, shield=2), False)]
+    cells = []
+    for name, lk, raw in rows:
+        for d in range(4):
+            im, order = compose(a, lk, d, skip_parse=raw)
+            cells.append((f"{name} {DIRS[d]}", im))
+    grid(cells, 4, scale, "sex byte: female (1) and male (0), unarmored and armored; row 2 skips 0x436120's armor rule",
+         os.path.join(outdir, "11_female.png"))
 
 
 if __name__ == "__main__":
