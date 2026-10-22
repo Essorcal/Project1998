@@ -23,15 +23,24 @@ namespace Tests;
 /// hit. The other seven 5-way spells (the dog fire family, Volcanic Blast, the Earthquake ladder) carry no drain
 /// entry and no aether, so the shared tail leaves them exactly as they were.</para>
 ///
+/// <para>The 600-mana gate (Caleb, 2026-10-21, decision sheet item 2). The same RTK body refuses a cast below 600
+/// mana before it sweeps anything (<c>inferno.lua:11-14</c>, "You do not have enough mana."), and the live Nexus Atlas
+/// mage page gives Inferno "Mana Cost - 600". The four rows said 0, which the cast reads as 5, so a 50-mana Inferno
+/// fired and started the full 70 s wait. The rows now say 600: the verb refuses below it for free, with no aether,
+/// and from it the verb's 600 and then the drain leave the pool at 0, as before.</para>
+///
 /// <para>Driven end to end through <c>Session.Receive</c> on content-free maps, at a creature with ten million
 /// hit points beside the caster so every sweep that should land does land and nothing dies.</para>
 /// </summary>
 [Collection("world")]
 public sealed class InfernoLadderSpellTests
 {
-    private const ushort LandedMap = 62010, RefusedMap = 62011, EmptyMap = 62012, OtherMap = 62013;
+    private const ushort LandedMap = 62010, RefusedMap = 62011, EmptyMap = 62012, OtherMap = 62013, GateMap = 62600;
 
     private const uint Pool = 40_000;
+
+    /// <summary>The least a cast of the ladder needs (RTK <c>inferno.lua:11</c>; the rows' mana).</summary>
+    private const uint Gate = 600;
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -77,16 +86,18 @@ public sealed class InfernoLadderSpellTests
         }
     }
 
-    /// <summary>A cast the verb refuses takes nothing and arms nothing, exactly as a refused archetype cast:
-    /// 3 mana is short of the 5 the verb charges, so it answers "You do not have enough mana." and the pool and
-    /// the aether are untouched. Green on 9c00b98 too (it returned before both); it is here so the shared tail's
-    /// <c>ok</c> gate has a fact that fails without it.</summary>
+    /// <summary>A cast below the 600-mana gate is refused and takes and arms nothing, exactly as a refused archetype
+    /// cast: 599 mana is short of the row's 600, so the verb answers "You do not have enough mana.", the creature
+    /// beside the caster keeps every point, and the pool and the aether are untouched. It is also the shared tail's
+    /// <c>ok</c> gate's fact: a refused cast that reached the tail would take the pool and arm the aether. Red on
+    /// 6de1d24: 599 clears the 5 the cast charged for a row saying 0, so it fires, empties the pool and arms the 70 s
+    /// wait.</summary>
     [Theory]
     [MemberData(nameof(Ladder))]
-    public void ACastTheVerbRefusesTakesNothingAndArmsNothing(string key)
+    public void ACastBelowTheSixHundredManaGateIsRefusedForFree(string key)
     {
         var sp = Content.SpellByKey(key)!;
-        var (session, outbound, c) = Caster(sp, RefusedMap, 3);
+        var (session, outbound, c) = Caster(sp, RefusedMap, Gate - 1);
         var mob = Target(RefusedMap);
         try
         {
@@ -97,7 +108,8 @@ public sealed class InfernoLadderSpellTests
             Assert.DoesNotContain($"You cast {sp.Name}.", lines);
             Assert.Equal(mob.MaxHp, mob.Hp);
             var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
-            Assert.True(pool == 3 && aether == 0, $"pool {pool} (want 3), aether {aether} ms left (want 0)");
+            Assert.True(pool == Gate - 1 && aether == 0,
+                        $"pool {pool} (want {Gate - 1}), aether {aether} ms left (want 0)");
         }
         finally
         {
@@ -106,8 +118,35 @@ public sealed class InfernoLadderSpellTests
         }
     }
 
+    /// <summary>The gate's other side: exactly 600 mana casts, reaches the creature, ends at 0 and arms the 70 s
+    /// aether, as RTK's <c>player.magic &lt; 600</c> lets 600 through. Green on 6de1d24 too; it pins the boundary, so
+    /// a gate written as "at most 600" fails here.</summary>
+    [Theory]
+    [MemberData(nameof(Ladder))]
+    public void ACastOnExactlySixHundredManaLands(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        var (session, outbound, c) = Caster(sp, GateMap, Gate);
+        var mob = Target(GateMap);
+        try
+        {
+            session.Receive(SpellCastSupport.CastFrame(0, mob.Id));
+
+            Assert.Contains($"You cast {sp.Name}.", SpellCastSupport.MiniTexts(outbound));
+            Assert.True(mob.Hp < mob.MaxHp, $"{sp.Name} never reached the creature beside the caster");
+            var (pool, aether) = (c.Mp, SpellCastSupport.AetherLeft(session, key));
+            Assert.True(pool == 0 && aether is >= 60_000 and <= 70_000,
+                        $"pool {pool} (want 0), aether {aether} ms left (want 60000 to 70000)");
+        }
+        finally
+        {
+            _fx.World.DespawnMob(GateMap, mob);
+            _fx.World.LeaveMap(session, GateMap);
+        }
+    }
+
     /// <summary>Aimed at nothing, the sweep centres on the caster and finds nobody, and the verb still accepts
-    /// it as a cast: "You cast X." and the verb's 5 mana, as on 9c00b98. So it now also costs the whole pool and
+    /// it as a cast: "You cast X." and the row's mana (5 on 9c00b98, 600 now). So it also costs the whole pool and
     /// arms the aether, as in RTK's <c>inferno.lua</c>, whose aether and <c>player.magic = 0</c> follow the
     /// sweep whatever it hit. Red on 9c00b98: the pool is down 5 and no aether is running.</summary>
     [Theory]

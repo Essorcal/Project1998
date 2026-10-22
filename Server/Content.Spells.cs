@@ -1126,13 +1126,18 @@ public static partial class Content
     // whole price.
     //
     // 1.0 - "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San
-    //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr
+    //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carried mana=0 and an amountExpr
     //   reading player.magic, which computes the damage correctly but NEVER SPENT the pool - so before this
     //   they were free, repeatable nukes scaling off a mana bar that never moved. Inferno's three alignment
     //   reskins (Death's Door, Nature's Denial, Steel Storm) take the same entry: RTK mage/inferno.lua gives
     //   all four one body, ending setAether(<key>, 70000) and `player.magic = 0`. (The four are 5-way zaps,
     //   and ApplyCast's 5-way branch used to return ahead of this drain, so even Inferno's entry never applied
-    //   until that branch joined the archetype tail.) Retribution and its three reskins (RTK
+    //   until that branch joined the archetype tail.) The same body refuses a cast below 600 mana
+    //   (inferno.lua:11-14, "You do not have enough mana."), so the four rows now carry mana=600 and the verb
+    //   refuses below it for free. That 600 is a bar in RTK, not a bill, which is GateOnly's case, but the flag
+    //   would change nothing here: the verb's 600 comes out of a pool of at least 600 and the drain takes the
+    //   whole pre-cast reading from what is left, so the cast ends at 0 either way. They stay false. Dooms
+    //   Fire's row still says 0. Retribution and its three reskins (RTK
     //   poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same thing one tier
     //   down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
