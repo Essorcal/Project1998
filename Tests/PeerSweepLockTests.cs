@@ -45,12 +45,13 @@ namespace Tests;
 [Collection("world")]
 public sealed class PeerSweepLockTests
 {
-    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62460,
-    // 62467-62469 and 62485-62488 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the
-    // re-check at "yes").
+    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62469 and
+    // 62485-62491 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the re-check at "yes").
+    // The kept/yes/gone-proposer facts first stood on 62460, 62467 and 62468, which upstream's VowHalvesTests and
+    // ResolverTargetMapTests took meanwhile (7d21d8c); they moved to 62489-62491.
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
-                         PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468,
+                         PromptMidMap = 62453, KeptMap = 62489, YesMap = 62490, GoneProposerMap = 62491,
                          AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487,
                          RelogMap = 62488;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
