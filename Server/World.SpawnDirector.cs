@@ -211,9 +211,9 @@ public sealed partial class World
         }
 
         /// <summary>The maps a creature's rooms are on, each once and in its rule's order, without a map the
-        /// client cannot render (<see cref="Materialize"/> ignores a room there); empty for a creature with no
-        /// rooms, or none on a renderable map, which is then filed under its row's map. Reads only
-        /// <see cref="Content"/>.
+        /// client cannot render (<see cref="Materialize"/> ignores a room there) and without a room off its map
+        /// (<see cref="OffItsMap"/>, never picked); empty for a creature with no rooms, or none left, which is
+        /// then filed under its row's map. Reads only <see cref="Content"/>.
         ///
         /// <para>Never throws for a creature <see cref="Materialize"/> would refuse. <see cref="Build"/> has no
         /// guard per row, so a throw here would cost the whole roster, where the same row refused by
@@ -226,8 +226,40 @@ public sealed partial class World
             if (key is null || !Content.MobSpawnRules.TryGetValue(key, out var rule) || rule.Rooms.Length == 0) return Array.Empty<ushort>();
             var maps = new List<ushort>(rule.Rooms.Length);
             foreach (var room in rule.Rooms)
-                if (Content.Maps.ContainsKey(room.Map) && !maps.Contains(room.Map)) maps.Add(room.Map);
+                if (Content.Maps.ContainsKey(room.Map) && !OffItsMap(room) && !maps.Contains(room.Map)) maps.Add(room.Map);
             return maps.ToArray();
+        }
+
+        /// <summary>Is a boss room so far outside its map that no tile of the map lies within
+        /// <see cref="SpawnTileRadius"/> of it (#333)? Such a room is left out of the filing
+        /// (<see cref="RoomMapsOf"/>) and of the pick (<see cref="PickRoom"/>).
+        ///
+        /// <para><c>FreeSpawnTile</c> looks that far past a spawn tile for an open tile on the map and, finding
+        /// none, builds the creature on the spawn tile itself: for a room this far out, outside the map, where
+        /// nobody can reach or kill it, so its point never refills until an <c>@reload</c>. One room is like
+        /// that today: <c>monkey_avenger</c>'s 4164:24:32, which is RTK's warp, on a map the 4.95 client draws
+        /// 20x30. A room only just outside its map keeps its place in both, because a tile of the map is within
+        /// reach and <c>FreeSpawnTile</c> builds the boss there: <c>divine_sheep</c>'s 3472:11:8 and
+        /// <c>sheep_avenger</c>'s 4472:10:8, both on 10-wide maps. Caleb's rule (2026-10-21): skip only a room
+        /// with no tile on its map within 2 of it. A map with no dimensions has no edge to be outside of. Reads
+        /// only <see cref="Content"/>.</para></summary>
+        private static bool OffItsMap((ushort Map, ushort X, ushort Y) room) =>
+            Content.Maps.TryGetValue(room.Map, out var mi) && mi.Xs > 0 && mi.Ys > 0
+            && (room.X >= mi.Xs + SpawnTileRadius || room.Y >= mi.Ys + SpawnTileRadius);
+
+        /// <summary>A boss's room picked at random, uniformly among those not off their map
+        /// (<see cref="OffItsMap"/>); null when every one of them is. With no room off its map this is the
+        /// single draw over all of them it always was: the same <c>Random.Shared.Next</c> over the same count,
+        /// landing on the same room.</summary>
+        private static (ushort Map, ushort X, ushort Y)? PickRoom((ushort Map, ushort X, ushort Y)[] rooms)
+        {
+            int usable = 0;
+            foreach (var room in rooms) if (!OffItsMap(room)) usable++;
+            if (usable == 0) return null;
+            int pick = Random.Shared.Next(usable);
+            foreach (var room in rooms)
+                if (!OffItsMap(room) && pick-- == 0) return room;
+            return null;   // not reached: `pick` is below the count of rooms the loop accepts
         }
 
         /// <summary>Warm the terrain of every map that a boss with a room on one of <paramref name="watched"/>
@@ -525,12 +557,9 @@ public sealed partial class World
             // among the boss's rooms). The spawn POINT keeps its row's map — respawn bookkeeping is keyed to it,
             // and it is the mapId this is called with — but it is filed under its rooms' maps (AddSpawn, #333),
             // and the creature is built in the room it belongs in. A room on an unrenderable map is ignored
-            // rather than stranding the boss nowhere.
-            if (rule is { Rooms.Length: > 0 })
-            {
-                var room = rule.Rooms[Random.Shared.Next(rule.Rooms.Length)];
-                if (Content.TryMap(room.Map, out _)) { mapId = room.Map; sp.X = room.X; sp.Y = room.Y; sp.Placed = true; }
-            }
+            // rather than stranding the boss nowhere, and a room off its map is never picked (PickRoom).
+            if (rule is { Rooms.Length: > 0 } && PickRoom(rule.Rooms) is { } room && Content.TryMap(room.Map, out _))
+            { mapId = room.Map; sp.X = room.X; sp.Y = room.Y; sp.Placed = true; }
 
             // Area spawn's first materialize: choose a walkable home tile inside its box (or anywhere on the map
             // for a zero box). Fixed once, so respawns hug the same patch like RTK's sentries.

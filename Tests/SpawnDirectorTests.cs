@@ -516,6 +516,9 @@ public class SpawnDirectorRoomTests
     private const ushort RatEyes2 = 3155, Gnaw2 = 3157;   // divine_rat's two rooms, 3155:10:6 and 3157:23:15
     private const ushort DogRoomA = 3193, DogRoomB = 3195;   // divine_dog's two rooms; the warm fact's alone
     private const ushort GimYisDen = 1308;   // gimyi's one room, 1308:2:5, and its batch group (AreaSpawns.csv)
+    private const ushort OffMapRowMap = 60208;   // the off-map fact's synthetic point's row
+    private const ushort MonkeyFlow3 = 4163, MonkeyDance3 = 4164, MonkeyWasteland3 = 4167;   // monkey_avenger's rooms' maps
+    private const ushort WoolenSqueeze2 = 3472, WoolenSqueeze3 = 4472;   // divine_sheep's and sheep_avenger's 10-wide rooms
 
     /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
     private static T Locked<T>(World world, Func<T> read)
@@ -719,9 +722,11 @@ public class SpawnDirectorRoomTests
     }
 
     /// <summary>The roster <c>Spawns.csv</c> gives every <see cref="World"/>: each point on map 4 whose
-    /// creature has rooms is filed under every one of its rooms' maps and not under map 4, and each room is on
-    /// a map the client renders (a room elsewhere is ignored by <c>Materialize</c>, which then builds the boss
-    /// on map 4 instead). The three nine-tailed foxes, which have no rule, are all that stays on map 4.
+    /// creature has rooms is filed under every one of its rooms' maps but a room off its map (no tile of the map
+    /// within two; <see cref="ARoomWithNoTileOfItsMapWithinTwoIsLeftOutOfTheFilingAndThePick"/> pins the one
+    /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere is ignored by
+    /// <c>Materialize</c>, which then builds the boss on map 4 instead). The three nine-tailed foxes, which
+    /// have no rule, are all that stays on map 4.
     ///
     /// <para>Falsified by filing every point under its row's map again (<c>AddSpawn</c>): red, a boss is
     /// filed under map 4.</para></summary>
@@ -743,13 +748,66 @@ public class SpawnDirectorRoomTests
             Assert.DoesNotContain(def.Key, onChamber);
             foreach (var room in rule.Rooms)
             {
-                Assert.True(Content.Maps.ContainsKey(room.Map), $"{def.Key}'s room map {room.Map} is not one the client renders");
-                Assert.Contains(def.Key, Locked(world, () => world.SpawnsForTest.PointKeysForTest(room.Map)));
+                Assert.True(Content.Maps.TryGetValue(room.Map, out var info), $"{def.Key}'s room map {room.Map} is not one the client renders");
+                var filed = Locked(world, () => world.SpawnsForTest.PointKeysForTest(room.Map));
+                if (room.X >= info.Xs + 2 || room.Y >= info.Ys + 2) Assert.DoesNotContain(def.Key, filed);   // off its map
+                else Assert.Contains(def.Key, filed);
             }
         }
         Assert.True(bosses > 0, "no point on map 4 has rooms any more; this fact pins nothing");
         Assert.Equal(new[] { "nine_tailed_fox_buya", "nine_tailed_fox_buya2", "nine_tailed_fox_buya3" },
                      onChamber.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    /// <summary>Caleb's rule for a room off its map (2026-10-21): a room with no tile of its map within two of it
+    /// is left out of the filing and the pick, and only such a room. <c>monkey_avenger</c>'s rooms are 4163:6:5,
+    /// 4164:24:32 and 4167:18:22; the second is RTK's warp, and map 4164 is 20x30, so <c>FreeSpawnTile</c>
+    /// found no tile of it within reach and built the boss at (24,32), outside the map, where nobody could kill
+    /// it. <c>divine_sheep</c>'s 3472:11:8 and <c>sheep_avenger</c>'s 4472:10:8 are one column outside their
+    /// 10-wide maps and keep their rooms: a tile of the map is within two, and the boss is built there.
+    ///
+    /// <para>The real roster files <c>monkey_avenger</c> under 4163 and 4167 only, and the two sheep under
+    /// their 10-wide maps. Then a synthetic point keyed <c>monkey_avenger</c>, with a one-beat window, is
+    /// built sixty times for a player on 4163, and never in the off-map room: drawn uniformly over all three
+    /// rooms, as before the rule, sixty builds all miss it with probability (2/3)^60, about 3e-11.</para>
+    ///
+    /// <para>Falsified by filing every room's map again (<c>RoomMapsOf</c> without <c>OffItsMap</c>): red,
+    /// filed under 4164. By picking over every room again (<c>PickRoom</c> without <c>OffItsMap</c>): red,
+    /// a build in the off-map room. By skipping every room outside its map, not only those with no tile
+    /// within two (<c>OffItsMap</c> without the reach): red, the sheep lose their rooms.</para></summary>
+    [Fact]
+    public void ARoomWithNoTileOfItsMapWithinTwoIsLeftOutOfTheFilingAndThePick()
+    {
+        var rule = RoomRule("monkey_avenger", MonkeyFlow3, MonkeyDance3, MonkeyWasteland3);
+        var offMap = rule.Rooms.Single(r => r.Map == MonkeyDance3);
+        var dance = Content.Maps[MonkeyDance3];
+        Assert.True(offMap.X >= dance.Xs + 2, $"the fact leans on {MonkeyDance3}:{offMap.X}:{offMap.Y} lying more than two tiles off its {dance.Xs}x{dance.Ys} map");
+        foreach (var (key, map) in new[] { ("divine_sheep", WoolenSqueeze2), ("sheep_avenger", WoolenSqueeze3) })
+        {
+            var room = Content.MobSpawnRules[key].Rooms.Single(r => r.Map == map);
+            var info = Content.Maps[map];
+            Assert.True(room.X >= info.Xs && room.X < info.Xs + 2 && room.Y < info.Ys,
+                        $"the fact leans on {key}'s {map}:{room.X}:{room.Y} lying just outside its {info.Xs}x{info.Ys} map");
+        }
+        var world = new World();
+        Assert.Equal(new[] { MonkeyFlow3, MonkeyWasteland3 },
+                     new[] { MonkeyFlow3, MonkeyDance3, MonkeyWasteland3 }
+                         .Where(m => Locked(world, () => world.SpawnsForTest.PointKeysForTest(m)).Contains("monkey_avenger")));
+        Assert.Contains("divine_sheep", Locked(world, () => world.SpawnsForTest.PointKeysForTest(WoolenSqueeze2)));
+        Assert.Contains("sheep_avenger", Locked(world, () => world.SpawnsForTest.PointKeysForTest(WoolenSqueeze3)));
+
+        var def = Creature(990_208, "monkey_avenger");
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(OffMapRowMap, def, 3, 3, respawnEvery: 1));
+        var watcher = Seat(world, "OffMapWatcher", MonkeyFlow3, (1, 1));
+        world.EnterMap(watcher, MonkeyFlow3);
+        for (int build = 1; build <= 60; build++)
+        {
+            var (boss, room) = Assert.Single(InTheirRooms(world, watcher, rule, def));
+            Assert.True(room.Map != MonkeyDance3, $"build {build} put the boss in the off-map room, at ({boss.X},{boss.Y}) on map {room.Map}");
+            AssertInTheRoom(boss, room);
+            Assert.True(world.DespawnMob(room.Map, boss));
+            world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4163
+        }
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature

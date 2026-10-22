@@ -440,6 +440,10 @@ public sealed partial class World
     // same way (`if fail >= maxMobs[z] * 4 then` treat the mob as done), which is what stops a boxed spawn
     // from spinning forever when the box is mostly wall.
     private const int PlacementTriesPerMob = 4;
+    // How far (Chebyshev) FreeSpawnTile looks past a spawn tile for an open one before it accepts the spawn tile
+    // itself. SpawnDirector's off-map room rule (#333) reads the same reach: a boss room with no tile of its map
+    // this close is one FreeSpawnTile would build outside the map.
+    private const int SpawnTileRadius = 2;
     // How far a mob may wander from its spawn tile (Chebyshev). Kept small so town critters hug their
     // spawn points instead of clustering into a dense knot that constantly overlaps on screen.
     private const int WanderRadius = 2;
@@ -891,7 +895,7 @@ public sealed partial class World
         // struct enumerator and the two tests are a struct, so there is no iterator, no closure and no
         // delegate — nothing on the heap per call at all.
         var free = MapData.FreeNeighbour(
-            MapData.SelfThenRingWalk(x, y, maxRadius: 2), xs, ys,
+            MapData.SelfThenRingWalk(x, y, maxRadius: SpawnTileRadius), xs, ys,
             new SpawnTileTest(m, terrain, avoidSolid));
 
         return free is { } t ? ((ushort)t.x, (ushort)t.y)
