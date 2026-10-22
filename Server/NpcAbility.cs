@@ -1525,7 +1525,7 @@ public sealed class ChapelAbility : INpcAbility
 
     /// <summary>What the Chapel says to a confirm whose vow the partner already ended: the login line's shape
     /// ("Your marriage to X has ended."), with "already", since the vow ended before this answer.</summary>
-    private static string AlreadyEnded(string kind, string partner) => $"Your {kind} to {partner} has already ended.";
+    internal static string AlreadyEnded(string kind, string partner) => $"Your {kind} to {partner} has already ended.";
 }
 
 /// <summary>Tells the current server date + time (a real, self-contained feature many NPCs share).</summary>
