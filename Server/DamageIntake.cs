@@ -28,7 +28,7 @@ public enum DamageKind
 /// </summary>
 public sealed class DamageIntake
 {
-    public DamageIntake(DamageKind kind, int raw)
+    public DamageIntake(DamageKind kind, double raw)
     {
         Kind = kind;
         Raw  = raw;
@@ -37,8 +37,11 @@ public sealed class DamageIntake
     public DamageKind Kind { get; }
 
     /// <summary>Damage before any intake-side term. What "before" means differs by kind — a PvP melee figure
-    /// has already had the victim's armor and rear-x2 applied attacker-side, a mob swing has not.</summary>
-    public int Raw { get; }
+    /// has already had the victim's armor and rear-x2 applied attacker-side, a mob swing has not.
+    /// <para>A double, not an int (#200): a player's Spark-family spell arrives as 50 + level/2, and the live probe's
+    /// self-casts read that half at the armour step (level 15 at AC 85: floor(57.5 x 1.85) = 106). An int here
+    /// rounded it away first.</para></summary>
+    public double Raw { get; }
 
     /// <summary>
     /// Whether this source walks past the Harden Body ward. Required — never defaulted — because the five
@@ -264,8 +267,11 @@ public sealed partial class Session
         byte critByte = intake.RollCritByte is null ? intake.CritByte : intake.RollCritByte();
 
         var terms = intake.Terms;
-        int dmg = intake.Raw;
-        if (terms.FloorRawToOne && dmg < 1) dmg = 1;
+        double raw = intake.Raw;
+        if (terms.FloorRawToOne && raw < 1) raw = 1;
+        // Whole before the terms below, except where the armour step is next: a spell's half (#200) is netted
+        // there, by ApplyArmor's single floor.
+        int dmg = (int)Math.Floor(raw);
 
         // RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is signed and
         // LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS (a -4 garb
@@ -280,15 +286,15 @@ public sealed partial class Session
         // The two run in opposite orders on the two kinds that have both. See DamageIntake.Terms.
         if (terms.ArmorBeforeAmp)
         {
-            if (terms.AppliesArmor) dmg = Combat.ApplyArmor(dmg, _char.Ac + Totals().armor, floor: -80);
+            if (terms.AppliesArmor) dmg = Combat.ApplyArmor(raw, _char.Ac + Totals().armor, floor: -80);
             double armorFirstAmp = TakeDamageAmp();
             if (armorFirstAmp > 1.0) dmg = (int)Math.Round(dmg * armorFirstAmp);
         }
         else
         {
             double amp = TakeDamageAmp();
-            if (amp > 1.0) dmg = (int)Math.Round(dmg * amp);
-            if (terms.AppliesArmor) dmg = Combat.ApplyArmor(dmg, _char.Ac + Totals().armor, floor: -80);
+            if (amp > 1.0) raw = Math.Round(raw * amp);
+            dmg = terms.AppliesArmor ? Combat.ApplyArmor(raw, _char.Ac + Totals().armor, floor: -80) : (int)Math.Floor(raw);
         }
 
         if (intake.DoubleForRear) dmg *= 2;

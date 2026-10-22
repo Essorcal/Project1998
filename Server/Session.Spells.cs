@@ -619,10 +619,17 @@ public sealed partial class Session
     // what the C# archetype computed) and run the verb with the amount + mana pre-supplied. Returns the verb's
     // success bool, or null if the verb isn't loaded, which Lua() below fails cleanly (there is no C# handler
     // left to fall back to). A verb that errors mid-run returns false (not null) so a failed retry can't double-apply.
+    //
+    // The amount is handed over UNROUNDED (#200). The Spark family's row is 50 + level/2, and the live probe reads
+    // its half at the armour step: a level-15 self-cast at AC 85 lands floor(57.5 x 1.85) = 106. Rounded here,
+    // half to even, 57.5 became 58 and landed 107. Every consumer still rounds where it must: the heals and the
+    // area verbs round inside SpellContext as they always did (rounding a rounded number changes nothing), and
+    // ctx:magicDamage carries the fraction to the single floor of the armour step. No other Damage row yields a
+    // fraction: each is whole arithmetic or wrapped in math.floor/math.ceil.
     private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
+        double amount = Formula.Eval(fx.AmountExpr, SpellVars(null));
         // Chin-Baek-Ho-Ryung (Black Potion, 10s): x1.5 on Slash / Assault / Feral Berserk, applied to the
         // evaluated amount exactly where RTK applies it — right after the damage is computed and before
         // anything is charged. Berserk and Whirlwind take the same bonus inside the sacrifice verb.
@@ -766,9 +773,12 @@ public sealed partial class Session
     // DELIBERATELY NOT APPLIED to: the sacrifice strikes and overflow (they net their own, see LuaSacApply);
     // ambush and melee (PlayerSwingDamage nets attacker-side); traps and pet mob-on-mob hits (no measurement
     // exists for either, and guessing would move balance with nothing behind it).
-    private static int SpellNet(int amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
+    //
+    // Takes the amount as a DOUBLE, like Combat.ApplyArmor itself (#200): the Spark family's base is 50 + level/2,
+    // and its half is read at this floor. Every caller up to here carries it unrounded.
+    private static int SpellNet(double amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
 
-    internal bool LuaDamageTarget(int amt, SpellDef sp, (Mob? mob, Session? pc) victim)
+    internal bool LuaDamageTarget(double amt, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         var (mob, pc) = victim;
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
@@ -801,7 +811,7 @@ public sealed partial class Session
     // tail (ApplyCast: the pool drain, the vita cost, the shout, the aether), which all wait on this returning true.
     // Resolving for itself, it struck the NPC with a blow World.TryDamage refused, for the full price (#349's review,
     // F1).
-    internal bool LuaMagicDamage(int amt, int mana, SpellDef sp, (Mob? mob, Session? pc) victim)
+    internal bool LuaMagicDamage(double amt, int mana, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (mana < 0) mana = 0;
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
@@ -3796,12 +3806,12 @@ public sealed partial class Session
     // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
     // notice (mana NOT spent) if disallowed. Rolls the PvP magic-deflect (SplCanFail spells only) before the
     // debit — a deflected cast spends no mana but still "happened" (returns true), matching the mob path.
-    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp) =>
+    private bool HitPlayerWithSpell(Session pc, double amt, int mana, SpellDef sp) =>
         HitPlayerWithSpell(pc, amt, mana, sp, out _);
 
     /// <param name="landed">Damage actually applied, uncapped by the victim's remaining HP — 0 if the cast was
     /// refused or deflected. Only the vita strikes read it, to find their overkill; see LuaSacApply.</param>
-    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp, out int landed)
+    private bool HitPlayerWithSpell(Session pc, double amt, int mana, SpellDef sp, out int landed)
     {
         landed = 0;
         bool isSelf = ReferenceEquals(pc, this);

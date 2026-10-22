@@ -1001,7 +1001,7 @@ public sealed partial class Session
     /// past zero it went. 0 when nothing landed (already dead, or immune). Overkill is
     /// <c>returned - hpBeforeTheCall</c>, which is what the vita strikes' overflow/backflow are computed from;
     /// every other caller ignores it.</returns>
-    public int ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
+    public int ReceiveSpellDamage(double rawDmg, Session attacker, string spellName)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         bool fromAnother = !ReferenceEquals(attacker, this);

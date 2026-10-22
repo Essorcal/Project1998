@@ -124,9 +124,10 @@ public sealed class SpellContext
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
-    /// arch_damage.</summary>
+    /// arch_damage. The amount goes over unrounded: the Spark family's half (50 + level/2) is netted at the armour
+    /// step, where the live probe reads it (#200).</summary>
     public bool magicDamage(double amt, double manaCost) =>
-        _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, Victim);
+        _s.LuaMagicDamage(amt, (int)manaCost, _sp, Victim);
     /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Heal whoever this cast is AIMED at — another player, a mob (your pet), or yourself — with the
