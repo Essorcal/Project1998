@@ -519,6 +519,8 @@ public class SpawnDirectorRoomTests
     private const ushort OffMapRowMap = 60208;   // the off-map fact's synthetic point's row
     private const ushort MonkeyFlow3 = 4163, MonkeyDance3 = 4164, MonkeyWasteland3 = 4167;   // monkey_avenger's rooms' maps
     private const ushort WoolenSqueeze2 = 3472, WoolenSqueeze3 = 4472;   // divine_sheep's and sheep_avenger's 10-wide rooms
+    private const ushort DragonRowMap = 60209;   // the Jeweled Dragon fact's synthetic point's row
+    private const ushort DragonsGold3 = 4254, DragonDeath3 = 4253, JeweledDragon3 = 4258;   // spirit_dragon's rooms' maps
 
     /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
     private static T Locked<T>(World world, Func<T> read)
@@ -810,6 +812,93 @@ public class SpawnDirectorRoomTests
             Assert.True(world.DespawnMob(room.Map, boss));
             world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4163
         }
+    }
+
+    /// <summary>Every tile of <paramref name="map"/> a player can walk to from a tile a warp lands on: the
+    /// review's terrain check (#357, its probe P3), a four-way flood fill over <see cref="MapData.BlockedMove"/>,
+    /// which is the player walk's own test (directional object walls included), indexed [x, y].</summary>
+    private static bool[,] WalkableFromItsLandings(ushort map, MapInfo info, MapData terrain)
+    {
+        var landings = Content.Warps.Values.Where(w => w.m == map).Select(w => ((int)w.x, (int)w.y)).Distinct().ToList();
+        Assert.True(landings.Count > 0, $"no warp lands on map {map}; the fact has nowhere to walk from");
+        var reached = new bool[info.Xs, info.Ys];
+        var queue = new Queue<(int X, int Y)>();
+        foreach (var (x, y) in landings)
+            if (x < info.Xs && y < info.Ys && !reached[x, y]) { reached[x, y] = true; queue.Enqueue((x, y)); }
+        int[] dx = { 0, 1, 0, -1 }, dy = { -1, 0, 1, 0 };   // heading 0=N 1=E 2=S 3=W, BlockedMove's order
+        while (queue.Count > 0)
+        {
+            var (cx, cy) = queue.Dequeue();
+            for (int d = 0; d < 4; d++)
+            {
+                int nx = cx + dx[d], ny = cy + dy[d];
+                if (nx < 0 || ny < 0 || nx >= info.Xs || ny >= info.Ys || reached[nx, ny]) continue;
+                if (terrain.BlockedMove(nx, ny, d)) continue;
+                reached[nx, ny] = true;
+                queue.Enqueue((nx, ny));
+            }
+        }
+        return reached;
+    }
+
+    /// <summary><c>spirit_dragon</c>'s room on Jeweled Dragon 3 (4258, 18x36) is a tile a player can walk to,
+    /// and the boss is built on it. RTK's script puts that room at 4258:7:13 (<c>mythic_dragon.lua</c>,
+    /// <c>spirit_dragon</c>'s <c>on_spawn</c>). On the 4.95 map that tile is open ground walled in on all four
+    /// sides, so the boss stood where nobody could walk to it or swing at it (#357's review, F1). The row names the
+    /// corridor tile two east instead, 4258:9:13, on Caleb's word (2026-10-22): a deliberate deviation for the
+    /// 4.95 terrain, noted beside the row in <c>MobSpawnRules.csv</c>.
+    ///
+    /// <para>The terrain half is the review's check (<see cref="WalkableFromItsLandings"/>). The room tile is
+    /// reached, and so is every open tile beside it: that is where <c>FreeSpawnTile</c> puts the boss when a
+    /// creature already stands on the room's own tile. RTK's tile is not reached, which is the reason for the
+    /// deviation; if a change to the map ever opens it, this goes red so the deviation can be reconsidered.</para>
+    ///
+    /// <para>The build half: a synthetic point keyed <c>spirit_dragon</c>, with a one-beat window, built sixty
+    /// times for a player on 4258. The map's own creatures are put out of the way first
+    /// (<c>ForgetMapForTest</c> drops 4258's batch group and the real Spirit dragon's point), so a build there
+    /// finds its room tile free, and every build on 4258 stands on the room tile itself. The pick is uniform over
+    /// three rooms, so sixty builds all miss 4258 with probability (2/3)^60, about 3e-11.</para>
+    ///
+    /// <para>Falsified by putting RTK's 4258:7:13 back in the row: red, the room is not reached.</para></summary>
+    [Fact]
+    public void TheSpiritDragonsJeweledDragonRoomIsOnTheCorridorAPlayerWalks()
+    {
+        var rule = RoomRule("spirit_dragon", DragonsGold3, JeweledDragon3, DragonDeath3);
+        var room = rule.Rooms.Single(r => r.Map == JeweledDragon3);
+        var info = Content.Maps[JeweledDragon3];
+        var terrain = MapData.For(JeweledDragon3, info.Xs, info.Ys);
+        Assert.NotNull(terrain);
+        var reached = WalkableFromItsLandings(JeweledDragon3, info, terrain);
+
+        Assert.True(reached[room.X, room.Y],
+                    $"spirit_dragon's room {JeweledDragon3}:{room.X}:{room.Y} is not reached from the map's warp landings: no player can walk to the boss");
+        for (int x = room.X - 1; x <= room.X + 1; x++)
+            for (int y = room.Y - 1; y <= room.Y + 1; y++)
+                if (x >= 0 && y >= 0 && x < info.Xs && y < info.Ys && !terrain.Solid(x, y))
+                    Assert.True(reached[x, y], $"({x},{y}), an open tile beside the room, is not reached from the map's warp landings");
+        Assert.False(reached[7, 13], $"RTK's room {JeweledDragon3}:7:13 is reached on this map now; the row's deviation from RTK can be reconsidered");
+
+        var world = new World();
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.ForgetMapForTest(JeweledDragon3));
+        var def = Creature(990_209, "spirit_dragon");
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(DragonRowMap, def, 3, 3, respawnEvery: 1));
+        var watcher = Seat(world, "JeweledWatcher", JeweledDragon3, (9, 2));   // a tile a warp lands on
+        world.EnterMap(watcher, JeweledDragon3);
+        int onJeweled = 0;
+        for (int build = 1; build <= 60; build++)
+        {
+            var (boss, at) = Assert.Single(InTheirRooms(world, watcher, rule, def));
+            if (at.Map == JeweledDragon3)
+            {
+                onJeweled++;
+                Assert.True(boss.X == room.X && boss.Y == room.Y,
+                            $"build {build} put the boss at ({boss.X},{boss.Y}) on {JeweledDragon3}, not on its room tile ({room.X},{room.Y})");
+            }
+            else AssertInTheRoom(boss, at);
+            Assert.True(world.DespawnMob(at.Map, boss));
+            world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4258
+        }
+        Assert.True(onJeweled > 0, $"sixty builds and none on {JeweledDragon3}; the fact pinned nothing there");
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
