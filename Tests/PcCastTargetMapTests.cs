@@ -25,13 +25,13 @@ namespace Tests;
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>. A caster casts at most three frames, so
 /// the packet handler's action budget never decides a fact. A Dispell is won where a fact needs one: Will 255
-/// against the default AC (99, clamped to 70) and Will 3 rolls against 108. Content-free maps no other class
-/// uses.</para>
+/// against the default AC (99, clamped to 70) and Will 3 rolls against 108. The players stand on content-free maps
+/// 62710-62713, which no other class uses and <c>game-data/Maps.csv</c> has no row for.</para>
 /// </summary>
 [Collection("world")]
 public sealed class PcCastTargetMapTests
 {
-    private const ushort HereMap = 62421, ThereMap = 62422, FacedHereMap = 62423, FacedThereMap = 62424;
+    private const ushort HereMap = 62710, ThereMap = 62711, FacedHereMap = 62712, FacedThereMap = 62713;
 
     private const uint Mana = 10_000;
     private const string BuffKey = "pc_target_map_might";

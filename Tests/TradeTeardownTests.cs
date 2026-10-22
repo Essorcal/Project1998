@@ -64,7 +64,7 @@ public class TradeTeardownTests
     /// <see cref="RaceMap"/> after that fact has finished — the fixture's World is shared and nothing ever
     /// leaves it — and the reconcile fact below asserts on which peers its victim can see. Its own map keeps
     /// them out of that viewport.</para></summary>
-    private const ushort DeathMap = 60020, ControlMap = 60021, RaceMap = 60022, ReconcileMap = 60023;
+    private const ushort DeathMap = 60024, ControlMap = 60025, RaceMap = 60026, ReconcileMap = 60027;
 
     /// <summary>The tail of the "you are dead" line <c>Die()</c> sends after the penalties and before the
     /// save — the last thing the death sequence puts on the wire, and therefore the cheapest proof from

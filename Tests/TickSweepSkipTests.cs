@@ -172,23 +172,47 @@ public class TickSweepSkipTests
     /// <para>Falsified by dropping any one bump; with <c>m.ViewGen++</c> removed from
     /// <c>MobMovement.StepMobTo</c> the ON arm never draws the mob at all and this is red on a missing
     /// <c>0x07</c>. The full falsification table is in
-    /// <c>briefs/reports/tick-sweep-skip-opus.md</c>.</para></summary>
+    /// <c>briefs/reports/tick-sweep-skip-opus.md</c>.</para>
+    ///
+    /// <para><b>The in-game hour.</b> Two broadcasts reach every fixture player on a wall-clock cadence the
+    /// fact does not control: the hour, <c>0x20</c>, whenever <c>GameCalendar.HoursNow()</c> moves (every
+    /// 450 s; <c>World.WorldClock.Sync</c>), and the weather, <c>0x1F</c>, when the two-hour weather period
+    /// rolls over, which is always also an hour move. One landing inside an arm's recorded beats puts a frame
+    /// in that arm alone, about one run in 4,500. So the hour is read before the two arms and after them, and
+    /// when it moved the whole comparison runs again, on the same two maps with fresh players. The frames
+    /// themselves are never filtered (see <see cref="Wire"/>). A world clock that was already behind when the
+    /// fact began cannot reach the comparison: each arm's eight settling beats bring the hour and the weather
+    /// period up to date before its recorder is cleared.</para></summary>
     [Fact]
     public void TheFramesAreIdenticalWithTheSkipOnAndOff()
     {
+        const int Attempts = 3;   // an hour is 450 s and one comparison well under one, so a second run settles it
         bool saved = Session.TickSweepSkipForTest;
         try
         {
-            Session.TickSweepSkipForTest = false;
-            var off = RunScenario(SeqOffMap, "SeqOff");
-            Session.TickSweepSkipForTest = true;
-            var on = RunScenario(SeqOnMap, "SeqOn");
+            for (int attempt = 1; ; attempt++)
+            {
+                long hour = GameCalendar.HoursNow();
+                Session.TickSweepSkipForTest = false;
+                var off = RunScenario(SeqOffMap, "SeqOff");
+                Session.TickSweepSkipForTest = true;
+                var on = RunScenario(SeqOnMap, "SeqOn");
 
-            Assert.True(off.Count > 0, "the scenario produced no frames at all — it exercises nothing");
-            Assert.True(off.SequenceEqual(on),
-                "the skip must change no frame the viewer receives.\n" +
-                $"  switch OFF ({off.Count} frames): {Render(off)}\n" +
-                $"  switch ON  ({on.Count} frames): {Render(on)}");
+                if (GameCalendar.HoursNow() != hour)
+                {
+                    Assert.True(attempt < Attempts,
+                        $"the in-game hour moved during each of {Attempts} runs of the comparison — the host clock " +
+                        "is jumping, so no run of it can be read");
+                    continue;   // a 0x20 (and maybe a 0x1F) may sit in one arm: run the whole comparison again
+                }
+
+                Assert.True(off.Count > 0, "the scenario produced no frames at all — it exercises nothing");
+                Assert.True(off.SequenceEqual(on),
+                    "the skip must change no frame the viewer receives.\n" +
+                    $"  switch OFF ({off.Count} frames): {Render(off)}\n" +
+                    $"  switch ON  ({on.Count} frames): {Render(on)}");
+                return;
+            }
         }
         finally { Session.TickSweepSkipForTest = saved; }
     }

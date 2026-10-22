@@ -35,7 +35,7 @@ public class ViewportRectTests
     public ViewportRectTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
-    private const ushort RectMap = 60050, BandMap = 60051, PeerMap = 60052;
+    private const ushort RectMap = 60104, BandMap = 60105, PeerMap = 60106;
 
     // The viewer stands here in every case below. A content-free map measures 12x12, which is narrower and
     // shorter than the 17x15 viewport, so EdgeAwareAnchor CENTRES it: vx = x + (17-12)/2 = x+2 and

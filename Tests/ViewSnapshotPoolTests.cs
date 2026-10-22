@@ -40,7 +40,7 @@ public class ViewSnapshotPoolTests
     public ViewSnapshotPoolTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per fact so nothing is shared.
-    private const ushort OracleMap = 60170, WipeMap = 60171, CountMap = 60172;
+    private const ushort OracleMap = 60175, WipeMap = 60176, CountMap = 60177;
 
     private const ushort ViewerX = 5, ViewerY = 10;
     private const ushort InStrict = 5;      // x in [-2,15)
