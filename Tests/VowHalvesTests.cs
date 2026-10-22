@@ -49,7 +49,7 @@ namespace Tests;
 /// player's monitor for an online player and into the row for an offline one.</para>
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
-/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62456-62459 and
+/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62456-62460 and
 /// 62470-62479, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of
 /// its own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
@@ -60,6 +60,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                          WrongVowMap = 62476, ArrivalRaceMap = 62477, UnreadableMap = 62478, HeldArrivalMap = 62479;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
     private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457, MonitorProbeMap = 62458, ClosedPartnerMap = 62459;
+    private const ushort RankedPartnerMap = 62460;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
     /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
@@ -1289,6 +1290,97 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         {
             Release(a, aHeld);
             Release(b, bHeld);
+        }
+    }
+
+    /// <summary>
+    /// <b>The Chapel's end lets go of the clicker's own monitor while it waits for a partner who ranks before
+    /// it.</b> A, beside Crystal, and B, on another map, are engaged (or married) to each other, and B ranks before A.
+    /// A's dialog waits at its last question. A third thread takes B's monitor, and A's "Yes", on a thread of its own,
+    /// charges A, ends A's own half and then waits to end B's: <c>EndEngagement</c> (or <c>EndMarriage</c>) on B, from
+    /// a thread that holds A's monitor, a descending entry. Then the third thread, still inside B, takes A's monitor,
+    /// which is what B's own Chapel visit does next, when it ends A's half (an ascending entry, so it keeps B's). It
+    /// gets it at once: the end enters B's monitor by <c>StateRank</c>, and <c>EnterState</c>'s descending case drops
+    /// A's own while it waits. Once the third thread lets go, B's half ends and B reads the line once; A pays and reads
+    /// as before. Deterministic, and bounded: the take is a <c>Monitor.TryEnter</c> with a 5 s timeout, so a monitor
+    /// that never comes free fails the fact instead of hanging it. B stands on a map of its own, so nothing of A's map
+    /// reaches B.
+    /// <para>Red with the partner's half under a plain lock on its monitor object (<c>lock (_state)</c> in place of
+    /// <c>EnterState</c> in <c>EndEngagement</c>, or in <c>EndMarriage</c>; PR #350's review, N1), Debug and Release:
+    /// A keeps its own monitor while it waits, and the third thread cannot take it in 5 s. In play that is two
+    /// partners answering at the Chapel at once and waiting on each other for good, which before this fact only the
+    /// race below caught.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheChapelsEndDropsTheClickersMonitorWhileItWaitsForALowerRankedPartner(bool married)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, RankedPartnerMap, 5, 5);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        Seed(db, aRow, bRow);
+
+        var (bS, bOut) = Arrive(db.Store, b);
+        var (aS, aOut) = Arrive(db.Store, a);
+        Assert.True(bS.StateRank < aS.StateRank, "B must rank before A, so that A's end of B's half is the descending entry");
+        Assert.True(Vowed(aS, b, married, keepsakes: 1) && Vowed(bS, a, married, keepsakes: 1), "the pair did not log in vowed");
+        object aMonitor = StateField.GetValue(aS)!;
+
+        var run = new HeldRun();
+        bool aPaidAndEndedFirst = false, bKeptItsHalf = false, tookA = false;
+        long waitedMs = -1;
+        try
+        {
+            uint aExp = aS.CharExp;
+            OnOwnThread(() => OpenVowEntry(aS, aOut, npc, def, married));
+            aOut.Clear();
+            bOut.Clear();
+
+            // The check runs inside the third thread's section on B, once A's "Yes" is seen waiting for it.
+            WhileAnotherThreadHolds(run, bS, () =>
+            {
+                aS.Receive(MenuFrame(1));   // "Yes": the re-check, the charge, A's own half, then B's (waits for B)
+                aS.Receive(NextFrame());
+            }, untouched: () =>
+            {
+                var aNow = Row(db.Store, a);
+                aPaidAndEndedFirst = aNow.Exp == aExp - Price(married) && RowVowGone(db.Store, a, married, keepsakes: 0);
+                bKeptItsHalf = Vowed(bS, a, married, keepsakes: 1);
+                var clock = Stopwatch.StartNew();
+                tookA = Monitor.TryEnter(aMonitor, TimeSpan.FromSeconds(5));
+                waitedMs = clock.ElapsedMilliseconds;
+                if (tookA) Monitor.Exit(aMonitor);
+                return tookA;
+            });
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            _out.WriteLine($"[{Kind(married)}] A's end waited for B: {!run.FinishedWhileHeld}; then A had paid and ended its " +
+                           $"own half {aPaidAndEndedFirst}, B still held its half {bKeptItsHalf}; the third thread, inside B, " +
+                           $"took A's monitor: {tookA} after {waitedMs} ms; after: A {VowState(aS)}, B {VowState(bS)}, " +
+                           $"B's lines [{string.Join(" | ", bLines)}]");
+
+            AssertWaited(run, "A's end",
+                "A kept its own monitor while it waited for B's: B's own Chapel visit, which takes A's next, would deadlock with it");
+            Assert.True(aPaidAndEndedFirst && bKeptItsHalf, "the window was not opened as described");
+            Assert.Equal(aExp - Price(married), aS.CharExp);
+            Assert.Equal(1, Shown(aOut, DonePage(married)));
+            Assert.True(VowGone(aS, married), $"A holds a half: {VowState(aS)}");
+            Assert.True(VowGone(bS, married), $"A's visit did not end B's half: {VowState(bS)}");
+            Assert.True(RowVowGone(db.Store, b, married, keepsakes: 0), $"B's row: {RowVowState(db.Store, b)}");
+            Assert.Equal(1, bLines.Count(l => l == Line(married, a)));
+            Assert.Equal(1, bLines.Count(l => l.Contains(" has ended.")));
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
         }
     }
 
