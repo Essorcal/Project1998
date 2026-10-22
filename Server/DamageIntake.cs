@@ -131,7 +131,11 @@ public sealed class DamageIntake
     /// sixth damage path that never went through any of the five and so was outside #28's scope — it
     /// hand-rolls this very epilogue (HP, WakeUp, SendStats, mini-text, the over-head bar, the foe mark),
     /// which makes #28's "five copies" really six. RTK's equivalent ticks (burn/venom <c>while_cast</c>) are
-    /// ward-gated like everything else.</para>
+    /// ward-gated like everything else, and since #82 (Caleb, 2026-10-21) so is ours: <c>TickPoison</c> asks
+    /// <see cref="Session.DamageImmune"/> itself, on the heartbeat, and a warded tick takes no HP, the low-HP
+    /// drop to 1 included (RTK's own branch for that skips its ward; ours does not, on Caleb's word). It still
+    /// does not come through here, deliberately: the tick has no blow, no attacker and no terms, and this
+    /// pipeline's foe mark enters another session's monitor.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 

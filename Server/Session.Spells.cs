@@ -1909,7 +1909,8 @@ public sealed partial class Session
     // (game-data/MobSpells.csv TickMinMs/TickMaxMs). 0 = the fixed World.PoisonTickMs beat.
     private int  _poisonTickMin, _poisonTickMax;
 
-    /// <summary>The line the status box gets on every tick that actually takes health. Venom is not a hit —
+    /// <summary>The line the status box gets on every tick that takes health, or would but for a ward (#82: the
+    /// ward blocks the loss, not the line). Venom is not a hit —
     /// there is no attacker to name and no swing to describe — so this is the only thing that tells a player
     /// what is happening to them between one tick and the next. Shared by every source of poison: a rogue's
     /// venom reads the same to its victim as a cavern rat's does.</summary>
@@ -1979,7 +1980,9 @@ public sealed partial class Session
     /// status. <b>It can never kill</b> — the atlas is explicit that poison brings you to the lowest possible
     /// health and stops, so the damage is clamped to leave 1 HP and <see cref="Die"/> is never reached.
     /// Armour is deliberately not consulted ("disregarding armor class"), and neither is the deduction
-    /// multiplier — this is not a hit, it is the poison already inside you.
+    /// multiplier — this is not a hit, it is the poison already inside you. A Harden Body ward (or the Scroll of
+    /// Immortality's) blocks the HP loss of every tick while it is up, the venom's timer, flash and line running on
+    /// (#82; see the gate below).
     /// <para><b>Why the field is read before the monitor.</b> The world heartbeat calls this on EVERY online
     /// session every beat, and almost none of them are venomed — so taking the monitor first meant the tick
     /// thread entered 400 session monitors a beat to find nothing to do, and waited behind whichever of them
@@ -2004,6 +2007,22 @@ public sealed partial class Session
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
+        // A WARD BLOCKS THE TICK'S HP LOSS (#82; Caleb, 2026-10-21, decision sheet item 14). Harden Body, its
+        // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
+        // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
+        // and the PvP foe mark. The venom itself runs on: the timer above was not touched, the flash has already
+        // gone out, and the line still prints, so a warded player can see the poison working on them. RTK's
+        // removeHealthExtend opens on the same ward check (player.lua:164-169), and venom.lua sends its animation
+        // and its line outside that call.
+        //
+        // NOT RTK's low-HP branch. venom.lua sets `health = 1` directly when the tick would not leave 1, which
+        // never reaches the ward check, so RTK drops a warded player on 5 HP to 1. Caleb, 2026-10-21: "82: ward
+        // blocks every tick". The ward blocks that drop too: `dam` above is already the never-kill clamp, and a
+        // warded tick takes none of it.
+        //
+        // Gated here, on the heartbeat, under the monitor taken above; the tick does not go through TakeDamage,
+        // whose PvP foe mark enters another session's monitor (DamageIntake.cs, the note at its end).
+        if (DamageImmune) { SendMiniText(PoisonTickText); return; }
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
