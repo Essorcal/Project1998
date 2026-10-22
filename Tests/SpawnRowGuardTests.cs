@@ -210,7 +210,8 @@ public class SpawnRowGuardTests
     /// (<c>guarded: false</c> on <c>EnsureMaterialized</c>'s <c>RefillGroups</c> call) is red, the first
     /// entry throws <see cref="ArgumentOutOfRangeException"/>; the stack written on every entry
     /// (<c>AdmitEntryStack</c> always true) is red on the second entry's line; the clock stamped whatever
-    /// happened (<c>if (!threw)</c> dropped in <c>RefillGroups</c>) is red on the clock.</para></summary>
+    /// happened (<c>if (!threw)</c> dropped in <c>RefillGroups</c>) is red on the clock. The room-boss suffix written
+    /// on every stack line (#367 review's R4, <c>World.EntryMapOf</c> bypassed) is red on the first entry's line.</para></summary>
     [Fact]
     public void OnEntryABadGroupMemberCostsOnlyThatMember()
     {
@@ -246,8 +247,11 @@ public class SpawnRowGuardTests
             Assert.All(ours, e => Assert.Equal(LogLevel.Error, e.Level));
             Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
 
+            // The whole sentence, past the map: a group member's line names its map alone (#367 review, F1). Printed
+            // in full on failure, because xUnit's own Contains message cuts the line off before the map.
             var first = ours[0];
-            Assert.Contains($"map entry: a spawn group member threw — 'test_entry_broken' (creature id {broken.Id}) on map {GroupMap}", first.Line);
+            string groupStack = $"map entry: a spawn group member threw — 'test_entry_broken' (creature id {broken.Id}) on map {GroupMap} is skipped, the entry and the map's other spawns go ahead (a repeat on a later entry is named, not re-logged)";
+            Assert.True(first.Line.Contains(groupStack), $"the first entry's line should carry \"{groupStack}\"; it reads: {first.Line.Split('\n')[0]}");
             Assert.Contains(nameof(ArgumentOutOfRangeException), first.Line);
             Assert.Contains("\n      ", first.Line);   // Log.Detail's continuation: the stack is on it
 
@@ -274,7 +278,8 @@ public class SpawnRowGuardTests
     /// rebuilds the roster, where before the guard every point after it was lost with it.
     ///
     /// <para>Falsified, Debug and Release (the w2-map-entry report), by the point guard's catch filter made
-    /// false on the entry path: red, the entry throws <see cref="ArgumentNullException"/>.</para></summary>
+    /// false on the entry path: red, the entry throws <see cref="ArgumentNullException"/>. By the room-boss suffix
+    /// written on every stack line (#367 review's R4): red on the entry's line.</para></summary>
     [Fact]
     public void OnFirstEntryABadPointCostsOnlyThatPoint()
     {
@@ -310,7 +315,9 @@ public class SpawnRowGuardTests
 
             var ours = lines.Where(e => e.Line.Contains($"(creature id {broken.Id}) on map {EntryPointMap}")).ToList();
             var stack = Assert.Single(ours);   // the entry's; not the beats', not the second entry's
-            Assert.Contains($"map entry: a spawn point threw — '' (creature id {broken.Id}) on map {EntryPointMap}", stack.Line);
+            // The whole sentence, past the map: a map's own point's line names its map alone (#367 review, F1).
+            string pointStack = $"map entry: a spawn point threw — '' (creature id {broken.Id}) on map {EntryPointMap} is skipped, the entry and the map's other spawns go ahead (a repeat on a later entry is named, not re-logged)";
+            Assert.True(stack.Line.Contains(pointStack), $"the entry's line should carry \"{pointStack}\"; it reads: {stack.Line.Split('\n')[0]}");
             Assert.Contains(nameof(ArgumentNullException), stack.Line);
             Assert.Contains("\n      ", stack.Line);
             Assert.Equal(LogLevel.Error, stack.Level);
