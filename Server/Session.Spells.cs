@@ -3818,7 +3818,10 @@ public sealed partial class Session
         }
         else
         {
-            proposer.SendMiniText($"{me} regretably must decline.");
+            // The proposer's line goes out inside the proposer's monitor (PR #368's review, N4; Caleb, 2026-10-22,
+            // decision 32): this is the beloved's thread, and a send numbers the packet with the proposer's own
+            // counter, which that monitor guards. The beloved's line is already under the beloved's.
+            proposer.WithState(() => proposer.SendMiniText($"{me} regretably must decline."));
             SendMiniText("What but love can last forever?");
         }
     }
@@ -3845,9 +3848,13 @@ public sealed partial class Session
             $"Do you, {them} take {me} as your partner?",
             new[] { "I do. (you will lose much xp if you divorce)", "I don't." });
 
+        // From here on this is the FIANCÉ's thread, under his monitor: his reply resumed the ceremony. A line to the
+        // bride is therefore sent inside her monitor (#29 rule 2; PR #365's review, O2; Caleb, 2026-10-22, decision
+        // 32): the send numbers the packet with her own counter, which her monitor guards. His lines are under his.
+        var bride = this;
         if (choice != 1)
         {
-            SendMiniText($"{them} regretably must decline.");
+            bride.WithState(() => bride.SendMiniText($"{them} regretably must decline."));
             fiance.SendMiniText("What but love can last forever?");
             return null;
         }
@@ -3877,7 +3884,13 @@ public sealed partial class Session
         // before its teardown runs. Nothing is written, and each of the two still present reads the line the
         // ceremony gives a partner who is not there. A close that lands after this read, without the monitor,
         // is not seen: the wedding is written and that player's lines are lost, as the ends' own rule says.
-        var bride = this;
+        //
+        // The two "I now pronounce you (married)" lines go out inside the section too, after the writes (PR #365's
+        // review, O2; Caleb, 2026-10-22, decision 32). Sent after it, the bride's line left this thread without her
+        // monitor: her logout's teardown could take that monitor between the section and the send, and close her
+        // connection after it, so she was married and her line was lost. Inside the section her teardown waits for
+        // the send. The fiancé's line moves with hers and stays second, so the two go out in the order they always
+        // did; his thread held his monitor for it already.
         bool wed = false;
         WithStatePair(bride, fiance, () =>
         {
@@ -3900,12 +3913,11 @@ public sealed partial class Session
             bride.ClearEngagement(); fiance.ClearEngagement();
             bride.SetSpouse(them); fiance.SetSpouse(me);
             bride.GiveRewardItem("love", 1); fiance.GiveRewardItem("love", 1);
+            bride.SendMiniText("I now pronounce you (married)");
+            fiance.SendMiniText("I now pronounce you (married)");
             wed = true;
         });
-        if (!wed) return null;
-        SendMiniText("I now pronounce you (married)");
-        fiance.SendMiniText("I now pronounce you (married)");
-        return "Congratulations! You are both now married.";
+        return wed ? "Congratulations! You are both now married." : null;
 
         // Still engaged to the partner, by the Chapel's own match (VowNames, as NpcContext.IsEngagedTo), and married
         // to nobody, in either form a marriage takes: the legend the fiancé's check above reads, and the spouse the

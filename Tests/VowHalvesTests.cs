@@ -48,6 +48,13 @@ namespace Tests;
 /// is going away, logging out or with a connection the server has closed (Caleb, 2026-10-22, decision 17): nothing is
 /// written, and the one still present reads "Both parties must be present for the ceremony to commence".</para>
 ///
+/// <para><b>And the lines to the other player</b> (PR #365's review, O2, and PR #368's, N4; Caleb, 2026-10-22, decision
+/// 32). The fiancé's answer resumes the ceremony on his thread, and the beloved's answer resumes the proposal on
+/// theirs, so a line to the bride, or to the proposer, is a send into another player. Each is now sent inside that
+/// player's monitor: the wedding's "I now pronounce you (married)" inside the pair's section, after the writes, and the
+/// two declines inside the receiver's own. A bride whose logout follows the wedding is told before her teardown
+/// runs.</para>
+///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
 /// Crystal's dialog on the Crystalline Chapel (map 3815) through the real <c>0x43</c> click and <c>0x3A</c> replies,
@@ -58,7 +65,7 @@ namespace Tests;
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
 /// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62456-62460 and
-/// 62470-62479, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of
+/// 62470-62480, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of
 /// its own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
@@ -68,7 +75,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                          WrongVowMap = 62476, ArrivalRaceMap = 62477, UnreadableMap = 62478, HeldArrivalMap = 62479;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
     private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457, MonitorProbeMap = 62458, ClosedPartnerMap = 62459;
-    private const ushort RankedPartnerMap = 62460;
+    private const ushort RankedPartnerMap = 62460, DeclineMap = 62480;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
     /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
@@ -1713,15 +1720,28 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// "B regretably must decline." and B "What but love can last forever?". Neither pays anything, and neither reads a
     /// "has already ended." line. Each player's frames from the answer on are logged as a fingerprint (opcodes and a
     /// hash of the bodies, the names put back to &lt;A&gt; and &lt;B&gt;), for a reader comparing two builds.
+    /// <para>Every one of those frames, the lines among them, is handed over by a thread that held that player's
+    /// monitor (both log in on a <see cref="HeldOutbound"/>), in both <c>StateRank</c> orders (PR #365's review, O2;
+    /// Caleb, 2026-10-22, decision 32). B's answer resumes the ceremony on B's thread, so every frame to A is a send
+    /// into another player, and from B's thread A's monitor is entered ascending in one order and descending in the
+    /// other.</para>
     /// <para>Green on 7d21d8c. The re-check the "I do" now makes (<see cref="AnIDoToAnEngagementThatNoLongerHoldsMarriesNobody"/>)
     /// sits on the path to every wedding, so one that misfired for a pair still engaged would turn each wedding into
     /// two "has already ended." lines: red, Debug and Release, with the re-check made to compare against "", which
     /// names nobody.</para>
+    /// <para>Red on 1ba65ae, Debug and Release, every case: A's line, "I now pronounce you (married)" or "B regretably
+    /// must decline.", is handed over by B's thread, which holds B's monitor and not A's. The same, both builds, with
+    /// either line alone sent as 1ba65ae sent it: the wedding's after the pair's section (the "I do" cases), the
+    /// decline without A's monitor (the "I don't." cases). No other fact in this class sees either move; the race below
+    /// (<see cref="AnIDoRacingTheBridesLogoutNeverMarriesHerUntold"/>) sees the first only in a round whose teardown
+    /// lands between the section and the send.</para>
     /// </summary>
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AnAnswerToTheCeremonyWhoseEngagementHoldsDoesWhatItAlwaysDid(bool iDo)
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public void AnAnswerToTheCeremonyWhoseEngagementHoldsDoesWhatItAlwaysDid(bool iDo, bool brideRanksFirst)
     {
         using var db = new IsolatedDatabase();
         var (npc, def) = ChapelNpc();
@@ -1731,28 +1751,47 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Session? aHeld = null, bHeld = null;
         try
         {
-            var (bS, bOut) = Arrive(db.Store, b);
-            bHeld = bS;
-            var (aS, aOut) = Arrive(db.Store, a);
-            aHeld = aS;
+            Session aS, bS;
+            HeldOutbound aWire, bWire;
+            if (brideRanksFirst)
+            {
+                (aS, aWire) = ArriveHeld(db.Store, a);
+                aHeld = aS;
+                (bS, bWire) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+            }
+            else
+            {
+                (bS, bWire) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+                (aS, aWire) = ArriveHeld(db.Store, a);
+                aHeld = aS;
+            }
+            Assert.Equal(brideRanksFirst, aS.StateRank < bS.StateRank);
+            RecordingOutbound aOut = aWire.Rec, bOut = bWire.Rec;
             OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
             Assert.True(bS.DialogBusy, "the ceremony did not ask B");
 
             string aBefore = WholeVow(aS), bBefore = WholeVow(bS);
             string aRow = RowJson(db, a), bRow = RowJson(db, b);
             uint aExp = aS.CharExp, bExp = bS.CharExp;
-            aOut.Clear();
-            bOut.Clear();
+            aWire.Clear();
+            bWire.Clear();
 
             OnOwnThread(() => bS.Receive(MenuFrame((byte)(iDo ? 1 : 2))));   // "I do." / "I don't."
             var aLines = SpellCastSupport.MiniTexts(aOut);
             var bLines = SpellCastSupport.MiniTexts(bOut);
+            var aSent = aWire.Sent();
+            var bSent = bWire.Sent();
             int congratulated = Shown(aOut, Congratulations);
             bool aBoxed = aS.DialogBusy;
-            _out.WriteLine($"[{(iDo ? "I do" : "I don't")}] A {VowState(aS)}, B {VowState(bS)}; A's lines " +
-                           $"[{string.Join(" | ", aLines)}], congratulated {congratulated}, box open {aBoxed}; B's lines " +
-                           $"[{string.Join(" | ", bLines)}]");
-            _out.WriteLine($"[{(iDo ? "I do" : "I don't")}] A's frames {Fingerprint(aOut, a, b)}; B's frames {Fingerprint(bOut, a, b)}");
+            string tag = $"{(iDo ? "I do" : "I don't")}, A ranks first {brideRanksFirst}";
+            _out.WriteLine($"[{tag}] A {VowState(aS)}, B {VowState(bS)}; A's lines " +
+                           $"[{string.Join(" | ", aWire.Lines().Select(l => $"'{l.Text}' held={l.Held}"))}], congratulated " +
+                           $"{congratulated}, box open {aBoxed}; B's lines " +
+                           $"[{string.Join(" | ", bWire.Lines().Select(l => $"'{l.Text}' held={l.Held}"))}]");
+            _out.WriteLine($"[{tag}] A's frames {Fingerprint(aOut, a, b)} held [{string.Join(" ", aSent.Select(s => s.Held))}]; " +
+                           $"B's frames {Fingerprint(bOut, a, b)} held [{string.Join(" ", bSent.Select(s => s.Held))}]");
             if (aBoxed) OnOwnThread(() => AnswerYesToTheEnd(aS, aOut));
 
             Assert.Equal(aExp, aS.CharExp);
@@ -1760,6 +1799,8 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Assert.DoesNotContain(aLines, l => l.Contains("has already ended."));
             Assert.DoesNotContain(bLines, l => l.Contains("has already ended."));
             Assert.False(bS.DialogBusy, "B's dialog was still open");
+            Assert.All(aSent, s => Assert.True(s.Held, $"A's frame 0x{s.Op:x2} was sent by a thread that did not hold A's monitor"));
+            Assert.All(bSent, s => Assert.True(s.Held, $"B's frame 0x{s.Op:x2} was sent by a thread that did not hold B's monitor"));
             if (iDo)
             {
                 Assert.True(aBoxed, "the Chapel did not open its closing box on A");
@@ -2001,6 +2042,95 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 Release(a, aS);
                 Release(b, bS);
             }
+        }
+    }
+
+    // ===== the proposal: the decline's line to the proposer ==================================================
+
+    /// <summary>
+    /// <b>A declined proposal tells the proposer inside the proposer's monitor</b> (PR #368's review, N4; Caleb,
+    /// 2026-10-22, decision 32). P casts "propose" (the real <c>0x0F</c>) and names B, who holds the ring; B's box asks
+    /// "P proposes marriage. Do you accept?" and B answers "I must decline.". P reads "B regretably must decline." once
+    /// and B "What but love can last forever?" once, B's box is closed and nobody is engaged, as always. B's answer
+    /// resumes the proposal on B's thread, so P's line is a send into another player: every frame each of the two is
+    /// sent from the answer on is handed over by a thread that held that player's monitor (both log in on a
+    /// <see cref="HeldOutbound"/>). Both <c>StateRank</c> orders: from B's thread P's monitor is entered ascending in one
+    /// and descending in the other.
+    /// <para>Red on 1ba65ae, Debug and Release, both orders: P's line is handed over by B's thread, which holds B's
+    /// monitor and not P's. B's own line goes out under B's monitor either way.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ADeclinedProposalTellsTheProposerInsideTheirMonitor(bool proposerRanksFirst)
+    {
+        using var db = new IsolatedDatabase();
+        string p = Name("P"), b = Name("B");
+        var propose = Content.SpellByKey("propose")!;
+        var pRow = NewCharacter(p, DeclineMap, 9, 5);
+        var bRow = NewCharacter(b, DeclineMap, 7, 5);
+        GiveRow(bRow, "engagement_ring");
+        pRow.Spells.Add(propose.Id);
+        int proposeSlot = pRow.Spells.IndexOf(propose.Id);
+        Seed(db, pRow, bRow);
+
+        Session? pHeld = null, bHeld = null;
+        try
+        {
+            Session pS, bS;
+            HeldOutbound pWire, bWire;
+            if (proposerRanksFirst)
+            {
+                (pS, pWire) = ArriveHeld(db.Store, p);
+                pHeld = pS;
+                (bS, bWire) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+            }
+            else
+            {
+                (bS, bWire) = ArriveHeld(db.Store, b);
+                bHeld = bS;
+                (pS, pWire) = ArriveHeld(db.Store, p);
+                pHeld = pS;
+            }
+            Assert.Equal(proposerRanksFirst, pS.StateRank < bS.StateRank);
+
+            OnOwnThread(() =>
+            {
+                pS.Receive(SpellCastSupport.CastFrame(proposeSlot));
+                Assert.True(SpinWait.SpinUntil(() => pS.DialogBusy, Bound), "the proposal never asked for a name");
+                pS.Receive(DialogInputFrame(b));
+            });
+            Assert.True(bS.DialogBusy, "the proposal did not ask B");
+            Assert.Equal(2, LastMenu(bWire.Rec, $"{p} proposes marriage. Do you accept?").Count);
+            pWire.Clear();
+            bWire.Clear();
+
+            OnOwnThread(() => bS.Receive(MenuFrame(2)));   // "I must decline."
+            var pSent = pWire.Sent();
+            var bSent = bWire.Sent();
+            var pLines = pWire.Lines();
+            var bLines = bWire.Lines();
+            _out.WriteLine($"[P ranks first {proposerRanksFirst}] P {VowState(pS)}, B {VowState(bS)}; P's lines " +
+                           $"[{string.Join(" | ", pLines.Select(l => $"'{l.Text}' held={l.Held}"))}], frames " +
+                           $"[{string.Join(" ", pSent.Select(s => $"0x{s.Op:x2}:held={s.Held}"))}]; B's lines " +
+                           $"[{string.Join(" | ", bLines.Select(l => $"'{l.Text}' held={l.Held}"))}], frames " +
+                           $"[{string.Join(" ", bSent.Select(s => $"0x{s.Op:x2}:held={s.Held}"))}]");
+            _out.WriteLine($"[P ranks first {proposerRanksFirst}] P's frames {Fingerprint(pWire.Rec, p, b)}; B's frames " +
+                           $"{Fingerprint(bWire.Rec, p, b)}");
+
+            Assert.Equal(new[] { $"{b} regretably must decline." }, pLines.Select(l => l.Text));
+            Assert.Equal(new[] { "What but love can last forever?" }, bLines.Select(l => l.Text));
+            Assert.All(pSent, s => Assert.True(s.Held, $"P's frame 0x{s.Op:x2} was sent by a thread that did not hold P's monitor"));
+            Assert.All(bSent, s => Assert.True(s.Held, $"B's frame 0x{s.Op:x2} was sent by a thread that did not hold B's monitor"));
+            Assert.False(bS.DialogBusy, "B's box was still open");
+            Assert.True(VowGone(pS, married: false) && VowGone(bS, married: false),
+                $"someone is engaged: P {VowState(pS)}, B {VowState(bS)}");
+        }
+        finally
+        {
+            Release(p, pHeld);
+            Release(b, bHeld);
         }
     }
 
@@ -2374,9 +2504,13 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// Both kinds of round must occur.
     /// <para>Red on e1d95c3, Debug and Release: a round whose teardown runs first still marries both, and A, whose
     /// connection is closed by then, is never told.</para>
-    /// <para>One window is left, and it is not this fact's: the wedding's "I now pronounce you (married)" goes to A
-    /// after the section, from B's thread (PR #365's review, O2). A round in which B's thread stalls between the section
-    /// and that send for as long as A's whole teardown takes would lose A's line and fail here.</para>
+    /// <para>On 1ba65ae one window was left: the wedding's "I now pronounce you (married)" went to A after the section,
+    /// from B's thread, without A's monitor (PR #365's review, O2). A round in which A's whole teardown, and the close
+    /// after it, landed between the section and that send married A and lost her line, and failed here: one round in
+    /// 64, once, in master's CI on 1ba65ae. The line is now sent inside the section, which holds A's monitor, so A's
+    /// teardown waits for it (Caleb, 2026-10-22, decision 32), and that round cannot happen. The send moved back out
+    /// is pinned by <see cref="AnAnswerToTheCeremonyWhoseEngagementHoldsDoesWhatItAlwaysDid"/>, which sees it every
+    /// time.</para>
     /// </summary>
     [Fact]
     public void AnIDoRacingTheBridesLogoutNeverMarriesHerUntold()
