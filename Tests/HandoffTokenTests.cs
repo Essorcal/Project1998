@@ -350,9 +350,10 @@ public class HandoffTokenTests : IDisposable
         }
 
         /// <summary>#332: a consume the database refuses is logged once, at Error, with the account and the
-        /// exception, and still answers false, so the arrival is refused as it always was. The line carries
-        /// neither the token's bytes nor the stored hash. Before this the fault was swallowed and the
-        /// arrival's "invalid/expired handoff token" line was all an operator saw.</summary>
+        /// exception, and still answers false, as an invalid token; what the arrival does with that answer is
+        /// the arrival's, and unchanged. The line carries neither the token's bytes nor the stored hash. Before
+        /// this the fault was swallowed and the arrival's "invalid/expired handoff token" line was all an
+        /// operator saw.</summary>
         [Fact]
         public void AConsumeTheDatabaseRefusesIsAnErrorAndStillRefuses()
         {
@@ -369,9 +370,10 @@ public class HandoffTokenTests : IDisposable
                 errors = sink.Lines.Where(l => l.Line.Contains($"handoff token for '{user}' could not be checked",
                                                                StringComparison.Ordinal)).ToArray();
             }
-            Assert.False(entered, "a consume the database refused let the arrival in");
+            Assert.False(entered, "a consume the database refused answered true");
             var error = Assert.Single(errors);
             Assert.Equal(LogLevel.Error, error.Level);
+            Assert.Contains("answered as an invalid token", error.Line);
             Assert.Contains("test trigger refuses this update", error.Line);
             Assert.Contains(typeof(SqliteException).FullName!, error.Line);
             var surviving = echo[..HandoffTokens.SurvivingBytes(user)];

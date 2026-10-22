@@ -163,10 +163,12 @@ public static class HandoffTokens
     /// token only one can change the row.
     ///
     /// <para>A database fault (a write lock held past the busy timeout, a missing table, a file that will not
-    /// open) is logged at Error with its exception and the account, never the token, and answers false: the
-    /// arrival is refused exactly as it was before the fault was logged (#332). The arrival still writes its
-    /// own "invalid/expired handoff token" line after this one, because false is the only refusal this method
-    /// has; the Error line above it is what tells the two apart.</para>
+    /// open) is logged at Error with its exception and the account, never the token, and answered as an
+    /// invalid token: false, the answer it got before the fault was logged (#332). What the arrival does with
+    /// that false is its own decision and is unchanged: it refuses, or with <c>P1998_ENFORCE_HANDOFF=0</c> lets
+    /// the client in with a warning. Either way it still writes its own "invalid/expired" or "invalid handoff
+    /// token" line after this one, because false is the only answer this method has for a token it could not
+    /// check; the Error line before it is what tells the two apart.</para>
     /// </summary>
     internal static bool Consume(byte[] token, string expectedUser, string ip, Func<SqliteConnection> open, long now)
     {
@@ -189,7 +191,7 @@ public static class HandoffTokens
         catch (Exception e)
         {
             Log.Error($"handoff token for '{Auth.Key(expectedUser)}' could not be checked (database fault) — "
-                      + "the arrival is refused as if the token were invalid", e);
+                      + "answered as an invalid token", e);
             return false;
         }
     }
