@@ -41,7 +41,7 @@ public class ViewportRectStalenessTests
     public ViewportRectStalenessTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps, one per test so nothing is shared. The character hook widens them to 100x100.
-    private const ushort MobMap = 60060, PeerMap = 60061, MidSweepMap = 60062;
+    private const ushort MobMap = 60065, PeerMap = 60066, MidSweepMap = 60067;
 
     private static void Wide(Character c) { c.MapXs = 100; c.MapYs = 100; }
 

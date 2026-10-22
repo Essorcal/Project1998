@@ -41,7 +41,7 @@ public class TickPhaseTimingTests
     public TickPhaseTimingTests(SessionFixture fx, ITestOutputHelper output) { _fx = fx; _out = output; }
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per test so nothing is shared.
-    private const ushort PhaseMap = 60050, QuietMap = 60051, SnapshotMap = 60052;
+    private const ushort PhaseMap = 60056, QuietMap = 60057, SnapshotMap = 60058;
 
     /// <summary>A real beat's worth of wandering creatures, spread over a 64-tile square with the watcher in
     /// the middle: most are out of its viewport, which is the shape a real hunting map has (the load run's

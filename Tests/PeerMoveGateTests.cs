@@ -48,10 +48,10 @@ public class PeerMoveGateTests
     public PeerMoveGateTests(SessionFixture fx) => _fx = fx;
 
     // Content-free maps (no registry row, no terrain, no warps, no spawns), one per fact so nothing is shared.
-    private const ushort InsideMap = 60110, BandMap = 60111, OutsideMap = 60112, LeavingMap = 60113;
-    private const ushort TurnMap = 60114, SwitchMap = 60115, SeqBaseMap = 60116, SeqHeadMap = 60117;
-    private const ushort MorphMap = 60118, RedrawSetMap = 60119;
-    private const ushort ResyncBackMap = 60120, ResyncAwayMap = 60121;
+    private const ushort InsideMap = 60230, BandMap = 60231, OutsideMap = 60232, LeavingMap = 60233;
+    private const ushort TurnMap = 60234, SwitchMap = 60235, SeqBaseMap = 60236, SeqHeadMap = 60237;
+    private const ushort MorphMap = 60238, RedrawSetMap = 60239;
+    private const ushort ResyncBackMap = 60240, ResyncAwayMap = 60241;
 
     private const ushort ViewerX = 30, ViewerY = 20;
     private const ushort WalkRow = 21;

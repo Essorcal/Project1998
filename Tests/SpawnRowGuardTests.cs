@@ -43,7 +43,7 @@ public class SpawnRowGuardTests
 
     // Content-free maps for the points (no registry row, no terrain, no spawns); map 485 for the groups,
     // which need a real box to roll in (SpawnDirectorTests' map, asserted empty below).
-    private const ushort ThrottleMap = 60200, EntryPointMap = 60201, ObserverMap = 60202, ReloadMap = 60221;
+    private const ushort ThrottleMap = 60218, EntryPointMap = 60219, ObserverMap = 60220, ReloadMap = 60221;
     private const ushort GroupMap = 485;
 
     private const string RowRepeatNeedle = "spawn rows still throwing";
