@@ -242,9 +242,9 @@ ohaengs_armor_rogue,2,24,200,acorn,100,red_fox_fur,10,,,,,rtk-lua
 spiritual_guide_rogue,2,28,200,acorn,100,red_fox_fur,15,,,,,rtk-lua
 natures_handiwork_rogue,2,28,200,acorn,100,red_fox_fur,15,,,,,rtk-lua
 judgement_day_rogue,2,28,200,acorn,100,red_fox_fur,15,,,,,rtk-lua
-souls_rage_rogue,2,34,300,acorn,150,light_fox_fur,20,,,,,rtk-lua
-spirit_of_the_forest_rogue,2,34,300,acorn,150,light_fox_fur,20,,,,,rtk-lua
-augmentation_rogue,2,34,300,acorn,150,light_fox_fur,20,,,,,rtk-lua
+souls_rage_rogue,2,30,300,acorn,150,light_fox_fur,20,,,,,tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes
+spirit_of_the_forest_rogue,2,30,300,acorn,150,light_fox_fur,20,,,,,tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes
+augmentation_rogue,2,30,300,acorn,150,light_fox_fur,20,,,,,tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes
 kwisin_mask_rogue,2,33,100,acorn,80,fox_fur,10,,,,,rtk-lua
 mingken_mask_rogue,2,33,100,acorn,80,fox_fur,10,,,,,rtk-lua
 ohaeng_mask_rogue,2,33,100,acorn,80,fox_fur,10,,,,,rtk-lua

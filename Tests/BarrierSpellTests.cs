@@ -61,6 +61,19 @@ public sealed class BarrierSpellTests
     public static TheoryData<string> HumanBarriers => new()
         { "blockade_human_poet", "block_entry_poet", "distance_self_poet", "protect_sides_poet" };
 
+    /// <summary>Barrier's Kwi-Sin twin is named "Spirit Body", the name the 2002 Nexus Atlas Poet page gives it
+    /// (<c>atlas-2002-12-30-spells-classes</c>, the highest-weight dated source; every other twin name matches it).
+    /// The live Atlas pages say "Spirit barrier"; Caleb chose the 2002 name on 2026-10-21 (decision sheet item 5). Only
+    /// the name moved: the key stays <c>spirit_barrier_poet</c> and the id 4098, which saved spell books store. Red on
+    /// 6de1d24: "Spirit Barrier".</summary>
+    [Fact]
+    public void BarriersKwiSinTwinIsNamedSpiritBody()
+    {
+        var sp = Content.SpellById(4098);
+        Assert.NotNull(sp);
+        Assert.Equal(("spirit_barrier_poet", "Spirit Body", 1), (sp!.Key, sp.Name, sp.Alignment));
+    }
+
     // ===== Barrier ===================================================================================
 
     /// <summary>A cast takes 300 mana through its own row, starts no aether, holds the <c>barriers</c> slot for
@@ -576,16 +589,18 @@ public sealed class BarrierSpellTests
     // ===== the 5-mana fallback =======================================================================
 
     /// <summary>Barrier's 300 comes from its own row; the fallback that charges 5 for a row saying 0 is unchanged.
-    /// Invisible (a 0 row) still takes exactly 5. The Inferno ladder (a 0 row, then the whole pool) casts on
-    /// exactly 5 and is refused on 4.</summary>
+    /// Invisible (a 0 row) still takes exactly 5. Dooms Fire (a 0 row, then the whole pool) casts on exactly 5 and
+    /// is refused on 4. (This fact used the Inferno ladder until its rows took RTK's 600-mana gate, decision sheet
+    /// item 2 of 2026-10-21; <see cref="InfernoLadderSpellTests"/> pins that gate.)</summary>
     [Fact]
-    public void InvisibleAndTheInfernoLadderStillCostFive()
+    public void InvisibleAndDoomsFireStillCostFive()
     {
         var invisible = Content.SpellByKey("invisible_rogue")!;
         var (rogue, _, rc) = Poet(invisible, FallbackMap, 10, 10);
-        var inferno = Content.SpellByKey("inferno_mage")!;
-        var (onFive, fiveOut, fc) = Poet(inferno, FallbackMap, 20, 10, mp: 5);
-        var (onFour, fourOut, _) = Poet(inferno, FallbackMap, 30, 10, mp: 4);
+        var doomsFire = Content.SpellByKey("dooms_fire_mage")!;
+        Assert.Equal(0, Content.FxFor(doomsFire)!.Mana);
+        var (onFive, fiveOut, fc) = Poet(doomsFire, FallbackMap, 20, 10, mp: 5);
+        var (onFour, fourOut, _) = Poet(doomsFire, FallbackMap, 30, 10, mp: 4);
         var mobFive = Creature(FallbackMap, 21, 10, hp: 10_000_000);
         var mobFour = Creature(FallbackMap, 31, 10, hp: 10_000_000);
         try
@@ -595,7 +610,7 @@ public sealed class BarrierSpellTests
             onFour.Receive(SpellCastSupport.CastFrame(0, mobFour.Id));
 
             Assert.Equal(995u, rc.Mp);
-            Assert.Contains("You cast Inferno.", SpellCastSupport.MiniTexts(fiveOut));
+            Assert.Contains("You cast Dooms Fire.", SpellCastSupport.MiniTexts(fiveOut));
             Assert.Equal(0u, fc.Mp);
             Assert.Contains("You do not have enough mana.", SpellCastSupport.MiniTexts(fourOut));
         }

@@ -9,6 +9,9 @@
 # The self-buff slice (#334) then moved seventeen from verb=arch_buff to verb=stance_rage: the fifteen fury
 # twins (Soul's Rage and the rest) and the two dog furies (serpents_fury, spirit_fury), which now have their
 # own rage rows in game-data/SpellMods.csv. No other line changed.
+# The spell-rulings slice (2026-10-21) then moved cotw_wind_master_poet from verb=misc to
+# verb=not_castable row: a SpellParams.csv row binds Wind master to a verb that refuses every cast, for free
+# and silently, until a source names its creature (Caleb's decision sheet item 3). No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -133,7 +136,7 @@ cotw_gorilla_poet	4705	verb=pet_summon
 cotw_panda_bear_poet	4703	verb=pet_summon
 cotw_wild_monkey_poet	4704	verb=pet_summon
 cotw_wind_dancer_poet	4727	verb=pet_summon
-cotw_wind_master_poet	4729	verb=misc
+cotw_wind_master_poet	4729	verb=not_castable row
 cotw_wind_warrior_poet	4728	verb=pet_summon
 crafting_bonus	9	verb=generic
 create_green_potion	31104	verb=generic

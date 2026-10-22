@@ -1007,8 +1007,9 @@ public static partial class Content
     // vita for a big facing-tile hit". nexusatlas: Focused Blow "Takes 2/3 of current Vita in a Strong Attack.
     // The attack does 2 times current vitality in damage at 0 AC"; Siege "does a critical strike and leaves the
     // caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC".
-    // They have NO alignment aliases yet — the 2002-10-01 announcement lists Siege only under its Ohaeng-ish
-    // name "Life's end", so the other three alias identifiers are unknown and deliberately not invented.
+    // The sacrifice verb's FocusedBlow and Siege branches carry those numbers, with the Atlas pages' mana and
+    // aethers (#328). Siege's three alignment names are below; the live Atlas warrior page lists them
+    // (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21). Focused Blow's are not in Spells.csv.
     public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind, FocusedBlow, Siege }
     private static readonly Dictionary<string, SacrificeFamily> SacrificeAliases = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1126,13 +1127,18 @@ public static partial class Content
     // whole price.
     //
     // 1.0 - "Takes all mana when cast and does that much damage times N" (nexusatlas): Inferno x1.5 (Ee San
-    //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carry mana=0 and an amountExpr
+    //   mage) and Dooms Fire x2.5 (Sam San mage). Their spell_effects rows carried mana=0 and an amountExpr
     //   reading player.magic, which computes the damage correctly but NEVER SPENT the pool - so before this
     //   they were free, repeatable nukes scaling off a mana bar that never moved. Inferno's three alignment
     //   reskins (Death's Door, Nature's Denial, Steel Storm) take the same entry: RTK mage/inferno.lua gives
     //   all four one body, ending setAether(<key>, 70000) and `player.magic = 0`. (The four are 5-way zaps,
     //   and ApplyCast's 5-way branch used to return ahead of this drain, so even Inferno's entry never applied
-    //   until that branch joined the archetype tail.) Retribution and its three reskins (RTK
+    //   until that branch joined the archetype tail.) The same body refuses a cast below 600 mana
+    //   (inferno.lua:11-14, "You do not have enough mana."), so the four rows now carry mana=600 and the verb
+    //   refuses below it for free. That 600 is a bar in RTK, not a bill, which is GateOnly's case, but the flag
+    //   would change nothing here: the verb's 600 comes out of a pool of at least 600 and the drain takes the
+    //   whole pre-cast reading from what is left, so the cast ends at 0 either way. They stay false. Dooms
+    //   Fire's row still says 0. Retribution and its three reskins (RTK
     //   poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same thing one tier
     //   down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
@@ -1397,18 +1403,22 @@ public static partial class Content
     /// <summary>The cast delay, live-measured at exactly one second.</summary>
     public const int ZapCastDelayMs = 1000;
 
-    // The Rogue sacrifice reskins: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
+    // The sacrifice reskins. Rogue: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
     // and The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack, under the other three
-    // alignments. RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
-    // desperate_attack.lua), and the sacrifice verb runs all eight alike, but the export gave the six reskins bare
-    // Utility rows where the originals have Damage rows, so the archetype test in CastDelayMs gave the reskins no
-    // delay at all. Caleb, 2026-09-29: they share the originals' 1s. Named key by key rather than by sacrifice
-    // family on purpose: the Warrior Berserk and Whirlwind reskins have Utility rows and the same gap, and no
-    // decision covers them yet.
-    private static readonly HashSet<string> RogueSacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
+    // alignments. Warrior: No Fear, Tiger's Pounce and Wind's Blast are Berserk, and Death's Angel, Nature's Own and
+    // Bladedance are Whirlwind (the 2002 Nexus Atlas warrior page lists each trio as its spell's Kwi-Sin, Ming-Ken
+    // and Ohaeng names). RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
+    // desperate_attack.lua, warrior/berserk.lua, whirlwind.lua), and the sacrifice verb runs all sixteen alike, but
+    // the export gave the twelve reskins bare Utility rows where the originals have Damage rows, so the archetype
+    // test in CastDelayMs gave the reskins no delay at all. Caleb: they share the originals' 1s (the Rogue six on
+    // 2026-09-29, the Warrior six on 2026-10-21). Named key by key rather than by sacrifice family, so a spell that
+    // joins the family later does not take a delay no decision gave it.
+    private static readonly HashSet<string> SacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
     {
         "afterlifes_embrace_rogue", "mingkens_judgement_rogue", "calculating_blow_rogue",   // Lethal Strike's
         "the_voids_measure_rogue", "beastly_frenzy_rogue", "tilting_the_balance_rogue",    // Desperate Attack's
+        "no_fear_warrior", "tigers_pounce_warrior", "winds_blast_warrior",                 // Berserk's
+        "deaths_angel_warrior", "natures_own_warrior", "bladedance_warrior",               // Whirlwind's
     };
 
     /// <summary>How long this spell occupies the shared cast/swing slot. 0 = no cast delay, so it neither
@@ -1434,8 +1444,8 @@ public static partial class Content
         // message whose "(0s)" was always a sub-second remainder being floored, i.e. this same 1s.
         if (IsStealthSpell(sp)) return ZapCastDelayMs;
 
-        // The six Rogue sacrifice reskins (RogueSacrificeReskins, above) take their originals' 1s.
-        if (RogueSacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
+        // The twelve sacrifice reskins (SacrificeReskins, above) take their originals' 1s.
+        if (SacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
 
         var fx = FxFor(sp);
         return fx is not null && fx.Archetype == "Damage" ? ZapCastDelayMs : 0;

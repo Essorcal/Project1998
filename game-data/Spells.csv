@@ -543,7 +543,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 4095,palm_of_life_poet,Palm of Life,2,4,2,0,0,Which target? >,0,0,0,1,0,1
 4096,tornado_poet,Tornado,2,4,3,0,0,Which target? >,0,0,0,1,0,1
 4097,barrier_poet,Barrier,5,4,0,0,0,,0,0,0,1,0,1
-4098,spirit_barrier_poet,Spirit Barrier,5,4,1,0,0,,0,0,0,1,0,1
+4098,spirit_barrier_poet,Spirit Body,5,4,1,0,0,,0,0,0,1,0,1
 4099,life_barrier_poet,Life Barrier,5,4,2,0,0,,0,0,0,1,0,1
 4100,balance_barrier_poet,Balance Barrier,5,4,3,0,0,,0,0,0,1,0,1
 4101,inspire_poet,Inspire,2,4,0,0,0,Which target? >,0,0,0,1,0,1

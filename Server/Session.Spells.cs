@@ -569,7 +569,8 @@ public sealed partial class Session
         // verb's verdict like every archetype. The tail is where the Inferno ladder's whole-pool drain and 70 s
         // aether live, and returning first skipped both (Caleb, 2026-09-29). The rest of the family has no drain
         // entry and no aether, so the tail does nothing for them. `mana` is the row's: 120 / 210 for the dog
-        // pair, and 5 for the Inferno ladder, whose row says 0 and whose drain then takes the rest.
+        // pair, and 600 for the Inferno ladder, RTK's minimum to cast (mage/inferno.lua:11-14): below it the verb
+        // refuses the cast for free, and from it the drain then takes the rest.
         bool ok = arch switch
         {
             _ when Content.IsTargetAreaZap(sp) => Lua(CastArch("target_area_zap", sp, fx, targetId, mana), sp),

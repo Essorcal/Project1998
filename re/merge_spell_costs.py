@@ -4,7 +4,8 @@ NUMERIC-LEVEL base-spell tables only -- the Il/Ee/Sam/Sa-san alignment-tier and 
 separate, not-yet-implemented rank-progression system and are deliberately excluded here, not silently
 guessed) against Spells.csv (for key/pathId) and the Lua-extracted baseline (re/spell_requirements_lua.json,
 used as a fallback for any spell with no archive coverage). The 9 within-archive conflicts already
-identified were resolved directly with the user (2026-07-27) and are hardcoded as overrides below.
+identified were resolved directly with the user (2026-07-27) and are hardcoded as overrides below, and so
+are the three Lua-fallback levels the era pages correct (LUA_LEVEL_OVERRIDES, 2026-10-21).
 
 Output: re/spell_costs_final.csv -- one row per Spells.csv key that got a level+cost assignment, columns:
 key,pathId,level,gold,item1,amt1,item2,amt2,item3,amt3,item4,amt4,source
@@ -125,6 +126,20 @@ MAGE_OVERRIDES = {
     "ignite": (19, "1 Book, 1 Ink, 200 Coins"),
     "electrocute": (64, "70 Acorns, 1 Amber, 500 Coins"),
 }
+
+# ---- Lua-fallback levels the era pages correct (Caleb, 2026-10-21, decision sheet item 4) ---------------------
+# The Rogue Wolf's Fury's Kwi-Sin, Ming-Ken and Ohaeng names are learned at Wolf's Fury's own level, 30, not at
+# the 34 their RTK requirements() give: the 2002 Nexus Atlas rogue page lists Soul's Rage, Spirit of the Forest and
+# Augmentation as Wolf's Fury's other names at "Level 30", the live Atlas page says the same, and tswolf's July
+# 2001 rogue page has Wolf's Fury at 30 (before the twins existed). Only the level moves: the cost Lua gives
+# (150 Acorns, 20 Light fox fur, 300 Coins) is the one both pages print. The source is written as the
+# game-data/Sources.csv ids, the way game-data/SpellLearnCosts.csv cites these three rows.
+LUA_LEVEL_OVERRIDES = {
+    "souls_rage_rogue": 30,
+    "spirit_of_the_forest_rogue": 30,
+    "augmentation_rogue": 30,
+}
+LUA_LEVEL_OVERRIDE_SOURCE = "tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes"
 
 # ---- Archive tables (numeric-level base spells only; Il/Ee/Sam/Sa-san + Dog-trainer spells excluded --
 # see script docstring) -- re-encoded from re/archive_*_spells.md's "no conflict" rows + the overrides above.
@@ -345,7 +360,10 @@ def main():
                     items.append((ik, int(amt) if amt else 0))
                 else:
                     unresolved.append(f"{it}={amt}")
-        row = {"key": key, "pathId": pth, "level": d["level"], "gold": gold, "source": "lua"}
+        level, source = d["level"], "lua"
+        if key in LUA_LEVEL_OVERRIDES:
+            level, source = LUA_LEVEL_OVERRIDES[key], LUA_LEVEL_OVERRIDE_SOURCE
+        row = {"key": key, "pathId": pth, "level": level, "gold": gold, "source": source}
         for i in range(4):
             row[f"item{i+1}"] = items[i][0] if i < len(items) else ""
             row[f"amt{i+1}"] = items[i][1] if i < len(items) else ""
