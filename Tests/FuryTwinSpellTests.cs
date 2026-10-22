@@ -23,6 +23,12 @@ namespace Tests;
 /// Serpent's Fury x4, 800 mana, 375 s and a 25 s aether, and Spirit Fury x5, 1000 mana, 375 s and none. tswolf
 /// (2001) agrees on the mana and the durations. RTK's scripts agree on every multiplier (weight 0).</para>
 ///
+/// <para>A twin is learned where its fury is, too (Caleb, 2026-10-21, decision sheet item 4). The Rogue's three
+/// Wolf's Fury names kept RTK's level 34 in <c>game-data/SpellLearnCosts.csv</c>, while Wolf's Fury itself is 30 and
+/// the 2002 Atlas rogue page prints them under it at "Level 30" (so does the live Atlas page); tswolf's July 2001
+/// rogue page has Wolf's Fury at 30. Their rows now read 30 and cite <c>tswolf-2001-spells-classes</c> and
+/// <c>atlas-2002-12-30-spells-classes</c>; the cost was already Wolf's Fury's.</para>
+///
 /// <para>Driven end to end: the real 0x0F frame through <c>Session.Receive</c>, on content-free maps no other class
 /// uses.</para>
 /// </summary>
@@ -151,6 +157,52 @@ public sealed class FuryTwinSpellTests
             _fx.World.LeaveMap(session, DogMap);
         }
     }
+
+    /// <summary>The fifteen twins and the fury each is a name of.</summary>
+    public static TheoryData<string, string> TwinOf
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            foreach (var row in Twins) data.Add((string)row[0], (string)row[1]);
+            return data;
+        }
+    }
+
+    /// <summary>Each twin is learned at its fury's level and for its fury's cost, in its fury's class
+    /// (<c>Content.LearnCostFor</c>, the row a trainer reads). Red on 6de1d24 for the Rogue's Soul's Rage, Spirit of
+    /// the Forest and Augmentation, at level 34 against Wolf's Fury's 30; the other twelve are green on both.</summary>
+    [Theory]
+    [MemberData(nameof(TwinOf))]
+    public void ATwinIsLearnedAtItsFurysLevelAndCost(string twinKey, string furyKey)
+    {
+        var twin = Content.SpellByKey(twinKey)!;
+        var fury = Content.SpellByKey(furyKey)!;
+        Assert.Equal(fury.PathId, twin.PathId);
+        var furyCost = Content.LearnCostFor(fury, fury.PathId);
+        var twinCost = Content.LearnCostFor(twin, twin.PathId);
+        Assert.True(furyCost is not null && twinCost is not null, $"{twinKey} or {furyKey} has no learn row");
+        Assert.Equal(Describe(furyCost!), Describe(twinCost!));
+    }
+
+    /// <summary>What a Rogue's trainer offers: at level 30, each Wolf's Fury name to the alignment that holds it;
+    /// at level 29, none of them (<c>Content.SpellsForClass</c>). Red on 6de1d24, where they appear only at 34.</summary>
+    [Theory]
+    [InlineData("souls_rage_rogue")]
+    [InlineData("spirit_of_the_forest_rogue")]
+    [InlineData("augmentation_rogue")]
+    public void ARogueIsOfferedTheWolfsFuryNamesFromLevelThirty(string key)
+    {
+        var twin = Content.SpellByKey(key)!;
+        Assert.InRange(twin.Alignment, 1, 3);
+        bool at30 = Content.SpellsForClass(2, 30, twin.Alignment).Any(s => s.Key == key);
+        bool at29 = Content.SpellsForClass(2, 29, twin.Alignment).Any(s => s.Key == key);
+        Assert.True(at30 && !at29, $"{twin.Name}: offered at level 30 {at30} (want true), at level 29 {at29} (want false)");
+    }
+
+    /// <summary>A learn row as one comparable string: level, gold, then each item and amount.</summary>
+    private static string Describe(Content.LearnCost cost) =>
+        $"level {cost.Level}, {cost.Gold} coins, " + string.Join(", ", cost.Items.Select(i => $"{i.Amount} {i.Item}"));
 
     /// <summary>A level-99 caster with the given spells in book slots 0, 1, … and 10000 mana.</summary>
     private static void Shape(Character c, params SpellDef[] book)
