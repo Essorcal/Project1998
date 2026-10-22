@@ -3720,13 +3720,48 @@ public sealed partial class Session
         if (rings < 1)
         { SendMiniText("You have not given them an engagement ring yet."); return; }
 
-        ForgetOneSpell(sp.Id);
-        _ = target.PromptProposal(this);
+        // Propose stays in the book until the beloved says "yes" (PromptProposal, RTK propose.lua:102).
+        _ = target.PromptProposal(this, sp);
     }
 
     /// <summary>Runs on the PROPOSEE's own session (called cross-session — same pattern as Trade/Party):
-    /// shows the accept/decline prompt and, on accept, engages both parties.</summary>
-    internal async Task PromptProposal(Session proposer)
+    /// shows the accept/decline prompt and, on accept, engages both parties.
+    /// <para><b>The proposer gives <paramref name="propose"/> up on "yes", and only then</b> (#345's pre-existing
+    /// item 5c; Caleb, 2026-10-21). RTK removes it in the accept branch alone (propose.lua:102, and again at :118),
+    /// and its decline (:120-124) keeps it. This port used to forget it at the cast, before this prompt opened, so
+    /// anything but "yes" cost the proposer the spell, and a new ring (4000 gold, a 24-hour wait) to get it back.
+    /// What each answer does, before and after:</para>
+    /// <list type="bullet">
+    /// <item>"Yes": engaged as before; the spell was already gone, and is now forgotten here, in RTK's place: after
+    ///   the proposer's legend, before the ring is taken. Saved once (<c>ForgetOneSpell</c>'s own save).</item>
+    /// <item>"No" (or the box closed): the proposer is told as before; the spell was lost, and is now kept.</item>
+    /// <item>The beloved logs out, or warps, with the box up: this await never resumes (nothing completes an
+    ///   orphaned reply) and the proposer is told nothing, as before; the spell was lost, and is now kept.</item>
+    /// <item>The beloved never answers: the same; there is no timeout. Lost before, kept now.</item>
+    /// </list>
+    /// <para>Keeping it is why the verb now enforces a 20-minute wait from the cast (<c>verbs.propose</c>; Caleb,
+    /// 2026-10-21): without it a proposer could ask again at once after a "no", or ask two people at the same moment.
+    /// RTK's script intends that wait (propose.lua:11-12) but never applies it; the verb says why.</para>
+    /// <para><b>"Yes" checks again that neither player is already engaged or married</b> (Caleb, 2026-10-21). The
+    /// cast checked both, but a box can stay up for as long as the beloved leaves it, and either player can be
+    /// committed by then: a second proposal the proposer made after the aether, accepted first, is the ordinary way.
+    /// Neither RTK's accept branch nor this one used to look again, so both "yes"es engaged, and one beloved was left
+    /// engaged to a proposer engaged to the other. Now a committed player refuses the "yes" for free: no legend, no
+    /// ring taken, no spell forgotten, nothing saved. Each player reads the line the cast gives for that case, from
+    /// their own side: the committed one "You are already committed to someone else!" (the verb's), the other one
+    /// "&lt;name&gt; is already committed to someone else!" (<see cref="RunProposeAsync"/>'s). The proposer is checked
+    /// first, as the cast checks the caster before the beloved.</para>
+    /// <para><b>Locks.</b> This runs on the PROPOSEE's thread (their reply resumed it, under their monitor), and the
+    /// "yes" writes both players: their legends, the proposer's spellbook (the forget), the ring, the engagement. It
+    /// took the proposer's monitor, by <c>StateRank</c>, for each of the proposer's writes. The check and the writes
+    /// are now one section holding both monitors (<see cref="WithStatePair"/>, the wedding's shape in
+    /// <see cref="RunMarriageCeremony"/>): the same two monitors in the same order, held across the decision, so two
+    /// beloveds saying "yes" to one proposer at once are taken one after the other and the second finds the first's
+    /// engagement. Nothing in the section enters the Lua gate or <c>World._lock</c>. A proposer who logged out before
+    /// the "yes" is handled the way their legend is: it is written to their departed session and saved, and so is the
+    /// forget, so the row that session saves is engaged and without the spell. RTK has nothing to follow there: its
+    /// Player object keeps a raw pointer to the departed session.</para></summary>
+    internal async Task PromptProposal(Session proposer, SpellDef propose)
     {
         int choice = await DlgMenu(MarriageVirtualNpc,
             $"{proposer.Snapshot().Name} proposes marriage. Do you accept?",
@@ -3735,14 +3770,31 @@ public sealed partial class Session
         string me = Snapshot().Name, them = proposer.Snapshot().Name;
         if (choice == 1)
         {
-            AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
-            proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
-            TakeItem("engagement_ring", 1);
-            long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
-            SetEngaged(them, isProposee: true, timer);
-            proposer.SetEngaged(me, isProposee: false, timer);
-            proposer.SendMiniText($"{me} accepts!");
-            SendMiniText($"You are now engaged to {them}!");
+            var beloved = this;
+            WithStatePair(beloved, proposer, () =>
+            {
+                if (proposer.HasLegend("engaged") || proposer.HasLegend("married"))
+                {
+                    proposer.SendMiniText("You are already committed to someone else!");
+                    beloved.SendMiniText($"{them} is already committed to someone else!");
+                    return;
+                }
+                if (beloved.HasLegend("engaged") || beloved.HasLegend("married"))
+                {
+                    proposer.SendMiniText($"{me} is already committed to someone else!");
+                    beloved.SendMiniText("You are already committed to someone else!");
+                    return;
+                }
+                beloved.AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
+                proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
+                proposer.ForgetOneSpell(propose.Id);   // RTK propose.lua:102, once; under the proposer's monitor (the pair)
+                beloved.TakeItem("engagement_ring", 1);
+                long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
+                beloved.SetEngaged(them, isProposee: true, timer);
+                proposer.SetEngaged(me, isProposee: false, timer);
+                proposer.SendMiniText($"{me} accepts!");
+                beloved.SendMiniText($"You are now engaged to {them}!");
+            });
         }
         else
         {

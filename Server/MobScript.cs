@@ -220,15 +220,32 @@ public sealed class MobContext
     /// <summary>Their current stage for a quest key (0 if unset), read from the flat registry.</summary>
     public double actorQuestStage(string questKey) => _actor?.Quest(QuestState.Registry).Get(questKey) ?? 0;
 
-    /// <summary>Does that player already carry this legend mark?</summary>
-    public bool actorHasLegend(string mark) => _actor?.HasLegend(mark) ?? false;
+    /// <summary>Does that player already carry this legend mark? Read inside that player's monitor (#345's
+    /// pre-existing item 5a). A hook runs on the tick thread, inside the Lua gate and outside <c>World._lock</c>,
+    /// holding no session monitor (<c>World.FlushTick</c>); <c>Session.HasLegend</c> walks the player's legend
+    /// list, which their own thread edits under their monitor, so a walk with no monitor met a concurrent edit,
+    /// threw "Collection was modified", and <see cref="MobScript.Fire"/>'s catch skipped the rest of the hook: the
+    /// Leviathan's brand and its line. The gate, then a session monitor, is the order
+    /// <c>docs/common/Locking.md</c> allows (rows 1 then 2), and the order <see cref="actorAddLegend"/>'s write
+    /// already took through <c>AddLegend</c>. <c>EnterState</c> takes it by <c>StateRank</c> with nothing else held.
+    /// <para>Taken here rather than in <c>Session.HasLegend</c>. Its thirty-odd other callers already hold the
+    /// right monitor: the player's own handlers, NPC dialogs, quests and casts, or a peer's <c>WithState</c> around
+    /// the read, as the mentor's, the proposer's and the wedding's checks do. These two reads are the only ones that
+    /// walk another player's legends with none. A monitor inside <c>HasLegend</c> would change nothing for the
+    /// others and put an acquisition, with <c>EnterState</c>'s lock-order asserts, on every one of them.</para></summary>
+    public bool actorHasLegend(string mark) => _actor is { } a && a.WithState(() => a.HasLegend(mark));
 
     /// <summary>Brand them — RTK's <c>attacker:addLegend(text, key, icon, colour)</c>. How the leviathans
-    /// record that you broke your word and attacked one.</summary>
+    /// record that you broke your word and attacked one. The "already carries it" check and the write are one
+    /// section inside that player's monitor (see <see cref="actorHasLegend"/>); <c>AddLegend</c>'s own
+    /// <c>EnterState</c> is re-entrant there.</summary>
     public void actorAddLegend(string text, string mark, double icon, double colour)
     {
-        if (_actor is null || mark.Length == 0 || _actor.HasLegend(mark)) return;
-        _actor.AddLegend(text, mark, (byte)icon, (byte)colour);
+        if (_actor is not { } a || mark.Length == 0) return;
+        a.WithState(() =>
+        {
+            if (!a.HasLegend(mark)) a.AddLegend(text, mark, (byte)icon, (byte)colour);
+        });
     }
 
     /// <summary>Say a line to that player alone (RTK follows its brand with a <c>dialogSeq</c>; a line over

@@ -60,7 +60,10 @@ public sealed partial class Session
         if (_pcSpellTarget is not { } target) return false;
         var (map, xs, ys, tx, ty) = target.PlaceForPeer();
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
-        var (x, y) = EnterMap(map, xs, ys, tx, ty, mapName, ArrivalPolicy.AdjacentFreeElseStack);
+        // The caster's own move, on the caster's own read loop: EnterMap refuses only a player who is logging out
+        // (#330), which the caster cannot be here, so the null arm is never taken.
+        if (EnterMap(map, xs, ys, tx, ty, mapName, ArrivalPolicy.AdjacentFreeElseStack) is not (var x, var y))
+            return false;
         Log.Info($"      {sp.Name}(lua): '{_char.Name}' -> '{target._char.Name}' at map {map} ({x},{y})");
         return true;
     }
@@ -102,8 +105,10 @@ public sealed partial class Session
     /// <para>An exchange that keeps re-opening is ended at most <see cref="SummonExchangeEndsMax"/> times; the next
     /// one refuses the move. Every refusal returns false and moves nobody, and the verb answers "Fizzle." at no
     /// cost. The caster's map and tile are read only after the last check, under both monitors again, since the
-    /// caster's was dropped too. <c>EnterMap</c> itself still has the gap for <c>@bring</c> and the Resurrect
-    /// family; #330 closes it there.</para></summary>
+    /// caster's was dropped too. Since #330 <c>EnterMap</c> refuses a player who is logging out itself, after its
+    /// own exchange step, and returns null; that answer is read below as a refusal too. After these checks it is
+    /// never null here: the target's monitor has been held since the last one, and there is no exchange left for
+    /// <c>EnterMap</c> to end.</para></summary>
     internal bool LuaSummonTarget(SpellDef sp)
     {
         if (_pcSpellTarget is not { } target) return false;
@@ -128,7 +133,12 @@ public sealed partial class Session
 
         ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
-        var (x, y) = target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName, ArrivalPolicy.AdjacentFreeElseStack);
+        if (target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName, ArrivalPolicy.AdjacentFreeElseStack)
+            is not (var x, var y))
+        {
+            Log.Info($"      {sp.Name}(lua): '{target._char.Name}' logged out before the move — nobody moved");
+            return false;
+        }
         Log.Info($"      {sp.Name}(lua): '{target._char.Name}' -> '{_char.Name}' at map {map} ({x},{y})");
         return true;
     }

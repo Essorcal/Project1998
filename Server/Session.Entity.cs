@@ -1127,12 +1127,40 @@ public sealed partial class Session
     // internal rather than private only so Tests/ReviveSaveTests can reach it: the only shipped caller is
     // Session.LuaReviveTarget (the poet Resurrect family), which needs a caster, a spell row and the script
     // gate to reach, none of which the persistence fact is about.
+    //
+    // A player who is logging out is neither healed nor moved (#330). The caster's thread looked them up
+    // without their monitor, so their logout can run to the end before this EnterState, and the heal used to
+    // land anyway: EnterMap put the departed session back on the map and SaveChar wrote a revived row for a
+    // player who logged out dead. So _leaving is read before the heal, and when it is set nothing below runs:
+    // no heal (an in-memory one is what the next login's fence would write, KickForReplacement), no move, no
+    // save. EnterMap reads the same flag, but only after its exchange step, which can drop this monitor while
+    // it waits for a lower-ranked partner; a logout in that gap would save the healed row. So that step is
+    // taken HERE, before the check, with EnterMap's own call: a ghost cannot open another exchange
+    // (TryStartTrade refuses IsDead on both sides, inside the pair), so EnterMap then has none to end, and
+    // nothing between the check and the move gives the monitor up. A ghost holds an exchange only inside
+    // Die(), whose EndTrade is its last statement, after a ResyncPeers that can drop the monitor. The step is
+    // skipped for the heal-in-place fallback, which never ended an exchange. The caster's cost is the verb's,
+    // paid before it calls here, and stays as it was: a raced Resurrect still costs its mana and its cooldown.
     internal void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
     {
         using var _ = EnterState();   // #29: a resurrection spell reaches here on the CASTER's thread
+        var dest = Content.Maps.TryGetValue(map, out var mi) ? mi : null;
+        if (dest is not null && _trade is { } open) EndTrade(open, "Exchange cancelled.");   // EnterMap's own step
+        if (_leaving)
+        {
+            Log.Info($"   -> REVIVE refused: '{_char.Name}' is logging out — nobody healed or moved");
+            return;
+        }
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
-        if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
+        if (dest is not null)
+        {
+            // Never null for a ghost after the check above (see the note). Read anyway: a target someone else
+            // revived since the verb's check is alive, and can open an exchange while our own step waits; if a
+            // logout then gets in at EnterMap's step, nobody moved, and the stats, the line and the save below
+            // are not made for a session that has left.
+            if (EnterMap(dest.Id, dest.Xs, dest.Ys, x, y, dest.Name) is null) return;
+        }
         else SendSelfLook();   // fallback: just heal in place if the map isn't loaded
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
         SendMiniText(arrivalMsg);
@@ -1147,10 +1175,26 @@ public sealed partial class Session
     /// form here (ReviveAt gets that implicitly from EnterMap).
     /// <para>Ends in <c>SaveChar</c> for the reason given on <see cref="ReviveAt"/> (#196): the death this
     /// undoes saved itself, so a revive that only marked the character dirty left the corpse on disk until
-    /// the next autosave sweep.</para></summary>
-    internal void ReviveInPlace(string message)
+    /// the next autosave sweep.</para>
+    /// <para><b>A player who is logging out is not revived</b> (#330's class; PR #358 review, R5; Caleb,
+    /// 2026-10-21), the check <see cref="ReviveAt"/> makes, in the same place: <c>_leaving</c>, read under this
+    /// monitor before the heal. <c>@rez &lt;name&gt;</c> looks its target up on the GM's thread with no monitor,
+    /// so the target's whole logout can run before this <c>EnterState</c>; the heal then landed on the departed
+    /// session (what the next login's fence writes), was broadcast, and <c>SaveChar</c> wrote a revived row for a
+    /// player who logged out dead. Nothing is done then, and false tells the caller nobody was revived. There is
+    /// no exchange step to take first, as <c>ReviveAt</c> takes <c>EnterMap</c>'s: nothing before the heal
+    /// gives this monitor up. A logout that gets in later, while <c>ResyncPeers</c> waits on a peer, finds a
+    /// living player and saves them so. The NPC Rebirth and the Shaman's revival reach here on the player's own
+    /// thread and never meet the flag.</para></summary>
+    /// <returns>False when nobody was revived: the player is logging out. Only <c>@rez &lt;name&gt;</c> reads it.</returns>
+    internal bool ReviveInPlace(string message)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving)
+        {
+            Log.Info($"   -> REVIVE (in place) refused: '{_char.Name}' is logging out — nobody healed");
+            return false;
+        }
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
         RefreshAppearance();   // redraw self + everyone watching as living again (MountForm drops form 1)
@@ -1159,6 +1203,7 @@ public sealed partial class Session
         SendMiniText(message);
         SaveChar();   // #196: MarkDirty left the death's row (Hp 0, penalised exp) on disk for up to AutoSaveMs
         Log.Info($"   -> REVIVED (in place): {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
+        return true;
     }
 
     // Home-city placement (HomeCityFor / PlaceNewCharacter) moved to Shared/CharacterFactory so the login

@@ -19,7 +19,9 @@ namespace Tests;
 /// and the pending reply (<c>_dlgReply</c>) their next 0x3A answers. The proposal, the mentorship offer and the
 /// wedding's question open them on the OTHER player from the asker's thread, and the wedding's closing box is opened
 /// on the bride from the fiancé's thread (the ceremony resumes there). Both halves were written without that
-/// player's monitor, while their own read loop reads and clears <c>_dlgReply</c> under it.</item>
+/// player's monitor, while their own read loop reads and clears <c>_dlgReply</c> under it. The proposal's "yes" is
+/// also where the proposer now gives up Propose, on the beloved's thread inside the proposer's monitor (#345's
+/// item 5c); before, the cast took it.</item>
 /// <item><b>Sends into another player</b> on those paths. No fact here: a send writes nothing a monitor guards
 /// (the report says why), so nothing changed.</item>
 /// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
@@ -43,10 +45,15 @@ namespace Tests;
 [Collection("world")]
 public sealed class PeerSweepLockTests
 {
-    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group.
+    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62469 and
+    // 62485-62491 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the re-check at "yes").
+    // The kept/yes/gone-proposer facts first stood on 62460, 62467 and 62468, which upstream's VowHalvesTests and
+    // ResolverTargetMapTests took meanwhile (7d21d8c); they moved to 62489-62491.
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
-                         PromptMidMap = 62453;
+                         PromptMidMap = 62453, KeptMap = 62489, YesMap = 62490, GoneProposerMap = 62491,
+                         AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487,
+                         RelogMap = 62488;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -73,6 +80,27 @@ public sealed class PeerSweepLockTests
         typeof(Session).GetMethod("ApplyCast", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo DlgReplyField =
         typeof(Session).GetField("_dlgReply", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo TearDown =
+        typeof(Session).GetMethod("TearDownWorldState", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo RestoreTimedEffects =
+        typeof(Session).GetMethod("RestoreTimedEffects", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo StatusFlagsField =
+        typeof(Session).GetField("_statusFlags", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    /// <summary>Propose's 20 minutes gone by: its aether (the session's) and its duration (the status flag the row
+    /// keeps, RTK's <c>setDuration</c>) both cleared, as the clock would clear them.</summary>
+    private static void WaitOutPropose(Session s)
+    {
+        SpellCastSupport.ClearAether(s, Propose.Key);
+        s.WithState(() => { ((Dictionary<string, long>)StatusFlagsField.GetValue(s)!).Remove(Propose.Key); });
+    }
+
+    /// <summary>Milliseconds left on Propose's persisted duration (0 when none is running).</summary>
+    private static long ProposeDurationLeft(Session s) => (long)s.WithState(() => s.LuaDurationLeft(Propose.Key));
+
+    /// <summary>The Propose spell (Spells.csv 409), which <c>Session.PromptProposal</c> takes from the proposer on
+    /// "yes".</summary>
+    private static SpellDef Propose => Content.SpellByKey("propose")!;
 
     public PeerSweepLockTests(SessionFixture fx)
     {
@@ -151,7 +179,7 @@ public sealed class PeerSweepLockTests
         var run = new HeldRun();
         try
         {
-            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p)),
+            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p, Propose)),
                                     untouched: () => !b.DialogBusy && !bOut.HasMenu(prompt));
             AssertWaited(run, "the proposal", "the beloved's prompt was opened while another thread held their monitor");
 
@@ -166,6 +194,463 @@ public sealed class PeerSweepLockTests
             if (run.Settled) Leave(PromptHeldMap, p, b);
         }
     }
+
+    // ----- Propose is given up on "yes" only (#345's pre-existing item 5c) -----------------------------
+
+    /// <summary>
+    /// <b>Anything but "yes" leaves the proposer their Propose spell</b> (#345's item 5c; RTK propose.lua removes it in
+    /// the accept branch alone, :102 and :118, and its decline at :120-124 keeps it). The real cast and the typed
+    /// name, then one of: the beloved declines ("decline"); the box is still up and nobody has answered, which is
+    /// also where a beloved who never answers leaves it, since nothing times the prompt out ("unanswered"); the
+    /// beloved logs out with the box up (the real teardown, "logout"). The proposer still knows Propose, in the
+    /// book they will save, and the decline still tells both what it always did.
+    /// <para>Red on 6de1d24 in Debug and Release, all three ("the proposer lost Propose"): the spell was forgotten at
+    /// the cast, before the prompt opened, so it was gone whatever the beloved did.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("decline")]
+    [InlineData("unanswered")]
+    [InlineData("logout")]
+    public void AProposerKeepsProposeUnlessTheBelovedSaysYes(string answer)
+    {
+        var (b, bOut, _) = Player("KeptBeloved", KeptMap, 22, 20);
+        var (p, pOut, _) = Player("KeptProposer", KeptMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            Assert.True(LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?").Held, "the proposal never opened");
+            pOut.Clear();
+
+            switch (answer)
+            {
+                case "decline":
+                    OnOwnThread(() => b.Receive(MenuFrame(2)));
+                    Assert.Contains($"{b.CharName} regretably must decline.", pOut.MiniTexts());
+                    Assert.Contains(Declined, bOut.MiniTexts());
+                    break;
+                case "unanswered":
+                    Assert.True(b.DialogBusy, "the beloved's box is not waiting");
+                    break;
+                case "logout":
+                    OnOwnThread(() => b.WithState(() => TearDown.Invoke(b, null)));
+                    Assert.Empty(pOut.MiniTexts());   // told nothing, as before: the prompt's await never resumes
+                    break;
+            }
+
+            p.WithState(() => Assert.True(p.KnowsSpellId(Propose.Id) && !p.HasLegend("engaged"),
+                                          $"the proposer lost Propose ({answer})"));
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
+        }
+        finally
+        {
+            Leave(KeptMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>"Yes" takes Propose from the proposer inside the proposer's monitor, and saves it.</b> The real cast, name and
+    /// "yes". The beloved's reply resumes the prompt on the BELOVED's thread, so this is a write to another player's
+    /// spellbook: each of its 0x18 frames to the proposer was sent with the proposer's monitor held, the book no longer
+    /// has the spell, and the proposer's saved row is engaged and without it.
+    /// <para>Red on 6de1d24 in Debug and Release: "Assert.NotEmpty() Failure: Collection was empty", the "yes" sent the
+    /// proposer no 0x18, since the cast had already taken the spell. The proposer's monitor here is the "yes" branch's
+    /// pair (both players, the re-check and every write). Red in both builds with a plain <c>lock</c> on the proposer
+    /// object in place of the pair, or with no lock: "Tuple ([1], False)", the frame went out with the proposer's
+    /// monitor not held (and in Debug, <c>SaveChar</c>'s guard also stops the rest of the "yes").</para>
+    /// </summary>
+    [Fact]
+    public void AYesTakesProposeFromTheProposerInsideTheirMonitor()
+    {
+        var (b, bOut, _) = Player("YesBeloved", YesMap, 22, 20);
+        var (p, pOut, _) = Player("YesProposer", YesMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            pOut.Clear();
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            var removes = pOut.Bodies(ServerOp.RemoveSpell);
+            Assert.NotEmpty(removes);
+            Assert.All(removes, f => Assert.True(f.Held, "a 0x18 went to the proposer outside the proposer's monitor"));
+            p.WithState(() => Assert.True(!p.KnowsSpellId(Propose.Id) && p.HasLegend("engaged"),
+                                          "the proposer still knows Propose after the yes, or is not engaged"));
+            var row = _fx.Store.Load(p.CharName);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            Assert.Equal((false, true), (row.Character!.Spells.Contains(Propose.Id),
+                                         row.Character.Legends.Any(l => l.Name == "engaged")));
+            Assert.Contains($"{b.CharName} accepts!", pOut.MiniTexts());
+        }
+        finally
+        {
+            Leave(YesMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>A proposer who logged out before the "yes" comes back engaged and without Propose</b>, the way the "yes"
+    /// already treated their legend: written to their departed session, and saved. The real cast and name; the
+    /// proposer's real teardown (off the map, the row saved with the spell); then the beloved's "yes".
+    /// <para>Green on 6de1d24 too, where the cast had already forgotten it; this pins the handling. Red in Debug and
+    /// Release if the "yes" skips a departed proposer's spellbook while it still writes their legend:
+    /// "Expected (False, True) / Actual (True, True)".</para>
+    /// </summary>
+    [Fact]
+    public void AProposerWhoLoggedOutBeforeTheYesIsSavedEngagedAndWithoutPropose()
+    {
+        var (b, bOut, _) = Player("GoneBeloved", GoneProposerMap, 22, 20);
+        var (p, _, _) = Player("GoneProposer", GoneProposerMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));
+            Assert.Null(_fx.World.Online.FindPlayer(p.CharName));   // the logout took them off the map
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            var row = _fx.Store.Load(p.CharName);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            Assert.Equal((false, true), (row.Character!.Spells.Contains(Propose.Id),
+                                         row.Character.Legends.Any(l => l.Name == "engaged")));
+            b.WithState(() => Assert.True(b.HasLegend("engaged") && b.CharFiance == p.CharName, "the beloved is not engaged"));
+        }
+        finally
+        {
+            Leave(GoneProposerMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>A cast of Propose arms a 20-minute aether, and a cast inside it asks nobody</b> (Caleb, 2026-10-21). RTK's
+    /// script intends the wait (propose.lua:11-12) but never applies it: its <c>setAether</c> is a dot call, which
+    /// RTK's binding drops, and its engine checks only aethers. The port enforces it. The real cast, and then either a
+    /// declined proposal ("declined") or a name prompt answered with nothing ("no name": the script sets the wait before
+    /// it asks, so that costs the wait too). Right after the first cast the aether has 20 minutes on it; a second cast
+    /// says "Propose isn't ready yet.", opens no name prompt and puts no box on the beloved; once the aether is gone
+    /// (cleared here, standing in for the 20 minutes) a cast asks for a name again.
+    /// <para>Red on a9f9449 in Debug and Release, both cases: "Expected ["Propose isn't ready yet."] / Actual ["You cast
+    /// Propose."]", no aether was armed and the second cast asked again. Red with the check gone from the verb (the
+    /// same), with the aether armed at the typed name instead of the cast ("no name" alone), and with 2 minutes for 20
+    /// ("the aether after the first cast had 120000 ms on it"). Since the review's F1 the cast also arms the port's
+    /// persisted <c>setDuration</c> (the script's line 11) for the same 20 minutes (see
+    /// <see cref="ProposeWaitsTwentyMinutesAcrossARelog"/>): red on 34c9c93, both cases, "the duration after the first
+    /// cast had 0 ms on it".</para>
+    /// </summary>
+    [Theory]
+    [InlineData("declined")]
+    [InlineData("no name")]
+    public void ProposeWaitsTwentyMinutesAfterACast(string first)
+    {
+        var (b, bOut, _) = Player("AetherBeloved", AetherMap, 22, 20);
+        var (p, pOut, _) = Player("AetherProposer", AetherMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        string ask = $"{p.CharName} proposes marriage. Do you accept?";
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(first == "declined" ? b.CharName : ""));
+                if (first == "declined") b.Receive(MenuFrame(2));
+            });
+            long left = SpellCastSupport.AetherLeft(p, Propose.Key);
+            Assert.False(p.DialogBusy || b.DialogBusy, "a box is still up after the first proposal");
+            int asked = bOut.MenusWith(ask);
+            pOut.Clear();
+
+            OnOwnThread(() => p.Receive(SpellCastSupport.CastFrame(0)));
+
+            // The outcome first, so a red run shows what the second cast did.
+            Assert.Equal(new[] { $"{Propose.Name} isn't ready yet." }, pOut.MiniTexts());
+            Assert.Equal((false, asked), (p.DialogBusy, bOut.MenusWith(ask)));
+            Assert.True(left is > 1_190_000 and <= 1_200_000, $"the aether after the first cast had {left} ms on it");
+            long lasting = ProposeDurationLeft(p);
+            Assert.True(lasting is > 1_190_000 and <= 1_200_000, $"the duration after the first cast had {lasting} ms on it");
+            p.WithState(() => Assert.True(p.KnowsSpellId(Propose.Id), "the refused cast took the spell"));
+
+            WaitOutPropose(p);
+            OnOwnThread(() => p.Receive(SpellCastSupport.CastFrame(0)));
+            Assert.True(p.DialogBusy, "a cast after the aether did not ask for a name");
+        }
+        finally
+        {
+            Leave(AetherMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>The 20 minutes survive a relog</b> (PR #358 review, F1; Caleb, 2026-10-21). The proposer casts, the beloved
+    /// says "no", and the proposer logs out (the real teardown, whose save captures the timed effects into the row).
+    /// A fresh session is built from that saved row, its timed effects restored as the arrival restores them, and it
+    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. The wait is the port's, on Caleb's
+    /// word: RTK's script intends it (propose.lua:11-12) but never applies it, since its <c>setAether</c> is a dot call
+    /// that RTK's binding drops and its engine checks only aethers. The port keeps it across a relog through line 11's
+    /// <c>setDuration</c>, a status flag the row carries.
+    /// <para>Red on 34c9c93 in Debug and Release: "Expected ["Propose isn't ready yet."] / Actual ["You cast
+    /// Propose."]", the aether lived in the old session and the new one asked again. Red the same way with the
+    /// duration set but not checked, and with it checked but not set.</para>
+    /// </summary>
+    [Fact]
+    public void ProposeWaitsTwentyMinutesAcrossARelog()
+    {
+        var (b, bOut, _) = Player("RelogBeloved", RelogMap, 22, 20);
+        var (p, _, pc) = Player("RelogProposer", RelogMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        string ask = $"{p.CharName} proposes marriage. Do you accept?";
+        Session? back = null;
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+                b.Receive(MenuFrame(2));
+            });
+            long armed = ProposeDurationLeft(p);
+            OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));   // the logout: off the map, the row saved
+
+            var row = _fx.Store.Load(pc.Name);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            HeldRecorder backOut;
+            (back, backOut) = Relog(row.Character!, RelogMap);
+            int asked = bOut.MenusWith(ask);
+
+            OnOwnThread(() => back.Receive(SpellCastSupport.CastFrame(0)));
+
+            // The outcome first, so a red run shows what the cast after the relog did.
+            Assert.Equal(new[] { $"{Propose.Name} isn't ready yet." }, backOut.MiniTexts());
+            Assert.Equal((false, asked), (back.DialogBusy, bOut.MenusWith(ask)));
+            Assert.True(armed > 1_190_000, $"the cast armed {armed} ms of persisted duration");
+            back.WithState(() => Assert.True(back.KnowsSpellId(Propose.Id), "the refused cast took the spell"));
+        }
+        finally
+        {
+            if (back is not null) Leave(RelogMap, back);
+            Leave(RelogMap, p, b);
+        }
+    }
+
+    /// <summary>A fresh session for a saved row, as a login would make it: the row as loaded, on
+    /// <paramref name="map"/>, its timed effects restored (<c>Session.RestoreTimedEffects</c>, which the arrival runs
+    /// right after the load).</summary>
+    private (Session session, HeldRecorder outbound) Relog(Character row, ushort map)
+    {
+        var o = new HeldRecorder($"held:{row.Name}:relog");
+        var s = new Session(o, 2005, _fx.Store, _fx.World, row);
+        o.Owner = s;
+        s.WithState(() => { RestoreTimedEffects.Invoke(s, null); });
+        _fx.World.EnterMap(s, map);
+        o.Clear();
+        return (s, o);
+    }
+
+    private const string YouAreCommitted = "You are already committed to someone else!";
+
+    /// <summary>
+    /// <b>"Yes" from or to a player who has become engaged or married since the cast is refused, for free</b> (Caleb,
+    /// 2026-10-21). The real cast and name put the box up on the beloved; then one of the two (<paramref name="who"/>)
+    /// becomes committed to a third player (<paramref name="vow"/>: engaged, both halves, or a marriage legend),
+    /// standing in for however that came about while the box was up; then the beloved says "yes". Nobody is engaged
+    /// by it: the beloved keeps the ring, the proposer keeps Propose, the third player's vow is untouched, and each of
+    /// the two reads the cast's line for the case from their own side.
+    /// <para>Red on a9f9449 in Debug and Release, all four ("the proposer was engaged to the beloved, or lost
+    /// Propose"): the "yes" engaged them anyway. Red the same way with the re-check removed (all four), with only the
+    /// proposer's half removed (the proposer cases), and with only the beloved's half removed (the beloved cases).</para>
+    /// </summary>
+    [Theory]
+    [InlineData("proposer", "engaged")]
+    [InlineData("proposer", "married")]
+    [InlineData("beloved", "engaged")]
+    [InlineData("beloved", "married")]
+    public void AYesWithAPlayerAlreadyCommittedIsRefusedForFree(string who, string vow)
+    {
+        var (b, bOut, _) = Player("CommitBeloved", CommittedMap, 22, 20);
+        var (p, pOut, _) = Player("CommitProposer", CommittedMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        var (x, _, _) = Player("CommitThird", CommittedMap, 24, 20);
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            var committed = who == "proposer" ? p : b;
+            if (vow == "engaged") { Engage(committed, x, proposee: false); Engage(x, committed, proposee: true); }
+            else committed.WithState(() => committed.AddLegend($"Married to {x.CharName} ({Character.GameDate})", "married", 6, 1));
+            pOut.Clear(); bOut.Clear();
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            // Nobody engaged to the other, and the "yes" cost nothing.
+            p.WithState(() => Assert.True(p.CharFiance != b.CharName && p.KnowsSpellId(Propose.Id),
+                                          "the proposer was engaged to the beloved, or lost Propose"));
+            b.WithState(() => Assert.True(b.CharFiance != p.CharName && b.CountItem("engagement_ring") == 1,
+                                          "the beloved was engaged to the proposer, or lost the ring"));
+            if (vow == "engaged")
+                committed.WithState(() => Assert.True(committed.CharFiance == x.CharName && committed.HasLegend("engaged"),
+                                                      "the existing engagement was touched"));
+            var (committedOut, otherOut) = who == "proposer" ? (pOut, bOut) : (bOut, pOut);
+            string other = who == "proposer" ? p.CharName : b.CharName;
+            Assert.Equal(new[] { YouAreCommitted }, committedOut.MiniTexts());
+            Assert.Equal(new[] { $"{other} is already committed to someone else!" }, otherOut.MiniTexts());
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
+        }
+        finally
+        {
+            Leave(CommittedMap, p, b, x);
+        }
+    }
+
+    /// <summary>
+    /// <b>Two beloveds saying "yes" to one proposer engage the proposer once</b>: the ordinary way to a committed
+    /// proposer at "yes". The proposer proposes to one, waits out the aether (cleared here), proposes to a second; the
+    /// second says "yes" first and is engaged; then the first says "yes" and is refused for free.
+    /// <para>Red on a9f9449 in Debug and Release ("the proposer's fiance is" the first beloved): both "yes"es engaged,
+    /// and the second beloved was left engaged to a proposer engaged to the first. Red the same way with the re-check
+    /// removed, or only its proposer's half.</para>
+    /// </summary>
+    [Fact]
+    public void TwoBelovedsSayingYesEngageTheProposerOnce()
+    {
+        var (first, firstOut, _) = Player("TwoYesFirst", TwoYesMap, 22, 20);
+        var (second, secondOut, _) = Player("TwoYesSecond", TwoYesMap, 18, 20);
+        var (p, pOut, _) = Player("TwoYesProposer", TwoYesMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(first);
+            GiveRing(second);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(first.CharName));
+            });
+            LastMenu(firstOut, $"{p.CharName} proposes marriage. Do you accept?");
+            WaitOutPropose(p);   // the 20 minutes, while the first box stays up
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(second.CharName));
+            });
+            LastMenu(secondOut, $"{p.CharName} proposes marriage. Do you accept?");
+
+            OnOwnThread(() => second.Receive(MenuFrame(1)));
+            firstOut.Clear(); pOut.Clear();
+            OnOwnThread(() => first.Receive(MenuFrame(1)));
+
+            p.WithState(() => Assert.True(p.CharFiance == second.CharName, $"the proposer's fiance is '{p.CharFiance}'"));
+            first.WithState(() => Assert.True(!first.HasLegend("engaged") && first.CountItem("engagement_ring") == 1,
+                                              "the first beloved was engaged, or lost the ring"));
+            Assert.Equal(new[] { YouAreCommitted }, pOut.MiniTexts());
+            Assert.Equal(new[] { $"{p.CharName} is already committed to someone else!" }, firstOut.MiniTexts());
+        }
+        finally
+        {
+            Leave(TwoYesMap, p, first, second);
+        }
+    }
+
+    /// <summary>
+    /// <b>Two "yes"es at the same moment that would both engage the proposer engage them once</b>: the check and the
+    /// writes are one section holding both players' monitors, so the second "yes" is decided only after the first has
+    /// written. Each round puts the boxes up (the cast's last step, from each proposer's thread) and releases both
+    /// "yes"es together, each on a thread of its own as two read loops would deliver them. Two shapes:
+    /// <list type="bullet">
+    /// <item>"two beloveds": the proposer proposed to two players, and both say "yes". Exactly one is engaged to the
+    ///   proposer, and the other keeps the ring.</item>
+    /// <item>"the proposer's own yes": the proposer proposed to a beloved, a third player proposed to the proposer, and
+    ///   the beloved and the proposer say "yes" at once. Exactly one of the two engagements is made, and the ring of the
+    ///   other "yes" is kept.</item>
+    /// </list>
+    /// <para>Red on a9f9449 in Debug and Release, both shapes, 40 of 40 rounds: both "yes"es engaged. The negative
+    /// control for the check's lock, no lock in place of the pair (the answering player's own monitor only, which their
+    /// reply holds): "two beloveds" red in both builds, 40 of 40 rounds, both passing the check before either writes.
+    /// "The proposer's own yes" stays green under it: the proposer's reply holds the proposer's monitor from its first
+    /// line, and the other "yes" takes that monitor for the proposer's name (<c>Snapshot</c>) before its branch, so it
+    /// is decided after the proposer's whatever the branch locks; that shape is red without the re-check. A plain
+    /// <c>lock</c> on the proposer object in place of the pair leaves both shapes green (the two beloveds' "yes"es lock
+    /// the same object); <see cref="AYesTakesProposeFromTheProposerInsideTheirMonitor"/> is red under it, in both builds.
+    /// The same <c>Snapshot</c> is why a held proposer monitor cannot test the pair: the "yes" waits there first.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("two beloveds")]
+    [InlineData("the proposer's own yes")]
+    public void TwoYesesAtOnceEngageTheProposerOnce(string shape)
+    {
+        bool twoBeloveds = shape == "two beloveds";
+        string tag = twoBeloveds ? "Two" : "Own";
+        var (p, _, _) = Player($"YesRace{tag}P", YesRaceMap, 20, 20);
+        var (first, _, _) = Player($"YesRace{tag}First", YesRaceMap, 22, 20);
+        var (second, _, _) = Player($"YesRace{tag}Second", YesRaceMap, 18, 20);   // a second beloved, or the proposer's suitor
+        var wrong = new List<string>();
+        try
+        {
+            for (int round = 0; round < YesRaceRounds; round++)
+            {
+                foreach (var s in new[] { p, first, second })
+                    s.WithState(() => { s.RemoveLegend("engaged"); s.ClearEngagement(); });
+                foreach (var holder in twoBeloveds ? new[] { first, second } : new[] { first, p })
+                    if (holder.WithState(() => holder.CountItem("engagement_ring")) == 0) GiveRing(holder);
+                OnOwnThread(() =>
+                {
+                    p.WithState(() => { _ = first.PromptProposal(p, Propose); });
+                    if (twoBeloveds) p.WithState(() => { _ = second.PromptProposal(p, Propose); });
+                    else second.WithState(() => { _ = p.PromptProposal(second, Propose); });
+                });
+                var answering = twoBeloveds ? new[] { first, second } : new[] { first, p };
+                Assert.True(answering.All(a => a.DialogBusy), "a proposal box is not up");
+
+                using var go = new ManualResetEventSlim();
+                Exception? fault = null;
+                var threads = answering.Select(a =>
+                {
+                    var t = new Thread(() =>
+                    {
+                        try { go.Wait(); a.Receive(MenuFrame(1)); }
+                        catch (Exception e) { fault = e; }
+                    }) { IsBackground = true };
+                    t.Start();
+                    return t;
+                }).ToList();
+                go.Set();
+                Assert.True(threads.All(t => t.Join(TimeSpan.FromSeconds(30))), "deadlock: a yes never finished");
+                Assert.Null(fault);
+
+                // The proposer's partners this round: the two beloveds, or the beloved and the suitor.
+                string fiance = p.WithState(() => p.CharFiance);
+                var partners = new[] { first, second }.Where(o => o.WithState(() => o.CharFiance == p.CharName)).ToList();
+                int rings = answering.Sum(a => a.WithState(() => a.CountItem("engagement_ring")));
+                if (partners.Count != 1 || fiance != partners[0].CharName || rings != 1)
+                    wrong.Add($"round {round}: {partners.Count} engaged to the proposer, whose fiance is '{fiance}', " +
+                              $"{rings} ring(s) left");
+            }
+            Assert.True(wrong.Count == 0, $"{wrong.Count} of {YesRaceRounds} rounds wrong; the first: {wrong.FirstOrDefault()}");
+        }
+        finally
+        {
+            Leave(YesRaceMap, p, first, second);
+        }
+    }
+
+    private const int YesRaceRounds = 40;
 
     /// <summary>What the swap could do to a player. The beloved is in a conversation of their own and has just picked
     /// "Yes" in it; their read loop is handling that pick (a third thread holds their monitor, as <c>Handle</c> does)
@@ -201,7 +686,7 @@ public sealed class PeerSweepLockTests
         bool ownAnswered = false, engaged = false;
         try
         {
-            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p)),
+            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p, Propose)),
                 untouched: () =>
                 {
                     b.Receive(MenuFrame(1));   // the pick being handled: "Yes" on the beloved's own menu
@@ -402,7 +887,7 @@ public sealed class PeerSweepLockTests
                     Dwell();
                     if (!ReferenceEquals(DlgReplyField.GetValue(self), before)) Interlocked.Increment(ref torn);
                 });
-                self.WithState(() => _ = other.PromptProposal(self));
+                self.WithState(() => _ = other.PromptProposal(self, Propose));
                 self.Receive(MenuFrame(2));
                 self.WithState(() => _ = other.PromptMentorship(self));
                 self.Receive(MenuFrame(2));
@@ -728,6 +1213,9 @@ public sealed class PeerSweepLockTests
                     {
                         for (int i = 0; i < Rounds; i++)
                         {
+                            // Propose's 20-minute wait (propose.lua:11-12) cleared before each cast, as the clock
+                            // would after it: this fact is about the checks' reads, not the wait.
+                            WaitOutPropose(p);
                             p.WithState(() => Cast(p, propose, null));
                             p.Receive(InputFrame(b.CharName));
                             race.Progress.Bump();
