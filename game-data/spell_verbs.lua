@@ -241,8 +241,8 @@ function verbs.arch_debuff(ctx, row)
   if ch >= 100 then ch = HOLD_CHANCE[kind] or 100 end
   if ch < 100 and not ctx:roll(ch) then ctx:debitMana(ctx.mana); ctx:say("Something went wrong."); return true end
 
-  -- holdTarget owns the boss cap, and asks canHold's questions again in case the faced tile changed since. It
-  -- returns false without spending anything.
+  -- holdTarget owns the boss cap, and asks canHold's questions again of the same target, in case its slot filled
+  -- or it left since (a target that has left is nobody). It returns false without spending anything.
   if not ctx:holdTarget(d.cat, dur, d.hold, d.blind, d.repeatMs) then return false end
   local amp = AMP_BY_SPELL[ctx.spellKey] or d.amp
   if amp > 1.0 then ctx:amplify(amp, dur) end   -- the next hit on them lands harder, then the hold breaks
@@ -269,11 +269,26 @@ end
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
 -- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
 -- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
--- archetype and the generic damage spells give a cast that finds nothing. Only an NPC: a cast at nothing still
--- charges here, as it always has.
+-- archetype and the generic damage spells give a cast that finds nothing.
+--
+-- A cast at nothing off a PvP map is refused the same way, once the caster can pay for it (Caleb, 2026-10-21,
+-- decision sheet item 9a). It used to cost 4 or 800 mana, the pose and "You cast X." for a blow that struck nothing;
+-- RTK's zap returns at a missing target before it spends (Spells/common/global_zap.lua:8-10). ctx:canStrike asks
+-- the blow's own question before the spend. On a PvP map it answers yes to everything it did before, a cast at
+-- nothing included (unaimed, it lands on its caster there). RTK differs there too; that is left for its own decision.
+--
+-- A player off a PvP map is refused before the spend too (item 9b): "You can't attack that target.", the line the
+-- blow's own PvP gate sends, which it used to send after the debit, so the refusal cost the mana, the pose and
+-- "You cast X." as well (the Poet whip's Freeze proc 800 at any player it faced in a town). RTK refuses there before
+-- any cost (global_zap.lua:26-30).
+--
+-- The target is asked only when the cast can be paid for, so a caster short of mana still hears spendMana's own
+-- line, as before, and as RTK's zap orders it (mana at global_zap.lua:14-17, before the PvP refusal).
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
-  if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
+  local mana = row.mana or 0
+  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- nothing, or a player, it may not strike here: free
+  if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true
 end
@@ -848,6 +863,8 @@ end
 -- makes self-pestilence a real defense (occupy your own 'curses' slot with a mild curse; row.amount is the stat
 -- effect, e.g. armor +5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
 -- Row: mana, category (curses/disheartens/...), stat, amount, duration. Removed later by a Cure of that category.
+-- canCurse, hasStatus, alreadyCast and applyCurse all read the cast's one target, resolved at canCurse (#343's
+-- review, F1), so the slot checked is the slot written; a target that has left since is nobody.
 -- Take-hold chance per curse category. Like HOLD_CHANCE above these are OURS: RTK's curse scripts have no
 -- failure roll at all, so a curse always stuck. A per-spell `chance` column in SpellParams.csv overrides.
 -- Note what this interacts with: because a landed curse OCCUPIES its category slot and blocks every other
@@ -858,7 +875,7 @@ local CURSE_CHANCE = { curses = 75, minorcurses = 85, disheartens = 80 }
 function verbs.curse(ctx, row)
   local mana = row.mana or 0
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:canCurse() then return false end                                    -- PvP-legal PC (incl self) or a mob
+  if not ctx:canCurse() then return false end                  -- PvP-legal PC (incl self) or a creature; not an NPC
   local by = blockedBy(function(c) return ctx:hasStatus(c) end, row.category)
   if by then ctx:say(blockMsg(by, ctx:alreadyCast(by))); return false end
   local ch = row.chance or CURSE_CHANCE[row.category] or 100
