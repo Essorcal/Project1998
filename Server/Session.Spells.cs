@@ -1825,12 +1825,22 @@ public sealed partial class Session
     }
 
     // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
-    // in a PvP map (approximates RTK canPK); a mob is always fair game; nothing faced -> a silent refusal. NPCs
-    // aren't distinguished from mobs on 4.95 (stationary mobs), so curse-on-NPC isn't specifically blocked yet.
+    // in a PvP map (approximates RTK canPK); a creature is always fair game; nothing faced -> a silent refusal.
+    //
+    // An NPC is no curse target (Caleb, 2026-10-21, decision sheet item 9c): refused here, silently and before the
+    // verb spends anything, as a cast that finds nothing is. It used to pass, so a curse from the book and the five
+    // curse procs (the Cursed, Corrupted, Tainted and Forsaken blades, the Frost sabre) charged their mana and put
+    // the curse's slot on an NPC, or lost the roll and said "Something went wrong." for the same mana. RTK never
+    // curses one: its cast dispatch runs a spell at a target only when the target has HP or is a player
+    // (rtk/src/map/clif.c:8937), and an NPC is neither, so nothing is said or spent. The resolver still ends its
+    // search at the NPC, so a curse at one never falls through to a player on its tile or, on a PvP map, to the
+    // caster.
     internal bool LuaCanCurseTarget(SpellDef sp, uint? targetId)
     {
         ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
         if (pc is null && mob is null) { LogNoTarget(sp); return false; }
+        if (mob is { IsNpc: true })
+        { Log.Info($"      -x {sp.Name}: mob {mob.Id} is an NPC — no curse target, silent refusal"); return false; }
         // The PvP-map gate covers YOURSELF too — same rule, and for the same reason, as HitPlayerWithSpell's.
         // Self-pestilence IS a real defence (occupy your own exclusivity slot with a mild curse so a worse one
         // can't land), but it is only ever worth anything where someone can curse you, so keeping it PvP-only
