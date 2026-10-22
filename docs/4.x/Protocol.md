@@ -26,6 +26,7 @@ that is called out too.
 6. [World-entry packet sequence (the working burst)](#6-world-entry-packet-sequence-the-working-burst)
 7. [Packet reference](#7-packet-reference)
 8. [The appearance system](#8-the-appearance-system)
+&nbsp;&nbsp;&nbsp;&nbsp;8.2 [Drawing a player: layers, order and frames](#82-drawing-a-player-the-four-layers-their-order-and-their-frames)
 9. [Character creation & the creation packet](#9-character-creation--the-creation-packet)
 10. [Movement model](#10-movement-model)
 11. [Speech & actions](#11-speech--actions)
@@ -74,7 +75,8 @@ Both channels use the **same framing and the same cipher** (see below). This is 
 
 ## 2. Wire framing
 
-Every packet, both directions, both channels:
+Every packet, both directions, both channels, except the two server frames listed at the end of this
+section:
 
 ```
 AA | length(u16, big-endian) | opcode(u8) | increment(u8) | body[...]
@@ -103,6 +105,25 @@ Length-prefixed strings are `len(u8) bytes[len]`, ASCII.
 Multiple packets are commonly concatenated in a single TCP segment; parse in a loop: while at least 5
 bytes and `buf[0]==0xAA`, read length, consume `3+length`, repeat. Handle partial packets by
 buffering the remainder.
+
+**Two server → client frames break this layout.** Every other server frame has the standard layout: all but
+one go through `TkPacket.Build` or `TkPacket.BuildGame` (`Protocol.Tk495/TkPacket.cs`), and that one, the literal
+name-available `0x02` in `LoginSession.NameAvailable`, is a standard frame too (increment `0x01`, a body of four
+zero bytes ciphered with it). The server splits every inbound frame as above (`TkPacket.Parse`):
+
+| Opcode | On the wire | Written by |
+|---|---|---|
+| `0x03` redirect (§4.1) | `AA len(u16BE) 03`, then one fixed-size struct: **no increment byte and no cipher**. `length` counts the opcode and the struct, `25 + nameLen` | `Protocol.Tk495/LoginRedirect.cs` `LoginRedirect.Build`; sent by `LoginServer/LoginSession.cs` `HandleLogin` (the handoff) and `Server/Session.cs` `HandleReLogin` and `HandleExitToSelect` |
+| `0x7E` welcome (§4.1) | `AA 00 13 7E 1B "CONNECTED SERVER\n"`: the layout's shape, with a constant `0x1B` where the increment goes, but the text is **not ciphered** | `Protocol.Tk495/Welcome.cs` `Welcome.Bytes`; sent on connect by `LoginServer/LoginSession.cs` `RunAsync`, and by `Server/Session.cs` `RunAsync` on login-port connections |
+
+A reader that takes an increment from every frame reads the redirect one byte late (`LoginProbe/Program.cs`
+reads the reversed address from raw byte 4, straight after the opcode). The client skips the decipher for
+`0x03` (receive paths testing the opcode at `0x477e1e` and `0x4780fd`), but none of its five decipher sites
+exempts `0x7E`, so it deciphers the welcome text with increment `0x1B`; logins work with the frame as sent.
+Fixed increments are not exceptions, since the field is "whatever the sender put there": the login channel's
+`0x02` replies always carry `0x02` (`LoginSession.SendStatus`, `SendMessage`) or `0x01` (the name-available
+frame in `LoginSession.NameAvailable`). The client's `0x10` arrival keeps the standard header; only its body is
+plaintext (§3; `Session.HandleArrival` reads the body as received).
 
 ---
 
@@ -171,7 +192,8 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    ```
    AA 00 13 7E 1B "CONNECTED SERVER\n"
    ```
-   (opcode `0x7E`, then the ASCII string.) The client expects this immediately on connecting to 2000.
+   (opcode `0x7E`, a constant `0x1B` where the increment goes, then the ASCII string, not ciphered; §2
+   lists it among the frames that break the layout.) The client expects this immediately on connecting to 2000.
 
 2. **Client → server `0x62`** — client signature, body `"baram\0"`. (The client identifies as the
    "baram" engine.) No meaningful reply required.
@@ -211,9 +233,13 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    Both processes share one logger (`Shared.Core/Log.cs`) and read that variable the same way — only the
    default differs, and the login server's is off.
 
-   **Server → client `0x03` (handoff):** tell the client where the game server is. Body layout
+   **Server → client `0x03` (handoff):** tell the client where the game server is. **The envelope is an
+   exception to §2:** `AA len(u16BE) 03` is followed directly by the struct below, with **no increment byte**
+   and **no cipher**, and the client reads it as **one fixed-size struct** (`Protocol.Tk495/LoginRedirect.cs`
+   `LoginRedirect.Build`, the only writer; the same struct also sends a game client back to login). Struct
    (as implemented and confirmed working):
    ```
+   AA  len(u16BE)  03             // envelope: len = 25 + nameLen, no increment follows
    ip[3] ip[2] ip[1] ip[0]        // 4 bytes, IP octets REVERSED (e.g. 127.0.0.1 -> 01 00 00 7F)
    port(u16, big-endian)          // game server port, e.g. 2005 -> 07 D5
    17 00 09                       // (constants observed in the working handoff)
@@ -1018,8 +1044,8 @@ layout:**
 | Byte | Meaning | Notes |
 |---|---|---|
 | `[0]` | **Body / sex** | `0` = male, `1+` = female. |
-| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
-| `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
+| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), `2` and `6`+ = **no sprite (blank)** (`0x432364`). Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). There is no separate horse sprite: the mounted poses of the worn body art (`Body.epf` pose numbers 80–91) are horse and rider in one frame, with the head drawn on top (§8.2). |
+| `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head, one per pose number of §8.2; pose 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor` **when that is a real ramp (0..9)**, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. See the second ⚠ below. |
 | `[5]` | **Weapon** | **FAMILY-RANGED, not a flat id — see the ⚠ below.** `0x00..0x7F` = Sword.epf art, `0x80..0xBF` = Spear.epf art−0x80, `0xC0..0xDF` = Bow.epf (no 4.95 art — empty hand), `0xE0..0xFE` = Fan.epf art−0xE0. **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
@@ -1027,7 +1053,8 @@ layout:**
 
 > **⚠ Byte `[4]` is a RAMP SHIFT on the body layer, and it must carry the armor's own `ItmLookColor`
 > (RE'd end-to-end 2026-08-07).** The real player draw is **`0x432320`** (reached from the entity draw at
-> `0x462999`/`0x462a2e` → `call 0x432320`). It resolves the four layer frames via `0x433040`, fetches each
+> `0x462999`/`0x462a2e` → `call 0x432320`). It resolves the four layer frames via `0x433040` (which layers,
+> in what order, and how each frame is computed: §8.2), fetches each
 > layer's palette from its table record (`rec+4`) through `0x467470(kind, palIdx)`, and **remembers which
 > loop index is the body layer in `[ebp+0x28]`**. At blit time:
 > ```
@@ -1167,8 +1194,8 @@ value in `[1]` (the form byte) risks blanking the whole sprite — that was the 
 The parser `0x436120` stores the 7 bytes into an entity sub-struct at offsets +4,+5,+7,+8,+9,+A,+B
 (with a special case: if byte[3]==0 it defaults to `byte[0]!=0`). The core entity/body is built by
 `0x44d7d0` (create-entity) directly (ctor `0x462ec0`/reposition `0x44c660` for self — see below); the
-appearance pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution lives deep in the
-sprite archives and was **not** cheaply static-RE-able — it was faster to decode by observation.
+appearance pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution, once decoded only by
+observation, is now read from the binary in §8.2.
 
 ### 8.1 The floating nameplate marker — leaked every appearance refresh, patched out (2026-07-27)
 
@@ -1203,6 +1230,128 @@ File offset == RVA == `0x63380` for this exe. Requires an elevated terminal (`Pr
 backs up the original exe first (`re/*.prenametagpatch.bak`, gitignored — never commit a full client
 binary). `--check`/`--revert` also supported. See `memory/nexustk-495-nametag-litter.md` (session memory)
 for the full investigation trail and the Frida tracer (`re/frida_nametag.py`) used to find it.
+
+### 8.2 Drawing a player: the four layers, their order and their frames
+
+*(Read statically from the 4.95 binary and its own `NexusTK.dat` and `Inter.dat`, 2026-10-21. Composites
+built from these rules alone with `re/render_player.py` (every facing standing and walking; the attack with
+sword, spear and fan, with and without a shield; the mount; the other actions; the emotes; the ghost; both
+sexes, armored and not) all draw as whole characters, weapon in hand and shield on the arm.)*
+
+**Inputs.** Peers and the self draw through one method, `0x462950` (slot `+0x70` of vtable `0x4cd098`; the
+self entity's vtable holds the same pointer at `0x4cf05c`). When `[entity+0x178] == 0` it calls `0x432320`
+(`this` = the player-sprite tables at `[0x501cf8]`) with:
+
+- the 12-byte look at `[entity+0x178]`, laid out as `0x436120` parses it: `+4` sex `[0]`, `+5` form `[1]`,
+  `+7` face `[2]`, `+8` armor `[3]`, `+9` colour `[4]`, `+0xA` weapon `[5]`, `+0xB` shield `[6]`. **The parser
+  rewrites one byte: an armor `[3]` of 0 becomes 1 when sex `[0]` is not 0** (`0x436160`–`0x43616c`: `test al,al`,
+  `jne` at `0x436162`, then `setne` on the sex byte into the armor byte). Body art 0 is the male base body and
+  art 1 the female one, and the server sends armor 0 for every unarmored character (`Session.ApplyAppearance`
+  on unequip, and `ArmorWireLook` for a look with no 4.95 body), so a client that skips this rule draws every
+  unarmored female on the male body. Nothing later in the draw reads the sex byte: `0x433040` never reads
+  look `+4`;
+- the facing **`d` = `[entity+0x18d]`: 0 = N (back view), 1 = E (faces right), 2 = S (front view), 3 = W
+  (faces left)**, the walk encoding of §10 and the byte the `0x11` turn stores (`0x462410`);
+- the walk phase `ph` = `[entity+0x18e]`: 0 standing, then `(ph + 1) & 3` per walk tick (`0x48eef4` for the
+  self, `0x4627c1` for peers);
+- the running action at `[entity+0x188]` (null when idle). The `0x1A` handler `0x4503a0` builds it through
+  `[vtbl+0x78]` = `0x462460` → `0x4612f0`, which keeps the action **type `t`** at `+0x108` and the action
+  **frame `f`** at `+0x10f`. The tick `0x461800` steps `f` from 0 to `n − 1`, one step per `time × 10`, and ends
+  the action when `f` reaches `n`; `n` (`+0x110`, set at `0x46133f`–`0x461361`) is 2 for `t` 1 (attack) and
+  2 (throw), 4 for 22 (dance), 1 for 3–21, 23 and 24, and 0 above 24.
+
+**The layers.** `0x433040` turns those inputs into four frame numbers (`0xFFFF` = none) and a four-letter
+draw order; `0x432320` loads each frame (`0x430de0`) from the archive below (names in UTF-16 in the exe):
+
+| Letter | Layer | Archive | Palette: the table record's `Palette`, through `0x467470` |
+|---|---|---|---|
+| `b` | body (armor `[3]` after the parser's rule: 0 with a non-zero sex is 1) | `BODY.EPF` (`0x4f1bf4`) | `Body.tbl[armor]`; the only layer the `[4]` ramp shift touches (⚠ above) |
+| `h` | head (face `[2]`) | `HEAD.EPF` (`0x4f1be0`); **`EMOTION.EPF`** (`0x4f1c08`) while `t` is 11–24 (`0x4323f4`); **`GHOST.EPF`** (`0x4f1c20`) for form 1 | `Head.tbl[face]`; the ghost takes `GHOST.PAL` by name (`0x432541`) |
+| `w` | weapon `[5]` | `SWORD.EPF` / `SPEAR.EPF` / `FAN.EPF` by the `0x432fe0` class (weapon ⚠ above); a bow loads nothing | `Sword` / `Spear` / `Fan.tbl[art]` |
+| `s` | shield `[6]` | `SHIELD.EPF` (`0x4f1bc8`) | `Shield.tbl[shield]` |
+
+**The order.** The draw loop (`0x432821`) takes the letters left to right, so **the first letter is the
+bottom layer**. `0` marks an empty place, and a layer whose letter is absent is not drawn even when its frame
+exists. The string comes from **`DrwOrder.tbl`, an entry of `Inter.dat`, not `NexusTK.dat`** (the resource
+lookup `0x416f00` searches Inter.dat's directory first): 100 records of four letters and a `;` (502 bytes with a
+trailing CRLF; `0x431a62` counts `size / 5`), indexed by the pose number `p` below (`0x432f90`; a `p` outside
+0–99 gives `bh00`). The emotes `t` 11–19, 21 and 23 use the literal `bhws` instead (`0x43389d`, `0x4338fe`).
+
+**The pose number and the frames.** One pose number `p` picks the head and the body frame together: **head =
+`Head.Starting + p`, body = `Body.Starting + p`** (16-bit adds). A head art is a block of 100 frames
+(`Starting = 100 × id`, 90 heads) and a body art a block of 104 (`Body.tbl`: 67 bodies, `Starting = 104 × id`).
+Weapon and shield arts are 20-frame blocks (`Starting = 20 × art`) with their own index `q`. With the
+sub-frame `sub = {0, 1, 0, 2}[ph]` (`0x4cb508`) and the weapon class `c` from `0x432fe0` (0 = none `0xFF`,
+1 sword, 2 spear, 3 bow, 4 fan):
+
+| What is playing (branch) | `p` | weapon and shield `q` |
+|---|---|---|
+| nothing: standing or walking (`0x433164`) | `{0, 12, 32, 52, 12}[c] + 3d + sub` (`0x4cb510`) | `3d + sub` |
+| nothing, form 3 mounted (`0x4330cb`) | `80 + 3d + sub` | none |
+| `t` 1 attack (`0x43336b`) | `{24, 24, 44, 64, 24}[c] + 2d + f` (`0x4cb524`) | `12 + 2d + f` |
+| `t` 2 throw, 3 shot | `24 + 2d + f`, `64 + 2d + f` | none |
+| `t` 4 pick up, 5 drop | `76 + d` | none |
+| `t` 6 magic | `72 + d` | none |
+| `t` 7 drink or smoke and 8 eat, 9 respect, 10 triumph | `92`, `96 + d`, `93` | none |
+| `t` 11–19, 21, 23 (emotes) | body `3d` with order `bhws`; head = `EMOTION.EPF` frame `20 × face + (t − 11)` (for `t` 23, `+ 15`) | none |
+| `t` 20 shrug, 22 dance, 24 kiss | `95`, `100 + f`, `96 + d`; head = `EMOTION.EPF` frame `20 × face + 9`, `+ 11 + f`, `+ 16 + d` | none |
+| `t` above 24 | all four frames `0xFFFF`: nothing is drawn | none |
+
+The branch for each `t` is the jump table behind `0x433350`. As a frame map: a weapon or shield block holds
+the idle and walk frames at 0–11 (three per facing) and two swing frames per facing at 12–19 (the odd ones are
+the arcs); a head or body block holds unarmed 0–11, one-handed (sword, fan) 12–23, the swing 24–31, spear
+32–43, the spear thrust 44–51, bow 52–63, the bow shot 64–71, magic 72–75, pick-up and drop 76–79, mounted
+80–91 and single poses 92–99, and a body block also the dance at 100–103. `EMOTION.EPF` holds 20 frames per
+face (1800 = 90 × 20).
+
+**Which case wins** (`0x433040`, in this order): form 2 draws nothing (`0x432320` already returns for form 2
+and 6 and up, `0x432364`); form 1 draws **the ghost alone**, order `h`, `GHOST.EPF` frame = face (90 frames, one
+per face, no facing) and no body, weapon or shield (`0x43308b`, `0x4323db`); then **any action, ahead of the
+mount** (`0x4330b8`), so a mounted rider is drawn dismounted while an action or emote plays; then form 3; then
+forms 0, 4 and 5 alike (5 changes only the blit, below).
+
+**The orders by facing.** `DrwOrder.tbl` read at those `p`, bottom layer first (a walk shows the sub-frames
+0, 1, 0, 2):
+
+| Pose | N (`d` 0) | E (1) | S (2) | W (3) |
+|---|---|---|---|---|
+| unarmed, sub-frame 0 / 1 / 2 | `wbhs` / `wbhs` / `sbhw` | `sbhw` | `bhsw` / `sbhw` / `wbhs` | `wbhs` |
+| sword or fan, sub-frame 0 / 1 / 2 | `wbhs` / `wbhs` / `swbh` | `sbhw` | `bhsw` / `sbhw` / `bhsw` | `wbhs` |
+| attack (none, sword, fan), `f` 0 / 1 | `sbhw` / `wbhs` | `sbhw` / `wsbh` | `wbhs` / `sbhw` | `wbhs` / `sbwh` |
+| spear: standing, walking, thrusting | `wbh0` | `bhw0` | `bhw0` | `wbh0` |
+
+Every other pose draws the body under the head (`bhw0`, `wbh0` or `bh00`), except magic facing E and W (`p` 73
+and 75, `whb0`), where the body frame's raised hands cover the face. In those poses the `w` and `s` draw nothing:
+mounted and actions 2–24 set both frames to `0xFFFF`, and the bow poses 52–71 have no weapon art and no `s`.
+**No spear or bow pose has an `s`, so a shield is never drawn with a spear or a bow** even though its frame is
+computed and `SHIELD.EPF` is loaded for it; nor is one drawn mounted or during actions 2–24.
+
+**What is skipped.** A layer draws only if its letter is in the order and its frame loaded (the `[obj+4]`
+tests at `0x432522`, `0x432584`, `0x4325d2` and `0x432690`):
+
+- weapon `0xFF` and shield `0xFF` give frame `0xFFFF` (`0x43324b` and `0x4331fc` idle, `0x43344c` and
+  `0x433405` attack); a bow (`0xC0`–`0xDF`) loads no archive but still selects the bow body poses;
+- **a face of 90 or more**: the head table's default record has `Starting = 0xFFFFFF01` (`0x431dad`), so the
+  frame is `0xFF01 + p`, past `Head.epf`'s 9000: no head. Such a face has no `EMOTION.EPF` or `GHOST.EPF`
+  frame either;
+- an armor, weapon art or shield art past its table's count is **not** skipped: those tables' default record
+  has `Starting 0` and `Palette −1` (loaders `0x431f60` and `0x432140`), so art 0's frames draw, in whatever
+  palette `0x467470` falls back to (`0x467460`). The server never sends one (`ArmorWireLook`,
+  `WeaponWireLook`, `ShieldWireLook`).
+
+**Placing and blitting.** The layers share one space: every EPF frame box (top, left, bottom, right) is signed
+from the same origin, so a composite is each frame drawn at its own box. `0x432320` takes the union of the four
+boxes (`0x4240c0`, `0x4241d0`) and offsets each layer by its box within it. Every form but 5 blits through
+`[renderer+0x94]`, and the body through the tinted `[renderer+0x98]` when `[4]` is not 0; form 5 blits every
+layer through `[renderer+0xac]` with a 0.7 factor (`0x3f333333`), keeping the body's tint. The ramp shift
+reaches every body pixel at index `0x30` or above, so on a mounted body it also shifts the horse's pixels
+at those indices.
+
+**Not settled here.** A non-zero `[entity+0x1a8]` sends every layer through `[renderer+0x9c]` instead, and a
+pre-pass gated by `0x44f600` draws the same order through `[renderer+0xa0]` first; neither is decoded. None of
+this section was compared with a running client: a live look (or a Frida read of `0x433040`'s outputs) would
+confirm it, in particular the rider drawn dismounted during an action and what the `Palette −1` fallback looks
+like.
 
 ---
 
@@ -1600,27 +1749,76 @@ RTK gates four things on `paralyzed || sleep`: `clif_parsewalk`, `clif_noparsewa
 walk parser; on 4.95 it is a separate `0x11`, and refusing it needs **no** snap-back — a turn is
 fire-and-forget with no ack pending, so simply not broadcasting it is enough.
 
-### 10.1 Fast-move flag — read it PER WALK, do not track the toggle
+### 10.1 Choosing the mode: the session's fast-move flag, not a per-walk bit
 
-The client marks each walk with its mode in the **high bit of the step counter** (`dec[1] & 0x80`):
-* **set** → fast-move ON (client-authoritative)
-* **clear** → fast-move OFF (server-authoritative)
+**Corrected 2026-10-21 to what the server does** (`Server/Session.Movement.cs` `HandleWalk`; the client side
+is in [`Fast-Move.md`](Fast-Move.md)). This section used to say to read the mode from the high bit of each
+walk's step counter (`dec[1] & 0x80`) and not to track the toggle. The server does the opposite, because that
+bit is never set on the wire: reading it per walk sent almost every step down the slow path (`HandleWalk`
+quotes the production logs: 32,924 of 33,219 commits). In the binary the bit belongs to a client walk handler,
+`0x497290`, which requires `0x80` on its direction byte and strips it, and only when the fast-move flag
+`[state+0x451]` is 1 (`0x4972e9`–`0x4972ff`). That the client never puts it in the network walk packet rests on
+the server's logs; it is not settled from the binary (unconfirmed).
 
-Read this per-packet. Do **not** try to track the `0x1b`/`09` toggle notification and a startup default —
-the client boots fast-move OFF, persists its state across launches, and never reports state on connect, so
-any default guess plus a toggle can invert and you end up sending corrections into a client-authoritative
-walk (→ the character "slides" with no animation). The per-walk bit is authoritative and self-correcting.
+- **The mode is one session flag, `Session._fastMove`, kept in lockstep with the client's runtime flag
+  `[state+0x451]`:**
+  - at world entry it is restored from the character's `SettingFlags` bit 9 (`Session.HandleArrival`);
+  - every `0x08` stats packet carries it as body byte 46 (`Session.SendStats`), which the client copies into
+    `[state+0x451]` (`0x48fd3a`), so the entry burst sets the client before its first step and every later
+    stats packet re-asserts it;
+  - the client's `0x1b` setting `0x09` (sent after the client flips its own flag) flips `_fastMove`, persists
+    bit 9 and answers with the minitext `Fast Move        :ON` or `:OFF` (`Session.HandleSetting`).
+- **`HandleWalk` reads that flag:** `clientFast = FastMoveTrustToggle ? _fastMove : (dec[1] & 0x80) != 0`.
+  `FastMoveTrustToggle` is the server knob `P1998_V495_FASTMOVE_TRUST_TOGGLE`, **on by default**. At 0 the
+  server reads the per-walk bit again and sends stats byte 46 as 0, so both sides fall back to the slow,
+  server-authoritative mode together.
 
-> Not to be confused with the *checkbox preference*: `SettingFlags` bit 9 IS persisted, purely so the Options
-> menu's Fast Move box seeds correctly across relog (the `0x23` edge-trigger contract, §"the Options menu").
-> That bit never drives movement — the per-walk high bit above does. Two separate concerns, same name.
+The client half of the old text stands: the client boots its flag OFF and never reports its state on connect,
+which is why the server carries the persisted value and sets the client from it. A new character's
+`SettingFlags` include bit 9 (`Shared/Character.cs`), so a new player starts in the fast mode. The same bit
+seeds the Options menu's Fast Move box (§7.1, the Options menu).
 
-### 10.2 Fast-move ON = client-authoritative (the smooth path) ✅
+### 10.2 One step as the server handles it: source tile, the two acknowledgements, corrections, pacing ✅
 
-The client moves, animates the leg cycle, AND scrolls its own camera locally. **Send the walker NOTHING on
-a good step.** Reserve `0x04` for *corrections only* (blocked tile or a position the server rejects — snap
-the client back). This is the smooth, self-paced walk; realm-center (§10.5) works in this mode. Confirmed
-live: fast-move-ON walks play a full `frameCtr 0→3` animation with zero server packets.
+**Corrected 2026-10-21** (`HandleWalk`). This section used to say to send the walker nothing on a good fast
+step. Half of that stands: in fast mode the client draws the step itself, legs and camera. But its own
+key-driven step leaves the walk gate latched until a `0x04` arrives, so with no answer it stalls (the comment at
+`HandleWalk`'s fast branch puts the stall at `frameCtr` 2, the "quarter-step" symptom). Per walk (`0x32` or
+`0x06`; `dir` at `dec[0]`, the client's believed tile at `dec[2..5]`), in this order:
+
+1. **Holds.** Asleep or paralyzed: a `0x04` at the server's own tile (`SendXy`) and nothing else (§10.0).
+2. **Source and destination.** The source is the client's reported tile when it lies on the map, otherwise the
+   server's position; the destination is one tile from the source in `dir` (0 N, 1 E, 2 S, 3 W). The facing
+   is set from `dir`.
+3. **Warps and scripted doorways** on the destination win over collision (`EnterMap` sends the
+   `0x15`/`0x04`/`0x33` entry trio). A warp whose entry requirement fails is refused like a block, below,
+   with a minitext.
+4. **The step** (`World.TryMovePlayer`). Off the map, terrain (the ground pass flag, or the `SObj.tbl` wall for
+   this heading, §12), a tile a Human Barrier has closed to this player (`BlockReason.Barrier`), or an occupant
+   (a mob or another player, under the ghost rules in `TryMovePlayer`) refuses it. **A refused step is the
+   correction, in either mode:** the server sets its position to the source tile and sends `0x04` there with
+   the normal view anchor (`SendXy`), which cancels the client's prediction.
+5. **A good step.** The server's position becomes the destination. Peers on the map get `0x0C` naming the
+   **source** tile (`MoveEntity`, because the 4.95 `0x0C` walk ends one tile past the tile it names). The
+   viewport sync (peers, mobs, ground items) and the terrain push (`StreamViewport`, §10.7) run. Then the
+   walker gets one acknowledgement:
+
+| Mode | Acknowledgement | Its coordinates |
+|---|---|---|
+| fast (`clientFast`) | **`0x04` with both view anchors `0xFFFF`** (`Session.SendXyCommitNoScroll`) | the **destination** |
+| slow | **`0x26` self-walk** (`Session.SendSelfWalk`, §10.3) | the **source** tile, with the view anchor for the new position (`ViewAnchor`) |
+
+The fast `0x04` releases the step without touching the camera the client has already scrolled: the `0x04`
+handler `0x44faf0` runs the camera function `0x44c660` and then the walk completion `0x44b140`; an anchor
+outside the viewport fails the bounds gate `0x44c8f0`, so the camera code does nothing, while `0x44b140` moves
+the self's logical tile to the destination and clears the walk-active gate (the comment on
+`SendXyCommitNoScroll`, `Server/Session.Entity.cs`). The client draws the legs and the scroll itself, and
+realm-center (§10.5) is unaffected.
+
+**Pacing.** On these default paths the server adds no delay and no step-rate limit; the acknowledgement goes
+out at once and the client, which waits for it (§10.0), sets the pace. The delays `P1998_V495_ACK_MS` (360) and
+`P1998_V495_WALK_MS` (200) belong only to the legacy drive modes, `P1998_V495_SELF_MOVE` other than its default
+7 and `P1998_V495_SLOW_MOVE` other than its default 5. (A 5.33 client always gets the `0x26`.)
 
 ### 10.3 Fast-move OFF = server-authoritative — answer with `0x26` self-walk ✅
 
@@ -1737,9 +1935,24 @@ clients pack passability differently:
 | 5.33 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ tile(u16BE) pass(u16BE) obj(u16BE) } × w·h` |
 | 4.95 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ ground(u16BE) object(u16BE) } × w·h` |
 
-4.95's cell is the same shape the door cell-patch already sends (`ground` = tile in the low 14 bits,
-passability in the top 2 — `MapData.GroundWord`), so a streamed cell is byte-identical to what the client
-would have read from its own copy. No leading flag byte on either client. Receive handler `0x44fb90` writes
+4.95's cell is the same shape the door cell-patch already sends. For a cell the server has not overridden, its
+`ground` is the `.map` file's own ground word, sent unchanged (`MapData.GroundWord` → `TileTranslation.Ground`,
+which returns a 4.95 word as is; `MapCell.Write` packs it), so the streamed cell is byte-identical to what the
+client would have read from its own copy. **That word is a two-sheet tagged union, not a tile with flags on
+top** (§12; `Server/TileTranslation.cs`): `0` draws nothing, below `0xC000` it is `TileA[v − 1]`, from `0xC000`
+up it is `TileB[v − 0xC000]`, and the top two bits double as the passability flag, because every blocked cell is
+on sheet 2. Masking the word to 14 bits before using it as a tile was the server's own rendering bug: it turned
+every sheet-2 cell into an unrelated sheet-1 tile.
+
+**An overridden cell can change sheet on the wire.** The server keeps each cell as a 14-bit index and the 2-bit
+pass flag and re-packs them as `(index & 0x3FFF) | (pass << 14)` (`MapData.GroundWord`, `MapCell.Write`), so a
+cell whose pass flag the server has changed goes out on the other sheet: pass 0 on a sheet-2 cell sends a
+sheet-1 word, pass 3 on a sheet-1 cell a sheet-2 word. That happens for an authored `game-data/MapCells.csv` row
+that sets `Pass` (six cells today), a `Doors.csv` ForceOpen tile (none today), a persisted runtime cell whose
+pass changed, and, while a GM has `@clip` on, every blocked cell (`Session.SendMapRect` streams pass as 0, so
+each sheet-2 cell goes out as sheet 1 until clip is turned off and the window is re-sent).
+
+No leading flag byte on either client. Receive handler `0x44fb90` writes
 each cell into the client's **live map array** and then redraws the patched rect, so the write itself is not
 viewport-gated and `height > 1` is fine — the door path only ever sends one row because that's all a door
 needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
@@ -4851,8 +5064,22 @@ Eye reveals these tiles (see above).
 Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
 
 - **Headerless.** `width × height` cells, **4 bytes per cell**, row-major.
-- Each cell = `groundTile(u16, little-endian) objectTile(u16, little-endian)`.
+- Each cell = `ground(u16, little-endian) object(u16, little-endian)`.
 - Example: `TK32` = 33×33 = 4356 bytes.
+- **The ground word `v` is a tagged union over two tile sheets** (corrected 2026-10-21; `Server/TileTranslation.cs`),
+  decoded by the 4.95 ground blitter `0x431820`:
+
+  | `v` | draws | decided at |
+  |---|---|---|
+  | `0` | nothing | `0x43184a` |
+  | `1` … `0xBFFF` | `TileA[v − 1]` (sheet 1) | `0x431853` (`cmp ax, 0xc000`), `dec eax` at `0x4318dd` |
+  | `0xC000` … | `TileB[v − 0xC000]` (sheet 2) | `sub eax, 0xc000` at `0x431861` |
+
+  The two bases are the `base` field (u16 after `count` and `palCount`) of `TileA.tbl` (`0x0001`) and
+  `TileB.tbl` (`0xC000`) in `NexusTK.dat`. TileA has 9,922 frames, so a sheet-1 word never reaches `0x4000`;
+  TileB has 8,938. It is **not** a tile in the low 14 bits with passability on top: masking with `0x3FFF`
+  turns every sheet-2 cell into an unrelated sheet-1 tile, and sheet 2 is 31.5% of the 1,926,803 cells in the
+  2,031 maps under `game-data/maps` (no word there lies in `0x4000`–`0xBFFF`).
 
 The server's `0x15` (enter-map) tells the client which map id + dimensions to load; the client reads
 the `.map` file itself. Pick a map that actually has content: `TK27` is a uniform "void" tile (renders
@@ -4861,9 +5088,14 @@ black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
 **Passability — ground pass flag PLUS `SObj.tbl` directional object-walls (corrected 2026-07-26).** Two
 layers combine:
 
-1. **Ground pass flag.** A cell is pass-solid iff the **top 2 bits of the ground `u16`** are set (value
-   **`3` = solid**, `0` = walkable; `1`/`2` never occur). Water, cliffs, out-of-bounds, and *some* wall
-   footprints are baked here.
+1. **Ground pass flag = sheet 2.** The **top 2 bits of the ground word** double as the passability flag:
+   **`3` = solid**, `0` = walkable, and `1`/`2` never occur. Since sheet-1 words stay below `0x4000` and sheet-2
+   words start at `0xC000`, "solid" is exactly "drawn from sheet 2": **every blocked cell is on sheet 2, and
+   the server treats every sheet-2 cell as blocked.** The server splits the word into this flag and a 14-bit
+   index (`MapData.Load`), collides on the flag (`MapData.Solid`) and joins the two again for the wire
+   (`MapData.GroundWord`). That gives back the file's word exactly for every cell the server has not
+   overridden; a cell whose pass flag it has changed goes out on the other sheet (§10.7). Water, cliffs,
+   out-of-bounds, and *some* wall footprints are baked here.
 2. **`SObj.tbl` directional object flags.** The object `u16` indexes `SObj.tbl`; each object has a 1-byte
    **directional wall flag** — `UP=1 DOWN=2 RIGHT=4 LEFT=8` (RTK `map.h`). A move that *enters* a cell while
    heading a given way is blocked if the destination object has that side's bit (`clif_object_canmove`:
