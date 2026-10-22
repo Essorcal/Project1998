@@ -248,16 +248,22 @@ public sealed partial class World
     // and never through the two throttles above: each has one owner, the tick thread, and neither is touched.
 
     /// <summary>One spawn row that threw while a player entered a map: the row fault as the guard recorded it
-    /// (a <see cref="PhaseFault"/> whose <see cref="PhaseFault.Phase"/> names the kind of row), and whether
-    /// this entry writes its stack. That second half needs a record shared between entries, so it is decided
-    /// under <c>_lock</c> by <see cref="SpawnDirector"/>, where every entry already is; see
-    /// <see cref="LogEntryFaults"/> for what the two cost the log.</summary>
-    internal readonly record struct EntryFault(PhaseFault Row, bool Stack);
+    /// (a <see cref="PhaseFault"/> whose <see cref="PhaseFault.Phase"/> names the kind of row), whether
+    /// this entry writes its stack, and the map the player entered. The stack half needs a record shared
+    /// between entries, so it is decided under <c>_lock</c> by <see cref="SpawnDirector"/>, where every entry
+    /// already is; see <see cref="LogEntryFaults"/> for what the two cost the log.
+    ///
+    /// <para><paramref name="Entered"/> is what the log names. For a group member and a map's own point it is
+    /// the row's map, <see cref="PhaseFault.Map"/>. A boss filed under its rooms' maps (#333) is asked about
+    /// under its row's map (map 4 for the sixty map-4 bosses), which nobody enters, so its fault names the
+    /// entered map and the row's map both.</para></summary>
+    internal readonly record struct EntryFault(PhaseFault Row, bool Stack, ushort Entered);
 
     /// <summary>
     /// Write one map entry's spawn row faults, on the entering session's thread, after <c>_lock</c> is
     /// released. Every fault is written ONCE for the entry, at Error, naming the row's kind, its creature
-    /// (content key and id) and the map: in full, with the exception and its stack, when its stack is due —
+    /// (content key and id) and the map entered (and, for a boss filed under its rooms' maps, its row's map
+    /// too: <see cref="EntryFault.Entered"/>): in full, with the exception and its stack, when its stack is due —
     /// the first time the fault is met on any entry, an hour after its last stack, or the first time after an
     /// <c>@reload</c> — and otherwise named, with a count, on ONE line for the whole entry.
     ///
@@ -272,13 +278,14 @@ public sealed partial class World
     {
         Debug.Assert(!HoldsWorldLock, "map-entry faults are formatted after World._lock is released, never under it");
 
-        List<(PhaseFault First, PhaseFaultKey Key, int Count)>? repeats = null;
-        foreach (var (f, stack) in faults)
+        List<(EntryFault First, PhaseFaultKey Key, int Count)>? repeats = null;
+        foreach (var e in faults)
         {
+            var f = e.Row;
             int defId = f.Def?.Id ?? 0;
-            if (stack)
+            if (e.Stack)
             {
-                Log.Error($"map entry: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {defId}) on map {f.Map} is skipped, the entry and the map's other spawns go ahead (a repeat on a later entry is named, not re-logged)",
+                Log.Error($"map entry: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {defId}) on map {EntryMapOf(e)} is skipped, the entry and the map's other spawns go ahead (a repeat on a later entry is named, not re-logged)",
                     f.Error);
                 continue;
             }
@@ -287,7 +294,7 @@ public sealed partial class World
             repeats ??= new();
             int i = 0;
             while (i < repeats.Count && !repeats[i].Key.Equals(key)) i++;
-            if (i == repeats.Count) repeats.Add((f, key, 1));
+            if (i == repeats.Count) repeats.Add((e, key, 1));
             else repeats[i] = (repeats[i].First, key, repeats[i].Count + 1);
         }
         if (repeats is null) return;
@@ -295,11 +302,18 @@ public sealed partial class World
         var sb = new StringBuilder("map entry: spawn rows still throwing — each skipped with no stack (each fault's stack is logged at its first throw on an entry, and again hourly): ");
         for (int i = 0; i < repeats.Count; i++)
         {
-            var (f, k, n) = repeats[i];
+            var (e, k, n) = repeats[i];
             if (i > 0) sb.Append(", ");
-            sb.Append(RowKind(k.Phase)).Append(" '").Append(f.Def?.Key).Append("' (creature id ").Append(k.DefId)
-              .Append(") on map ").Append(k.Map).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
+            sb.Append(RowKind(k.Phase)).Append(" '").Append(e.Row.Def?.Key).Append("' (creature id ").Append(k.DefId)
+              .Append(") on map ").Append(EntryMapOf(e)).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
         }
         Log.Error(sb.ToString());
     }
+
+    /// <summary>The map an entry fault is named under: the map entered, and the row's map as well when the two
+    /// differ, which is only a boss filed under its rooms' maps (#333, <see cref="EntryFault.Entered"/>). Its row
+    /// is on map 4 for the sixty map-4 bosses, a map nobody enters, so naming that alone would send whoever reads
+    /// the line to the wrong map.</summary>
+    private static string EntryMapOf(EntryFault e) =>
+        e.Row.Map == e.Entered ? e.Entered.ToString() : $"{e.Entered} (a room boss whose row names map {e.Row.Map})";
 }

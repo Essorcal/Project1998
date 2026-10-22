@@ -388,12 +388,13 @@ public sealed partial class World
             if (rows is null) return null;                      // the ordinary entry: nothing threw
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var faults = new List<EntryFault>(rows.Count);
-            foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now)));
+            foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now), mapId));
             return faults;
 
             // One point on the map's first entry, for the map's own points and the bosses filed under it alike.
-            // rosterMap is what Materialize is asked about and what a fault names: the entered map for its own
-            // points, the row's map for a boss filed under its rooms.
+            // rosterMap is what Materialize is asked about and what a fault records and is throttled under: the
+            // entered map for its own points, the row's map for a boss filed under its rooms. The log names the
+            // entered map as well (EntryFault.Entered), so a boss's fault is not reported against map 4.
             void OnFirstEntry(ushort rosterMap, Spawn sp)
             {
                 // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending

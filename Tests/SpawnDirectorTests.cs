@@ -521,6 +521,8 @@ public class SpawnDirectorRoomTests
     private const ushort WoolenSqueeze2 = 3472, WoolenSqueeze3 = 4472;   // divine_sheep's and sheep_avenger's 10-wide rooms
     private const ushort DragonRowMap = 60209;   // the Jeweled Dragon fact's synthetic point's row
     private const ushort DragonsGold3 = 4254, DragonDeath3 = 4253, JeweledDragon3 = 4258;   // spirit_dragon's rooms' maps
+    private const ushort BrokenRowMap = 60210;   // the entry-fault fact's synthetic point's row
+    private const ushort BullsSong2 = 3175, OxPath2 = 3178;   // divine_ox's two rooms, 3175:12:21 and 3178:15:20
 
     /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
     private static T Locked<T>(World world, Func<T> read)
@@ -550,7 +552,7 @@ public class SpawnDirectorRoomTests
                                           .Select(m => (m, room)))
             .GroupBy(t => t.m.Id).Select(g => g.First()).ToList();
 
-    private static MobDef Creature(int id, string key) =>
+    private static MobDef Creature(int id, string key, int moveTime = 1_000_000) =>
         new()
         {
             Id = id,
@@ -561,7 +563,7 @@ public class SpawnDirectorRoomTests
             Hp = 100,
             Exp = 0,
             Level = 1,
-            MoveTime = 1_000_000,
+            MoveTime = moveTime,
             Stationary = true,
         };
 
@@ -899,6 +901,57 @@ public class SpawnDirectorRoomTests
             world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4258
         }
         Assert.True(onJeweled > 0, $"sixty builds and none on {JeweledDragon3}; the fact pinned nothing there");
+    }
+
+    /// <summary>A room boss whose build throws on a map entry is logged under the map the player entered, with
+    /// its row's map beside it. The fault is recorded under the row's map, which is what <c>Materialize</c> is
+    /// asked about and what the entry's stack record is keyed on; for the sixty map-4 bosses that is map 4,
+    /// which nobody enters, and the line named only that (#357's review, F2).
+    ///
+    /// <para>A synthetic point on a row map nobody enters, keyed <c>divine_ox</c> (rooms on 3175 and 3178),
+    /// whose creature <c>BuildMob</c> refuses: a negative move time, as <see cref="SpawnRowGuardTests"/>' bad
+    /// group member. The first entry to 3175 writes the fault with its stack, under 3175. The first entry to
+    /// 3178 tries the point again (one that threw is neither built nor pending) and names the fault without a
+    /// stack, under 3178. Both lines name the row's map too, and both are written with the lock released.</para>
+    ///
+    /// <para>Falsified by naming the recorded map alone again (<c>World.EntryMapOf</c> returning the row's map,
+    /// the old line): red, the stack line says "on map 60210".</para></summary>
+    [Fact]
+    public void ARoomBossWhoseBuildThrowsOnEntryIsLoggedUnderTheMapEntered()
+    {
+        RoomRule("divine_ox", BullsSong2, OxPath2);
+        var world = new World();
+        var broken = Creature(990_210, "divine_ox", moveTime: -1);   // BuildMob throws for it
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(BrokenRowMap, broken, 3, 3, respawnEvery: 1));
+        var first = Seat(world, "BrokenRoomFirst", BullsSong2, (1, 1));
+        var second = Seat(world, "BrokenRoomSecond", OxPath2, (1, 1));
+
+        IReadOnlyList<LogLineSink.Entry> lines;
+        using (var sink = LogLineSink.Acquire(probe: () => world.HoldsWorldLock))
+        {
+            world.EnterMap(first, BullsSong2);
+            world.EnterMap(second, OxPath2);
+            lines = sink.Lines;
+        }
+
+        Assert.Empty(MobsOf(world, first, BullsSong2, broken));
+        Assert.Empty(MobsOf(world, second, OxPath2, broken));
+        var ours = lines.Where(e => e.Line.Contains($"(creature id {broken.Id})")).ToList();
+        Assert.Equal(2, ours.Count);   // once per entry
+        Assert.All(ours, e => Assert.Equal(LogLevel.Error, e.Level));
+        Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+        // Asserted with the whole first line in the message: xUnit's own Contains failure cuts the line short of
+        // the map it names, which is the one thing this fact is about.
+        string row = $"(a room boss whose row names map {BrokenRowMap})";
+        string stack = $"map entry: a spawn point threw — 'divine_ox' (creature id {broken.Id}) on map {BullsSong2} {row} is skipped";
+        Assert.True(ours[0].Line.Contains(stack), $"the first entry's line should carry \"{stack}\"; it reads: {ours[0].Line.Split('\n')[0]}");
+        Assert.Contains(nameof(ArgumentOutOfRangeException), ours[0].Line);
+        Assert.Contains("\n      ", ours[0].Line);   // Log.Detail's continuation: the stack is on it
+        string repeat = $"a spawn point 'divine_ox' (creature id {broken.Id}) on map {OxPath2} {row} {nameof(ArgumentOutOfRangeException)} x1";
+        Assert.True(ours[1].Line.Contains("map entry: spawn rows still throwing") && ours[1].Line.Contains(repeat),
+                    $"the second entry's line should name \"{repeat}\"; it reads: {ours[1].Line}");
+        Assert.DoesNotContain("\n", ours[1].Line);   // named, with no stack
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
