@@ -46,12 +46,13 @@ namespace Tests;
 public sealed class PeerSweepLockTests
 {
     // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62460,
-    // 62467-62469 and 62485-62487 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the
+    // 62467-62469 and 62485-62488 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the
     // re-check at "yes").
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
                          PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468,
-                         AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487;
+                         AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487,
+                         RelogMap = 62488;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -80,6 +81,21 @@ public sealed class PeerSweepLockTests
         typeof(Session).GetField("_dlgReply", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo TearDown =
         typeof(Session).GetMethod("TearDownWorldState", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo RestoreTimedEffects =
+        typeof(Session).GetMethod("RestoreTimedEffects", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo StatusFlagsField =
+        typeof(Session).GetField("_statusFlags", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    /// <summary>Propose's 20 minutes gone by: its aether (the session's) and its duration (the status flag the row
+    /// keeps, RTK's <c>setDuration</c>) both cleared, as the clock would clear them.</summary>
+    private static void WaitOutPropose(Session s)
+    {
+        SpellCastSupport.ClearAether(s, Propose.Key);
+        s.WithState(() => { ((Dictionary<string, long>)StatusFlagsField.GetValue(s)!).Remove(Propose.Key); });
+    }
+
+    /// <summary>Milliseconds left on Propose's persisted duration (0 when none is running).</summary>
+    private static long ProposeDurationLeft(Session s) => (long)s.WithState(() => s.LuaDurationLeft(Propose.Key));
 
     /// <summary>The Propose spell (Spells.csv 409), which <c>Session.PromptProposal</c> takes from the proposer on
     /// "yes".</summary>
@@ -330,7 +346,9 @@ public sealed class PeerSweepLockTests
     /// <para>Red on a9f9449 in Debug and Release, both cases: "Expected ["Propose isn't ready yet."] / Actual ["You cast
     /// Propose."]", no aether was armed and the second cast asked again. Red with the check gone from the verb (the
     /// same), with the aether armed at the typed name instead of the cast ("no name" alone), and with 2 minutes for 20
-    /// ("the aether after the first cast had 120000 ms on it").</para>
+    /// ("the aether after the first cast had 120000 ms on it"). Since the review's F1 the cast also arms RTK's
+    /// persisted <c>setDuration</c> for the same 20 minutes (see <see cref="ProposeWaitsTwentyMinutesAcrossARelog"/>):
+    /// red on 34c9c93, both cases, "the duration after the first cast had 0 ms on it".</para>
     /// </summary>
     [Theory]
     [InlineData("declined")]
@@ -360,9 +378,11 @@ public sealed class PeerSweepLockTests
             Assert.Equal(new[] { $"{Propose.Name} isn't ready yet." }, pOut.MiniTexts());
             Assert.Equal((false, asked), (p.DialogBusy, bOut.MenusWith(ask)));
             Assert.True(left is > 1_190_000 and <= 1_200_000, $"the aether after the first cast had {left} ms on it");
+            long lasting = ProposeDurationLeft(p);
+            Assert.True(lasting is > 1_190_000 and <= 1_200_000, $"the duration after the first cast had {lasting} ms on it");
             p.WithState(() => Assert.True(p.KnowsSpellId(Propose.Id), "the refused cast took the spell"));
 
-            SpellCastSupport.ClearAether(p, Propose.Key);
+            WaitOutPropose(p);
             OnOwnThread(() => p.Receive(SpellCastSupport.CastFrame(0)));
             Assert.True(p.DialogBusy, "a cast after the aether did not ask for a name");
         }
@@ -370,6 +390,71 @@ public sealed class PeerSweepLockTests
         {
             Leave(AetherMap, p, b);
         }
+    }
+
+    /// <summary>
+    /// <b>The 20 minutes survive a relog</b> (PR #358 review, F1; Caleb, 2026-10-21). The proposer casts, the beloved
+    /// says "no", and the proposer logs out (the real teardown, whose save captures the timed effects into the row).
+    /// A fresh session is built from that saved row, its timed effects restored as the arrival restores them, and it
+    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. RTK keeps its aethers on the
+    /// character row (char_db.c); this port keeps the half of propose.lua:11-12 that is RTK's <c>setDuration</c>, a
+    /// status flag the row carries.
+    /// <para>Red on 34c9c93 in Debug and Release: "Expected ["Propose isn't ready yet."] / Actual ["You cast
+    /// Propose."]", the aether lived in the old session and the new one asked again. Red the same way with the
+    /// duration set but not checked, and with it checked but not set.</para>
+    /// </summary>
+    [Fact]
+    public void ProposeWaitsTwentyMinutesAcrossARelog()
+    {
+        var (b, bOut, _) = Player("RelogBeloved", RelogMap, 22, 20);
+        var (p, _, pc) = Player("RelogProposer", RelogMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        string ask = $"{p.CharName} proposes marriage. Do you accept?";
+        Session? back = null;
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+                b.Receive(MenuFrame(2));
+            });
+            long armed = ProposeDurationLeft(p);
+            OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));   // the logout: off the map, the row saved
+
+            var row = _fx.Store.Load(pc.Name);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            HeldRecorder backOut;
+            (back, backOut) = Relog(row.Character!, RelogMap);
+            int asked = bOut.MenusWith(ask);
+
+            OnOwnThread(() => back.Receive(SpellCastSupport.CastFrame(0)));
+
+            // The outcome first, so a red run shows what the cast after the relog did.
+            Assert.Equal(new[] { $"{Propose.Name} isn't ready yet." }, backOut.MiniTexts());
+            Assert.Equal((false, asked), (back.DialogBusy, bOut.MenusWith(ask)));
+            Assert.True(armed > 1_190_000, $"the cast armed {armed} ms of persisted duration");
+            back.WithState(() => Assert.True(back.KnowsSpellId(Propose.Id), "the refused cast took the spell"));
+        }
+        finally
+        {
+            if (back is not null) Leave(RelogMap, back);
+            Leave(RelogMap, p, b);
+        }
+    }
+
+    /// <summary>A fresh session for a saved row, as a login would make it: the row as loaded, on
+    /// <paramref name="map"/>, its timed effects restored (<c>Session.RestoreTimedEffects</c>, which the arrival runs
+    /// right after the load).</summary>
+    private (Session session, HeldRecorder outbound) Relog(Character row, ushort map)
+    {
+        var o = new HeldRecorder($"held:{row.Name}:relog");
+        var s = new Session(o, 2005, _fx.Store, _fx.World, row);
+        o.Owner = s;
+        s.WithState(() => { RestoreTimedEffects.Invoke(s, null); });
+        _fx.World.EnterMap(s, map);
+        o.Clear();
+        return (s, o);
     }
 
     private const string YouAreCommitted = "You are already committed to someone else!";
@@ -455,7 +540,7 @@ public sealed class PeerSweepLockTests
                 p.Receive(InputFrame(first.CharName));
             });
             LastMenu(firstOut, $"{p.CharName} proposes marriage. Do you accept?");
-            SpellCastSupport.ClearAether(p, Propose.Key);   // the 20 minutes, while the first box stays up
+            WaitOutPropose(p);   // the 20 minutes, while the first box stays up
             OnOwnThread(() =>
             {
                 p.Receive(SpellCastSupport.CastFrame(0));
@@ -1124,9 +1209,9 @@ public sealed class PeerSweepLockTests
                     {
                         for (int i = 0; i < Rounds; i++)
                         {
-                            // Propose's 20-minute aether (propose.lua:11-12) cleared before each cast, as the clock
-                            // would after the wait: this fact is about the checks' reads, not the wait.
-                            SpellCastSupport.ClearAether(p, propose.Key);
+                            // Propose's 20-minute wait (propose.lua:11-12) cleared before each cast, as the clock
+                            // would after it: this fact is about the checks' reads, not the wait.
+                            WaitOutPropose(p);
                             p.WithState(() => Cast(p, propose, null));
                             p.Receive(InputFrame(b.CharName));
                             race.Progress.Bump();

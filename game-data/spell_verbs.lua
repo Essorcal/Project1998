@@ -1131,14 +1131,23 @@ end
 -- where RTK's engine refuses an aethered cast before the script runs (clif.c, "Wait %d second(s) for aethers to
 -- settle."); the line is this file's own for a verb's aether. Set at the cast, so a name never typed, or a refused
 -- one, costs the wait as in RTK.
+-- And RTK's setDuration("propose", 1200000) on the line before it (propose.lua:11), so the 20 minutes survive a
+-- relog (PR #358 review, F1; Caleb, 2026-10-21). This file's aether lives in the session and a relog clears it,
+-- where RTK writes its aethers to the character row (char_db.c). setDuration here is the persisted one (a status
+-- flag the row captures and the arrival restores), as Baekho's Cunning and Harden Body set it and the warrior
+-- strikes read the Black Potion's; a cast is refused while either is running. A death or @dispel clears the
+-- duration (they clear every status flag), and the aether half still holds for the rest of that session.
 local PROPOSE_AETHER = 1200000
 function verbs.propose(ctx, row)
-  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  if ctx:onCooldown(ctx.spellKey) or ctx:hasDuration(ctx.spellKey) then
+    ctx:say(ctx.spellName .. " isn't ready yet."); return false
+  end
   if ctx:hasLegend("engaged") or ctx:hasLegend("married") then
     ctx:forgetSpell()
     ctx:say("You are already committed to someone else!")
     return false
   end
+  ctx:setDuration(ctx.spellKey, PROPOSE_AETHER)
   ctx:setCooldown(ctx.spellKey, PROPOSE_AETHER)
   ctx:propose()                                          -- fires RunProposeAsync; the cast anim plays regardless
   return true
