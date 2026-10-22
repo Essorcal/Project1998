@@ -1740,27 +1740,74 @@ RTK gates four things on `paralyzed || sleep`: `clif_parsewalk`, `clif_noparsewa
 walk parser; on 4.95 it is a separate `0x11`, and refusing it needs **no** snap-back — a turn is
 fire-and-forget with no ack pending, so simply not broadcasting it is enough.
 
-### 10.1 Fast-move flag — read it PER WALK, do not track the toggle
+### 10.1 Choosing the mode: the session's fast-move flag, not a per-walk bit
 
-The client marks each walk with its mode in the **high bit of the step counter** (`dec[1] & 0x80`):
-* **set** → fast-move ON (client-authoritative)
-* **clear** → fast-move OFF (server-authoritative)
+**Corrected 2026-10-21 to what the server does** (`Server/Session.Movement.cs` `HandleWalk`; the client side
+is in [`Fast-Move.md`](Fast-Move.md)). This section used to say to read the mode from the high bit of each
+walk's step counter (`dec[1] & 0x80`) and not to track the toggle. The server does the opposite, because that
+bit is never set on the wire: the client sets `0x80` only on its local self-move command, and reading it per
+walk sent almost every step down the slow path (`HandleWalk` quotes the production logs: 32,924 of 33,219
+commits).
 
-Read this per-packet. Do **not** try to track the `0x1b`/`09` toggle notification and a startup default —
-the client boots fast-move OFF, persists its state across launches, and never reports state on connect, so
-any default guess plus a toggle can invert and you end up sending corrections into a client-authoritative
-walk (→ the character "slides" with no animation). The per-walk bit is authoritative and self-correcting.
+- **The mode is one session flag, `Session._fastMove`, kept in lockstep with the client's runtime flag
+  `[state+0x451]`:**
+  - at world entry it is restored from the character's `SettingFlags` bit 9 (`Session.HandleArrival`);
+  - every `0x08` stats packet carries it as body byte 46 (`Session.SendStats`), which the client copies into
+    `[state+0x451]` (`0x48fd3a`), so the entry burst sets the client before its first step and every later
+    stats packet re-asserts it;
+  - the client's `0x1b` setting `0x09` (sent after the client flips its own flag) flips `_fastMove`, persists
+    bit 9 and answers with the minitext `Fast Move        :ON` or `:OFF` (`Session.HandleSetting`).
+- **`HandleWalk` reads that flag:** `clientFast = FastMoveTrustToggle ? _fastMove : (dec[1] & 0x80) != 0`.
+  `FastMoveTrustToggle` is the server knob `P1998_V495_FASTMOVE_TRUST_TOGGLE`, **on by default**. At 0 the
+  server reads the per-walk bit again and sends stats byte 46 as 0, so both sides fall back to the slow,
+  server-authoritative mode together.
 
-> Not to be confused with the *checkbox preference*: `SettingFlags` bit 9 IS persisted, purely so the Options
-> menu's Fast Move box seeds correctly across relog (the `0x23` edge-trigger contract, §"the Options menu").
-> That bit never drives movement — the per-walk high bit above does. Two separate concerns, same name.
+The client half of the old text stands: the client boots its flag OFF and never reports its state on connect,
+which is why the server carries the persisted value and sets the client from it. A new character's
+`SettingFlags` include bit 9 (`Shared/Character.cs`), so a new player starts in the fast mode. The same bit
+seeds the Options menu's Fast Move box (§7.1, the Options menu).
 
-### 10.2 Fast-move ON = client-authoritative (the smooth path) ✅
+### 10.2 One step as the server handles it: source tile, the two acknowledgements, corrections, pacing ✅
 
-The client moves, animates the leg cycle, AND scrolls its own camera locally. **Send the walker NOTHING on
-a good step.** Reserve `0x04` for *corrections only* (blocked tile or a position the server rejects — snap
-the client back). This is the smooth, self-paced walk; realm-center (§10.5) works in this mode. Confirmed
-live: fast-move-ON walks play a full `frameCtr 0→3` animation with zero server packets.
+**Corrected 2026-10-21** (`HandleWalk`). This section used to say to send the walker nothing on a good fast
+step. Half of that stands: in fast mode the client draws the step itself, legs and camera. But its own
+key-driven step leaves the walk gate latched until a `0x04` arrives, so with no answer it stalls (the comment at
+`HandleWalk`'s fast branch puts the stall at `frameCtr` 2, the "quarter-step" symptom). Per walk (`0x32` or
+`0x06`; `dir` at `dec[0]`, the client's believed tile at `dec[2..5]`), in this order:
+
+1. **Holds.** Asleep or paralyzed: a `0x04` at the server's own tile (`SendXy`) and nothing else (§10.0).
+2. **Source and destination.** The source is the client's reported tile when it lies on the map, otherwise the
+   server's position; the destination is one tile from the source in `dir` (0 N, 1 E, 2 S, 3 W). The facing
+   is set from `dir`.
+3. **Warps and scripted doorways** on the destination win over collision (`EnterMap` sends the
+   `0x15`/`0x04`/`0x33` entry trio). A warp whose entry requirement fails is refused like a block, below,
+   with a minitext.
+4. **The step** (`World.TryMovePlayer`). Off the map, terrain (the ground pass flag, or the `SObj.tbl` wall for
+   this heading, §12) or an occupant (a mob or another player, under the ghost rules in `TryMovePlayer`)
+   refuses it. **A refused step is the correction, in either mode:** the server sets its position to the
+   source tile and sends `0x04` there with the normal view anchor (`SendXy`), which cancels the client's
+   prediction.
+5. **A good step.** The server's position becomes the destination. Peers on the map get `0x0C` naming the
+   **source** tile (`MoveEntity`, because the 4.95 `0x0C` walk ends one tile past the tile it names). The
+   viewport sync (peers, mobs, ground items) and the terrain push (`StreamViewport`, §10.7) run. Then the
+   walker gets one acknowledgement:
+
+| Mode | Acknowledgement | Its coordinates |
+|---|---|---|
+| fast (`clientFast`) | **`0x04` with both view anchors `0xFFFF`** (`Session.SendXyCommitNoScroll`) | the **destination** |
+| slow | **`0x26` self-walk** (`Session.SendSelfWalk`, §10.3) | the **source** tile, with the view anchor for the new position (`ViewAnchor`) |
+
+The fast `0x04` releases the step without touching the camera the client has already scrolled: the `0x04`
+handler `0x44faf0` runs the camera function `0x44c660` and then the walk completion `0x44b140`; an anchor
+outside the viewport fails the bounds gate `0x44c8f0`, so the camera code does nothing, while `0x44b140` moves
+the self's logical tile to the destination and clears the walk-active gate (the comment on
+`SendXyCommitNoScroll`, `Server/Session.Entity.cs`). The client draws the legs and the scroll itself, and
+realm-center (§10.5) is unaffected.
+
+**Pacing.** On these default paths the server adds no delay and no step-rate limit; the acknowledgement goes
+out at once and the client, which waits for it (§10.0), sets the pace. The delays `P1998_V495_ACK_MS` (360) and
+`P1998_V495_WALK_MS` (200) belong only to the legacy drive modes, `P1998_V495_SELF_MOVE` other than its default
+7 and `P1998_V495_SLOW_MOVE` other than its default 5. (A 5.33 client always gets the `0x26`.)
 
 ### 10.3 Fast-move OFF = server-authoritative — answer with `0x26` self-walk ✅
 
