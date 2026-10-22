@@ -224,8 +224,11 @@ public sealed class DispellRulesTests
     /// and still poisoned. Once it lets go, the cast finishes and ends all three. Both orders of the two players'
     /// <c>StateRank</c>, so both of <c>EnterState</c>'s branches are the ones that wait.
     /// <para>Red on 93b079c: the cast waits, but ends none of the three. Red with the wake or the cure moved
-    /// outside the target's monitor: in Release they end while the holder still holds it, and in Debug the
-    /// <c>_buffs</c> guard fires inside the verb.</para></summary>
+    /// outside the target's monitor ahead of the flush: in Release they end while the holder still holds it, and in
+    /// Debug the <c>_buffs</c> guard fires inside the verb. Moved outside it after the flush, they wait for the holder
+    /// with the flush and run once it lets go, so this fact cannot see the move and stays green in Release. Only the
+    /// Debug build catches that one: the <c>_buffs</c> guard (<c>AssertStateHeld</c> in the <c>_buffs</c> writers)
+    /// fires inside the verb (PR #340's review, F1).</para></summary>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
