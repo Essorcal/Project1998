@@ -1245,7 +1245,7 @@ self entity's vtable holds the same pointer at `0x4cf05c`). When `[entity+0x178]
   `+7` face `[2]`, `+8` armor `[3]`, `+9` colour `[4]`, `+0xA` weapon `[5]`, `+0xB` shield `[6]`;
 - the facing **`d` = `[entity+0x18d]`: 0 = N (back view), 1 = E (faces right), 2 = S (front view), 3 = W
   (faces left)**, the walk encoding of §10 and the byte the `0x11` turn stores (`0x462410`);
-- the walk phase `w` = `[entity+0x18e]`: 0 standing, then `(w + 1) & 3` per walk tick (`0x48eef4` for the
+- the walk phase `ph` = `[entity+0x18e]`: 0 standing, then `(ph + 1) & 3` per walk tick (`0x48eef4` for the
   self, `0x4627c1` for peers);
 - the running action at `[entity+0x188]` (null when idle). The `0x1A` handler `0x4503a0` builds it through
   `[vtbl+0x78]` = `0x462460` → `0x4612f0`, which keeps the action **type `t`** at `+0x108` and the action
@@ -1274,13 +1274,13 @@ trailing CRLF; `0x431a62` counts `size / 5`), indexed by the pose number `p` bel
 `Head.Starting + p`, body = `Body.Starting + p`** (16-bit adds). A head art is a block of 100 frames
 (`Starting = 100 × id`, 90 heads) and a body art a block of 104 (`Body.tbl`: 67 bodies, `Starting = 104 × id`).
 Weapon and shield arts are 20-frame blocks (`Starting = 20 × art`) with their own index `q`. With the
-sub-frame `s = {0, 1, 0, 2}[w]` (`0x4cb508`) and the weapon class `c` from `0x432fe0` (0 = none `0xFF`,
+sub-frame `sub = {0, 1, 0, 2}[ph]` (`0x4cb508`) and the weapon class `c` from `0x432fe0` (0 = none `0xFF`,
 1 sword, 2 spear, 3 bow, 4 fan):
 
 | What is playing (branch) | `p` | weapon and shield `q` |
 |---|---|---|
-| nothing: standing or walking (`0x433164`) | `{0, 12, 32, 52, 12}[c] + 3d + s` (`0x4cb510`) | `3d + s` |
-| nothing, form 3 mounted (`0x4330cb`) | `80 + 3d + s` | none |
+| nothing: standing or walking (`0x433164`) | `{0, 12, 32, 52, 12}[c] + 3d + sub` (`0x4cb510`) | `3d + sub` |
+| nothing, form 3 mounted (`0x4330cb`) | `80 + 3d + sub` | none |
 | `t` 1 attack (`0x43336b`) | `{24, 24, 44, 64, 24}[c] + 2d + f` (`0x4cb524`) | `12 + 2d + f` |
 | `t` 2 throw, 3 shot | `24 + 2d + f`, `64 + 2d + f` | none |
 | `t` 4 pick up, 5 drop | `76 + d` | none |
@@ -1336,7 +1336,8 @@ from the same origin, so a composite is each frame drawn at its own box. `0x4323
 boxes (`0x4240c0`, `0x4241d0`) and offsets each layer by its box within it. Every form but 5 blits through
 `[renderer+0x94]`, and the body through the tinted `[renderer+0x98]` when `[4]` is not 0; form 5 blits every
 layer through `[renderer+0xac]` with a 0.7 factor (`0x3f333333`), keeping the body's tint. The ramp shift
-reaches every body pixel at index `0x30` or above, so on a mounted body it recolours the horse too.
+reaches every body pixel at index `0x30` or above, so on a mounted body it also shifts the horse's pixels
+at those indices.
 
 **Not settled here.** A non-zero `[entity+0x1a8]` sends every layer through `[renderer+0x9c]` instead, and a
 pre-pass gated by `0x44f600` draws the same order through `[renderer+0xa0]` first; neither is decoded. None of
