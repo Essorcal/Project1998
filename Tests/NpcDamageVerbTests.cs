@@ -43,7 +43,11 @@ namespace Tests;
 /// <para>Caleb's decision of 2026-10-21 (decision sheet item 9) added three refusals, each before anything is spent:
 /// Bolt and Freeze at nothing off a PvP map, silently (9a); Bolt and Freeze, the Poet whip's proc included, at a player
 /// off a PvP map, with "You can't attack that target." (9b); and every curse, from the book or one of the five curse
-/// procs, at an NPC, silently (9c). On a PvP map a cast at nothing or at a player is unchanged.</para>
+/// procs, at an NPC, silently (9c). On a PvP map a cast at a player is unchanged.</para>
+///
+/// <para>A later decision of the same day made Bolt and Freeze at nothing free and silent on a PvP map too, and silent
+/// with too little mana on any map, as RTK's zap is (it returns at a missing target first). A cast aimed at the
+/// caster's own id is not nothing and still strikes them where PvP is on.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, and every swing the real 0x13 frame, by a
 /// fresh caster facing a fresh target. The NPC is built as <c>World.PlaceNpc</c> builds one: 1 HP, <c>IsNpc</c>, no Will
@@ -496,43 +500,95 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} at nothing ({aim}) on map {map}: {r}");
     }
 
-    /// <summary>With too little mana, Bolt at nothing off a PvP map still answers what it did: "Not enough mana to cast
-    /// Bolt.", for nothing. The verb asks for its target only when the cast can be paid for, so a short caster hears
-    /// <c>spendMana</c>'s line first, as before.
-    /// <para>Green on 6de1d24 as well.</para></summary>
-    [Fact]
-    public void BoltAtNothingWithTooLittleManaSaysWhatItDid()
+    public static TheoryData<string, ushort, uint> ShortManaNothingCases => new()
     {
-        var sp = Spell("bolt_mage");
-        var r = Cast(sp, Town, Aim.Slot, npc: null, mana: 3);
-        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0, $"{sp.Name} at nothing: {r}");
-    }
-
-    public static TheoryData<string, Aim, string, int, bool> PvpNothingCases => new()
-    {
-        // key, aim, the line, mana, the caster struck
-        { "bolt_mage", Aim.Slot, "You cast Bolt.", 4, true },
-        { "freeze", Aim.Slot, "You cast Freeze.", 800, true },
-        { "bolt_mage", Aim.OffMapPlayerId, "You cast Bolt.", 4, false },
+        // key, map, the caster's mana (one short of the row's cost)
+        { "bolt_mage", Town, 3 },
+        { "bolt_mage", Arena, 3 },
+        { "freeze", Town, 799 },
+        { "freeze", Arena, 799 },
     };
 
-    /// <summary>On a PvP map a cast at nothing is unchanged. By the slot alone (the stock client's frame) with nothing
-    /// faced, the damage resolver gives the caster (<c>Session.ResolveDamageTarget</c>'s PvP fallback), so Bolt and
-    /// Freeze land on their caster, for their mana. Aimed at a player on another map with nothing faced, the resolver
-    /// gives nobody (#343), and the cast still costs its mana and its line and strikes nothing.
-    /// <para>RTK differs on both: its zap returns at a missing target before it asks for mana
-    /// (<c>Spells/common/global_zap.lua:8-10</c>), so it is free and silent there. A change on a PvP map is left for a
-    /// decision of its own. Green on 6de1d24 as well.</para></summary>
+    /// <summary>With too little mana, Bolt or Freeze at nothing says nothing, on either map (Caleb, 2026-10-21:
+    /// "silent like RTK"). RTK's zap returns at a missing target before it looks at the mana
+    /// (<c>Spells/common/global_zap.lua:8-10</c>, then <c>:14-17</c>). No line, no mana, no pose.
+    /// <para>Red on e651252 (this branch's merge of fc14434): "Not enough mana to cast Bolt." (or Freeze), because the
+    /// verb asked for its target only when the cast could be paid for.</para></summary>
+    [Theory]
+    [MemberData(nameof(ShortManaNothingCases))]
+    public void BoltOrFreezeAtNothingWithTooLittleManaSaysNothing(string key, ushort map, uint mana)
+    {
+        var sp = Spell(key);
+        var r = Cast(sp, map, Aim.Slot, npc: null, mana: mana);
+        Assert.True(r.Lines == "" && r.Spent == 0 && r.Pose == 0 && r.HpDelta == 0,
+                    $"{sp.Name} at nothing with {mana} mana on map {map}: {r}");
+    }
+
+    /// <summary>The control for the silent short cast: at a real target, with too little mana, the line stays, as RTK
+    /// orders it (mana before the PvP refusal, <c>global_zap.lua:14-17</c>). A creature faced here; a player faced is
+    /// <see cref="BoltAtAPlayerWithTooLittleManaSaysWhatItDid"/>.
+    /// <para>Green on e651252 as well.</para></summary>
+    [Theory]
+    [InlineData(Town)]
+    [InlineData(Arena)]
+    public void BoltAtACreatureWithTooLittleManaStillSaysSo(ushort map)
+    {
+        var sp = Spell("bolt_mage");
+        var r = Cast(sp, map, Aim.Slot, npc: false, mana: 3);
+        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature,
+                    $"{sp.Name} at a creature with 3 mana on map {map}: {r}");
+    }
+
+    public static TheoryData<string, Aim> PvpNothingCases => new()
+    {
+        { "bolt_mage", Aim.Slot },
+        { "freeze", Aim.Slot },
+        { "bolt_mage", Aim.OffMapPlayerId },
+    };
+
+    /// <summary>On a PvP map a cast at nothing is free and silent (Caleb, 2026-10-21), as RTK's zap is: it returns at a
+    /// missing target before anything else (<c>Spells/common/global_zap.lua:8-10</c>). No line, no mana, no pose, no
+    /// aether, the caster's HP kept, and the player on the other map neither hit nor told anything. This replaces #356's
+    /// <c>OnAPvpMapACastAtNothingIsUnchanged</c>, which pinned the old answer on purpose and left the change to this
+    /// decision.
+    /// <para>Red on e651252 (this branch's merge of fc14434). By the slot alone with nothing faced, the damage resolver's
+    /// PvP fallback gave the caster, and Bolt and Freeze landed on them: "You cast X.", 4 or 800 mana, the pose and the
+    /// caster's HP down. Aimed at a player on another map with nothing faced, the resolver gave nobody (#343), and the
+    /// cast still cost its mana, its line and the pose for a blow that struck nothing.</para></summary>
     [Theory]
     [MemberData(nameof(PvpNothingCases))]
-    public void OnAPvpMapACastAtNothingIsUnchanged(string key, Aim aim, string line, int mana, bool struck)
+    public void OnAPvpMapACastAtNothingIsFreeAndSilent(string key, Aim aim)
     {
         var sp = Spell(key);
         Assert.True(Content.IsPvpMap(Arena));
         var r = Cast(sp, Arena, aim, npc: null);
-        Assert.True(r.Lines == line && r.Spent == mana && r.Pose == 1 && (r.HpDelta < 0) == struck
+        Assert.True(r.Lines == "" && r.Spent == 0 && r.Pose == 0 && r.HpDelta == 0 && r.Aether == 0
                     && r.FarHp == Hp && r.FarLines == "",
                     $"{sp.Name} at nothing ({aim}) on map {Arena}: {r}");
+    }
+
+    /// <summary>The control: on a PvP map Bolt aimed at its caster's own id is aimed, not nothing, and still strikes
+    /// them, for its 4 mana and its line. Only the resolver's fallback for a cast aimed at nothing is refused.
+    /// <para>Green on e651252 as well.</para></summary>
+    [Fact]
+    public void OnAPvpMapBoltAimedAtItsCastersOwnIdStillStrikesThem()
+    {
+        var sp = Spell("bolt_mage");
+        var (caster, cOut, cc) = Caster(Arena, ch => ch.Spells.Add(sp.Id));
+        try
+        {
+            uint mp0 = cc.Mp, hp0 = cc.Hp;
+            cOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, caster.PlayerId));
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(lines == "You cast Bolt." && mp0 - cc.Mp == 4 && cc.Hp < hp0
+                        && cOut.BodiesOf(ServerOp.Action).Count == 1,
+                        $"{sp.Name} at its caster's id on map {Arena}: [{lines}], spent {mp0 - cc.Mp}, hp {hp0} -> {cc.Hp}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Arena);
+        }
     }
 
     public static TheoryData<string, ushort, int, int> AreaCases

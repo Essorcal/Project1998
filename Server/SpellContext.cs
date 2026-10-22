@@ -38,7 +38,7 @@ public sealed class SpellContext
     /// <para>So do the other verbs that strike it (#349's review, F1). <see cref="hasDamageTarget"/> (the
     /// <c>generic</c> verb's gate) and <see cref="magicDamage"/> (<c>arch_damage</c>) read this victim too, so each
     /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> spends before it strikes, so it asks
-    /// <see cref="victimIsNpc"/> and then <see cref="canStrike"/> before it spends.</para>
+    /// <see cref="victimIsNpc"/>, <see cref="castAtNothing"/> and then <see cref="canStrike"/> before it spends.</para>
     /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
     /// a queued or proc cast included.</para></summary>
     private (Mob? mob, Session? pc) Victim
@@ -132,20 +132,27 @@ public sealed class SpellContext
     /// <summary>Check + debit the caster's mana; false (with a "not enough mana" notice) if short.</summary>
     public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
     /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
-    /// and the PvP gate for a player). False if there is none.</summary>
-    public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
+    /// and the PvP gate for a player). False if there is none. The amount goes over unrounded, to the one floor
+    /// at the armour step (#78): Bolt's 2 + 1.5 x Will keeps its half at an odd Will.</summary>
+    public bool damage(double amt)      => _s.LuaDamageTarget(amt, _sp, Victim);
     /// <summary>May <see cref="damage"/> strike this cast's victim (<see cref="Victim"/>) here? A verb that spends
     /// before it strikes (<c>magic_damage</c>) asks it first, so a blow that would strike nothing costs nothing. Off a
     /// PvP map a cast that finds nothing is refused, silently, and a player with "You can't attack that target.". On a
     /// PvP map it answers yes to everything <see cref="damage"/> took there before, a cast that finds nothing included
     /// (see <c>Session.LuaCanStrike</c>).</summary>
     public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
+    /// <summary>Is this cast aimed at nothing: no victim (<see cref="Victim"/>), or, on a PvP map, the caster only as
+    /// the resolver's fallback for a cast aimed at nothing? <c>magic_damage</c> asks it first, before its mana, and
+    /// refuses silently and for free (Caleb, 2026-10-21; RTK's zap returns there first, global_zap.lua:8-10). An id
+    /// aimed at the caster is not nothing. See <c>Session.LuaCastAtNothing</c>.</summary>
+    public bool castAtNothing           => _s.LuaCastAtNothing(_sp, Victim, _targetId);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
-    /// arch_damage.</summary>
+    /// arch_damage. The amount goes over unrounded: the Spark family's half (50 + level/2) is netted at the armour
+    /// step, where the live probe reads it (#200).</summary>
     public bool magicDamage(double amt, double manaCost) =>
-        _s.LuaMagicDamage((int)System.Math.Round(amt), (int)manaCost, _sp, Victim);
+        _s.LuaMagicDamage(amt, (int)manaCost, _sp, Victim);
     /// <summary>Heal the caster's own HP (capped at max), with the spell's sparkle fx.</summary>
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Heal whoever this cast is AIMED at — another player, a mob (your pet), or yourself — with the

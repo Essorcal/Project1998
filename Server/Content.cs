@@ -402,8 +402,9 @@ public static partial class Content
 
         bool spellsOk = SpellFx.Count > 0
             && SpellFx.TryGetValue("spark_mage", out var spk) && spk.Archetype == "Damage"
-            // game-data/spell_effects.csv spark_mage @ level 50 / will 30; its RTK disagreement is reported.
-            && Math.Abs(Formula.Eval(spk.AmountExpr, vars) - 70) < 0.5
+            // game-data/spell_effects.csv spark_mage @ level 50 / will 30: the live probe's 50 + level/2 (#200), which
+            // takes no Will. RTK's spark.lua (48 here) disagrees and is weight 0; see docs/4.x/Protocol.md.
+            && Math.Abs(Formula.Eval(spk.AmountExpr, vars) - 75) < 0.25
             // RTK rtklua/Accepted/Spells/mage/hellfire.lua @ magic 200.
             && Math.Abs(Formula.Eval("math.ceil(player.magic * 2.15)", vars) - 430) < 0.5
             // RTK rtklua/Accepted/Spells/common/global_zap.lua: pcalign 11 (Spark) → animation 28.

@@ -620,10 +620,17 @@ public sealed partial class Session
     // what the C# archetype computed) and run the verb with the amount + mana pre-supplied. Returns the verb's
     // success bool, or null if the verb isn't loaded, which Lua() below fails cleanly (there is no C# handler
     // left to fall back to). A verb that errors mid-run returns false (not null) so a failed retry can't double-apply.
+    //
+    // The amount is handed over UNROUNDED (#200). The Spark family's row is 50 + level/2, and the live probe reads
+    // its half at the armour step: a level-15 self-cast at AC 85 lands floor(57.5 x 1.85) = 106. Rounded here,
+    // half to even, 57.5 became 58 and landed 107. Every consumer still rounds where it must: the heals and the
+    // area verbs round inside SpellContext as they always did (rounding a rounded number changes nothing), and
+    // ctx:magicDamage carries the fraction to the single floor of the armour step. No other Damage row yields a
+    // fraction: each is whole arithmetic or wrapped in math.floor/math.ceil.
     private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        double amount = Math.Round(Formula.Eval(fx.AmountExpr, SpellVars(null)));
+        double amount = Formula.Eval(fx.AmountExpr, SpellVars(null));
         // Chin-Baek-Ho-Ryung (Black Potion, 10s): x1.5 on Slash / Assault / Feral Berserk, applied to the
         // evaluated amount exactly where RTK applies it — right after the damage is computed and before
         // anything is charged. Berserk and Whirlwind take the same bonus inside the sacrifice verb.
@@ -751,17 +758,16 @@ public sealed partial class Session
     /// pose and "You cast X.", for a blow that struck nothing. RTK's zap returns at a missing target before it spends
     /// (<c>Spells/common/global_zap.lua:8-10</c>).</para>
     /// <para><b>Off a PvP map, a player is refused too</b> (item 9b), yourself included: "You can't attack that
-    /// target.", the blow's own gate and line (<see cref="HitPlayerWithSpell(Session, int, int, SpellDef, out int)"/>),
+    /// target.", the blow's own gate and line (<see cref="HitPlayerWithSpell(Session, double, int, SpellDef, out int)"/>),
     /// asked before the spend instead of after it. The refusal used to cost Bolt's 4 mana and Freeze's 800, the pose
     /// and "You cast X." as well, and the Poet whip's Freeze proc 800 at any player it faced in a town. RTK refuses
     /// before any cost, with "You cannot attack that target." (<c>Spells/common/global_zap.lua:26-30</c>); this server
     /// already sends its own wording of that line for this case, so that wording is kept. The blow still asks again
     /// when it lands.</para>
-    /// <para><b>On a PvP map nothing changes</b>, and it answers yes to everything the blow took before. With the slot
-    /// alone and nothing faced, the victim is the caster (<see cref="ResolveDamageTarget"/>'s PvP fallback), and the zap
-    /// lands on them. Aimed at an id that finds nobody there, the victim is none, and the cast still pays for a blow
-    /// that strikes nothing. RTK is free and silent in both. That difference is on a PvP map, so it is left for a
-    /// decision of its own.</para></summary>
+    /// <para><b>On a PvP map it answers yes.</b> A cast at nothing never reaches it from <c>magic_damage</c> now: the
+    /// verb asks <see cref="LuaCastAtNothing"/> first, on every map and before the mana (Caleb, 2026-10-21: Bolt and
+    /// Freeze at nothing on a PvP map are free and silent as in RTK, and "silent like RTK" with too little
+    /// mana).</para></summary>
     internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (Content.IsPvpMap(_char.Map)) return true;
@@ -772,6 +778,30 @@ public sealed partial class Session
             return false;
         }
         if (victim.mob is null) { LogNoTarget(sp); return false; }   // silent, free
+        return true;
+    }
+
+    /// <summary>Is this cast aimed at nothing? <c>magic_damage</c> (Bolt, Freeze) asks it first, before its mana and
+    /// before <see cref="LuaCanStrike"/>, and refuses silently and for free when it is: no mana, no aether, no line, no
+    /// pose. RTK's zap returns at a missing target before anything else (<c>Spells/common/global_zap.lua:8-10</c>).
+    /// <para><b>Nothing</b> is no victim at all (an id that finds nobody, or nothing faced off a PvP map), and, on a
+    /// PvP map, the caster when <see cref="ResolveDamageTarget"/> gave them only as its fallback for a cast aimed at
+    /// nothing (the slot alone, nothing faced). Caleb, 2026-10-21: on a PvP map Bolt and Freeze at nothing are free
+    /// and silent, as RTK is. They used to land on their caster there by the slot alone, and to pay 4 or 800 mana for
+    /// a blow that struck nobody when aimed at an id that found nobody. A cast aimed at the caster's own id is aimed,
+    /// and is not nothing: it still strikes them where PvP is on.</para>
+    /// <para><b>Whatever the mana</b> (Caleb, 2026-10-21: "silent like RTK"): a caster too short to pay used to hear
+    /// "Not enough mana to cast Bolt." for a cast at nothing. RTK asks for the target before the mana
+    /// (global_zap.lua:8-10, then :14-17), so it says nothing. At a real target the mana line stays, before the PvP
+    /// refusal, as RTK orders it.</para>
+    /// <para>Only <c>magic_damage</c> asks this. The Damage archetype still lands an unaimed cast on its caster on a
+    /// PvP map; that is not part of this decision.</para></summary>
+    internal bool LuaCastAtNothing(SpellDef sp, (Mob? mob, Session? pc) victim, uint? targetId)
+    {
+        if (victim.mob is not null) return false;
+        bool unaimedFallback = ReferenceEquals(victim.pc, this) && targetId is null or 0;
+        if (victim.pc is not null && !unaimedFallback) return false;
+        LogNoTarget(sp);
         return true;
     }
 
@@ -799,9 +829,12 @@ public sealed partial class Session
     // DELIBERATELY NOT APPLIED to: the sacrifice strikes and overflow (they net their own, see LuaSacApply);
     // ambush and melee (PlayerSwingDamage nets attacker-side); traps and pet mob-on-mob hits (no measurement
     // exists for either, and guessing would move balance with nothing behind it).
-    private static int SpellNet(int amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
+    //
+    // Takes the amount as a DOUBLE, like Combat.ApplyArmor itself (#200): the Spark family's base is 50 + level/2,
+    // and its half is read at this floor. Every caller up to here carries it unrounded.
+    private static int SpellNet(double amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
 
-    internal bool LuaDamageTarget(int amt, SpellDef sp, (Mob? mob, Session? pc) victim)
+    internal bool LuaDamageTarget(double amt, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         var (mob, pc) = victim;
         if (mob is null && pc is null) { LogNoTarget(sp); return false; }   // silent — see LogNoTarget
@@ -834,7 +867,7 @@ public sealed partial class Session
     // tail (ApplyCast: the pool drain, the vita cost, the shout, the aether), which all wait on this returning true.
     // Resolving for itself, it struck the NPC with a blow World.TryDamage refused, for the full price (#349's review,
     // F1).
-    internal bool LuaMagicDamage(int amt, int mana, SpellDef sp, (Mob? mob, Session? pc) victim)
+    internal bool LuaMagicDamage(double amt, int mana, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (mana < 0) mana = 0;
         if (_char.Mp < (uint)mana) { SendMiniText("You do not have enough mana."); return false; }
@@ -1996,7 +2029,8 @@ public sealed partial class Session
     // (game-data/MobSpells.csv TickMinMs/TickMaxMs). 0 = the fixed World.PoisonTickMs beat.
     private int  _poisonTickMin, _poisonTickMax;
 
-    /// <summary>The line the status box gets on every tick that actually takes health. Venom is not a hit —
+    /// <summary>The line the status box gets on every tick that takes health, or would but for a ward (#82: the
+    /// ward blocks the loss, not the line). Venom is not a hit —
     /// there is no attacker to name and no swing to describe — so this is the only thing that tells a player
     /// what is happening to them between one tick and the next. Shared by every source of poison: a rogue's
     /// venom reads the same to its victim as a cavern rat's does.</summary>
@@ -2066,7 +2100,9 @@ public sealed partial class Session
     /// status. <b>It can never kill</b> — the atlas is explicit that poison brings you to the lowest possible
     /// health and stops, so the damage is clamped to leave 1 HP and <see cref="Die"/> is never reached.
     /// Armour is deliberately not consulted ("disregarding armor class"), and neither is the deduction
-    /// multiplier — this is not a hit, it is the poison already inside you.
+    /// multiplier — this is not a hit, it is the poison already inside you. A Harden Body ward (or the Scroll of
+    /// Immortality's) blocks the HP loss of every tick while it is up, the venom's timer, flash and line running on
+    /// (#82; see the gate below).
     /// <para><b>Why the field is read before the monitor.</b> The world heartbeat calls this on EVERY online
     /// session every beat, and almost none of them are venomed — so taking the monitor first meant the tick
     /// thread entered 400 session monitors a beat to find nothing to do, and waited behind whichever of them
@@ -2091,6 +2127,22 @@ public sealed partial class Session
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
+        // A WARD BLOCKS THE TICK'S HP LOSS (#82; Caleb, 2026-10-21, decision sheet item 14). Harden Body, its
+        // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
+        // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
+        // and the PvP foe mark. The venom itself runs on: the timer above was not touched, the flash has already
+        // gone out, and the line still prints, so a warded player can see the poison working on them. RTK's
+        // removeHealthExtend opens on the same ward check (player.lua:164-169), and venom.lua sends its animation
+        // and its line outside that call.
+        //
+        // NOT RTK's low-HP branch. venom.lua sets `health = 1` directly when the tick would not leave 1, which
+        // never reaches the ward check, so RTK drops a warded player on 5 HP to 1. Caleb, 2026-10-21: "82: ward
+        // blocks every tick". The ward blocks that drop too: `dam` above is already the never-kill clamp, and a
+        // warded tick takes none of it.
+        //
+        // Gated here, on the heartbeat, under the monitor taken above; the tick does not go through TakeDamage,
+        // whose PvP foe mark enters another session's monitor (DamageIntake.cs, the note at its end).
+        if (DamageImmune) { SendMiniText(PoisonTickText); return; }
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
@@ -3893,12 +3945,12 @@ public sealed partial class Session
     // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
     // notice (mana NOT spent) if disallowed. Rolls the PvP magic-deflect (SplCanFail spells only) before the
     // debit — a deflected cast spends no mana but still "happened" (returns true), matching the mob path.
-    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp) =>
+    private bool HitPlayerWithSpell(Session pc, double amt, int mana, SpellDef sp) =>
         HitPlayerWithSpell(pc, amt, mana, sp, out _);
 
     /// <param name="landed">Damage actually applied, uncapped by the victim's remaining HP — 0 if the cast was
     /// refused or deflected. Only the vita strikes read it, to find their overkill; see LuaSacApply.</param>
-    private bool HitPlayerWithSpell(Session pc, int amt, int mana, SpellDef sp, out int landed)
+    private bool HitPlayerWithSpell(Session pc, double amt, int mana, SpellDef sp, out int landed)
     {
         landed = 0;
         bool isSelf = ReferenceEquals(pc, this);

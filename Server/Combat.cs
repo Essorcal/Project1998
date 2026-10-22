@@ -214,9 +214,18 @@ public static class Combat
     /// 19% of a hit where the model says 20% — off by a whole point at exactly the value the clamp makes most
     /// common. The integer form is exact at every hundredth and reproduces all 19 live Spark readings
     /// unchanged; <c>Tests.CombatArmorTests</c> pins both that and this case.</para></summary>
-    public static int ApplyArmor(double rawDamage, int armor, int floor)
-    {
-        double deduction = (100 + Math.Max(armor, floor)) / 100.0;
-        return Math.Max(1, (int)Math.Floor(rawDamage * deduction));
-    }
+    public static int ApplyArmor(double rawDamage, int armor, int floor) =>
+        FloorOnce(rawDamage * ArmorFactor(armor, floor));
+
+    /// <summary>The armor multiplier <see cref="ApplyArmor"/> applies, <c>(100 + max(armor, floor)) / 100</c>, for a
+    /// caller that has other terms to multiply in before the one floor (<c>Session.TakeDamage</c>,
+    /// <c>Session.PlayerSwingDamage</c>). Formed with the integer add first, for the reason in
+    /// <see cref="ApplyArmor"/>'s note.</summary>
+    public static double ArmorFactor(int armor, int floor) => (100 + Math.Max(armor, floor)) / 100.0;
+
+    /// <summary>The one rounding a hit takes (#78; Caleb, 2026-10-21: "multiply everything, round down once,
+    /// minimum 1"): floor the finished product of every term, then raise it to 1, so a hit that lands always
+    /// takes something. The floor is the live-proven one (the Spark probe, <see cref="ApplyArmor"/>), not RTK's
+    /// spell ceiling.</summary>
+    public static int FloorOnce(double damage) => Math.Max(1, (int)Math.Floor(damage));
 }

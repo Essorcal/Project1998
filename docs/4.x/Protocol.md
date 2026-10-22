@@ -2944,11 +2944,12 @@ mana cost, buff stat+amount+duration, debuff kind+duration+chance, cooldown ("ae
 have a row (100 % of the four caster classes' teachable sets); the rest fall back to the keyword classifier.
 
 `ApplyCast` dispatches on the archetype:
-- **Damage** → evaluates the spell's actual Lua damage formula (e.g. Spark = `15 + floor(level/2) + floor((will+3)/4)`)
-  via `Content.Formula` — a tiny arithmetic evaluator over the caster's effective stats (`player.level/will/…`,
-  `target.baseHealth`) supporting `+ - * /`, parens, decimals and `math.floor/ceil/random`. Spends the real mana
-  cost, hits the packet target id if present else **the mob on the tile the caster faces** (like melee), reusing
-  the world damage/despawn/exp path so a spell kill rewards exp/loot exactly like a melee kill.
+- **Damage** → evaluates the spell's damage formula (e.g. Spark = `50 + level/2`, the live probe's base since #200;
+  RTK's own `15 + floor(level/2) + floor((will+3)/4)` is weight 0), unrounded, via `Content.Formula` — a tiny
+  arithmetic evaluator over the caster's effective stats (`player.level/will/…`, `target.baseHealth`) supporting
+  `+ - * /`, parens, decimals and `math.floor/ceil/random`. Spends the real mana cost, hits the packet target id
+  if present else **the mob on the tile the caster faces** (like melee), reusing the world damage/despawn/exp path
+  so a spell kill rewards exp/loot exactly like a melee kill.
 - **Heal** → evaluates the real heal amount and restores the caster's HP (clamped to effective max).
 - **Buff** → applies the spell's timed stat modifier(s) (might/hit/dam/…) for its RTK duration as an
   `ActiveBuff`, folded live into the HUD/profile/melee through `Session.Totals()` (gear + buffs) and persisted
@@ -3359,9 +3360,16 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     marsh ogre (−65) takes **35%**. Every damage number in the game moved.
   - NOT extended to traps, pet mob-on-mob hits or harvest nodes — no measurement exists for any of them, and
     guessing would move balance with nothing behind it. Ambush and melee already net attacker-side.
-  - **Still open:** the same probe says Spark scales off `level/2` and explicitly rules will out ("a +1 will
-    item changed nothing"), but our exported row is `50 + floor((level + will)/4)`. The AC term is fixed; the
-    base term is still the RTK export and disagrees with the measurement.
+  - **Base settled 2026-10-21 (#200):** the same probe says Spark scales off `level/2` and rules will out ("a +1
+    will item changed nothing"), and Caleb took that: the seven Spark-family rows (Spark, Glimpse of the Void and
+    Nature's Ire for mage; all four for poet) read `50 + level/2`, no longer `50 + floor((level + will)/4)`. The
+    half is kept to the armor step: `Session.CastArch` no longer rounds the evaluated amount, and `ctx:magicDamage`,
+    `LuaMagicDamage`, `LuaDamageTarget`, `SpellNet`, `HitPlayerWithSpell`, `ReceiveSpellDamage` and
+    `DamageIntake.Raw` carry a double to the armor step: `SpellNet`'s `Combat.ApplyArmor` against a creature, and
+    `Combat.ArmorFactor` and `Combat.FloorOnce` in `Session.TakeDamage` against a player. So a level-15 self-cast at
+    AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). Mage Bolt is not on that row:
+    `game-data/SpellParams.csv` binds `bolt_mage` to `verbs.magic_damage`, 2 + 1.5 × Will for 4 mana, held for a
+    decision of its own. `Tests/SparkFamilyBaseTests.cs` casts each row through the real frame.
 
 - **`ApplyArmor` forms its deduction as `(100 + armor)/100.0`, not `1.0 + armor/100.0`** — equal in real
   arithmetic, not in IEEE754. The latter evaluates to 0.19999999999999996 at the human floor, so a maximally

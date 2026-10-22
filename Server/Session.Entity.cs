@@ -949,7 +949,7 @@ public sealed partial class Session
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
-        // side==target.side rule; the pipeline applies it AFTER armor, matching the Lua's own order). NOT
+        // side==target.side rule; the pipeline doubles its once-floored figure, in RTK's order, #78). NOT
         // ported: the item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see
         // Combat.cs).
         bool behind = Combat.IsBehindTarget(mob.Dir, _facing, mob.X, mob.Y, _char.X, _char.Y);
@@ -1001,7 +1001,7 @@ public sealed partial class Session
     /// past zero it went. 0 when nothing landed (already dead, or immune). Overkill is
     /// <c>returned - hpBeforeTheCall</c>, which is what the vita strikes' overflow/backflow are computed from;
     /// every other caller ignores it.</returns>
-    public int ReceiveSpellDamage(int rawDmg, Session attacker, string spellName)
+    public int ReceiveSpellDamage(double rawDmg, Session attacker, string spellName)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         bool fromAnother = !ReferenceEquals(attacker, this);
@@ -1016,19 +1016,22 @@ public sealed partial class Session
     }
 
     // Take incoming MELEE damage from another player (PvP). The melee twin of ReceiveSpellDamage — but the
-    // attacker-side PlayerSwingDamage has ALREADY applied our physical AC and the positional rear-x2 (it read
-    // our real defense via SwingTarget.Of(this)), so `rawDmg` is post-armor and the intake must not net it
-    // again. What is left is what the intake side owns: Harden Body immunity, the sleep-family amplifier, the
-    // deduction reduction (sanctuary / Baekho's Cunning), HP, per-hit durability (RTK clif_deductarmor rolls
+    // attacker-side PlayerSwingRaw has ALREADY applied our physical AC (it read our real defense via
+    // SwingTarget.Of(this)), so `rawDmg` is post-armor and the intake must not net it again. The positional
+    // rear-x2 comes over as `fromBehind` and doubles the intake's floored figure (#78, RTK's order). What is left
+    // is what the intake side owns: Harden Body immunity, the sleep-family amplifier, the deduction reduction
+    // (sanctuary / Baekho's Cunning), HP, per-hit durability (RTK clif_deductarmor rolls
     // every worn slot on a hit, unlike magic), the over-head HP bar to the whole map, the mutual PvP-foe mark
     // (so arena pets know who to go for), and death -> ghost. No "X hits you" chat line: melee shows only the
-    // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
-    public void ReceiveMeleeDamage(int rawDmg, Session attacker, bool crit)
+    // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll. `rawDmg` arrives unfloored
+    // (PlayerSwingRaw), so the intake's one floor is the only rounding the blow takes (#78).
+    public void ReceiveMeleeDamage(double rawDmg, Session attacker, bool crit, bool fromBehind = false)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         TakeDamage(new DamageIntake(DamageKind.PlayerMelee, rawDmg)
         {
             IgnoresHardenBody = false,
+            DoubleForRear = fromBehind,
             CritByte = crit ? (byte)0xFF : HitCritByte,
             PvpFoe   = ReferenceEquals(attacker, this) ? null : attacker,
             LogLine  = dmg => $"   -> {attacker._char.Name} MELEE hit {_char.Name} for {dmg} -> {_char.Hp}/{_char.MaxHp}",

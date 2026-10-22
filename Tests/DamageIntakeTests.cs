@@ -16,9 +16,9 @@ namespace Tests;
 /// against it before the pipeline existed.</para>
 ///
 /// <para><b>The numbers are chosen to discriminate, not to be round.</b> AC -50 halves damage and the sleep
-/// amplifier multiplies by 1.5; with a raw 101 those two terms give 75 one way round and 76 the other, so
-/// the tests below actually catch a re-ordering of armor and amplifier instead of quietly agreeing with it.
-/// (100 would not: floor(100/2)x1.5 and floor(100x1.5/2) are both 75.)</para>
+/// amplifier multiplies by 1.5; with a raw 101, rounding after each step gave 75 one way round and 76 the
+/// other. Since #78 every term is one product floored once (75.75, so 75 both ways), and the damage-math facts
+/// use figures where that single floor and the old step rounding part, so a return to either is caught.</para>
 ///
 /// <para>Determinism: a naked character rolls no durability (the loop has no slots to roll), and
 /// <c>Combat.RollCritChance</c> only ever reaches the wire-visual crit byte — RTK never multiplies a mob's
@@ -32,7 +32,7 @@ public class DamageIntakeTests
 
     public DamageIntakeTests(SessionFixture fx) => _fx = fx;
 
-    /// <summary>Odd on purpose: floor(101/2) = 50 keeps the half that makes the ordering visible.</summary>
+    /// <summary>Odd on purpose: 101/2 = 50.5 keeps a half for the single floor (#78) to act on.</summary>
     private const int Raw = 101;
 
     private const uint FullHp = 100_000;
@@ -61,25 +61,32 @@ public class DamageIntakeTests
     }
 
     // ---- the damage math, one intake at a time ------------------------------------------------------------
+    //
+    // #78 (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"). Every term multiplies the
+    // unrounded figure and the product is floored once and raised to 1 (Combat.FloorOnce); a hit from behind is
+    // then doubled ("Round down once (minimum 1), then double for a hit from behind"). Each step used to
+    // round on its own: the armor floor, then Math.Round (half to even) after the amplifier and again after the
+    // deduction, and the two armored kinds ran armor and the amplifier in opposite orders. The facts below use
+    // figures where the two rules part, and each says what 6de1d24 (step rounding) gave.
 
-    /// <summary>A creature's swing nets ARMOR FIRST and only then applies the sleep amplifier — RTK
-    /// swingDamage.lua's own order. floor(101 x 0.5) = 50, then x1.5 = 75.</summary>
+    /// <summary>A creature's swing: armor and the sleep amplifier multiply and are floored once.
+    /// 103 x 0.5 x 1.5 = 77.25, so 77. Step rounding netted armor first, floor(51.5) = 51, then rounded
+    /// 51 x 1.5 = 76.5 to the even 76.</summary>
     [Fact]
-    public void MobMeleeNetsArmorBeforeTheSleepAmplifier()
+    public void MobMeleeMultipliesArmorAndTheSleepAmplifierThenFloorsOnce()
     {
         var (session, _, character) = Victim("DmgMobMelee");
         session.ArmDamageAmp(1.5, 60_000);
 
-        session.ApplyMobHit(Attacker(), Raw);
+        session.ApplyMobHit(Attacker(), 103);
 
-        Assert.Equal(FullHp - 75, character.Hp);
+        Assert.Equal(FullHp - 77, character.Hp);
     }
 
-    /// <summary>A player's spell amplifies FIRST and nets armor after — the opposite order, and the reason
-    /// the pipeline cannot simply pick one. 101 x 1.5 = 152 (152 is even, so the .5 rounds to it), then
-    /// floor(152 x 0.5) = 76.</summary>
+    /// <summary>A player's spell: the same product, 101 x 1.5 x 0.5 = 75.75, so 75. Step rounding amplified
+    /// first and rounded, 151.5 to the even 152, then netted armor, floor(76) = 76.</summary>
     [Fact]
-    public void PlayerSpellAmplifiesBeforeNettingArmor()
+    public void PlayerSpellMultipliesTheAmplifierAndArmorThenFloorsOnce()
     {
         var (victim, _, character) = Victim("DmgSpellVictim");
         var (caster, _, _) = Victim("DmgSpellCaster");
@@ -87,12 +94,30 @@ public class DamageIntakeTests
 
         int applied = victim.ReceiveSpellDamage(Raw, caster, "Spark");
 
-        Assert.Equal(76, applied);
-        Assert.Equal(FullHp - 76, character.Hp);
+        Assert.Equal(75, applied);
+        Assert.Equal(FullHp - 75, character.Hp);
+    }
+
+    /// <summary>The order no longer matters. The two armored kinds used to run armor and the amplifier in
+    /// opposite orders, which is why a raw 101 at AC -50 under a 1.5x amplifier landed 75 from a creature and
+    /// 76 from a player. One product, one floor: both land 75.</summary>
+    [Fact]
+    public void TheTwoArmoredKindsLandTheSameFigureWhicheverWayTheyWereOrdered()
+    {
+        var (mobVictim, _, mobChar) = Victim("DmgOrderMob");
+        mobVictim.ArmDamageAmp(1.5, 60_000);
+        mobVictim.ApplyMobHit(Attacker(), Raw);
+
+        var (spellVictim, _, spellChar) = Victim("DmgOrderSpell");
+        spellVictim.ArmDamageAmp(1.5, 60_000);
+        spellVictim.ReceiveSpellDamage(Raw, Victim("DmgOrderCaster").session, "Spark");
+
+        Assert.Equal(new[] { 75u, 75u }, new[] { FullHp - mobChar.Hp, FullHp - spellChar.Hp });
     }
 
     /// <summary>PvP melee arrives POST-armor (the attacker side already netted it via SwingTarget.Of), so the
-    /// intake must not net it a second time: 101 x 1.5 = 152 and nothing else.</summary>
+    /// intake must not net it a second time: 101 x 1.5 = 151.5, floored to 151 and nothing else. Step rounding
+    /// took it to the even 152.</summary>
     [Fact]
     public void PlayerMeleeAppliesTheAmplifierAndNoArmor()
     {
@@ -102,7 +127,7 @@ public class DamageIntakeTests
 
         victim.ReceiveMeleeDamage(Raw, attacker, crit: false);
 
-        Assert.Equal(FullHp - 152, character.Hp);
+        Assert.Equal(FullHp - 151, character.Hp);
     }
 
     /// <summary>A creature's spell skips physical AC exactly as a player's melee intake does — 101 lands as
@@ -131,33 +156,62 @@ public class DamageIntakeTests
         Assert.Contains(SuteAi.FrigidText, MiniTexts(outbound));
     }
 
-    /// <summary>The positional rear x2 lands AFTER armor and belongs to the mob swing alone. Same facing,
-    /// attacker to the south of a north-facing victim: floor(100 x 0.5) = 50, doubled to 100.</summary>
+    /// <summary>The positional rear x2 belongs to the mob swing alone, and doubles the figure AFTER the one floor,
+    /// as RTK's swingDamage.lua does (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a
+    /// hit from behind. Ordinary hits from behind stay exactly as today." Same facing, attacker to the south of a
+    /// north-facing victim: floor(101 x 0.5) = 50, doubled to 100, as on 6de1d24. Under a 1.5x amplifier,
+    /// floor(101 x 0.5 x 1.5) = 75, doubled to 150 (6de1d24 also 150, by its own rounding).
+    /// <para>Red on d5edcf8, which put the double inside the floor: 101 and 151.</para></summary>
     [Fact]
-    public void MobMeleeDoublesFromBehindAfterArmor()
+    public void MobMeleeDoublesFromBehindAfterTheOneFloor()
     {
-        var (victim, _, character) = Victim("DmgRear");
+        var (plain, _, plainChar) = Victim("DmgRear");
+        plain.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), Raw);
+        Assert.Equal(FullHp - 100, plainChar.Hp);
 
-        victim.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), 100);
-
-        Assert.Equal(FullHp - 100, character.Hp);
+        var (slept, _, sleptChar) = Victim("DmgRearSlept");
+        slept.ArmDamageAmp(1.5, 60_000);
+        slept.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), Raw);
+        Assert.Equal(FullHp - 150, sleptChar.Hp);
     }
 
-    /// <summary>The sanctuary/Cunning deduction is the LAST term on every intake that has one. On the mob
-    /// swing it lands on the already-armored figure (50 -> 25); on a mob spell there is no armor to precede
-    /// it, so it halves the raw (101 -> 50, banker's rounding taking 50.5 down to the even 50).</summary>
+    /// <summary>The sanctuary/Cunning deduction multiplies into the same product on every intake. The decision
+    /// sheet's example: a creature swing of 300 on a slept (1.5x) player at AC -22 under Sanctuary,
+    /// 300 x 0.78 x 1.5 x 0.5 = 175.5, so 175; step rounding gave floor(234) x 1.5 = 351, then 175.5 rounded to
+    /// the even 176. On a creature's spell there is no armor: 103 x 0.5 = 51.5, so 51, where step rounding
+    /// took it to the even 52.</summary>
     [Fact]
-    public void DeductionAppliesLastOnBothOrderings()
+    public void TheDeductionMultipliesIntoTheOneFloorOnBothKinds()
     {
-        var (melee, _, meleeChar) = Victim("DmgDeductMelee");
+        var (melee, _, meleeChar) = Victim("DmgDeductMelee", ac: -22);
         melee.ApplySanctuaryDeduction(0.5, 60_000, "Sanctuary");
-        melee.ApplyMobHit(Attacker(), Raw);
-        Assert.Equal(FullHp - 25, meleeChar.Hp);
+        melee.ArmDamageAmp(1.5, 60_000);
+        melee.ApplyMobHit(Attacker(), 300);
+        Assert.Equal(FullHp - 175, meleeChar.Hp);
 
         var (spell, _, spellChar) = Victim("DmgDeductSpell");
         spell.ApplySanctuaryDeduction(0.5, 60_000, "Sanctuary");
-        spell.ReceiveMobSpell(Raw, Attacker(), "Ice ray");
-        Assert.Equal(FullHp - 50, spellChar.Hp);
+        spell.ReceiveMobSpell(103, Attacker(), "Ice ray");
+        Assert.Equal(FullHp - 51, spellChar.Hp);
+    }
+
+    /// <summary>A hit that lands takes at least 1, on every intake, however armored and protected the player.
+    /// The decision sheet's edge: a creature's raw 9 on a player at AC -80 under Sanctuary is 9 x 0.2 x 0.5 =
+    /// 0.9, raised to 1. Step rounding netted armor to floor(1.8) = 1 and then rounded 1 x 0.5 to 0, so the
+    /// hit landed (the bar, the sound, the durability rolls) and took nothing. The same on a creature's spell
+    /// under high Cunning (0.15): 1 x 0.15 rounded to 0, and is 1 now.</summary>
+    [Fact]
+    public void AWeakHitOnAnArmouredSanctuariedPlayerTakesOneNotZero()
+    {
+        var (melee, _, meleeChar) = Victim("DmgWeakMelee", ac: -80);
+        melee.ApplySanctuaryDeduction(0.5, 60_000, "Sanctuary");
+        melee.ApplyMobHit(Attacker(), 9);
+        Assert.Equal(FullHp - 1, meleeChar.Hp);
+
+        var (spell, _, spellChar) = Victim("DmgWeakSpell");
+        spell.ApplySanctuaryDeduction(0.15, 60_000, "Baekho's cunning");
+        spell.ReceiveMobSpell(1, Attacker(), "Ice ray");
+        Assert.Equal(FullHp - 1, spellChar.Hp);
     }
 
     // ---- Harden Body: one gate, five answers, all of them sourced -------------------------------------------

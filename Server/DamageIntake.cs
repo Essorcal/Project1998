@@ -28,7 +28,7 @@ public enum DamageKind
 /// </summary>
 public sealed class DamageIntake
 {
-    public DamageIntake(DamageKind kind, int raw)
+    public DamageIntake(DamageKind kind, double raw)
     {
         Kind = kind;
         Raw  = raw;
@@ -37,8 +37,12 @@ public sealed class DamageIntake
     public DamageKind Kind { get; }
 
     /// <summary>Damage before any intake-side term. What "before" means differs by kind — a PvP melee figure
-    /// has already had the victim's armor and rear-x2 applied attacker-side, a mob swing has not.</summary>
-    public int Raw { get; }
+    /// has already had the victim's armor applied attacker-side (its rear x2 comes over as
+    /// <see cref="DoubleForRear"/>), a mob swing has not.
+    /// <para>A double, not an int (#200): a player's Spark-family spell arrives as 50 + level/2, and the live probe's
+    /// self-casts read that half at the armour step (level 15 at AC 85: floor(57.5 x 1.85) = 106). An int here
+    /// rounded it away first.</para></summary>
+    public double Raw { get; }
 
     /// <summary>
     /// Whether this source walks past the Harden Body ward. Required — never defaulted — because the five
@@ -109,8 +113,10 @@ public sealed class DamageIntake
     /// <see cref="DamageKind.MobSpell"/> and <see cref="DamageKind.Environment"/>, on the "magic ignores
     /// physical AC" rule — and <c>SuteAi.IceRayObservedDamage</c>'s 405-at-AC--22 reading was taken as the
     /// RAW figure precisely because of that assumption, so turning AC on means re-deriving Sute's whole kit.
-    /// (#78) RTK's three damage helpers all run amplifier, deduction, THEN armor; every intake here applies
-    /// armor before the deduction, and the mob swing also amplifies on the wrong side of it.</para>
+    /// (#78) RTK's three damage helpers all run amplifier, deduction, THEN armor; every intake here applied
+    /// armor before the deduction, and the mob swing also amplified on the wrong side of it. That one is
+    /// settled now (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"): the terms are one
+    /// product with one floor, so their order no longer matters. See <see cref="Terms"/>.</para>
     ///
     /// <para><b>Two damage paths this pipeline does not reach</b>, both in files owned by #26 while it is in
     /// flight, so they are named here rather than converted. (<b>#79</b>) <c>Session.NpcCastStormstrike</c>
@@ -126,7 +132,11 @@ public sealed class DamageIntake
     /// sixth damage path that never went through any of the five and so was outside #28's scope — it
     /// hand-rolls this very epilogue (HP, WakeUp, SendStats, mini-text, the over-head bar, the foe mark),
     /// which makes #28's "five copies" really six. RTK's equivalent ticks (burn/venom <c>while_cast</c>) are
-    /// ward-gated like everything else.</para>
+    /// ward-gated like everything else, and since #82 (Caleb, 2026-10-21) so is ours: <c>TickPoison</c> asks
+    /// <see cref="Session.DamageImmune"/> itself, on the heartbeat, and a warded tick takes no HP, the low-HP
+    /// drop to 1 included (RTK's own branch for that skips its ward; ours does not, on Caleb's word). It still
+    /// does not come through here, deliberately: the tick has no blow, no attacker and no terms, and this
+    /// pipeline's foe mark enters another session's monitor.</para>
     /// </summary>
     public required bool IgnoresHardenBody { get; init; }
 
@@ -136,7 +146,9 @@ public sealed class DamageIntake
     public Mob? StampMobAttacker { get; init; }
 
     /// <summary>The positional "attacked from behind while both face the same way" x2 (RTK
-    /// swingDamage.lua's <c>side == target.side</c> rule). Decided by the caller, which owns the geometry.</summary>
+    /// swingDamage.lua's <c>side == target.side</c> rule). Decided by the caller, which owns the geometry: the
+    /// creature swing, and the PvP swing, whose attacker passes it over with its unfloored figure. Applied after
+    /// the one floor (#78; RTK's order).</summary>
     public bool DoubleForRear { get; init; }
 
     /// <summary>The over-head bar's hit-animation byte (RTK: 33 normal, 255 critical). Ignored when
@@ -170,41 +182,42 @@ public sealed class DamageIntake
     /// spell proc, which must trail neither a blocked blow nor a corpse.</summary>
     public Action? AfterSurvivedHit { get; init; }
 
-    /// <summary>Which terms of the damage sequence this kind runs, and in which order.</summary>
-    public readonly record struct Sequence(
-        bool FloorRawToOne, bool AppliesArmor, bool ArmorBeforeAmp, bool DeductsDurability);
+    /// <summary>Which terms of the damage sequence this kind runs.</summary>
+    public readonly record struct Sequence(bool FloorRawToOne, bool AppliesArmor, bool DeductsDurability);
 
     /// <summary>
     /// The whole divergence matrix, in one readable table — the thing five copy-pasted intakes never let
     /// anyone see at once.
     ///
-    /// <para><b>FloorRawToOne</b> — four sources raise a sub-1 figure to 1 so a heavily-reduced hit still
-    /// stings; the creature swing does not, because its armor term (<c>Combat.ApplyArmor</c>) already floors
-    /// its own result at 1.</para>
+    /// <para><b>FloorRawToOne</b> — four sources raise a sub-1 raw figure to 1 before the terms, so a
+    /// heavily-reduced hit still stings; the creature swing does not. Every kind's RESULT is raised to 1
+    /// anyway (see the single floor in <see cref="Session.TakeDamage"/>), so this differs only for a raw
+    /// below 1 under terms that multiply it up.</para>
     /// <para><b>AppliesArmor</b> — physical AC is netted at intake for a creature swing (the attacker side
     /// has no view of our gear) and for a player's spell (centralised there so no PvP spell path can forget
     /// it, and no path can apply it twice). A PvP melee figure arrives already netted, via
-    /// <c>SwingTarget.Of(this)</c> on the attacker side. Creature spells and room damage skip AC entirely —
-    /// "the AC pass belongs to swings, not spells".</para>
-    /// <para><b>ArmorBeforeAmp</b> — the creature swing nets armor and THEN applies the sleep-family
-    /// amplifier; a player's spell amplifies first and nets after. It is not a rounding curiosity: at AC -50
-    /// with a 1.5x amplifier, a raw 101 lands as 75 one way and 76 the other. Preserved per kind rather than
-    /// unified: unifying it would be an UNSOURCED behaviour change, and the only behaviour #28 changes is the
-    /// sourced one (see <see cref="IgnoresHardenBody"/>). <b>Neither order is RTK's</b> — swingDamage.lua
-    /// amplifies at :92 and nets armor at :105-108, i.e. amplifier first on the swing too, and all three of
-    /// RTK's damage helpers put the deduction BEFORE armor where every kind here puts it after. Filed as
-    /// #78 rather than fixed here, per the #21 ground rule.</para>
+    /// <c>SwingTarget.Of(this)</c> on the attacker side, and unrounded. Creature spells and room damage skip
+    /// AC entirely — "the AC pass belongs to swings, not spells" (#77, held for a retail reading).</para>
+    /// <para><b>No order column.</b> There was one, <c>ArmorBeforeAmp</c>: the creature swing netted armor
+    /// and THEN applied the sleep-family amplifier, a player's spell the other way round, and each step was
+    /// rounded, so at AC -50 with a 1.5x amplifier a raw 101 landed 75 one way and 76 the other. Neither
+    /// order was RTK's, whose three helpers multiply amplifier, deduction and armor UNROUNDED and floor once
+    /// (swingDamage.lua:92, :101-102, :105-108; player.lua:210-244). #78, decided by Caleb on 2026-10-21
+    /// ("multiply everything, round down once, minimum 1"): every term is one product and is floored once,
+    /// so the order of the terms cannot change a result and the column has nothing left to say. The floor
+    /// is the live-proven one (the Spark probe, <c>Combat.ApplyArmor</c>), not RTK's spell ceiling. The rear
+    /// x2 stays outside it, after the floor, as RTK's swingDamage.lua doubles (:147-150).</para>
     /// <para><b>DeductsDurability</b> — RTK clif_deductarmor rolls every worn slot on a HIT; magic and the
     /// room do not touch gear.</para>
     /// </summary>
     public Sequence Terms => Kind switch
     {
-        //                                 floor<1  armor  armor-1st  dura
-        DamageKind.MobMelee    => new Sequence(false, true,  true,     true),
-        DamageKind.PlayerSpell => new Sequence(true,  true,  false,    false),
-        DamageKind.PlayerMelee => new Sequence(true,  false, false,    true),
-        DamageKind.MobSpell    => new Sequence(true,  false, false,    false),
-        DamageKind.Environment => new Sequence(true,  false, false,    false),
+        //                                 floor<1  armor  dura
+        DamageKind.MobMelee    => new Sequence(false, true,  true),
+        DamageKind.PlayerSpell => new Sequence(true,  true,  false),
+        DamageKind.PlayerMelee => new Sequence(true,  false, true),
+        DamageKind.MobSpell    => new Sequence(true,  false, false),
+        DamageKind.Environment => new Sequence(true,  false, false),
         _ => throw new ArgumentOutOfRangeException(nameof(Kind), Kind, "unhandled damage kind"),
     };
 }
@@ -213,10 +226,10 @@ public sealed partial class Session
 {
     /// <summary>
     /// The one player-damage pipeline (#28). Every blow a player takes runs this sequence: immunity gate,
-    /// wake, attacker stamp, amplifier, armor, rear x2, deduction, HP, durability, stats, over-head bar,
-    /// sound, chat line, our own PvP foe mark, log, death — and then, last of all, the foe's half of that mark
-    /// (#174: it is the one statement here that enters ANOTHER session's monitor, so it goes where dropping
-    /// ours costs nothing). The per-kind subset and ordering come from <see cref="DamageIntake.Terms"/>.
+    /// wake, attacker stamp, armor x amplifier x deduction floored once and then the rear x2 (#78), HP,
+    /// durability, stats, over-head bar, sound, chat line, our own PvP foe mark, log, death — and then, last of
+    /// all, the foe's half of that mark (#174: it is the one statement here that enters ANOTHER session's monitor,
+    /// so it goes where dropping ours costs nothing). The per-kind subset comes from <see cref="DamageIntake.Terms"/>.
     ///
     /// <para>It replaces five hand-copied versions of that sequence. Three checked
     /// <see cref="DamageImmune"/> and two did not, which is the finding this pipeline exists to make
@@ -264,38 +277,40 @@ public sealed partial class Session
         byte critByte = intake.RollCritByte is null ? intake.CritByte : intake.RollCritByte();
 
         var terms = intake.Terms;
-        int dmg = intake.Raw;
-        if (terms.FloorRawToOne && dmg < 1) dmg = 1;
+        double net = intake.Raw;
+        if (terms.FloorRawToOne && net < 1) net = 1;
 
-        // RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is signed and
-        // LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS (a -4 garb
-        // takes 4 off your AC; see Session.Items.EquipTotals). A well-armored (very negative effective AC)
-        // player takes as little as 20% of the raw swing, while a naked/positive-AC player takes MORE than
-        // raw — armor can't fully negate a hit (-80 floor = min 20%).
+        // ONE PRODUCT, ONE FLOOR (#78; Caleb, 2026-10-21: "multiply everything, round down once, minimum 1").
+        // Each term below multiplies the unrounded figure, and Combat.FloorOnce floors it once at the end and
+        // raises it to 1. Every step used to round on its own (the armor floor, then Math.Round, half to even,
+        // after the amplifier and again after the deduction), so the order of the steps changed results by up
+        // to 2 HP, and a deduction could round a landed hit down to 0: raw 9 on an AC -80 player under
+        // Sanctuary was floor(1.8) = 1, then round(0.5) = 0. It is 1 now. With no amplifier and no deduction
+        // this is exactly Combat.ApplyArmor's product and floor, so the common hit is unchanged, from behind too.
         //
+        // Armor — RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is
+        // signed and LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS
+        // (a -4 garb takes 4 off your AC; see Session.Items.EquipTotals). A well-armored (very negative
+        // effective AC) player takes as little as 20% of the raw swing, while a naked/positive-AC player takes
+        // MORE than raw — armor can't fully negate a hit (-80 floor = min 20%).
+        if (terms.AppliesArmor) net *= Combat.ArmorFactor(_char.Ac + Totals().armor, floor: -80);
+
         // Sleep-family amplifier: being dozed/slept makes the NEXT hit on you land harder (Doze 1.3x,
         // Sleep 1.5x). Consumed here, so it applies to one hit only — WakeUp above already broke the hold,
         // and together that is the whole point of the spell: set up one amplified opener.
-        //
-        // The two run in opposite orders on the two kinds that have both. See DamageIntake.Terms.
-        if (terms.ArmorBeforeAmp)
-        {
-            if (terms.AppliesArmor) dmg = Combat.ApplyArmor(dmg, _char.Ac + Totals().armor, floor: -80);
-            double armorFirstAmp = TakeDamageAmp();
-            if (armorFirstAmp > 1.0) dmg = (int)Math.Round(dmg * armorFirstAmp);
-        }
-        else
-        {
-            double amp = TakeDamageAmp();
-            if (amp > 1.0) dmg = (int)Math.Round(dmg * amp);
-            if (terms.AppliesArmor) dmg = Combat.ApplyArmor(dmg, _char.Ac + Totals().armor, floor: -80);
-        }
-
-        if (intake.DoubleForRear) dmg *= 2;
+        double amp = TakeDamageAmp();
+        if (amp > 1.0) net *= amp;
 
         // RTK player.deduction: a flat damage-reduction multiplier from the sanctuary line / Baekho's Cunning
-        // (1.0 normally, down to 0.5/0.6 while active). Applied last, after armor + position.
-        if (EffDeduction < 1.0) dmg = (int)Math.Round(dmg * EffDeduction);
+        // (1.0 normally, down to 0.5/0.15 while active).
+        if (EffDeduction < 1.0) net *= EffDeduction;
+
+        int dmg = Combat.FloorOnce(net);
+
+        // The positional rear x2 comes AFTER the one floor and its minimum of 1, as RTK's swingDamage.lua doubles
+        // its floored figure (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a hit
+        // from behind. Ordinary hits from behind stay exactly as today." Doubling a whole number rounds nothing.
+        if (intake.DoubleForRear) dmg *= 2;
 
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
