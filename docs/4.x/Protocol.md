@@ -1924,9 +1924,14 @@ clients pack passability differently:
 | 5.33 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ tile(u16BE) pass(u16BE) obj(u16BE) } × w·h` |
 | 4.95 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ ground(u16BE) object(u16BE) } × w·h` |
 
-4.95's cell is the same shape the door cell-patch already sends (`ground` = tile in the low 14 bits,
-passability in the top 2 — `MapData.GroundWord`), so a streamed cell is byte-identical to what the client
-would have read from its own copy. No leading flag byte on either client. Receive handler `0x44fb90` writes
+4.95's cell is the same shape the door cell-patch already sends, and its `ground` is the `.map` file's own
+ground word, sent unchanged (`MapData.GroundWord` → `TileTranslation.Ground`, which returns a 4.95 word as is;
+`MapCell.Write` packs it), so a streamed cell is byte-identical to what the client would have read from its own
+copy. **That word is a two-sheet tagged union, not a tile with flags on top** (§12; `Server/TileTranslation.cs`):
+`0` draws nothing, below `0xC000` it is `TileA[v − 1]`, from `0xC000` up it is `TileB[v − 0xC000]`, and the top
+two bits double as the passability flag, because every blocked cell is on sheet 2. Masking the word to 14 bits
+before using it as a tile was the server's own rendering bug: it turned every sheet-2 cell into an unrelated
+sheet-1 tile. No leading flag byte on either client. Receive handler `0x44fb90` writes
 each cell into the client's **live map array** and then redraws the patched rect, so the write itself is not
 viewport-gated and `height > 1` is fine — the door path only ever sends one row because that's all a door
 needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
@@ -5030,8 +5035,22 @@ Eye reveals these tiles (see above).
 Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
 
 - **Headerless.** `width × height` cells, **4 bytes per cell**, row-major.
-- Each cell = `groundTile(u16, little-endian) objectTile(u16, little-endian)`.
+- Each cell = `ground(u16, little-endian) object(u16, little-endian)`.
 - Example: `TK32` = 33×33 = 4356 bytes.
+- **The ground word `v` is a tagged union over two tile sheets** (corrected 2026-10-21; `Server/TileTranslation.cs`),
+  decoded by the 4.95 ground blitter `0x431820`:
+
+  | `v` | draws | decided at |
+  |---|---|---|
+  | `0` | nothing | `0x43184a` |
+  | `1` … `0xBFFF` | `TileA[v − 1]` (sheet 1) | `0x431853` (`cmp ax, 0xc000`), `dec eax` at `0x4318dd` |
+  | `0xC000` … | `TileB[v − 0xC000]` (sheet 2) | `sub eax, 0xc000` at `0x431861` |
+
+  The two bases are the `base` field (u16 after `count` and `palCount`) of `TileA.tbl` (`0x0001`) and
+  `TileB.tbl` (`0xC000`) in `NexusTK.dat`. TileA has 9,922 frames, so a sheet-1 word never reaches `0x4000`;
+  TileB has 8,938. It is **not** a tile in the low 14 bits with passability on top: masking with `0x3FFF`
+  turns every sheet-2 cell into an unrelated sheet-1 tile, and sheet 2 is 31.5% of the 1,926,803 cells in the
+  2,031 maps under `game-data/maps` (no word there lies in `0x4000`–`0xBFFF`).
 
 The server's `0x15` (enter-map) tells the client which map id + dimensions to load; the client reads
 the `.map` file itself. Pick a map that actually has content: `TK27` is a uniform "void" tile (renders
@@ -5040,9 +5059,13 @@ black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
 **Passability — ground pass flag PLUS `SObj.tbl` directional object-walls (corrected 2026-07-26).** Two
 layers combine:
 
-1. **Ground pass flag.** A cell is pass-solid iff the **top 2 bits of the ground `u16`** are set (value
-   **`3` = solid**, `0` = walkable; `1`/`2` never occur). Water, cliffs, out-of-bounds, and *some* wall
-   footprints are baked here.
+1. **Ground pass flag = sheet 2.** The **top 2 bits of the ground word** double as the passability flag:
+   **`3` = solid**, `0` = walkable, and `1`/`2` never occur. Since sheet-1 words stay below `0x4000` and sheet-2
+   words start at `0xC000`, "solid" is exactly "drawn from sheet 2": **every blocked cell is on sheet 2, and
+   the server treats every sheet-2 cell as blocked.** The server splits the word into this flag and a 14-bit
+   index (`MapData.Load`), collides on the flag (`MapData.Solid`) and joins the two again for the wire
+   (`MapData.GroundWord`), which gives back the file's word exactly. Water, cliffs, out-of-bounds, and *some*
+   wall footprints are baked here.
 2. **`SObj.tbl` directional object flags.** The object `u16` indexes `SObj.tbl`; each object has a 1-byte
    **directional wall flag** — `UP=1 DOWN=2 RIGHT=4 LEFT=8` (RTK `map.h`). A move that *enters* a cell while
    heading a given way is blocked if the destination object has that side's bit (`clif_object_canmove`:
