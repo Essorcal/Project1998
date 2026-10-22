@@ -1390,7 +1390,17 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// after this half has ended. A half already ended costs nothing, and the Chapel says so instead of the paid line, in
 /// the shape of the login line (<c>Session.SettleVowHalves</c>). The player has by then read the status line the partner's
 /// visit sent them; RTK has no equivalent to follow (its divorce never touches the other side), so the words are
-/// ours.</para></summary>
+/// ours.</para>
+/// <para><b>A "No", a stale Marriage and the ceremony's question read the same line</b> (PR #350's review, N3; Caleb,
+/// 2026-10-21). The check comes before the answer is read, so a "No" to Break Off Engagement's question, or to
+/// Divorce's first, after the partner ended the vow reads it too, not "I hope you can salvage your relationship." or
+/// "Patience and love will save your marriage. ...". Marriage, offered by a top menu built while the player was
+/// engaged, first asks the same of the fiancé it was offered for, so a pick after the fiancé broke it off reads it as
+/// well, not "The proposee should start the marriage ceremony." (the end clears the proposee flag). It asks again once
+/// its own question ("Are you certain ...?") is answered, so a "Yes" or a "No" there after the fiancé broke it off
+/// reads it too, not "Both parties must be present for the ceremony to commence" (the emptied fiancé name finds
+/// nobody) or "Come back when you are firm in your resolve to marry.". All five were free before as now; only the
+/// words were wrong.</para></summary>
 public sealed class ChapelAbility : INpcAbility
 {
     public static readonly ChapelAbility Instance = new();
@@ -1400,9 +1410,9 @@ public sealed class ChapelAbility : INpcAbility
         yield return ("Buy Engagement Ring", BuyRing);
         if (ctx.IsEngaged)
         {
-            string fiance = ctx.FianceName;   // the engagement this entry is offered for
+            string fiance = ctx.FianceName;   // the engagement these two entries are offered for
             yield return ("Break Off Engagement", c => BreakOffEngagement(c, fiance));
-            yield return ("Marriage", RunCeremony);
+            yield return ("Marriage", c => RunCeremony(c, fiance));
         }
         string spouse = ctx.SpouseName;       // the marriage this entry is offered for
         if (!string.IsNullOrEmpty(spouse)) yield return ("Divorce", c => Divorce(c, spouse));
@@ -1440,9 +1450,9 @@ public sealed class ChapelAbility : INpcAbility
         await ctx.Say("How sad this is necessary. At least you reached this decision before marriage.");
         int c = await ctx.Menu("Are you sure you want to end the engagement?",
             new[] { "Yes, it is necessary (You will lose some XP)", "No, I need to consider further." });
-        if (c != 1) { await ctx.Say("I hope you can salvage your relationship."); return; }
-        // The fiancé may have broken it off while this question waited: free (see the class doc).
+        // The fiancé may have broken it off while this question waited: free, whatever the answer (see the class doc).
         if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
+        if (c != 1) { await ctx.Say("I hope you can salvage your relationship."); return; }
 
         uint penalty = ctx.MaxMp * 1000;   // RTK: player.baseMagic * 1000
         ctx.SpendExp(Math.Min(ctx.Exp, penalty));
@@ -1450,8 +1460,10 @@ public sealed class ChapelAbility : INpcAbility
         await ctx.Say("It is done.");
     }
 
-    private static async Task RunCeremony(NpcContext ctx)
+    private static async Task RunCeremony(NpcContext ctx, string fiance)
     {
+        // The fiancé may have broken it off while the top menu that offered Marriage waited (see the class doc).
+        if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
         if (ctx.MarriageWaitSeconds > 0)
         { await ctx.Say("You have engaged too recently. Let your hearts settle a while longer."); return; }
         if (!ctx.IsProposee)
@@ -1459,6 +1471,8 @@ public sealed class ChapelAbility : INpcAbility
 
         int confirm = await ctx.Menu("Are you certain you wish to devote yourself to this man or woman for life?",
             new[] { "Yes", "No" });
+        // Asked again: the fiancé may have broken it off while this question waited, whatever the answer (the class doc).
+        if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
         if (confirm != 1) { await ctx.Say("Come back when you are firm in your resolve to marry."); return; }
 
         string? result = await ctx.Marry();
@@ -1471,10 +1485,11 @@ public sealed class ChapelAbility : INpcAbility
         uint expCost = ctx.MaxHp * 2550;   // RTK: player.baseHealth * 2550
         int choice = await ctx.Menu($"It will cost {expCost:N0} experience. Are you sure you want this divorce?",
             new[] { "Yes", "No" });
+        // The spouse may have divorced while this question waited: free, whatever the answer, and no sacrifice offered
+        // (see the class doc).
+        if (!ctx.IsMarriedTo(spouse)) { await ctx.Say(AlreadyEnded("marriage", spouse)); return; }
         if (choice != 1)
         { await ctx.Say("Patience and love will save your marriage.\n\nDivorce is not something to take lightly."); return; }
-        // The spouse may have divorced while this question waited: free, and no sacrifice offered (see the class doc).
-        if (!ctx.IsMarriedTo(spouse)) { await ctx.Say(AlreadyEnded("marriage", spouse)); return; }
 
         if (ctx.Exp >= expCost)
         {

@@ -33,11 +33,13 @@ namespace Tests;
 ///
 /// <para><b>And then</b> (#344's Follow-ups; Caleb, 2026-10-18, "As recommended"). A confirm whose vow the partner
 /// already ended is free: the dialog re-checks the clicker's own half, under the clicker's own monitor, before it
-/// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead. And a partner whose half
-/// a Chapel visit ends while they are online reads the login line, "Your marriage to X has ended." (or engagement),
-/// sent from inside their monitor where the end runs; a partner who is offline, whose logout reaches their monitor
-/// before the end does, or whose connection the server has already closed, reads it once, at their next login; and a
-/// partner whose half names someone else, or nobody, reads nothing.</para>
+/// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead; she says the same to a
+/// "No" there, to a Marriage picked from a menu built before the end, and to either answer to the ceremony's question
+/// (PR #350's review, N3). And a partner whose half a Chapel visit ends while they are online reads the login line,
+/// "Your marriage to X has ended." (or engagement), sent from inside their monitor where the end runs; a partner who is
+/// offline, whose logout reaches their monitor before the end does, or whose connection the server has already
+/// closed, reads it once, at their next login; and a partner whose half names someone else, or nobody, reads
+/// nothing.</para>
 ///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
@@ -48,7 +50,7 @@ namespace Tests;
 /// player's monitor for an online player and into the row for an offline one.</para>
 ///
 /// <para><b>Collection "world", on a World of its own.</b> The <see cref="SessionFixture"/> is a class fixture, so
-/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62456-62459 and
+/// Crystal on map 3815 is this class's alone. The other players stand on content-free maps 62456-62460 and
 /// 62470-62479, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of
 /// its own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
@@ -59,6 +61,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                          WrongVowMap = 62476, ArrivalRaceMap = 62477, UnreadableMap = 62478, HeldArrivalMap = 62479;
     private const ushort RankedHeldMap = 62470, RankedArrivalMap = 62471;
     private const ushort PartnerAwayMap = 62456, LeavingPartnerMap = 62457, MonitorProbeMap = 62458, ClosedPartnerMap = 62459;
+    private const ushort RankedPartnerMap = 62460;
 
     /// <summary>A session's state monitor object, so a fact can try it with a timeout (<c>Monitor.TryEnter</c>)
     /// instead of entering it through <c>EnterState</c>, which would wait for good on a monitor that is never
@@ -693,19 +696,38 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         SacrificeAtTheQuestion,
         /// <summary>The sacrifice's last question, "It will cost you 8000 base Vita as a penalty. Continue?".</summary>
         SacrificeAtTheConfirm,
+        /// <summary>Break Off Engagement's question, answered "No, I need to consider further.".</summary>
+        BreakAtTheQuestionNo,
+        /// <summary>Divorce's question, experience enough, answered "No".</summary>
+        DivorceAtTheQuestionNo,
+        /// <summary>Crystal's top menu, which offered Marriage (and Break Off Engagement), answered "Marriage".</summary>
+        MarriageAtTheMenu,
+        /// <summary>The ceremony's "Are you certain you wish to devote yourself to this man or woman for life?", A the
+        /// proposee and the wait over, answered "Yes".</summary>
+        MarriageAtTheQuestion,
+        /// <summary>The same question, answered "No".</summary>
+        MarriageAtTheQuestionNo,
     }
 
     /// <summary>
     /// <b>A confirm whose vow the partner already ended is free.</b> A and B stand beside Crystal, engaged (or married)
     /// to each other. A's dialog is left waiting (<see cref="LateConfirm"/>), and B ends the vow at Crystal meanwhile,
-    /// which ends both halves. Then A answers yes to everything, to the end of the dialog. A pays nothing (experience,
-    /// base Vita and base Mana, in memory and in A's row) and reads Crystal's "Your engagement to B has already ended."
-    /// (or marriage) once, never "It is done." / "You are now divorced." and never the sacrifice's offer; A read the
-    /// status line "Your engagement to B has ended." (or marriage) once, when B's visit ended A's half. B pays and
-    /// reads as before, and reads no status line.
-    /// <para>Red on c7878f2, Debug and Release: A is charged (<c>MaxMp * 1000</c> or <c>MaxHp * 2550</c> exp, or
-    /// 8000 base Vita on the sacrifice path) and reads "It is done." or "You are now divorced."; A reads no status
-    /// line.</para>
+    /// which ends both halves. Then A answers yes to everything, to the end of the dialog; or, in the last five cases,
+    /// answers "No" to the waiting question, or picks Marriage from the waiting top menu, and then yes to the end. A pays
+    /// nothing (experience, base Vita and base Mana, in memory and in A's row) and reads Crystal's "Your engagement to B
+    /// has already ended." (or marriage) once, never "It is done." / "You are now divorced.", never the sacrifice's offer
+    /// and never a line for a vow that still holds (<see cref="StillVowedLines"/>); A read the status line "Your
+    /// engagement to B has ended." (or marriage) once, when B's visit ended A's half. B pays and reads as before, and
+    /// reads no status line.
+    /// <para>The first six cases are red on c7878f2, Debug and Release: A is charged (<c>MaxMp * 1000</c> or
+    /// <c>MaxHp * 2550</c> exp, or 8000 base Vita on the sacrifice path) and reads "It is done." or "You are now
+    /// divorced."; A reads no status line.</para>
+    /// <para>The next three cases (PR #350's review, N3) are red on 6de1d24, Debug and Release: A, who pays nothing there
+    /// either, reads "I hope you can salvage your relationship.", "Patience and love will save your marriage. ..." or
+    /// "The proposee should start the marriage ceremony.", and no "has already ended." page. The last two, the
+    /// ceremony's own question, are red on bf0e6e6, Debug and Release: A reads "Both parties must be present for the
+    /// ceremony to commence" or "Come back when you are firm in your resolve to marry.", and no "has already ended."
+    /// page.</para>
     /// </summary>
     [Theory]
     [InlineData(LateConfirm.BreakAtTheQuestion)]
@@ -714,13 +736,23 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     [InlineData(LateConfirm.DivorceAtTheMenu)]
     [InlineData(LateConfirm.SacrificeAtTheQuestion)]
     [InlineData(LateConfirm.SacrificeAtTheConfirm)]
+    [InlineData(LateConfirm.BreakAtTheQuestionNo)]
+    [InlineData(LateConfirm.DivorceAtTheQuestionNo)]
+    [InlineData(LateConfirm.MarriageAtTheMenu)]
+    [InlineData(LateConfirm.MarriageAtTheQuestion)]
+    [InlineData(LateConfirm.MarriageAtTheQuestionNo)]
     public void AConfirmWhoseVowThePartnerAlreadyEndedIsFree(LateConfirm when)
     {
         using var db = new IsolatedDatabase();
         var (npc, def) = ChapelNpc();
-        bool married = when is not (LateConfirm.BreakAtTheQuestion or LateConfirm.BreakAtTheMenu);
+        bool ceremony = when is LateConfirm.MarriageAtTheQuestion or LateConfirm.MarriageAtTheQuestionNo;
+        bool married = !ceremony && when is not (LateConfirm.BreakAtTheQuestion or LateConfirm.BreakAtTheMenu
+                                                 or LateConfirm.BreakAtTheQuestionNo or LateConfirm.MarriageAtTheMenu);
         bool sacrifice = when is LateConfirm.SacrificeAtTheQuestion or LateConfirm.SacrificeAtTheConfirm;
-        bool atTheMenu = when is LateConfirm.BreakAtTheMenu or LateConfirm.DivorceAtTheMenu;
+        bool atTheMenu = when is LateConfirm.BreakAtTheMenu or LateConfirm.DivorceAtTheMenu or LateConfirm.MarriageAtTheMenu;
+        bool no = when is LateConfirm.BreakAtTheQuestionNo or LateConfirm.DivorceAtTheQuestionNo
+                       or LateConfirm.MarriageAtTheQuestionNo;
+        string label = when == LateConfirm.MarriageAtTheMenu ? "Marriage" : married ? "Divorce" : "Break Off Engagement";
         string a = Name("A"), b = Name("B");
         // On the sacrifice path A has 10,000 Vita, so a divorce costs 25,500,000 exp, against 1,000 held, and the
         // 8000 Vita sacrifice is allowed.
@@ -737,6 +769,9 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             bHeld = bS;
             Vow(aS, b, married);
             Vow(bS, a, married);
+            // The ceremony asks its question only of the proposee, once the three days' wait is over.
+            if (ceremony)
+                aS.WithState(() => aS.SetEngaged(b, isProposee: true, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1));
             var aPools = Pools(aS);
             var aRowPools = Pools(Row(db.Store, a));
             uint bExp = bS.CharExp;
@@ -747,8 +782,15 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 if (atTheMenu)
                 {
                     Click(aS, npc);
-                    entry = LastMenu(aOut, $"{def.Name}: How can I help you today?")
-                        .IndexOf(married ? "Divorce" : "Break Off Engagement") + 1;
+                    entry = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf(label) + 1;
+                }
+                else if (ceremony)
+                {
+                    Click(aS, npc);
+                    int marriage = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf("Marriage") + 1;
+                    Assert.True(marriage > 0, "Crystal's top menu did not offer A Marriage");
+                    aS.Receive(MenuFrame((byte)marriage));
+                    LastMenu(aOut, "Are you certain you wish to devote yourself to this man or woman for life?");
                 }
                 else
                 {
@@ -763,7 +805,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 }
             });
             Assert.True(aS.DialogBusy, $"A's dialog is not waiting at {when}");
-            if (atTheMenu) Assert.True(entry > 0, "Crystal's top menu did not offer A the entry");
+            if (atTheMenu) Assert.True(entry > 0, $"Crystal's top menu did not offer A {label}");
             aOut.Clear();
             bOut.Clear();
 
@@ -777,18 +819,21 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
             OnOwnThread(() =>
             {
-                aS.Receive(MenuFrame((byte)(atTheMenu ? entry : 1)));
+                aS.Receive(MenuFrame((byte)(atTheMenu ? entry : no ? 2 : 1)));
                 AnswerYesToTheEnd(aS, aOut);
             });
             var aLines = SpellCastSupport.MiniTexts(aOut);
             var aNow = Pools(aS);
             _out.WriteLine($"[{when}] A paid exp {aPools.Exp - aNow.Exp}, Vita {aPools.MaxHp - aNow.MaxHp}, " +
                            $"Mana {aPools.MaxMp - aNow.MaxMp}; A read: already {Shown(aOut, AlreadyLine(married, b))}, " +
-                           $"done {Shown(aOut, DonePage(married))}, offer {Shown(aOut, SacrificeOffer)}; " +
+                           $"done {Shown(aOut, DonePage(married))}, offer {Shown(aOut, SacrificeOffer)}, still vowed " +
+                           $"[{string.Join(" | ", StillVowedLines.Where(l => Shown(aOut, l) > 0))}]; " +
                            $"A's lines: [{string.Join(" | ", aLines)}]; A {VowState(aS)}, B {VowState(bS)}");
 
             Assert.Equal(aPools, aNow);
             Assert.Equal(aRowPools, Pools(Row(db.Store, a)));
+            foreach (string still in StillVowedLines)
+                Assert.True(Shown(aOut, still) == 0, $"A, whose vow had ended, read \"{still}\"");
             Assert.Equal(1, Shown(aOut, AlreadyLine(married, b)));
             Assert.Equal(0, Shown(aOut, DonePage(married)));
             Assert.Equal(0, Shown(aOut, SacrificeOffer));
@@ -805,6 +850,143 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 Assert.Equal(0, aS.WithState(() => aS.CountItem("love")));
                 Assert.Equal(0, bS.WithState(() => bS.CountItem("love")));
             }
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    /// <summary>An answer at the Chapel from a player whose vow still holds, at one of the places a late answer's check
+    /// now comes before the answer is acted on.</summary>
+    public enum VowedAnswer
+    {
+        /// <summary>Break Off Engagement's "Are you sure you want to end the engagement?", answered "No, I need to
+        /// consider further.".</summary>
+        BreakNo,
+        /// <summary>Divorce's "It will cost N experience. Are you sure you want this divorce?", answered "No".</summary>
+        DivorceNo,
+        /// <summary>Marriage, picked by the partner who proposed, the wait over.</summary>
+        MarriageByTheProposer,
+        /// <summary>Marriage, picked by the proposee before the three days' wait is over.</summary>
+        MarriageTooSoon,
+        /// <summary>The ceremony's "Are you certain you wish to devote yourself to this man or woman for life?", asked of
+        /// the proposee with the wait over, answered "No".</summary>
+        CeremonyNo,
+        /// <summary>The same question answered "Yes" while the fiancé is offline.</summary>
+        CeremonyYesWithTheFianceOffline,
+    }
+
+    /// <summary>
+    /// <b>A player whose vow still holds reads what they always read, and pays nothing.</b> A stands beside Crystal,
+    /// engaged (or married) to B, whose half names A back; B stands beside A, or is offline for
+    /// <see cref="VowedAnswer.CeremonyYesWithTheFianceOffline"/>. A takes the entry, gives the answer
+    /// (<see cref="VowedAnswer"/>) and then "next" to the end. A reads Crystal's line for that answer once and never
+    /// "has already ended."; A pays nothing (experience, base Vita and base Mana, in memory and in A's row); A's half,
+    /// keepsake, proposee flag and ceremony timer are as they were, and A reads no status line; B, when online, is not
+    /// asked, not charged and not changed, and B's row keeps its half when B is offline.
+    /// <para>Every check the late answers make (<see cref="AConfirmWhoseVowThePartnerAlreadyEndedIsFree"/>) now comes
+    /// before one of these answers, so a check that misfires for a player who is still vowed would turn each into a free
+    /// "has already ended." (PR #355's review, F1). Red, Debug and Release, with the check at one site made to misfire by
+    /// comparing "", which names nobody: Break Off Engagement's for <see cref="VowedAnswer.BreakNo"/>, Divorce's first
+    /// for <see cref="VowedAnswer.DivorceNo"/>, the ceremony's first for all four Marriage cases and its second for the
+    /// two at its question; and all six with <c>NpcContext.IsEngagedTo</c> and <c>IsMarriedTo</c> answering
+    /// false.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(VowedAnswer.BreakNo)]
+    [InlineData(VowedAnswer.DivorceNo)]
+    [InlineData(VowedAnswer.MarriageByTheProposer)]
+    [InlineData(VowedAnswer.MarriageTooSoon)]
+    [InlineData(VowedAnswer.CeremonyNo)]
+    [InlineData(VowedAnswer.CeremonyYesWithTheFianceOffline)]
+    public void AnAnswerWhoseVowStillHoldsReadsWhatItAlwaysRead(VowedAnswer answer)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        bool married = answer == VowedAnswer.DivorceNo;
+        bool fianceOnline = answer != VowedAnswer.CeremonyYesWithTheFianceOffline;
+        bool proposee = answer is VowedAnswer.MarriageTooSoon or VowedAnswer.CeremonyNo
+                                  or VowedAnswer.CeremonyYesWithTheFianceOffline;
+        (string Entry, string Line, bool No) want = answer switch
+        {
+            VowedAnswer.BreakNo => ("Break Off Engagement", "I hope you can salvage your relationship.", true),
+            VowedAnswer.DivorceNo =>
+                ("Divorce", "Patience and love will save your marriage.\n\nDivorce is not something to take lightly.", true),
+            VowedAnswer.MarriageByTheProposer => ("Marriage", "The proposee should start the marriage ceremony.", false),
+            VowedAnswer.MarriageTooSoon =>
+                ("Marriage", "You have engaged too recently. Let your hearts settle a while longer.", false),
+            VowedAnswer.CeremonyNo => ("Marriage", "Come back when you are firm in your resolve to marry.", true),
+            _ => ("Marriage", "Both parties must be present for the ceremony to commence", false),
+        };
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        if (!married)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            aRow.IsProposee = proposee;
+            bRow.IsProposee = !proposee;
+            aRow.MarriageTimer = bRow.MarriageTimer = answer == VowedAnswer.MarriageTooSoon ? now + 259200 : now - 1;
+        }
+        Seed(db, aRow, bRow);
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            RecordingOutbound? bOut = null;
+            if (fianceOnline) (bHeld, bOut) = Arrive(db.Store, b);
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            Assert.True(Vowed(aS, b, married, keepsakes: 1), $"A did not log in vowed: {VowState(aS)}");
+            string Whole(Session s) => s.WithState(() => $"{VowState(s)} proposee={s.CharIsProposee} timer={s.CharMarriageTimer}");
+            string aBefore = Whole(aS);
+            string? bBefore = bHeld is null ? null : Whole(bHeld);
+            var aPools = Pools(aS);
+            var aRowPools = Pools(Row(db.Store, a));
+            uint bExp = bHeld?.CharExp ?? 0;
+            aOut.Clear();
+            bOut?.Clear();
+
+            OnOwnThread(() =>
+            {
+                Click(aS, npc);
+                int pick = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf(want.Entry) + 1;
+                Assert.True(pick > 0, $"Crystal's top menu did not offer A {want.Entry}");
+                aS.Receive(MenuFrame((byte)pick));
+                // "next" through every page; the one question, if this entry asks one, gets the answer.
+                for (int i = 0; i < 8 && aS.DialogBusy; i++)
+                {
+                    var last = aOut.BodiesOf(ServerOp.NpcDialog).Last();
+                    aS.Receive(last[0] == 0x02 ? MenuFrame((byte)(want.No ? 2 : 1)) : NextFrame());
+                }
+            });
+            var aNow = Pools(aS);
+            _out.WriteLine($"[{answer}] A paid exp {aPools.Exp - aNow.Exp}, Vita {aPools.MaxHp - aNow.MaxHp}, Mana " +
+                           $"{aPools.MaxMp - aNow.MaxMp}; A read: the line {Shown(aOut, want.Line)}, already " +
+                           $"{Shown(aOut, AlreadyLine(married, b))}; A's lines: " +
+                           $"[{string.Join(" | ", SpellCastSupport.MiniTexts(aOut))}]; A {Whole(aS)}");
+
+            Assert.False(aS.DialogBusy, "A's dialog was still open");
+            Assert.True(Shown(aOut, want.Line) == 1, $"A did not read \"{want.Line}\" once");
+            Assert.Equal(0, Shown(aOut, AlreadyLine(married, b)));
+            Assert.Equal(aPools, aNow);
+            Assert.Equal(aRowPools, Pools(Row(db.Store, a)));
+            Assert.Equal(aBefore, Whole(aS));
+            Assert.True(RowVowed(db.Store, a, b, married), $"A's row: {RowVowState(db.Store, a)}");
+            Assert.DoesNotContain(SpellCastSupport.MiniTexts(aOut), l => l.Contains(" has ended."));
+            if (bHeld is not null)
+            {
+                Assert.False(bHeld.DialogBusy, "B was asked");
+                Assert.Equal(bBefore, Whole(bHeld));
+                Assert.Equal(bExp, bHeld.CharExp);
+                Assert.DoesNotContain(SpellCastSupport.MiniTexts(bOut!), l => l.Contains(" has ended."));
+            }
+            else
+                Assert.True(RowVowed(db.Store, b, a, married), $"B's row: {RowVowState(db.Store, b)}");
         }
         finally
         {
@@ -1100,9 +1282,12 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// (<c>EndReadLoopAsync</c>: the teardown and its save), and B logs back in, at once (fenced) or later. B's half is
     /// kept through A's end, in memory and in the row, and B reads "Your engagement to A has ended." (or marriage)
     /// exactly once, at that login. A pays and reads as before.
-    /// <para>The order of the two flags is the other way round from the logout fact above: a close the server makes
-    /// itself sets <c>_closed</c> first, without the monitor, and the read loop's teardown sets <c>_leaving</c> only
-    /// later. The told end checks both.</para>
+    /// <para>The order of the two flags is the other way round from the logout fact above: here the server's close sets
+    /// <c>_closed</c> first, without the monitor, and the read loop's teardown sets <c>_leaving</c> only later. A kick
+    /// does the same in play: it sets <c>_closed</c> before it closes the socket the read loop waits on. The writer's
+    /// exit does it here only because the fact makes its close directly, before the read loop exits; in play it closes
+    /// the socket first and sets <c>_closed</c> after, so it races the teardown (<c>Session.EndEngagement</c>'s doc).
+    /// The told end checks both.</para>
     /// <para>Red on b787430, Debug and Release (PR #350 re-check, Finding 1, probe P1): the told end checked
     /// <c>_leaving</c> alone, so it ended B's half and wrote the row; the line was dropped at the closed connection;
     /// and the teardown and the next login had nothing left to settle: B was never told.</para>
@@ -1269,6 +1454,97 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         {
             Release(a, aHeld);
             Release(b, bHeld);
+        }
+    }
+
+    /// <summary>
+    /// <b>The Chapel's end lets go of the clicker's own monitor while it waits for a partner who ranks before
+    /// it.</b> A, beside Crystal, and B, on another map, are engaged (or married) to each other, and B ranks before A.
+    /// A's dialog waits at its last question. A third thread takes B's monitor, and A's "Yes", on a thread of its own,
+    /// charges A, ends A's own half and then waits to end B's: <c>EndEngagement</c> (or <c>EndMarriage</c>) on B, from
+    /// a thread that holds A's monitor, a descending entry. Then the third thread, still inside B, takes A's monitor,
+    /// which is what B's own Chapel visit does next, when it ends A's half (an ascending entry, so it keeps B's). It
+    /// gets it at once: the end enters B's monitor by <c>StateRank</c>, and <c>EnterState</c>'s descending case drops
+    /// A's own while it waits. Once the third thread lets go, B's half ends and B reads the line once; A pays and reads
+    /// as before. Deterministic, and bounded: the take is a <c>Monitor.TryEnter</c> with a 5 s timeout, so a monitor
+    /// that never comes free fails the fact instead of hanging it. B stands on a map of its own, so nothing of A's map
+    /// reaches B.
+    /// <para>Red with the partner's half under a plain lock on its monitor object (<c>lock (_state)</c> in place of
+    /// <c>EnterState</c> in <c>EndEngagement</c>, or in <c>EndMarriage</c>; PR #350's review, N1), Debug and Release:
+    /// A keeps its own monitor while it waits, and the third thread cannot take it in 5 s. In play that is two
+    /// partners answering at the Chapel at once and waiting on each other for good, which before this fact only the
+    /// race below caught.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheChapelsEndDropsTheClickersMonitorWhileItWaitsForALowerRankedPartner(bool married)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, RankedPartnerMap, 5, 5);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        Seed(db, aRow, bRow);
+
+        var (bS, bOut) = Arrive(db.Store, b);
+        var (aS, aOut) = Arrive(db.Store, a);
+        Assert.True(bS.StateRank < aS.StateRank, "B must rank before A, so that A's end of B's half is the descending entry");
+        Assert.True(Vowed(aS, b, married, keepsakes: 1) && Vowed(bS, a, married, keepsakes: 1), "the pair did not log in vowed");
+        object aMonitor = StateField.GetValue(aS)!;
+
+        var run = new HeldRun();
+        bool aPaidAndEndedFirst = false, bKeptItsHalf = false, tookA = false;
+        long waitedMs = -1;
+        try
+        {
+            uint aExp = aS.CharExp;
+            OnOwnThread(() => OpenVowEntry(aS, aOut, npc, def, married));
+            aOut.Clear();
+            bOut.Clear();
+
+            // The check runs inside the third thread's section on B, once A's "Yes" is seen waiting for it.
+            WhileAnotherThreadHolds(run, bS, () =>
+            {
+                aS.Receive(MenuFrame(1));   // "Yes": the re-check, the charge, A's own half, then B's (waits for B)
+                aS.Receive(NextFrame());
+            }, untouched: () =>
+            {
+                var aNow = Row(db.Store, a);
+                aPaidAndEndedFirst = aNow.Exp == aExp - Price(married) && RowVowGone(db.Store, a, married, keepsakes: 0);
+                bKeptItsHalf = Vowed(bS, a, married, keepsakes: 1);
+                var clock = Stopwatch.StartNew();
+                tookA = Monitor.TryEnter(aMonitor, TimeSpan.FromSeconds(5));
+                waitedMs = clock.ElapsedMilliseconds;
+                if (tookA) Monitor.Exit(aMonitor);
+                return tookA;
+            });
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            _out.WriteLine($"[{Kind(married)}] A's end waited for B: {!run.FinishedWhileHeld}; then A had paid and ended its " +
+                           $"own half {aPaidAndEndedFirst}, B still held its half {bKeptItsHalf}; the third thread, inside B, " +
+                           $"took A's monitor: {tookA} after {waitedMs} ms; after: A {VowState(aS)}, B {VowState(bS)}, " +
+                           $"B's lines [{string.Join(" | ", bLines)}]");
+
+            AssertWaited(run, "A's end",
+                "A kept its own monitor while it waited for B's: B's own Chapel visit, which takes A's next, would deadlock with it");
+            Assert.True(aPaidAndEndedFirst && bKeptItsHalf, "the window was not opened as described");
+            Assert.Equal(aExp - Price(married), aS.CharExp);
+            Assert.Equal(1, Shown(aOut, DonePage(married)));
+            Assert.True(VowGone(aS, married), $"A holds a half: {VowState(aS)}");
+            Assert.True(VowGone(bS, married), $"A's visit did not end B's half: {VowState(bS)}");
+            Assert.True(RowVowGone(db.Store, b, married, keepsakes: 0), $"B's row: {RowVowState(db.Store, b)}");
+            Assert.Equal(1, bLines.Count(l => l == Line(married, a)));
+            Assert.Equal(1, bLines.Count(l => l.Contains(" has ended.")));
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
         }
     }
 
@@ -1505,6 +1781,19 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// <summary>The divorce's page for a player with too little experience, before the sacrifice is offered.</summary>
     private const string SacrificeOffer =
         "Hmmm.. you don't have the experience to divorce, but there is something else you can offer.";
+
+    /// <summary>What Crystal says to a player whose vow still holds, for a "No" to Break Off Engagement's question or to
+    /// Divorce's first, for Marriage picked by the partner who proposed, and for the ceremony's question answered "Yes"
+    /// while the fiancé is offline, or "No". Before PR #350's N3 follow-up a player whose vow the partner had already
+    /// ended read them too.</summary>
+    private static readonly string[] StillVowedLines =
+    {
+        "I hope you can salvage your relationship.",
+        "Patience and love will save your marriage.\n\nDivorce is not something to take lightly.",
+        "The proposee should start the marriage ceremony.",
+        "Both parties must be present for the ceremony to commence",
+        "Come back when you are firm in your resolve to marry.",
+    };
 
     /// <summary>What the Chapel charges in experience: a divorce <c>MaxHp * 2550</c>, a break <c>MaxMp * 1000</c>
     /// (<see cref="NewCharacter"/> gives 100 Mana).</summary>
