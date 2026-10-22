@@ -3590,9 +3590,9 @@ public sealed partial class Session
     ///   orphaned reply) and the proposer is told nothing, as before; the spell was lost, and is now kept.</item>
     /// <item>The beloved never answers: the same; there is no timeout. Lost before, kept now.</item>
     /// </list>
-    /// <para>Keeping it is why the verb now sets RTK's 20-minute aether at the cast (propose.lua:11-12;
-    /// <c>verbs.propose</c>): without it a proposer could ask again at once after a "no", or ask two people at the
-    /// same moment.</para>
+    /// <para>Keeping it is why the verb now enforces a 20-minute wait from the cast (<c>verbs.propose</c>; Caleb,
+    /// 2026-10-21): without it a proposer could ask again at once after a "no", or ask two people at the same moment.
+    /// RTK's script intends that wait (propose.lua:11-12) but never applies it; the verb says why.</para>
     /// <para><b>"Yes" checks again that neither player is already engaged or married</b> (Caleb, 2026-10-21). The
     /// cast checked both, but a box can stay up for as long as the beloved leaves it, and either player can be
     /// committed by then: a second proposal the proposer made after the aether, accepted first, is the ordinary way.

@@ -338,18 +338,20 @@ public sealed class PeerSweepLockTests
     }
 
     /// <summary>
-    /// <b>A cast of Propose arms RTK's 20-minute aether, and a cast inside it asks nobody</b> (propose.lua:11-12; Caleb,
-    /// 2026-10-21). The real cast, and then either a declined proposal ("declined") or a name prompt answered with
-    /// nothing ("no name": RTK sets the aether before it asks, so that costs the wait too). Right after the first
-    /// cast the aether has 20 minutes on it; a second cast says "Propose isn't ready yet.", opens no name prompt and
-    /// puts no box on the beloved; once the aether is gone (cleared here, standing in for the 20 minutes) a cast asks
-    /// for a name again.
+    /// <b>A cast of Propose arms a 20-minute aether, and a cast inside it asks nobody</b> (Caleb, 2026-10-21). RTK's
+    /// script intends the wait (propose.lua:11-12) but never applies it: its <c>setAether</c> is a dot call, which
+    /// RTK's binding drops, and its engine checks only aethers. The port enforces it. The real cast, and then either a
+    /// declined proposal ("declined") or a name prompt answered with nothing ("no name": the script sets the wait before
+    /// it asks, so that costs the wait too). Right after the first cast the aether has 20 minutes on it; a second cast
+    /// says "Propose isn't ready yet.", opens no name prompt and puts no box on the beloved; once the aether is gone
+    /// (cleared here, standing in for the 20 minutes) a cast asks for a name again.
     /// <para>Red on a9f9449 in Debug and Release, both cases: "Expected ["Propose isn't ready yet."] / Actual ["You cast
     /// Propose."]", no aether was armed and the second cast asked again. Red with the check gone from the verb (the
     /// same), with the aether armed at the typed name instead of the cast ("no name" alone), and with 2 minutes for 20
-    /// ("the aether after the first cast had 120000 ms on it"). Since the review's F1 the cast also arms RTK's
-    /// persisted <c>setDuration</c> for the same 20 minutes (see <see cref="ProposeWaitsTwentyMinutesAcrossARelog"/>):
-    /// red on 34c9c93, both cases, "the duration after the first cast had 0 ms on it".</para>
+    /// ("the aether after the first cast had 120000 ms on it"). Since the review's F1 the cast also arms the port's
+    /// persisted <c>setDuration</c> (the script's line 11) for the same 20 minutes (see
+    /// <see cref="ProposeWaitsTwentyMinutesAcrossARelog"/>): red on 34c9c93, both cases, "the duration after the first
+    /// cast had 0 ms on it".</para>
     /// </summary>
     [Theory]
     [InlineData("declined")]
@@ -397,9 +399,10 @@ public sealed class PeerSweepLockTests
     /// <b>The 20 minutes survive a relog</b> (PR #358 review, F1; Caleb, 2026-10-21). The proposer casts, the beloved
     /// says "no", and the proposer logs out (the real teardown, whose save captures the timed effects into the row).
     /// A fresh session is built from that saved row, its timed effects restored as the arrival restores them, and it
-    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. RTK keeps its aethers on the
-    /// character row (char_db.c); this port keeps the half of propose.lua:11-12 that is RTK's <c>setDuration</c>, a
-    /// status flag the row carries.
+    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. The wait is the port's, on Caleb's
+    /// word: RTK's script intends it (propose.lua:11-12) but never applies it, since its <c>setAether</c> is a dot call
+    /// that RTK's binding drops and its engine checks only aethers. The port keeps it across a relog through line 11's
+    /// <c>setDuration</c>, a status flag the row carries.
     /// <para>Red on 34c9c93 in Debug and Release: "Expected ["Propose isn't ready yet."] / Actual ["You cast
     /// Propose."]", the aether lived in the old session and the new one asked again. Red the same way with the
     /// duration set but not checked, and with it checked but not set.</para>

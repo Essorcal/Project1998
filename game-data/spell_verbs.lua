@@ -1125,18 +1125,20 @@ end
 
 -- Propose (RTK common/propose.lua): a marriage proposal — kicks off a scripted async dialog (ask beloved's name,
 -- then prompt them). No mana; the real outcome resolves asynchronously. Blocked if already engaged/married.
--- RTK's 20-minute aether (propose.lua:11-12, setAether 1200000 at the cast, before the name is even asked): the
--- spell now stays in the book until the beloved says "yes" (Session.PromptProposal), and this is what keeps a
--- proposer from asking again at once, or asking two people at the same moment (Caleb, 2026-10-21). Checked first,
--- where RTK's engine refuses an aethered cast before the script runs (clif.c, "Wait %d second(s) for aethers to
--- settle."); the line is this file's own for a verb's aether. Set at the cast, so a name never typed, or a refused
--- one, costs the wait as in RTK.
--- And RTK's setDuration("propose", 1200000) on the line before it (propose.lua:11), so the 20 minutes survive a
--- relog (PR #358 review, F1; Caleb, 2026-10-21). This file's aether lives in the session and a relog clears it,
--- where RTK writes its aethers to the character row (char_db.c). setDuration here is the persisted one (a status
--- flag the row captures and the arrival restores), as Baekho's Cunning and Harden Body set it and the warrior
--- strikes read the Black Potion's; a cast is refused while either is running. A death or @dispel clears the
--- duration (they clear every status flag), and the aether half still holds for the rest of that session.
+-- A 20-minute wait from the cast, which RTK's script intends and this port enforces (Caleb, 2026-10-21, and again
+-- for #358: "Keep the saved 20-minute limit as built"). propose.lua:11-12 sets setDuration and setAether, both
+-- 1200000, at the cast, before the name is even asked. RTK never applies it: line 12 is a dot call
+-- (player.setAether), so RTK's binding gets no player and does nothing (sl.c, typel_boundfunc), and its engine's
+-- cast refusal reads only aethers (clif.c, "Wait %d second(s) for aethers to settle."), not line 11's duration.
+-- Here the spell stays in the book until the beloved says "yes" (Session.PromptProposal), and this wait is what
+-- keeps a proposer from asking again at once, or asking two people at the same moment. Checked first, where RTK's
+-- engine would check an aether; the line is this file's own for a verb's aether. Set at the cast, so a name never
+-- typed, or a refused one, costs the wait, as the script's order has it.
+-- Two halves, so the wait survives a relog (PR #358 review, F1): this file's aether lives in the session and a relog
+-- clears it; setDuration here is the persisted one (a status flag the row captures and the arrival restores), as
+-- Baekho's Cunning and Harden Body set it and the warrior strikes read the Black Potion's. A cast is refused while
+-- either is running. A death or @dispel clears the duration (they clear every status flag) and the aether half holds
+-- for the rest of that session, so a death and a relog together end the wait early.
 local PROPOSE_AETHER = 1200000
 function verbs.propose(ctx, row)
   if ctx:onCooldown(ctx.spellKey) or ctx:hasDuration(ctx.spellKey) then
