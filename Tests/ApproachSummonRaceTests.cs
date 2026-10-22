@@ -318,6 +318,9 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     /// their map, departed and saved. The <c>@bring</c> must move nobody, and say what the lookup would now say.
     /// <para>Red on 6de1d24 in Debug and Release: "Expected (0, False) / Actual (1, True)", the departed target back
     /// on the GM's map and found by name. Red the same way with <c>EnterMap</c>'s check disabled.</para>
+    /// <para>The "no Brought line" check reads the pane, where the command's confirmation goes (<c>Reply</c>, 0x0A).
+    /// It read the 0x0D speech frames before, where that line never goes, so it could not fail (PR #358's review, F2).
+    /// Red in Debug and Release with the confirmation forced through on the refused path.</para>
     /// </summary>
     [Fact]
     public void ABringWaitingOnATargetWhoLogsOutLeavesThemOffEveryMap()
@@ -343,7 +346,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.Equal((0, false), (MapsHolding(t), _fx.World.Online.FindPlayer(tc.Name) is not null));
         Assert.Equal((BringQuitThere, (ushort)10, (ushort)10), (tc.Map, tc.X, tc.Y));
         Assert.Contains(Speech(gmo), s => s.Contains($"'{tc.Name}' isn't online.", StringComparison.Ordinal));
-        Assert.DoesNotContain(Speech(gmo), s => s.Contains("Brought", StringComparison.Ordinal));
+        Assert.DoesNotContain(MiniTexts(gmo), l => l.Contains("Brought", StringComparison.Ordinal));   // Reply's pane line
         Assert.DoesNotContain(MiniTexts(to), l => l.Contains("summoned", StringComparison.Ordinal));
     }
 
@@ -356,6 +359,9 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     /// <para>Red on 6de1d24 in Debug and Release: "Expected (0, False) / Actual (1, True)", the step resumed and the
     /// move went on. Red the same way with <c>EnterMap</c>'s check moved BEFORE its exchange step, which is why it
     /// sits after it.</para>
+    /// <para>The "no Brought line" check reads the pane, as in
+    /// <see cref="ABringWaitingOnATargetWhoLogsOutLeavesThemOffEveryMap"/>: red in Debug and Release with the
+    /// confirmation forced through on the refused path.</para>
     /// </summary>
     [Fact]
     public void ABringParkedOnABusyPartnerDoesNotPutALoggedOutTargetBackOnAMap()
@@ -386,7 +392,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.Equal((0, false), (MapsHolding(t), _fx.World.Online.FindPlayer(tc.Name) is not null));
         Assert.Equal((BringBusyThere, (ushort)10, (ushort)10), (tc.Map, tc.X, tc.Y));
         Assert.Contains(Speech(gmo), s => s.Contains($"'{tc.Name}' isn't online.", StringComparison.Ordinal));
-        Assert.DoesNotContain(Speech(gmo), s => s.Contains("Brought", StringComparison.Ordinal));
+        Assert.DoesNotContain(MiniTexts(gmo), l => l.Contains("Brought", StringComparison.Ordinal));   // Reply's pane line
     }
 
     /// <summary>
@@ -653,7 +659,9 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         return SessionFixture.Frame(ClientOp.Chat, body);
     }
 
-    /// <summary>The ASCII of every 0x0D speech frame, where a command's reply and refusal land (<c>SendLog</c>).</summary>
+    /// <summary>The ASCII of every 0x0D speech frame, where a command's refusal lands (<c>Refuse</c>, <c>SendLog</c>). Its
+    /// readouts and confirmations go to the status pane instead (<c>Reply</c>, 0x0A): read those with
+    /// <see cref="MiniTexts"/>.</summary>
     private static List<string> Speech(RecordingOutbound o) =>
         o.BodiesOf(ServerOp.Speech).Select(b => Encoding.ASCII.GetString(b)).ToList();
 
