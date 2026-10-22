@@ -1588,13 +1588,18 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// keepsakes and experience, in memory and in their saved rows, are exactly as they were just before it. A reads no
     /// "Congratulations! You are both now married." box and nobody reads "I now pronounce you (married)". Instead each
     /// reads one status line, the Chapel's "has already ended." line naming the other: A "Your engagement to B has
-    /// already ended.", B "Your engagement to A has already ended.". Both dialogs are then closed.
+    /// already ended.", B "Your engagement to A has already ended.", each handed over by a thread that held that
+    /// player's monitor (both log in on a <see cref="HeldOutbound"/>): the section sends them, holding both. Both
+    /// dialogs are then closed.
     /// <para>Red on 7d21d8c, Debug and Release, every case: the "I do" marries both, whatever the halves held. After
     /// the bride's own break-off, both end married with a keepsake each, A having paid 100,000 experience to end the
     /// engagement, and A reads the "Congratulations!" box.</para>
     /// <para>The first case is the path in play. The other four write one half directly, as a proposal's "yes" or a
     /// wedding writes it, so that each clause of the re-check (the bride's half names the fiancé, his names her, and
     /// neither is married) has a case that only it decides.</para>
+    /// <para>Red, Debug and Release, every case, with the re-check left inside the section and only its two sends moved
+    /// to after it (PR #365's review, F1): A's line is then handed over by B's thread, which holds B's monitor and not
+    /// A's. B's own line still goes out under B's monitor, which his thread holds for the whole answer.</para>
     /// </summary>
     [Theory]
     [InlineData(EngagementAtTheAnswer.BrokenOffByTheBride)]
@@ -1612,10 +1617,11 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Session? aHeld = null, bHeld = null;
         try
         {
-            var (bS, bOut) = Arrive(db.Store, b);
+            var (bS, bWire) = ArriveHeld(db.Store, b);
             bHeld = bS;
-            var (aS, aOut) = Arrive(db.Store, a);
+            var (aS, aWire) = ArriveHeld(db.Store, a);
             aHeld = aS;
+            RecordingOutbound aOut = aWire.Rec, bOut = bWire.Rec;
             var aPools = Pools(aS);
             uint bExp = bS.CharExp;
 
@@ -1659,17 +1665,20 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             string aBefore = WholeVow(aS), bBefore = WholeVow(bS);
             string aRow = RowJson(db, a), bRow = RowJson(db, b);
             uint aExp = aS.CharExp;
-            aOut.Clear();
-            bOut.Clear();
+            aWire.Clear();
+            bWire.Clear();
 
             OnOwnThread(() => bS.Receive(MenuFrame(1)));   // "I do."
             bool aBoxed = aS.DialogBusy;
             var aLines = SpellCastSupport.MiniTexts(aOut);
             var bLines = SpellCastSupport.MiniTexts(bOut);
+            var aHeldLines = aWire.Lines();
+            var bHeldLines = bWire.Lines();
             _out.WriteLine($"[{at}] after B's \"I do\": A {VowState(aS)}, B {VowState(bS)}; A's lines " +
-                           $"[{string.Join(" | ", aLines)}], A's box open {aBoxed}, congratulated {Shown(aOut, Congratulations)}; " +
-                           $"B's lines [{string.Join(" | ", bLines)}]; rows unchanged A {RowJson(db, a) == aRow}, " +
-                           $"B {RowJson(db, b) == bRow}");
+                           $"[{string.Join(" | ", aHeldLines.Select(l => $"'{l.Text}' held={l.Held}"))}], A's box open {aBoxed}, " +
+                           $"congratulated {Shown(aOut, Congratulations)}; B's lines " +
+                           $"[{string.Join(" | ", bHeldLines.Select(l => $"'{l.Text}' held={l.Held}"))}]; rows unchanged A " +
+                           $"{RowJson(db, a) == aRow}, B {RowJson(db, b) == bRow}");
             if (aBoxed) OnOwnThread(() => AnswerYesToTheEnd(aS, aOut));
 
             Assert.Equal(aBefore, WholeVow(aS));
@@ -1684,6 +1693,8 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Assert.DoesNotContain(Pronounced, bLines);
             Assert.Equal(new[] { AlreadyLine(married: false, b) }, aLines);
             Assert.Equal(new[] { AlreadyLine(married: false, a) }, bLines);
+            Assert.All(aHeldLines, l => Assert.True(l.Held, $"A's line \"{l.Text}\" was sent by a thread that did not hold A's monitor"));
+            Assert.All(bHeldLines, l => Assert.True(l.Held, $"B's line \"{l.Text}\" was sent by a thread that did not hold B's monitor"));
             Assert.False(bS.DialogBusy, "B's dialog was still open");
         }
         finally
@@ -1810,12 +1821,17 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// included), keepsakes and experience of B, of the session A left and of A's new one, and both saved rows, are
     /// exactly as they were just before the answer. Nobody reads "I now pronounce you (married)" or the
     /// "Congratulations!" box. The one still present reads one status line, the ceremony's own line for an absent
-    /// partner: "Both parties must be present for the ceremony to commence"; the one going away, and A's new session,
-    /// read nothing.
+    /// partner: "Both parties must be present for the ceremony to commence", handed over by a thread that held that
+    /// player's monitor (both log in on a <see cref="HeldOutbound"/>); the one going away, and A's new session, read
+    /// nothing.
     /// <para>Red on e1d95c3, Debug and Release, every case: the "I do" marries. After a relog the fiancé ends married
     /// in memory and in his row while A's new session, and her row once it saves, stay engaged; a bride who stays out,
     /// or whose connection the server closed, is married with nothing said; and the fiancé who was leaving is married
     /// in his row.</para>
+    /// <para>Red, Debug and Release, for <see cref="GoingAwayAtTheAnswer.TheFianceLeaving"/>, with the check left inside
+    /// the section and only its line moved to after it (PR #365's review, F1): A's line is then handed over by B's
+    /// thread without A's monitor. When the bride is the one going away the line is B's, and B's thread holds B's
+    /// monitor for the whole answer, so those cases cannot see that move.</para>
     /// </summary>
     [Theory]
     [InlineData(GoingAwayAtTheAnswer.TheBrideLoggedOut)]
@@ -1834,10 +1850,11 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Session? aHeld = null, bHeld = null, aBack = null;
         try
         {
-            var (bS, bOut) = Arrive(db.Store, b);
+            var (bS, bWire) = ArriveHeld(db.Store, b);
             bHeld = bS;
-            var (aS, aOut) = Arrive(db.Store, a);
+            var (aS, aWire) = ArriveHeld(db.Store, a);
             aHeld = aS;
+            RecordingOutbound aOut = aWire.Rec, bOut = bWire.Rec;
             OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
             Assert.True(bS.DialogBusy, "the ceremony did not ask B");
 
@@ -1873,18 +1890,20 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             string aBefore = WholeVow(aS), bBefore = WholeVow(bS), aBackBefore = aBack is null ? "" : WholeVow(aBack);
             string aRow = RowJson(db, a), bRow = RowJson(db, b);
             uint aExp = aS.CharExp, bExp = bS.CharExp;
-            aOut.Clear();
-            bOut.Clear();
+            aWire.Clear();
+            bWire.Clear();
             aBackOut?.Clear();
 
             OnOwnThread(() => bS.Receive(MenuFrame(1)));   // "I do."
             var aLines = SpellCastSupport.MiniTexts(aOut);
             var bLines = SpellCastSupport.MiniTexts(bOut);
             var aBackLines = aBackOut is null ? new List<string>() : SpellCastSupport.MiniTexts(aBackOut);
+            var heldLines = aWire.Lines().Select(l => ("A", l.Text, l.Held)).Concat(bWire.Lines().Select(l => ("B", l.Text, l.Held))).ToList();
             _out.WriteLine($"[{away}] after B's \"I do\": A {VowState(aS)}, A back {(aBack is null ? "-" : VowState(aBack))}, " +
                            $"B {VowState(bS)}; rows A {RowVowState(db.Store, a)} (unchanged {RowJson(db, a) == aRow}), B " +
-                           $"{RowVowState(db.Store, b)} (unchanged {RowJson(db, b) == bRow}); A's lines [{string.Join(" | ", aLines)}], " +
-                           $"A back's lines [{string.Join(" | ", aBackLines)}], B's lines [{string.Join(" | ", bLines)}]");
+                           $"{RowVowState(db.Store, b)} (unchanged {RowJson(db, b) == bRow}); lines " +
+                           $"[{string.Join(" | ", heldLines.Select(l => $"{l.Item1} '{l.Text}' held={l.Held}"))}], " +
+                           $"A back's lines [{string.Join(" | ", aBackLines)}]");
             if (away == GoingAwayAtTheAnswer.TheFianceLeaving) CloseConnection.Invoke(bS, new object[] { "read-loop exit" });
 
             Assert.Equal(aBefore, WholeVow(aS));
@@ -1900,6 +1919,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Assert.Empty(aBackLines);
             Assert.Equal(brideAway ? Array.Empty<string>() : new[] { BothPresent }, aLines);
             Assert.Equal(brideAway ? new[] { BothPresent } : Array.Empty<string>(), bLines);
+            Assert.All(heldLines, l => Assert.True(l.Held, $"{l.Item1}'s line \"{l.Text}\" was sent by a thread that did not hold {l.Item1}'s monitor"));
             Assert.False(bS.DialogBusy, "B's dialog was still open");
         }
         finally
@@ -2641,14 +2661,21 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
     /// <summary>An outbound that keeps every frame and whether the thread that handed it over held the owner's state
     /// monitor at that moment (<c>Session.StateHeld</c>, <c>Monitor.IsEntered</c>): <c>Session.Send</c> hands each
-    /// frame to <see cref="IOutbound.Send"/> synchronously, on the sending thread.</summary>
+    /// frame to <see cref="IOutbound.Send"/> synchronously, on the sending thread. Every frame also goes on to
+    /// <see cref="Rec"/>, so the class's dialog helpers can drive and read a player who logged in on this.</summary>
     private sealed class HeldOutbound : IOutbound
     {
         private readonly List<(byte[] Frame, bool Held)> _frames = new();
         private readonly object _gate = new();
         public Session? Owner;
+        public readonly RecordingOutbound Rec;
 
-        public HeldOutbound(string remote) => Remote = remote;
+        public HeldOutbound(string remote)
+        {
+            Remote = remote;
+            Rec = new RecordingOutbound(remote);
+        }
+
         public string Remote { get; }
         public int Capacity => int.MaxValue;
         public int QueueDepth => 0;
@@ -2658,15 +2685,24 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         {
             bool held = Owner?.StateHeld ?? false;
             lock (_gate) _frames.Add((frame, held));
-            return true;
+            return Rec.Send(frame);
         }
 
-        public void Close() => Closed = true;
+        public void Close()
+        {
+            Closed = true;
+            Rec.Close();
+        }
 
         public void Clear()
         {
             lock (_gate) _frames.Clear();
+            Rec.Clear();
         }
+
+        /// <summary>Every status line (<c>0x0A</c>) so far, with its flag.</summary>
+        public List<(string Text, bool Held)> Lines() =>
+            Sent().Where(s => s.Op == ServerOp.MiniText).Select(s => (MiniTextOf(s.Body), s.Held)).ToList();
 
         /// <summary>Every frame so far, decrypted as <see cref="RecordingOutbound.BodiesOf"/> does, with its flag.</summary>
         public List<(byte Op, byte[] Body, bool Held)> Sent()
