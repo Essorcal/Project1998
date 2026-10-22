@@ -680,9 +680,14 @@ public sealed partial class World
     /// so the ~21k hunting-map mobs don't flood memory or stall boot. Dead points refill via <see cref="Tick"/>.</summary>
     private void PopulateSpawns()
     {
-        int points, skipped, groups, capped;
-        lock (_lock) (points, skipped, groups, capped) = _spawnDirector.Build();
+        int points, skipped, groups, capped, roomPoints, roomMaps;
+        lock (_lock)
+        {
+            (points, skipped, groups, capped) = _spawnDirector.Build();
+            (roomPoints, roomMaps) = (_spawnDirector.RoomPointCount, _spawnDirector.RoomMapCount);
+        }
         Log.Info($"spawns: {points} spawn points (materialized lazily) across {_spawnDirector.PointMapCount} map(s)" +
+                 $", {roomPoints} of them filed under their bosses' rooms on {roomMaps} map(s)" +
                  (skipped > 0 ? $" ({skipped} skipped — unknown map/mob)" : ""));
         Log.Info($"spawns: {groups} batch groups capping {capped} mobs across {_spawnDirector.GroupMapCount} map(s)");
     }
@@ -1379,8 +1384,11 @@ public sealed partial class World
         // BEFORE the lock: first entry to a map runs EnsureMaterialized, whose spawn placement reads the
         // terrain (FreeSpawnTile -> MapData.For) — a disk read, a full cell decode and a SQLite query. Held
         // under _lock that froze every player on every OTHER map too, for as long as the load took. Warming
-        // the cache out here makes the locked section a pure in-memory hit. See MapData.Prewarm.
+        // the cache out here makes the locked section a pure in-memory hit. See MapData.Prewarm. A boss filed
+        // under this map as one of its rooms' maps can be built on another of them by this entry (#333), so
+        // those maps are warmed too.
         MapData.Prewarm(mapId);
+        SpawnDirector.PrewarmRoomMaps(new ReadOnlySpan<ushort>(in mapId));
 
         PeerTile[] peers; Mob[] mobs; PeerTile newcomer;
         List<EntryFault>? faults = null;   // spawn rows that threw on this entry; null on an ordinary one
@@ -1671,6 +1679,8 @@ public sealed partial class World
     /// re-materialize; the ~23k lazy points elsewhere are cheap point objects again. Players on a populated map
     /// briefly see mobs blink (despawn now, re-stream on the next <see cref="Tick"/>) — acceptable for an admin
     /// reload; a wounded mob also resets to full, since area spawns have no stable identity to preserve.
+    /// A boss filed under its rooms' maps (#333) is re-built once if any of those maps has a player, in whichever
+    /// room its pick lands on; <see cref="ReloadFromDisk"/> warms those rooms' maps before this takes the lock.
     /// Returns (mobs torn down, NPCs placed, maps re-materialized).</summary>
     public (int mobs, int npcs, int maps) RebuildPopulation()
     {
@@ -2384,9 +2394,12 @@ public sealed partial class World
             StaffAccounts.Load();   // the staff rosters are file-backed config too — promote/demote without a restart
             // Pre-warm the terrain cache for populated maps OUTSIDE _lock, so RebuildPopulation's re-materialization
             // (FreeSpawnTile/SpawnDirector.PickAreaHome -> MapData.For) hits a warm cache instead of reading .map files from disk
-            // while holding the world lock (the old reload-stall).
-            foreach (var mapId in PopulatedMapIds())
+            // while holding the world lock (the old reload-stall). With them, the maps a boss filed under one of
+            // them may be built on (#333): its rooms' maps (SpawnDirector.PrewarmRoomMaps).
+            var populated = PopulatedMapIds();
+            foreach (var mapId in populated)
                 if (Content.Maps.TryGetValue(mapId, out var mi)) MapData.For(mapId, mi.Xs, mi.Ys);
+            SpawnDirector.PrewarmRoomMaps(populated.ToArray());
             var (mobs, npcs, maps) = RebuildPopulation();
             return (true, $"{summary}. Rebuilt population: {mobs} mob(s) torn down, {npcs} NPC(s) placed, " +
                           $"{maps} live map(s) re-materialized; map cache cleared.");
@@ -3074,10 +3087,13 @@ public sealed partial class World
         // (0) Warm every active map's terrain BEFORE taking the lock. Both the respawn refill (Materialize ->
         // FreeSpawnTile) and the wander loop below call MapData.For, which on a miss reads the .map off disk,
         // decodes every cell and runs a SQLite query. Under _lock that stalled the whole world; out here it
-        // costs nothing on the overwhelmingly common cache-hit path. See MapData.Prewarm.
+        // costs nothing on the overwhelmingly common cache-hit path. See MapData.Prewarm. A boss filed under its
+        // rooms' maps (#333) is refilled while any of them is active and built on any of them, so the maps
+        // beside an active one are warmed too (SpawnDirector.PrewarmRoomMaps).
         ushort[] active;
         lock (_lock) active = _maps.Where(kv => kv.Value.Players.Count > 0).Select(kv => kv.Key).ToArray();
         foreach (var id in active) MapData.Prewarm(id);
+        SpawnDirector.PrewarmRoomMaps(active);
 
         long lockT0 = System.Diagnostics.Stopwatch.GetTimestamp();
         MarkPhaseAt(PhWarm, lockT0);

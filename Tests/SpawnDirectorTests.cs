@@ -485,3 +485,348 @@ public class SpawnDirectorRebuildTests
         Assert.Equal(kugnaeBefore, Locked(world, () => spawns.PointCountForTest(Kugnae)));   // …and Content's roster is back as it was
     }
 }
+
+/// <summary>
+/// #333: a spawn point whose creature has rooms (<c>MobSpawnRules.csv</c>'s <c>Rooms</c>, RTK's
+/// <c>on_spawn = function(mob) mob:warp(map, x, y) end</c>) is filed under its rooms' maps, not under the
+/// map its row names. Before the fix the 61 map-4 bosses were filed under map 4, the NPC Chamber nobody
+/// enters, so none of them existed until someone entered map 4, and a killed one came back only while
+/// someone stood there.
+///
+/// <para>Each fact builds a <see cref="World"/> of its own, as <see cref="MapEntryPlacementTests"/>' trap
+/// facts do: the rooms are real maps with real content, and entering one on the shared fixture would leave
+/// that map's creatures, the real boss among them, in every later class's world. Where a fact needs a
+/// point of its own, its creature is synthetic but keyed by a real rule, the way
+/// <see cref="SpawnDirectorTests"/>' death-cooldown fact borrows <c>ogre_citelam</c>'s: <c>MobSpawnRules</c>
+/// is looked up by creature KEY. Those points' row maps are content-free ids nobody enters. The other facts
+/// use the real map-4 points that <c>Spawns.csv</c> gives every <c>World</c>. Each borrowed rule's room maps
+/// are used by no other class, and the warm fact's by no other fact. The sessions use the shared fixture's
+/// store, which is why the class is in the <c>world</c> collection.</para>
+/// </summary>
+[Collection("world")]
+public class SpawnDirectorRoomTests
+{
+    private readonly SessionFixture _fx;
+
+    public SpawnDirectorRoomTests(SessionFixture fx) => _fx = fx;
+
+    private const ushort RowMap = 60206, TwoRoomRowMap = 60207;   // synthetic points' rows: no Maps.csv row, nobody enters
+    private const ushort NpcChamber = 4;   // where Spawns.csv puts the 61 map-4 bosses and the three nine-tailed foxes
+    private const ushort Gnaw1 = 157;      // mythic_rat's one room, 157:23:15 (Gnaw 1, 30x30)
+    private const ushort RatEyes2 = 3155, Gnaw2 = 3157;   // divine_rat's two rooms, 3155:10:6 and 3157:23:15
+    private const ushort DogRoomA = 3193, DogRoomB = 3195;   // divine_dog's two rooms; the warm fact's alone
+    private const ushort GimYisDen = 1308;   // gimyi's one room, 1308:2:5, and its batch group (AreaSpawns.csv)
+
+    /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
+    private static T Locked<T>(World world, Func<T> read)
+    {
+        T value = default!;
+        world.UnderWorldLockForTest(() => value = read());
+        return value;
+    }
+
+    /// <summary>A rule this class leans on, with its shape checked: rooms on exactly these maps, and no
+    /// population cap, roll or death cooldown, so a point of its creature is built every time it is asked.</summary>
+    private static Content.MobSpawnRuleDef RoomRule(string key, params ushort[] maps)
+    {
+        var rule = Content.MobSpawnRules[key];
+        Assert.True(rule.Rooms.Select(r => r.Map).Distinct().OrderBy(m => m).SequenceEqual(maps.OrderBy(m => m))
+                    && rule.MaxAlive == 0 && rule.SpawnChance == 0 && rule.DeathCooldownSec == 0,
+                    $"the fact leans on the shape of {key}'s rule; MobSpawnRules.csv changed under it");
+        return rule;
+    }
+
+    /// <summary>Every creature of <paramref name="def"/> on any of <paramref name="rule"/>'s room maps, with
+    /// the room it is standing in.</summary>
+    private static List<(Mob Mob, (ushort Map, ushort X, ushort Y) Room)> InTheirRooms(
+        World world, Session viewer, Content.MobSpawnRuleDef rule, MobDef def) =>
+        rule.Rooms.SelectMany(room => world.View(viewer, room.Map).mobs
+                                          .Where(m => m.DefId == def.Id)
+                                          .Select(m => (m, room)))
+            .GroupBy(t => t.m.Id).Select(g => g.First()).ToList();
+
+    private static MobDef Creature(int id, string key) =>
+        new()
+        {
+            Id = id,
+            Key = key,
+            Name = "Test " + key,
+            Look = 1,
+            Color = 0,
+            Hp = 100,
+            Exp = 0,
+            Level = 1,
+            MoveTime = 1_000_000,
+            Stationary = true,
+        };
+
+    /// <summary>A session on <paramref name="world"/> standing on <paramref name="tile"/> of
+    /// <paramref name="map"/>, not yet on any map's list (the fact enters it itself).</summary>
+    private Session Seat(World world, string name, ushort map, (ushort X, ushort Y) tile)
+    {
+        var character = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion,
+            Id = world.AllocatePlayerId(),
+            Name = name,
+            Map = map,
+            X = tile.X,
+            Y = tile.Y,
+        };
+        return new Session(new RecordingOutbound($"recorder:{name}"), 2005, _fx.Store, world, character);
+    }
+
+    private static List<Mob> MobsOf(World world, Session viewer, ushort map, MobDef def) =>
+        world.View(viewer, map).mobs.Where(m => m.DefId == def.Id).ToList();
+
+    /// <summary>On the room's tile or within two of it: <c>Materialize</c> places through
+    /// <c>FreeSpawnTile</c>, which takes the nearest open tile within two when the room's own is a wall or
+    /// has a creature on it.</summary>
+    private static void AssertInTheRoom(Mob boss, (ushort Map, ushort X, ushort Y) room)
+    {
+        int off = Math.Max(Math.Abs(boss.X - room.X), Math.Abs(boss.Y - room.Y));
+        Assert.True(off <= 2, $"#{boss.Id} stands on ({boss.X},{boss.Y}), {off} tiles from its room ({room.X},{room.Y})");
+    }
+
+    /// <summary>The issue's own test. A point on a row map nobody enters, whose creature borrows
+    /// <c>mythic_rat</c>'s rule (one room, 157:23:15). A player who enters only the room's map finds the boss
+    /// there. Killed, it stays away for its respawn window and is back when the window closes, with nobody on
+    /// the point's row map at any time.
+    ///
+    /// <para>Red on master's code at the first check: the point is filed under its row map, which nobody
+    /// enters, so entering the room builds nothing.</para></summary>
+    [Fact]
+    public void ABossWaitsInItsRoomForAPlayerWhoNeverEntersItsRowMap()
+    {
+        var rule = Content.MobSpawnRules["mythic_rat"];
+        Assert.True(rule.Rooms.Length == 1 && rule.Rooms[0] == (Gnaw1, (ushort)23, (ushort)15)
+                    && rule.MaxAlive == 0 && rule.SpawnChance == 0 && rule.DeathCooldownSec == 0,
+                    "the fact leans on the shape of mythic_rat's rule; MobSpawnRules.csv changed under it");
+        var room = rule.Rooms[0];
+        const int window = 3;   // beats
+        var world = new World();   // constructed, never started: nothing moves unless this fact moves it
+        var def = Creature(990_206, "mythic_rat");
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(RowMap, def, 3, 3, respawnEvery: window));
+
+        var watcher = Seat(world, "RoomWatcher", Gnaw1, (1, 1));
+        world.EnterMap(watcher, Gnaw1);
+
+        var boss = Assert.Single(MobsOf(world, watcher, Gnaw1, def));   // the first entry to its room built it
+        AssertInTheRoom(boss, room);
+        Assert.Equal(0, world.MobCountForTest(RowMap));
+
+        Assert.True(world.DespawnMob(Gnaw1, boss));                                     // off the map, point freed
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.RecordDeath(Gnaw1, boss));   // the kill's stamp
+        for (int beat = 1; beat < window; beat++)
+        {
+            world.TickOnceForTest();
+            Assert.True(MobsOf(world, watcher, Gnaw1, def).Count == 0, $"the boss was back on beat {beat} of a {window}-beat window");
+        }
+        world.TickOnceForTest();
+
+        var back = Assert.Single(MobsOf(world, watcher, Gnaw1, def));   // served with nobody on its row map
+        Assert.NotEqual(boss.Id, back.Id);
+        AssertInTheRoom(back, room);
+        Assert.Equal(0, world.MobCountForTest(RowMap));
+        Assert.Empty(world.View(watcher, RowMap).peers);
+    }
+
+    /// <summary>A boss whose rooms span two maps (<c>divine_rat</c>: 3155:10:6 and 3157:23:15, the issue's own
+    /// example) has one point, filed under both. The first entry to either builds it, in a room picked at
+    /// random among both, so possibly on the other map; the first entry to the second map does NOT build it
+    /// again. Killed, it is refilled while a player is on either map: here only on 3157, the second of its
+    /// rooms' maps. Killed again with nobody on either map, it stays away; once someone is back on either,
+    /// the next beat refills it.
+    ///
+    /// <para>Falsified by dropping the "not yet built or pending" test from <c>EnsureMaterialized</c>'s room
+    /// loop: red, two bosses after the second map's first entry. By making the respawn pass ask only the
+    /// first of a boss's rooms' maps for a player: red, the boss does not come back for the player on 3157.
+    /// By dropping the player test from the respawn pass's room loop: red, the boss is back with nobody on
+    /// either map.</para></summary>
+    [Fact]
+    public void ABossWhoseRoomsSpanTwoMapsIsBuiltOnceAndServedFromEither()
+    {
+        var rule = RoomRule("divine_rat", RatEyes2, Gnaw2);
+        Assert.Equal(RatEyes2, rule.Rooms[0].Map);   // the respawn half stands its player on the OTHER map
+        const int window = 3;   // beats
+        var world = new World();
+        var def = Creature(990_207, "divine_rat");
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(TwoRoomRowMap, def, 3, 3, respawnEvery: window));
+
+        var east = Seat(world, "TwoRoomEast", RatEyes2, (1, 1));
+        world.EnterMap(east, RatEyes2);
+        var (boss, room) = Assert.Single(InTheirRooms(world, east, rule, def));   // built, on either map
+        AssertInTheRoom(boss, room);
+
+        var west = Seat(world, "TwoRoomWest", Gnaw2, (1, 1));
+        world.EnterMap(west, Gnaw2);                                             // its other map's first entry
+        Assert.Equal(boss.Id, Assert.Single(InTheirRooms(world, east, rule, def)).Mob.Id);   // not built twice
+
+        // Killed; the player on its first rooms' map leaves, the one on its second stays.
+        Assert.True(world.DespawnMob(room.Map, boss));
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.RecordDeath(room.Map, boss));
+        world.LeaveMap(east, RatEyes2);
+        for (int beat = 0; beat < window; beat++) world.TickOnceForTest();
+        var (back, backRoom) = Assert.Single(InTheirRooms(world, west, rule, def));
+        Assert.NotEqual(boss.Id, back.Id);
+        AssertInTheRoom(back, backRoom);
+
+        // Killed again with nobody on either map: it stays away, however long.
+        Assert.True(world.DespawnMob(backRoom.Map, back));
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.RecordDeath(backRoom.Map, back));
+        world.LeaveMap(west, Gnaw2);
+        for (int beat = 0; beat < 4 * window; beat++) world.TickOnceForTest();
+        Assert.Empty(InTheirRooms(world, west, rule, def));
+
+        // Someone is back on one of its maps: the next beat refills it. The entry itself does not (the map
+        // is not new), which is the ordinary point's rule too.
+        world.EnterMap(east, RatEyes2);
+        world.TickOnceForTest();
+        var (again, againRoom) = Assert.Single(InTheirRooms(world, east, rule, def));
+        AssertInTheRoom(again, againRoom);
+    }
+
+    /// <summary><c>@reload</c> (<c>World.RebuildPopulation</c>) with players on a boss's rooms' maps: the
+    /// real <c>divine_rat</c> point, filed under 3155 and 3157, with a player on each. The rebuild tears the
+    /// boss down with everything else and builds it again itself, once, though both its maps have a player
+    /// and both are re-materialised; and the rebuilt roster files the point under each map once, not on top
+    /// of the old one.
+    ///
+    /// <para>Red on master's code at the first check (the point is filed under map 4). Falsified by
+    /// dropping <c>_roomPoints.Clear()</c> from <c>SpawnDirector.Clear</c>: red, the point is filed twice
+    /// under 3155 after the rebuild (one boss still: the stale point's creature was torn down, so it is not
+    /// rebuilt, but it would be held for the life of the process, #121's leak).</para></summary>
+    [Fact]
+    public void AReloadRebuildsARoomBossOnceForThePlayersOnItsRoomsMaps()
+    {
+        var rule = RoomRule("divine_rat", RatEyes2, Gnaw2);
+        var def = Content.Mobs.Single(m => m.Key == "divine_rat");
+        var world = new World();
+        var east = Seat(world, "ReloadEast", RatEyes2, (1, 1));
+        var west = Seat(world, "ReloadWest", Gnaw2, (1, 1));
+        world.EnterMap(east, RatEyes2);
+        world.EnterMap(west, Gnaw2);
+        var before = Assert.Single(InTheirRooms(world, east, rule, def)).Mob;
+
+        var (_, _, maps) = world.RebuildPopulation();
+
+        Assert.Equal(2, maps);                                                   // both rooms' maps re-materialised
+        var after = Assert.Single(InTheirRooms(world, east, rule, def));         // built by the rebuild, once
+        Assert.NotEqual(before.Id, after.Mob.Id);
+        AssertInTheRoom(after.Mob, after.Room);
+        foreach (var map in new[] { RatEyes2, Gnaw2 })
+            Assert.Single(Locked(world, () => world.SpawnsForTest.PointKeysForTest(map)), k => k == def.Key);
+    }
+
+    /// <summary>The roster <c>Spawns.csv</c> gives every <see cref="World"/>: each point on map 4 whose
+    /// creature has rooms is filed under every one of its rooms' maps and not under map 4, and each room is on
+    /// a map the client renders (a room elsewhere is ignored by <c>Materialize</c>, which then builds the boss
+    /// on map 4 instead). The three nine-tailed foxes, which have no rule, are all that stays on map 4.
+    ///
+    /// <para>Falsified by filing every point under its row's map again (<c>AddSpawn</c>): red, a boss is
+    /// filed under map 4.</para></summary>
+    [Fact]
+    public void TheMapFourBossesAreFiledUnderTheirRoomsMapsAndTheFoxesStay()
+    {
+        var world = new World();
+        var onChamber = Locked(world, () => world.SpawnsForTest.PointKeysForTest(NpcChamber));
+        int bosses = 0;
+        foreach (var row in Content.SpawnsFor(NpcChamber))
+        {
+            if (Content.MobById(row.MobId) is not { } def) continue;   // Build skips an unknown creature too
+            if (!Content.MobSpawnRules.TryGetValue(def.Key, out var rule) || rule.Rooms.Length == 0)
+            {
+                Assert.Contains(def.Key, onChamber);
+                continue;
+            }
+            bosses++;
+            Assert.DoesNotContain(def.Key, onChamber);
+            foreach (var room in rule.Rooms)
+            {
+                Assert.True(Content.Maps.ContainsKey(room.Map), $"{def.Key}'s room map {room.Map} is not one the client renders");
+                Assert.Contains(def.Key, Locked(world, () => world.SpawnsForTest.PointKeysForTest(room.Map)));
+            }
+        }
+        Assert.True(bosses > 0, "no point on map 4 has rooms any more; this fact pins nothing");
+        Assert.Equal(new[] { "nine_tailed_fox_buya", "nine_tailed_fox_buya2", "nine_tailed_fox_buya3" },
+                     onChamber.OrderBy(k => k, StringComparer.Ordinal));
+    }
+
+    /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
+    /// (<c>AreaSpawns.csv</c>: one <c>gimyi</c>, a 300 s clock, anywhere on the map). Its first entry runs
+    /// the group first, as every map's does, which places one Gim Yi anywhere; the point, now filed under
+    /// 1308, then builds a second in its room. The group's cap counts both (its live count is map-wide by
+    /// creature), so it adds none while either lives. This is what the PR body states for gimyi.
+    ///
+    /// <para>Red on master's code: one Gim Yi, the group's. Falsified like the map-4 filing fact.</para></summary>
+    [Fact]
+    public void GimYisDenGetsItsRoomsBossBesideItsGroupsOne()
+    {
+        var rule = RoomRule("gimyi", GimYisDen);
+        var def = Content.Mobs.Single(m => m.Key == "gimyi");
+        var group = Assert.Single(Content.AreaSpawns, a => a.MobId == def.Id);
+        Assert.True(group.Map == GimYisDen && group.Count == 1 && group.Timer > 0, "gimyi's batch group changed under the fact");
+        var world = new World();
+
+        var visitor = Seat(world, "DenVisitor", GimYisDen, (9, 22));   // the tile the Den's warps land on
+        world.EnterMap(visitor, GimYisDen);
+
+        var both = InTheirRooms(world, visitor, rule, def);
+        Assert.Equal(2, both.Count);
+        Assert.Contains(both, b => Math.Max(Math.Abs(b.Mob.X - b.Room.X), Math.Abs(b.Mob.Y - b.Room.Y)) <= 2);
+    }
+
+    /// <summary>The two gates <c>Materialize</c> reads under the map it is asked about, not the map the
+    /// creature lives on: the death cooldown (the registry is read under that map, and <c>RecordDeath</c>
+    /// stamps the map the creature died on) and a population cap with no <c>CapMaps</c> (counted on that map).
+    /// For a boss filed under its rooms that map is its row's (map 4), where it never stands, so either gate
+    /// on a rule with rooms would never bite. That was so before #333 and stays so: the boss is still asked
+    /// about under its row's map. No rule with rooms carries either today; this pins that, so a row that adds
+    /// one is told why it will not work rather than finding out on the live server.
+    ///
+    /// <para>Falsified by giving a rule with rooms a <c>DeathCooldownSec</c> in <c>MobSpawnRules.csv</c>:
+    /// red, naming it.</para></summary>
+    [Fact]
+    public void NoRuleWithRoomsCarriesAGateReadUnderItsRowsMap()
+    {
+        var gated = Content.MobSpawnRules.Values
+            .Where(r => r.Rooms.Length > 0 && (r.DeathCooldownSec > 0 || (r.MaxAlive > 0 && r.CapMaps.Length == 0)))
+            .Select(r => r.MobKey).ToList();
+        Assert.True(gated.Count == 0,
+                    $"a rule with rooms carries a death cooldown or an uncapped MaxAlive, which Materialize reads under its row's map: {string.Join(", ", gated)}");
+    }
+
+    /// <summary>A map's entry warms the terrain of its bosses' other rooms' maps BEFORE it takes
+    /// <c>World._lock</c>, so a boss built on one of them by that entry is placed from a warm cache rather
+    /// than by a disk read, a cell decode and a SQLite query under the lock (<c>docs/common/Locking.md</c>,
+    /// "How long a hold may be"). <c>divine_dog</c>'s rooms are on 3193 and 3195; 3195 carries no NPC (a
+    /// World's construction would load it) and nothing else in the suite touches it, so it is cold until
+    /// this fact's entry.
+    ///
+    /// <para>The fact holds the world lock itself and starts the entry on another thread, which warms and
+    /// then waits for the lock. While the lock is held, 3195 must come into the cache: only the warm can
+    /// have put it there, since the placement runs under the lock. Falsified by deleting the
+    /// <c>SpawnDirector.PrewarmRoomMaps</c> call in <c>World.EnterMap</c>: red after the five-second wait,
+    /// 3195 still cold.</para></summary>
+    [Fact]
+    public void AnEntryWarmsItsBossesOtherRoomsMapsBeforeItTakesTheLock()
+    {
+        RoomRule("divine_dog", DogRoomA, DogRoomB);
+        Assert.DoesNotContain(Content.Npcs, n => n.Map == DogRoomB);
+        var world = new World();
+        Assert.False(MapData.IsLoadedForTest(DogRoomB), $"map {DogRoomB} should be cold to start with; something else loaded it");
+
+        var entrant = Seat(world, "WarmEntrant", DogRoomA, (1, 1));
+        var entering = new Thread(() => world.EnterMap(entrant, DogRoomA)) { IsBackground = true, Name = "warm-entrant" };
+        bool warmWhileHeld = false;
+        world.UnderWorldLockForTest(() =>
+        {
+            entering.Start();
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            while (!MapData.IsLoadedForTest(DogRoomB) && waited.ElapsedMilliseconds < 5000) Thread.Sleep(5);
+            warmWhileHeld = MapData.IsLoadedForTest(DogRoomB);
+        });
+        Assert.True(entering.Join(TimeSpan.FromSeconds(30)), "the entry did not finish once the lock was released");
+        Assert.True(warmWhileHeld, $"map {DogRoomB} was not warmed before the entry took the world lock");
+    }
+}

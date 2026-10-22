@@ -51,10 +51,16 @@ public sealed partial class World
         /// <summary>A spawn point: one <see cref="Live"/> mob at a time, respawned <see cref="RespawnTick"/>
         /// ticks after it dies. Built once from <see cref="Content.Spawns"/> (fixed tile, <see cref="Placed"/>
         /// already true) and from the trap-ambush supplement (a random home tile is chosen in the box the first
-        /// time the point materializes). Drives the persistent world roster.</summary>
+        /// time the point materializes). Drives the persistent world roster.
+        ///
+        /// <para>Filed under <see cref="Map"/>, the map its row names, unless its creature has rooms
+        /// (<see cref="RoomMaps"/>, #333): then it is filed under its rooms' maps instead, and lives in
+        /// <c>_roomPoints</c> rather than <c>_spawns</c>. See <see cref="AddSpawn"/>.</para></summary>
         private sealed class Spawn
         {
             public MobDef Def = null!;
+            public ushort Map;           // the map its row names: where Content put it, and what Materialize is asked about
+            public ushort[]? RoomMaps;   // its creature's rooms' maps (#333): filed under these, not Map; null ⇒ filed under Map
             public ushort X, Y;          // home tile — fixed for a static spawn, chosen lazily for an area spawn
             public Mob?   Live;          // the currently-alive mob for this point (null while dead/pending)
             public long   RespawnTick;   // tick at which a dead point may respawn (0 = not pending)
@@ -80,6 +86,12 @@ public sealed partial class World
             public readonly List<(MobDef Def, int Cap)> Members = new();
         }
         private readonly Dictionary<ushort, List<Spawn>> _spawns = new();   // map -> its spawn points
+        /// <summary>The points whose creature has rooms (#333), each once, filed under every map in its
+        /// <see cref="Spawn.RoomMaps"/>: built on the first entry to any of them
+        /// (<see cref="EnsureMaterialized"/>) and refilled while any of them has a player
+        /// (<see cref="RespawnDuePoints"/>). A list rather than a per-map index: there are a few dozen, and
+        /// the per-map question is asked once per map per roster, on its first entry.</summary>
+        private readonly List<Spawn> _roomPoints = new();
         private readonly Dictionary<ushort, List<SpawnGroup>> _groups = new();   // map -> its batch spawn groups
         private readonly Dictionary<uint, Spawn> _mobSpawn = new();          // live mob id -> its spawn point
         // Maps whose spawn roster has been materialized (mobs instantiated). Populated lazily on first player
@@ -178,12 +190,75 @@ public sealed partial class World
             return world._tick + sp.RespawnEvery + (sp.Rare ? Random.Shared.Next(sp.RespawnEvery / 2 + 1) : 0);
         }
 
-        /// <summary>Append a spawn point to its map's roster. Caller holds <c>_lock</c>.</summary>
+        /// <summary>File a spawn point whose row names <paramref name="mapId"/>. Caller holds <c>_lock</c>.
+        ///
+        /// <para><b>A point whose creature has rooms is filed under its rooms' maps (#333).</b> Its creature
+        /// is never built on the row's map: <see cref="Materialize"/> builds it in a room picked at random from
+        /// its <c>MobSpawnRules.csv</c> row. Filed under the row's map, as every point was before, the bosses
+        /// whose rows sit on map 4 (the NPC Chamber, which nobody enters; every <c>Spawns.csv</c> point with
+        /// rooms is one of them) did not exist until someone entered map 4, and a killed one came back only
+        /// while someone stood there. Filed under the rooms' maps, the boss is built on the first entry to any
+        /// of them and refilled while any of them has a player: the normal rules of a point, applied where the
+        /// creature actually lives. Every other point is filed under its row's map, as before.</para></summary>
         private void AddSpawn(ushort mapId, Spawn sp)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
+            sp.Map = mapId;
+            var rooms = RoomMapsOf(sp.Def);
+            if (rooms.Length > 0) { sp.RoomMaps = rooms; _roomPoints.Add(sp); return; }
             if (!_spawns.TryGetValue(mapId, out var list)) { list = new(); _spawns[mapId] = list; }
             list.Add(sp);
+        }
+
+        /// <summary>The maps a creature's rooms are on, each once and in its rule's order, without a map the
+        /// client cannot render (<see cref="Materialize"/> ignores a room there); empty for a creature with no
+        /// rooms, or none on a renderable map, which is then filed under its row's map. Reads only
+        /// <see cref="Content"/>.
+        ///
+        /// <para>Never throws for a creature <see cref="Materialize"/> would refuse. <see cref="Build"/> has no
+        /// guard per row, so a throw here would cost the whole roster, where the same row refused by
+        /// <see cref="Materialize"/> costs only itself (the row guards, <c>Tests/SpawnRowGuardTests.cs</c>,
+        /// whose bad creature has no key): a creature with no key has no rule, and is filed under its row's
+        /// map.</para></summary>
+        private static ushort[] RoomMapsOf(MobDef def)
+        {
+            string? key = def.Key;
+            if (key is null || !Content.MobSpawnRules.TryGetValue(key, out var rule) || rule.Rooms.Length == 0) return Array.Empty<ushort>();
+            var maps = new List<ushort>(rule.Rooms.Length);
+            foreach (var room in rule.Rooms)
+                if (Content.Maps.ContainsKey(room.Map) && !maps.Contains(room.Map)) maps.Add(room.Map);
+            return maps.ToArray();
+        }
+
+        /// <summary>Warm the terrain of every map that a boss with a room on one of <paramref name="watched"/>
+        /// may be built on, from a caller that holds NO lock (#333).
+        ///
+        /// <para>A boss's point is filed under all its rooms' maps and its creature is built in a room picked
+        /// at random among them, so a player on one of them can be what builds it on another: on that map's
+        /// first entry, on the tick's respawn pass, or on <c>@reload</c>'s re-materialise. The placement reads
+        /// the terrain of the map it builds on (<c>FreeSpawnTile</c> -&gt; <c>MapData.For</c>), which on a miss
+        /// is a disk read, a cell decode and a SQLite query. Each of those three callers warms the maps it
+        /// is about to touch before it takes <c>_lock</c> (<c>World.EnterMap</c>, <c>World.Tick</c>'s step
+        /// (0), <c>World.ReloadFromDisk</c>), and calls this beside that warm with the same maps, so the
+        /// rooms' maps are a cache hit under the lock as theirs are.</para>
+        ///
+        /// <para>Reads only <see cref="Content"/> and the terrain cache, like <see cref="PlacementBox"/>. It
+        /// asks the rules, not the roster (which is under <c>_lock</c>): a rule whose creature has no point
+        /// costs a warm nobody needed, never a cold read anyone did. A map with no <c>Maps.csv</c> row, and a
+        /// map already cached, costs a dictionary probe (<see cref="MapData.Prewarm"/>).</para></summary>
+        internal static void PrewarmRoomMaps(ReadOnlySpan<ushort> watched)
+        {
+            if (watched.IsEmpty) return;
+            foreach (var rule in Content.MobSpawnRules.Values)
+            {
+                var rooms = rule.Rooms;
+                for (int i = 0; i < rooms.Length; i++)
+                {
+                    if (!watched.Contains(rooms[i].Map)) continue;
+                    foreach (var room in rooms) MapData.Prewarm(room.Map);
+                    break;
+                }
+            }
         }
 
         /// <summary>Instantiate a map's spawn roster the first time anyone enters it (idempotent), and top up its
@@ -235,24 +310,42 @@ public sealed partial class World
             world.RefillAmbushLocked(mapId, arriving);   // top up this map's hidden ambush traps (also every entry, same reason)
             world.RefillFrigidLocked(mapId, arriving);   // …and Sute's Cave's hidden cold tiles (Server/SuteAi.cs)
 
-            if (_materialized.Add(mapId) && _spawns.TryGetValue(mapId, out var list))   // first entry only
-                foreach (var sp in list)
-                {
-                    // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
-                    // with a random first-appearance somewhere in its respawn window; the Tick refill loop spawns it
-                    // once due (and only while the map is being hunted, since that loop skips empty maps).
-                    if (sp.Rare) { sp.RespawnTick = world._tick + 1 + Random.Shared.Next(sp.RespawnEvery); continue; }
-                    // The point guard, phase (1)'s shape. The map is already marked materialised, so a point this
-                    // skips is not walked again: it costs itself, and only itself.
-                    try { Materialize(mapId, sp); }
-                    catch (Exception e) when (entry) { (rows ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, mapId, sp.Def)); }
-                }
+            if (_materialized.Add(mapId))   // first entry only
+            {
+                if (_spawns.TryGetValue(mapId, out var list))
+                    foreach (var sp in list) OnFirstEntry(mapId, sp);
+
+                // The bosses filed under this map as one of their rooms' maps (#333, AddSpawn). Built on the first
+                // entry to ANY of their maps, so one already built, or pending on its clock, from another of them
+                // is left to the tick's respawn pass: built twice it would be two bosses on one point. One whose
+                // Materialize threw is neither, so the first entry to another of its maps tries it again. Asked
+                // about under its row's map, as it always was; Materialize then picks its room, which may be on
+                // another of its maps than this one (the rooms' maps are warm: see PrewarmRoomMaps).
+                foreach (var sp in _roomPoints)
+                    if (sp.Live is null && sp.RespawnTick == 0 && Array.IndexOf(sp.RoomMaps!, mapId) >= 0)
+                        OnFirstEntry(sp.Map, sp);
+            }
 
             if (rows is null) return null;                      // the ordinary entry: nothing threw
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var faults = new List<EntryFault>(rows.Count);
             foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now)));
             return faults;
+
+            // One point on the map's first entry, for the map's own points and the bosses filed under it alike.
+            // rosterMap is what Materialize is asked about and what a fault names: the entered map for its own
+            // points, the row's map for a boss filed under its rooms.
+            void OnFirstEntry(ushort rosterMap, Spawn sp)
+            {
+                // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
+                // with a random first-appearance somewhere in its respawn window; the Tick refill loop spawns it
+                // once due (and only while the map is being hunted, since that loop skips empty maps).
+                if (sp.Rare) { sp.RespawnTick = world._tick + 1 + Random.Shared.Next(sp.RespawnEvery); return; }
+                // The point guard, phase (1)'s shape. The map is already marked materialised, so a point this
+                // skips is not walked again: it costs itself, and only itself.
+                try { Materialize(rosterMap, sp); }
+                catch (Exception e) when (entry) { (rows ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, rosterMap, sp.Def)); }
+            }
         }
 
         /// <summary>Whether a map-entry fault's stack is written on this entry: yes the first time the fault is
@@ -429,9 +522,10 @@ public sealed partial class World
             { sp.RespawnTick = NextRespawnTick(sp); return; }
 
             // Boss placement (RTK's `on_spawn = function(mob) mob:warp(map, x, y) end`, usually a random pick
-            // among the boss's rooms). The spawn POINT stays where the table put it — respawn bookkeeping is
-            // keyed to it — but the creature is built in the room it belongs in. A room on an unrenderable map
-            // is ignored rather than stranding the boss nowhere.
+            // among the boss's rooms). The spawn POINT keeps its row's map — respawn bookkeeping is keyed to it,
+            // and it is the mapId this is called with — but it is filed under its rooms' maps (AddSpawn, #333),
+            // and the creature is built in the room it belongs in. A room on an unrenderable map is ignored
+            // rather than stranding the boss nowhere.
             if (rule is { Rooms.Length: > 0 })
             {
                 var room = rule.Rooms[Random.Shared.Next(rule.Rooms.Length)];
@@ -569,6 +663,24 @@ public sealed partial class World
                     catch (Exception e) { (faults ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, mapId, sp.Def)); }
                 }
             }
+
+            // The bosses filed under their rooms' maps (#333): each walked once, and refilled while ANY of its
+            // rooms' maps has a player, wherever its room pick then puts it. Asked about under its row's map,
+            // as on its first entry (EnsureMaterialized); the same guard, the same fault.
+            foreach (var sp in _roomPoints)
+            {
+                if (sp.Live is not null || sp.RespawnTick == 0 || tick < sp.RespawnTick) continue;
+                if (!AnyPlayerOn(sp.RoomMaps!)) continue;
+                try { Materialize(sp.Map, sp); }
+                catch (Exception e) { (faults ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, sp.Map, sp.Def)); }
+            }
+
+            bool AnyPlayerOn(ushort[] maps)
+            {
+                foreach (var m in maps)
+                    if (world._maps.TryGetValue(m, out var pm) && pm.Players.Count > 0) return true;
+                return false;
+            }
         }
 
         /// <summary>Phase (1.1): every due spawn group on a map someone is hunting (RTK's spawner NPC, whose
@@ -621,8 +733,9 @@ public sealed partial class World
             }
         }
 
-        /// <summary>Drop both rosters, the materialised set and the mob-to-point index ahead of a
-        /// <see cref="Build"/> from re-read content (<see cref="RebuildPopulation"/>). The death registry is
+        /// <summary>Drop both rosters (the points filed under their rooms' maps with them), the materialised set
+        /// and the mob-to-point index ahead of a <see cref="Build"/> from re-read content
+        /// (<see cref="RebuildPopulation"/>). The death registry is
         /// deliberately kept: a reload is not a world reset for a boss cooldown. Caller holds <c>_lock</c>.
         ///
         /// <para><c>_mobSpawn</c> goes with the rosters (#121). The rebuild has already torn down every
@@ -636,15 +749,21 @@ public sealed partial class World
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             _spawns.Clear();
+            _roomPoints.Clear();
             _groups.Clear();
             _materialized.Clear();
             _mobSpawn.Clear();
             _entryStacks.Clear();
         }
 
-        /// <summary>How many maps carry at least one spawn point / batch group — the start-up log lines.</summary>
+        /// <summary>How many maps carry at least one spawn point of their own row / batch group — the start-up
+        /// log lines.</summary>
         internal int PointMapCount => _spawns.Count;
         internal int GroupMapCount => _groups.Count;
+        /// <summary>How many points are filed under their rooms' maps instead (#333), and on how many maps —
+        /// the start-up log line.</summary>
+        internal int RoomPointCount => _roomPoints.Count;
+        internal int RoomMapCount => _roomPoints.SelectMany(sp => sp.RoomMaps!).Distinct().Count();
 
         // ---- test seams (Tests/SpawnDirectorTests.cs) ------------------------------------------------
         // Kept beside the rosters they open rather than in the test project, for the same reason as
@@ -702,6 +821,18 @@ public sealed partial class World
             return _groups.TryGetValue(mapId, out var l) ? l.Count : 0;
         }
 
+        /// <summary>The creature key of every point filed under a map, one entry per point: the map's own
+        /// rows' points and the bosses filed under it as one of their rooms' maps (#333). Caller holds
+        /// <c>_lock</c>.</summary>
+        internal List<string> PointKeysForTest(ushort mapId)
+        {
+            Debug.Assert(world.HoldsWorldLock, LockNote);
+            var keys = _spawns.TryGetValue(mapId, out var l) ? l.Select(sp => sp.Def.Key).ToList() : new List<string>();
+            foreach (var sp in _roomPoints)
+                if (Array.IndexOf(sp.RoomMaps!, mapId) >= 0) keys.Add(sp.Def.Key);
+            return keys;
+        }
+
         internal bool IsMaterializedForTest(ushort mapId)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
@@ -718,12 +849,25 @@ public sealed partial class World
 
         /// <summary>Undo a test's registrations on one map: its points, groups, materialised flag, death stamps,
         /// map-entry stack stamps and every world-spawned creature on it, so the shared fixture World is as it
-        /// was. Caller holds <c>_lock</c>.</summary>
+        /// was. A boss point filed under its rooms' maps (#333) goes too when its row names this map or it is
+        /// filed under this map, with its creature, on whichever of its maps that stands. Caller holds
+        /// <c>_lock</c>.</summary>
         internal void ForgetMapForTest(ushort mapId)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             if (_spawns.Remove(mapId, out var points))
                 foreach (var sp in points) if (sp.Live is { } live) _mobSpawn.Remove(live.Id);
+            _roomPoints.RemoveAll(sp =>
+            {
+                if (sp.Map != mapId && Array.IndexOf(sp.RoomMaps!, mapId) < 0) return false;
+                if (sp.Live is { } live)
+                {
+                    _mobSpawn.Remove(live.Id);
+                    foreach (var m in sp.RoomMaps!.Append(sp.Map))
+                        if (world._maps.TryGetValue(m, out var rm) && rm.Mobs.Remove(live)) rm.ViewGen++;
+                }
+                return true;
+            });
             _groups.Remove(mapId);
             _materialized.Remove(mapId);
             foreach (var stamp in _lastDeath.Keys.Where(k => k.Map == mapId).ToList()) _lastDeath.Remove(stamp);
