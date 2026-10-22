@@ -846,7 +846,9 @@ public sealed partial class Session
         // under no lock at all. It is now ArrivalPolicy.AdjacentFreeElseStack, which runs the same search and
         // the write in one acquisition (#99 part 1). Same predicates, same N/E/S/W order, same stack-on-them
         // fallback when they are boxed in.
-        var (x, y) = EnterMap(map, xs, ys, tx, ty, mapName, ArrivalPolicy.AdjacentFreeElseStack);
+        // Our own move, on our own read loop: EnterMap refuses only a player who is logging out (#330), which we
+        // cannot be here, so the null arm is never taken.
+        if (EnterMap(map, xs, ys, tx, ty, mapName, ArrivalPolicy.AdjacentFreeElseStack) is not (var x, var y)) return;
         Reply($"Approached {target._char.Name} on {mapName} at ({_char.X},{_char.Y}).");
         Log.Info($"   -> @approach '{_char.Name}' -> '{target._char.Name}' at map {map} ({x},{y})");
     }
@@ -889,10 +891,18 @@ public sealed partial class Session
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
         // Same move as @approach, with the roles swapped: the anchor is US, the mover is THEM. See the note
         // there on why the search is a policy now.
-        var (x, y) = target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName,
-                                     ArrivalPolicy.AdjacentFreeElseStack);
+        if (target.EnterMap(map, xs, ys, _char.X, _char.Y, mapName,
+                            ArrivalPolicy.AdjacentFreeElseStack) is not (var x, var y))
+        {
+            // #330: they logged out after the lookup above, before the move or while its exchange step waited, and
+            // EnterMap left them off every map. The lookup's own line: had the command come a moment later, that
+            // is what it would have said. Nothing is sent to them.
+            Refuse($"'{name}' isn't online.");
+            Log.Info($"   -> @bring '{_char.Name}' <- '{name}': logged out before the move — nobody moved");
+            return;
+        }
         // The move itself was already guarded: EnterMap opens with `using var _ = EnterState()`
-        // (Session.Navigation.cs:1389), so every write the summon makes on them happens under their monitor.
+        // (Session.Navigation.cs:1375), so every write the summon makes on them happens under their monitor.
         // What was not guarded is this line and the two reads of their NAME below — #29 rule 2, so they get a
         // section of their own here rather than a wider one around EnterMap, which would change nothing about
         // the writes and would hold the monitor across World._lock for longer than the move needs it. Rule 1

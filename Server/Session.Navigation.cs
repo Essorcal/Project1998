@@ -1365,9 +1365,12 @@ public sealed partial class Session
     /// occupied-or-not half is what the original game did (#99, settled as stacking). Only
     /// <c>@approach</c>/<c>@bring</c>/<c>@npc</c> pass anything else; see <see cref="ArrivalPolicy"/>.</param>
     /// <returns>The tile actually landed on. Callers that report it (<c>@bring</c>) read it from here rather
-    /// than from what they asked for, since a policy may have moved it.</returns>
-    private (ushort x, ushort y) EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName,
-                                          ArrivalPolicy arrival = ArrivalPolicy.Clamp)
+    /// than from what they asked for, since a policy may have moved it. Null when nobody moved: this player is
+    /// logging out (#330, the check after the exchange step below). Only a move made by another player's hand can
+    /// meet that, and the three that make one read it: <c>@bring</c> (<c>BringCmd</c>), Summon
+    /// (<c>LuaSummonTarget</c>) and the Resurrect family (<see cref="ReviveAt"/>). A player's own moves never do.</returns>
+    private (ushort x, ushort y)? EnterMap(ushort mapId, ushort xs, ushort ys, ushort x, ushort y, string mapName,
+                                           ArrivalPolicy arrival = ArrivalPolicy.Clamp)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Captured before anything below overwrites it: the tile we still hold while this move is in flight.
@@ -1388,6 +1391,26 @@ public sealed partial class Session
         // it again. Before LeaveMap, so both windows close while we are still standing where the trade
         // started — and outside World._lock, which LeaveMap takes for itself (Session.State.cs rule 1).
         if (_trade is not null) EndTrade(_trade, "Exchange cancelled.");
+        // #330: a player who is logging out stays off every map. Their teardown sets _leaving first, under this
+        // monitor, before it takes them off their map (Session.cs, TearDownWorldState), and nothing clears it. A
+        // move after that put the departed session back on a map, found by name and still writing its row. Two
+        // ways reach here with the flag set, both from another player's thread (@bring; Summon and Resurrect
+        // check for themselves first, in LuaSummonTarget and ReviveAt, and read this answer too):
+        //   * the mover looked this player up, and the whole logout ran before the EnterState above;
+        //   * the exchange step just above: EndTrade takes the pair (WithStatePair), and with a partner ranked
+        //     below us it drops this monitor while it waits for theirs. A whole logout fits in that gap.
+        // So the check is HERE, after the exchange step, and nothing from here to _world.EnterMap gives this
+        // monitor up: LeaveMap, PlacePlayer and the weather read take World._lock (row 3), LeaveMap's despawns
+        // take each peer's view lock (row 3), the rest sends to this player alone, and none of it enters
+        // another session's monitor or the Lua gate. Once _world.EnterMap has put us on the new map's list, a
+        // logout that gets in (SyncPeers below can drop the monitor) takes us off that map, since _char.Map
+        // already names it. A player's own moves (doors, warps, @warp, Gateway, Return) run on their own read
+        // loop, which runs the teardown only after its last packet, so they never meet the flag.
+        if (_leaving)
+        {
+            Log.Info($"   -> ENTER map {mapId} refused: '{_char.Name}' is logging out — nobody moved");
+            return null;
+        }
         // Leave the OLD map in the shared world (despawn us for the players we're leaving behind), and
         // clear our session-local debug dummies (the client drops all foreign entities on a map change).
         _world.LeaveMap(this, _char.Map);

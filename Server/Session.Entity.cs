@@ -1124,12 +1124,40 @@ public sealed partial class Session
     // internal rather than private only so Tests/ReviveSaveTests can reach it: the only shipped caller is
     // Session.LuaReviveTarget (the poet Resurrect family), which needs a caster, a spell row and the script
     // gate to reach, none of which the persistence fact is about.
+    //
+    // A player who is logging out is neither healed nor moved (#330). The caster's thread looked them up
+    // without their monitor, so their logout can run to the end before this EnterState, and the heal used to
+    // land anyway: EnterMap put the departed session back on the map and SaveChar wrote a revived row for a
+    // player who logged out dead. So _leaving is read before the heal, and when it is set nothing below runs:
+    // no heal (an in-memory one is what the next login's fence would write, KickForReplacement), no move, no
+    // save. EnterMap reads the same flag, but only after its exchange step, which can drop this monitor while
+    // it waits for a lower-ranked partner; a logout in that gap would save the healed row. So that step is
+    // taken HERE, before the check, with EnterMap's own call: a ghost cannot open another exchange
+    // (TryStartTrade refuses IsDead on both sides, inside the pair), so EnterMap then has none to end, and
+    // nothing between the check and the move gives the monitor up. A ghost holds an exchange only inside
+    // Die(), whose EndTrade is its last statement, after a ResyncPeers that can drop the monitor. The step is
+    // skipped for the heal-in-place fallback, which never ended an exchange. The caster's cost is the verb's,
+    // paid before it calls here, and stays as it was: a raced Resurrect still costs its mana and its cooldown.
     internal void ReviveAt(ushort map, ushort x, ushort y, string arrivalMsg)
     {
         using var _ = EnterState();   // #29: a resurrection spell reaches here on the CASTER's thread
+        var dest = Content.Maps.TryGetValue(map, out var mi) ? mi : null;
+        if (dest is not null && _trade is { } open) EndTrade(open, "Exchange cancelled.");   // EnterMap's own step
+        if (_leaving)
+        {
+            Log.Info($"   -> REVIVE refused: '{_char.Name}' is logging out — nobody healed or moved");
+            return;
+        }
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
-        if (Content.Maps.TryGetValue(map, out var mi)) EnterMap(mi.Id, mi.Xs, mi.Ys, x, y, mi.Name);
+        if (dest is not null)
+        {
+            // Never null for a ghost after the check above (see the note). Read anyway: a target someone else
+            // revived since the verb's check is alive, and can open an exchange while our own step waits; if a
+            // logout then gets in at EnterMap's step, nobody moved, and the stats, the line and the save below
+            // are not made for a session that has left.
+            if (EnterMap(dest.Id, dest.Xs, dest.Ys, x, y, dest.Name) is null) return;
+        }
         else SendSelfLook();   // fallback: just heal in place if the map isn't loaded
         SendStats();           // push the restored HP/MP to the HUD (EnterMap doesn't send stats itself)
         SendMiniText(arrivalMsg);
