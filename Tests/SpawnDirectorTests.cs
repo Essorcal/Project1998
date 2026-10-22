@@ -519,6 +519,12 @@ public class SpawnDirectorRoomTests
     private const ushort OffMapRowMap = 60208;   // the off-map fact's synthetic point's row
     private const ushort MonkeyFlow3 = 4163, MonkeyDance3 = 4164, MonkeyWasteland3 = 4167;   // monkey_avenger's rooms' maps
     private const ushort WoolenSqueeze2 = 3472, WoolenSqueeze3 = 4472;   // divine_sheep's and sheep_avenger's 10-wide rooms
+    private const ushort DragonRowMap = 60209;   // the Jeweled Dragon fact's synthetic point's row
+    private const ushort DragonsGold3 = 4254, DragonDeath3 = 4253, JeweledDragon3 = 4258;   // spirit_dragon's rooms' maps
+    private const ushort BrokenRowMap = 60210;   // the entry-fault fact's synthetic point's row
+    private const ushort BullsSong2 = 3175, OxPath2 = 3178;   // divine_ox's two rooms, 3175:12:21 and 3178:15:20
+    private const ushort BoarRise2 = 3189, CloveHill2 = 3187;   // divine_pig's two rooms, 3189:7:9 and 3187:20:23
+    private const ushort Unrenderable = 60211;   // the pick fact's room map: no Maps.csv row, so the client cannot render it
 
     /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
     private static T Locked<T>(World world, Func<T> read)
@@ -548,7 +554,7 @@ public class SpawnDirectorRoomTests
                                           .Select(m => (m, room)))
             .GroupBy(t => t.m.Id).Select(g => g.First()).ToList();
 
-    private static MobDef Creature(int id, string key) =>
+    private static MobDef Creature(int id, string key, int moveTime = 1_000_000) =>
         new()
         {
             Id = id,
@@ -559,7 +565,7 @@ public class SpawnDirectorRoomTests
             Hp = 100,
             Exp = 0,
             Level = 1,
-            MoveTime = 1_000_000,
+            MoveTime = moveTime,
             Stationary = true,
         };
 
@@ -724,8 +730,8 @@ public class SpawnDirectorRoomTests
     /// <summary>The roster <c>Spawns.csv</c> gives every <see cref="World"/>: each point on map 4 whose
     /// creature has rooms is filed under every one of its rooms' maps but a room off its map (no tile of the map
     /// within two; <see cref="ARoomWithNoTileOfItsMapWithinTwoIsLeftOutOfTheFilingAndThePick"/> pins the one
-    /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere is ignored by
-    /// <c>Materialize</c>, which then builds the boss on map 4 instead). What stays on map 4 is the three
+    /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere would be left
+    /// out of the filing and the pick, <see cref="ThePickSkipsEveryRoomTheFilingSkips"/>). What stays on map 4 is the three
     /// nine-tailed foxes, which have no rule, and <c>gimyi</c>, whose room's map already has a batch group of
     /// it (<see cref="GimYisDenKeepsItsOneGimYiAndItsPointStaysOnMapFour"/>).
     ///
@@ -773,8 +779,8 @@ public class SpawnDirectorRoomTests
     /// built sixty times for a player on 4163, and never in the off-map room: drawn uniformly over all three
     /// rooms, as before the rule, sixty builds all miss it with probability (2/3)^60, about 3e-11.</para>
     ///
-    /// <para>Falsified by filing every room's map again (<c>RoomMapsOf</c> without <c>OffItsMap</c>): red,
-    /// filed under 4164. By picking over every room again (<c>PickRoom</c> without <c>OffItsMap</c>): red,
+    /// <para>Falsified by filing every room's map again (<c>UsableRoomMaps</c> without <c>UsableRoom</c>): red,
+    /// filed under 4164. By picking over every room again (<c>PickRoom</c> without <c>UsableRoom</c>): red,
     /// a build in the off-map room. By skipping every room outside its map, not only those with no tile
     /// within two (<c>OffItsMap</c> without the reach): red, the sheep lose their rooms.</para></summary>
     [Fact]
@@ -810,6 +816,186 @@ public class SpawnDirectorRoomTests
             Assert.True(world.DespawnMob(room.Map, boss));
             world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4163
         }
+    }
+
+    /// <summary>Every tile of <paramref name="map"/> a player can walk to from a tile a warp lands on: the
+    /// review's terrain check (#357, its probe P3), a four-way flood fill over <see cref="MapData.BlockedMove"/>,
+    /// which is the player walk's own test (directional object walls included), indexed [x, y].</summary>
+    private static bool[,] WalkableFromItsLandings(ushort map, MapInfo info, MapData terrain)
+    {
+        var landings = Content.Warps.Values.Where(w => w.m == map).Select(w => ((int)w.x, (int)w.y)).Distinct().ToList();
+        Assert.True(landings.Count > 0, $"no warp lands on map {map}; the fact has nowhere to walk from");
+        var reached = new bool[info.Xs, info.Ys];
+        var queue = new Queue<(int X, int Y)>();
+        foreach (var (x, y) in landings)
+            if (x < info.Xs && y < info.Ys && !reached[x, y]) { reached[x, y] = true; queue.Enqueue((x, y)); }
+        int[] dx = { 0, 1, 0, -1 }, dy = { -1, 0, 1, 0 };   // heading 0=N 1=E 2=S 3=W, BlockedMove's order
+        while (queue.Count > 0)
+        {
+            var (cx, cy) = queue.Dequeue();
+            for (int d = 0; d < 4; d++)
+            {
+                int nx = cx + dx[d], ny = cy + dy[d];
+                if (nx < 0 || ny < 0 || nx >= info.Xs || ny >= info.Ys || reached[nx, ny]) continue;
+                if (terrain.BlockedMove(nx, ny, d)) continue;
+                reached[nx, ny] = true;
+                queue.Enqueue((nx, ny));
+            }
+        }
+        return reached;
+    }
+
+    /// <summary><c>spirit_dragon</c>'s room on Jeweled Dragon 3 (4258, 18x36) is a tile a player can walk to,
+    /// and the boss is built on it. RTK's script puts that room at 4258:7:13 (<c>mythic_dragon.lua</c>,
+    /// <c>spirit_dragon</c>'s <c>on_spawn</c>). On the 4.95 map that tile is open ground walled in on all four
+    /// sides, so the boss stood where nobody could walk to it or swing at it (#357's review, F1). The row names the
+    /// corridor tile two east instead, 4258:9:13, on Caleb's word (2026-10-22): a deliberate deviation for the
+    /// 4.95 terrain, noted beside the row in <c>MobSpawnRules.csv</c>.
+    ///
+    /// <para>The terrain half is the review's check (<see cref="WalkableFromItsLandings"/>). The room tile is
+    /// reached, and so is every open tile beside it: that is where <c>FreeSpawnTile</c> puts the boss when a
+    /// creature already stands on the room's own tile. RTK's tile is not reached, which is the reason for the
+    /// deviation; if a change to the map ever opens it, this goes red so the deviation can be reconsidered.</para>
+    ///
+    /// <para>The build half: a synthetic point keyed <c>spirit_dragon</c>, with a one-beat window, built sixty
+    /// times for a player on 4258. The map's own creatures are put out of the way first
+    /// (<c>ForgetMapForTest</c> drops 4258's batch group and the real Spirit dragon's point), so a build there
+    /// finds its room tile free, and every build on 4258 stands on the room tile itself. The pick is uniform over
+    /// three rooms, so sixty builds all miss 4258 with probability (2/3)^60, about 3e-11.</para>
+    ///
+    /// <para>Falsified by putting RTK's 4258:7:13 back in the row: red, the room is not reached.</para></summary>
+    [Fact]
+    public void TheSpiritDragonsJeweledDragonRoomIsOnTheCorridorAPlayerWalks()
+    {
+        var rule = RoomRule("spirit_dragon", DragonsGold3, JeweledDragon3, DragonDeath3);
+        var room = rule.Rooms.Single(r => r.Map == JeweledDragon3);
+        var info = Content.Maps[JeweledDragon3];
+        var terrain = MapData.For(JeweledDragon3, info.Xs, info.Ys);
+        Assert.NotNull(terrain);
+        var reached = WalkableFromItsLandings(JeweledDragon3, info, terrain);
+
+        Assert.True(reached[room.X, room.Y],
+                    $"spirit_dragon's room {JeweledDragon3}:{room.X}:{room.Y} is not reached from the map's warp landings: no player can walk to the boss");
+        for (int x = room.X - 1; x <= room.X + 1; x++)
+            for (int y = room.Y - 1; y <= room.Y + 1; y++)
+                if (x >= 0 && y >= 0 && x < info.Xs && y < info.Ys && !terrain.Solid(x, y))
+                    Assert.True(reached[x, y], $"({x},{y}), an open tile beside the room, is not reached from the map's warp landings");
+        Assert.False(reached[7, 13], $"RTK's room {JeweledDragon3}:7:13 is reached on this map now; the row's deviation from RTK can be reconsidered");
+
+        var world = new World();
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.ForgetMapForTest(JeweledDragon3));
+        var def = Creature(990_209, "spirit_dragon");
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(DragonRowMap, def, 3, 3, respawnEvery: 1));
+        var watcher = Seat(world, "JeweledWatcher", JeweledDragon3, (9, 2));   // a tile a warp lands on
+        world.EnterMap(watcher, JeweledDragon3);
+        int onJeweled = 0;
+        for (int build = 1; build <= 60; build++)
+        {
+            var (boss, at) = Assert.Single(InTheirRooms(world, watcher, rule, def));
+            if (at.Map == JeweledDragon3)
+            {
+                onJeweled++;
+                Assert.True(boss.X == room.X && boss.Y == room.Y,
+                            $"build {build} put the boss at ({boss.X},{boss.Y}) on {JeweledDragon3}, not on its room tile ({room.X},{room.Y})");
+            }
+            else AssertInTheRoom(boss, at);
+            Assert.True(world.DespawnMob(at.Map, boss));
+            world.TickOnceForTest();   // the one-beat window: rebuilt on this beat, for the player on 4258
+        }
+        Assert.True(onJeweled > 0, $"sixty builds and none on {JeweledDragon3}; the fact pinned nothing there");
+    }
+
+    /// <summary>A room boss whose build throws on a map entry is logged under the map the player entered, with
+    /// its row's map beside it. The fault is recorded under the row's map, which is what <c>Materialize</c> is
+    /// asked about and what the entry's stack record is keyed on; for the sixty map-4 bosses that is map 4,
+    /// which nobody enters, and the line named only that (#357's review, F2).
+    ///
+    /// <para>A synthetic point on a row map nobody enters, keyed <c>divine_ox</c> (rooms on 3175 and 3178),
+    /// whose creature <c>BuildMob</c> refuses: a negative move time, as <see cref="SpawnRowGuardTests"/>' bad
+    /// group member. The first entry to 3175 writes the fault with its stack, under 3175. The first entry to
+    /// 3178 tries the point again (one that threw is neither built nor pending) and names the fault without a
+    /// stack, under 3178. Both lines name the row's map too, and both are written with the lock released.</para>
+    ///
+    /// <para>Falsified by naming the recorded map alone again (<c>World.EntryMapOf</c> returning the row's map,
+    /// the old line): red, the stack line says "on map 60210".</para></summary>
+    [Fact]
+    public void ARoomBossWhoseBuildThrowsOnEntryIsLoggedUnderTheMapEntered()
+    {
+        RoomRule("divine_ox", BullsSong2, OxPath2);
+        var world = new World();
+        var broken = Creature(990_210, "divine_ox", moveTime: -1);   // BuildMob throws for it
+        world.UnderWorldLockForTest(() => world.SpawnsForTest.AddPointForTest(BrokenRowMap, broken, 3, 3, respawnEvery: 1));
+        var first = Seat(world, "BrokenRoomFirst", BullsSong2, (1, 1));
+        var second = Seat(world, "BrokenRoomSecond", OxPath2, (1, 1));
+
+        IReadOnlyList<LogLineSink.Entry> lines;
+        using (var sink = LogLineSink.Acquire(probe: () => world.HoldsWorldLock))
+        {
+            world.EnterMap(first, BullsSong2);
+            world.EnterMap(second, OxPath2);
+            lines = sink.Lines;
+        }
+
+        Assert.Empty(MobsOf(world, first, BullsSong2, broken));
+        Assert.Empty(MobsOf(world, second, OxPath2, broken));
+        var ours = lines.Where(e => e.Line.Contains($"(creature id {broken.Id})")).ToList();
+        Assert.Equal(2, ours.Count);   // once per entry
+        Assert.All(ours, e => Assert.Equal(LogLevel.Error, e.Level));
+        Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+        // Asserted with the whole first line in the message: xUnit's own Contains failure cuts the line short of
+        // the map it names, which is the one thing this fact is about.
+        string row = $"(a room boss whose row names map {BrokenRowMap})";
+        string stack = $"map entry: a spawn point threw — 'divine_ox' (creature id {broken.Id}) on map {BullsSong2} {row} is skipped";
+        Assert.True(ours[0].Line.Contains(stack), $"the first entry's line should carry \"{stack}\"; it reads: {ours[0].Line.Split('\n')[0]}");
+        Assert.Contains(nameof(ArgumentOutOfRangeException), ours[0].Line);
+        Assert.Contains("\n      ", ours[0].Line);   // Log.Detail's continuation: the stack is on it
+        string repeat = $"a spawn point 'divine_ox' (creature id {broken.Id}) on map {OxPath2} {row} {nameof(ArgumentOutOfRangeException)} x1";
+        Assert.True(ours[1].Line.Contains("map entry: spawn rows still throwing") && ours[1].Line.Contains(repeat),
+                    $"the second entry's line should name \"{repeat}\"; it reads: {ours[1].Line}");
+        Assert.DoesNotContain("\n", ours[1].Line);   // named, with no stack
+    }
+
+    /// <summary>The pick draws only among the rooms the filing keeps: one test, <c>SpawnDirector.UsableRoom</c>,
+    /// for both (#357's review, F3). A borrowed rule, <c>divine_pig</c>'s two rooms on 3189 and 3187, with two
+    /// rooms added: one on a map the client cannot render (60211, no <c>Maps.csv</c> row) and one off its map
+    /// (3189 at a column ten past its edge). The filing keeps the two real rooms' maps, and sixty draws each land on
+    /// one of the two real rooms. The pick used to skip only the room off its map, so it drew the unrenderable
+    /// room one time in three, and <c>Materialize</c> then dropped it and built the boss at its row's tile on its
+    /// row's map, which the point is not filed under; sixty draws all miss it with probability (2/3)^60, about
+    /// 3e-11. A rule with no usable room at all has nothing to be filed under and no pick: its point stays on its
+    /// row's map and is built there.
+    ///
+    /// <para>No rule has a room on an unrenderable map today (<c>ContentSmokeTests</c> requires every room's map
+    /// to render), so such a rule cannot reach <c>Materialize</c> through <see cref="Content"/>. The fact hands
+    /// the rooms to the filing's and the pick's own halves instead (<c>UsableRoomMaps</c>,
+    /// <c>PickRoom</c>).</para>
+    ///
+    /// <para>Falsified by the pick's old test (<c>PickRoom</c> asking <c>!OffItsMap</c> where it asks
+    /// <c>UsableRoom</c>): red at the first draw that lands on 60211 ("draw 3 picked (60211, 3, 3)").</para></summary>
+    [Fact]
+    public void ThePickSkipsEveryRoomTheFilingSkips()
+    {
+        var rule = RoomRule("divine_pig", BoarRise2, CloveHill2);
+        Assert.False(Content.Maps.ContainsKey(Unrenderable), $"map {Unrenderable} has a Maps.csv row now; the fact needs a map the client cannot render");
+        var boarRise = Content.Maps[BoarRise2];
+        (ushort Map, ushort X, ushort Y) unrenderable = (Unrenderable, 3, 3);
+        (ushort Map, ushort X, ushort Y) offItsMap = (BoarRise2, (ushort)(boarRise.Xs + 10), 3);
+        var rooms = rule.Rooms.Append(unrenderable).Append(offItsMap).ToArray();
+
+        var filed = World.SpawnDirector.UsableRoomMaps(rooms);
+        Assert.Equal(new[] { BoarRise2, CloveHill2 }, filed);
+        for (int draw = 1; draw <= 60; draw++)
+        {
+            var pick = World.SpawnDirector.PickRoom(rooms);
+            Assert.True(pick is { } room && Array.IndexOf(rule.Rooms, room) >= 0 && Array.IndexOf(filed, room.Map) >= 0,
+                        $"draw {draw} picked {pick}, a room the filing leaves out");
+        }
+
+        var noneUsable = new[] { unrenderable, offItsMap };
+        Assert.Empty(World.SpawnDirector.UsableRoomMaps(noneUsable));
+        var none = World.SpawnDirector.PickRoom(noneUsable);
+        Assert.True(none is null, $"a rule with no usable room picked {none}");
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature

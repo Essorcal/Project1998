@@ -237,10 +237,9 @@ public sealed partial class World
             }
         }
 
-        /// <summary>The maps a creature's rooms are on, each once and in its rule's order, without a map the
-        /// client cannot render (<see cref="Materialize"/> ignores a room there) and without a room off its map
-        /// (<see cref="OffItsMap"/>, never picked); empty for a creature with no rooms, or none left, which is
-        /// then filed under its row's map. Reads only <see cref="Content"/>.
+        /// <summary>The maps a creature's rooms are on, each once and in its rule's order, counting only the
+        /// rooms a boss may be built in (<see cref="UsableRoomMaps"/>); empty for a creature with no rooms, or
+        /// none left, which is then filed under its row's map. Reads only <see cref="Content"/>.
         ///
         /// <para>Never throws for a creature <see cref="Materialize"/> would refuse. <see cref="Build"/> has no
         /// guard per row, so a throw here would cost the whole roster, where the same row refused by
@@ -250,16 +249,39 @@ public sealed partial class World
         private static ushort[] RoomMapsOf(MobDef def)
         {
             string? key = def.Key;
-            if (key is null || !Content.MobSpawnRules.TryGetValue(key, out var rule) || rule.Rooms.Length == 0) return Array.Empty<ushort>();
-            var maps = new List<ushort>(rule.Rooms.Length);
-            foreach (var room in rule.Rooms)
-                if (Content.Maps.ContainsKey(room.Map) && !OffItsMap(room) && !maps.Contains(room.Map)) maps.Add(room.Map);
+            if (key is null || !Content.MobSpawnRules.TryGetValue(key, out var rule)) return Array.Empty<ushort>();
+            return UsableRoomMaps(rule.Rooms);
+        }
+
+        /// <summary>The maps of the <see cref="UsableRoom"/>s among <paramref name="rooms"/>, each once and in
+        /// their order: what a point with those rooms is filed under. Internal so the pick fact
+        /// (<c>Tests/SpawnDirectorTests.cs</c>) can hand it a room on a map no rule has today.</summary>
+        internal static ushort[] UsableRoomMaps((ushort Map, ushort X, ushort Y)[] rooms)
+        {
+            if (rooms.Length == 0) return Array.Empty<ushort>();
+            var maps = new List<ushort>(rooms.Length);
+            foreach (var room in rooms)
+                if (UsableRoom(room) && !maps.Contains(room.Map)) maps.Add(room.Map);
             return maps.ToArray();
         }
 
+        /// <summary>May a boss be built in this room (#333)? Its map is one the client renders (a <c>Maps.csv</c>
+        /// row, <see cref="Content.Maps"/>), and the room is not off that map (<see cref="OffItsMap"/>). The one
+        /// test both the filing (<see cref="UsableRoomMaps"/>) and the pick (<see cref="PickRoom"/>) ask, so the
+        /// pick never lands in a room the filing left out. Reads only <see cref="Content"/>.
+        ///
+        /// <para>They used to ask two: the filing skipped both kinds of room, the pick only the room off its map,
+        /// and <see cref="Materialize"/> dropped a drawn room on an unrenderable map after the draw. A point whose
+        /// rooms included one built its creature, on that draw, at its row's tile on its row's map: map 4 for
+        /// the map-4 bosses, a map the point is not filed under, where it stood until an <c>@reload</c>
+        /// (#357's review, F3). No rule has such a room today (<c>Tests/ContentSmokeTests.cs</c> requires every
+        /// room's map to render); this keeps one added later from stranding its boss.</para></summary>
+        private static bool UsableRoom((ushort Map, ushort X, ushort Y) room) =>
+            Content.Maps.ContainsKey(room.Map) && !OffItsMap(room);
+
         /// <summary>Is a boss room so far outside its map that no tile of the map lies within
-        /// <see cref="SpawnTileRadius"/> of it (#333)? Such a room is left out of the filing
-        /// (<see cref="RoomMapsOf"/>) and of the pick (<see cref="PickRoom"/>).
+        /// <see cref="SpawnTileRadius"/> of it (#333)? Such a room is not a <see cref="UsableRoom"/>, so it is
+        /// left out of the filing and of the pick.
         ///
         /// <para><c>FreeSpawnTile</c> looks that far past a spawn tile for an open tile on the map and, finding
         /// none, builds the creature on the spawn tile itself: for a room this far out, outside the map, where
@@ -274,18 +296,20 @@ public sealed partial class World
             Content.Maps.TryGetValue(room.Map, out var mi) && mi.Xs > 0 && mi.Ys > 0
             && (room.X >= mi.Xs + SpawnTileRadius || room.Y >= mi.Ys + SpawnTileRadius);
 
-        /// <summary>A boss's room picked at random, uniformly among those not off their map
-        /// (<see cref="OffItsMap"/>); null when every one of them is. With no room off its map this is the
-        /// single draw over all of them it always was: the same <c>Random.Shared.Next</c> over the same count,
-        /// landing on the same room.</summary>
-        private static (ushort Map, ushort X, ushort Y)? PickRoom((ushort Map, ushort X, ushort Y)[] rooms)
+        /// <summary>A boss's room picked at random, uniformly among the rooms it may be built in
+        /// (<see cref="UsableRoom"/>), which are the rooms whose maps its point is filed under; null when there are
+        /// none, and such a point is filed under its row's map. With every room usable this is the single draw
+        /// over all of them it always was: the same <c>Random.Shared.Next</c> over the same count, landing on the
+        /// same room. Internal so the pick fact (<c>Tests/SpawnDirectorTests.cs</c>) can hand it a room on a map
+        /// no rule has today.</summary>
+        internal static (ushort Map, ushort X, ushort Y)? PickRoom((ushort Map, ushort X, ushort Y)[] rooms)
         {
             int usable = 0;
-            foreach (var room in rooms) if (!OffItsMap(room)) usable++;
+            foreach (var room in rooms) if (UsableRoom(room)) usable++;
             if (usable == 0) return null;
             int pick = Random.Shared.Next(usable);
             foreach (var room in rooms)
-                if (!OffItsMap(room) && pick-- == 0) return room;
+                if (UsableRoom(room) && pick-- == 0) return room;
             return null;   // not reached: `pick` is below the count of rooms the loop accepts
         }
 
@@ -388,12 +412,13 @@ public sealed partial class World
             if (rows is null) return null;                      // the ordinary entry: nothing threw
             long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var faults = new List<EntryFault>(rows.Count);
-            foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now)));
+            foreach (var f in rows) faults.Add(new EntryFault(f, AdmitEntryStack(f, now), mapId));
             return faults;
 
             // One point on the map's first entry, for the map's own points and the bosses filed under it alike.
-            // rosterMap is what Materialize is asked about and what a fault names: the entered map for its own
-            // points, the row's map for a boss filed under its rooms.
+            // rosterMap is what Materialize is asked about and what a fault records and is throttled under: the
+            // entered map for its own points, the row's map for a boss filed under its rooms. The log names the
+            // entered map as well (EntryFault.Entered), so a boss's fault is not reported against map 4.
             void OnFirstEntry(ushort rosterMap, Spawn sp)
             {
                 // A rare boss doesn't appear the instant someone walks in — it's a surprise. Leave it pending
@@ -583,9 +608,11 @@ public sealed partial class World
             // Boss placement (RTK's `on_spawn = function(mob) mob:warp(map, x, y) end`, usually a random pick
             // among the boss's rooms). The spawn POINT keeps its row's map — respawn bookkeeping is keyed to it,
             // and it is the mapId this is called with — but it is filed under its rooms' maps (AddSpawn, #333),
-            // and the creature is built in the room it belongs in. A room on an unrenderable map is ignored
-            // rather than stranding the boss nowhere, and a room off its map is never picked (PickRoom).
-            if (rule is { Rooms.Length: > 0 } && PickRoom(rule.Rooms) is { } room && Content.TryMap(room.Map, out _))
+            // and the creature is built in the room it belongs in. PickRoom draws only among the rooms the filing
+            // keeps (UsableRoom): never a room on a map the client cannot render, nor one off its map. With none
+            // left there is no pick, and the creature is built at its row's tile on its row's map, which is where
+            // such a point is filed.
+            if (rule is { Rooms.Length: > 0 } && PickRoom(rule.Rooms) is { } room)
             { mapId = room.Map; sp.X = room.X; sp.Y = room.Y; sp.Placed = true; }
 
             // Area spawn's first materialize: choose a walkable home tile inside its box (or anywhere on the map
