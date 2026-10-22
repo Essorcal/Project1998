@@ -1007,8 +1007,9 @@ public static partial class Content
     // vita for a big facing-tile hit". nexusatlas: Focused Blow "Takes 2/3 of current Vita in a Strong Attack.
     // The attack does 2 times current vitality in damage at 0 AC"; Siege "does a critical strike and leaves the
     // caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC".
-    // They have NO alignment aliases yet — the 2002-10-01 announcement lists Siege only under its Ohaeng-ish
-    // name "Life's end", so the other three alias identifiers are unknown and deliberately not invented.
+    // The sacrifice verb's FocusedBlow and Siege branches carry those numbers, with the Atlas pages' mana and
+    // aethers (#328). Siege's three alignment names are below; the live Atlas warrior page lists them
+    // (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21). Focused Blow's are not in Spells.csv.
     public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind, FocusedBlow, Siege }
     private static readonly Dictionary<string, SacrificeFamily> SacrificeAliases = new(StringComparer.OrdinalIgnoreCase)
     {

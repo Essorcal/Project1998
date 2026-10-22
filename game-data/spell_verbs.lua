@@ -1168,6 +1168,15 @@ end
 -- An NPC in front is empty air too (ctx:sacFrontMob answers false for one): no blow can hurt it, and RTK's strikes
 -- look for a BL_MOB only. So it costs the mana and aether, the swing and the shout, and strikes nothing: no HP cost,
 -- and no overkill to splash or refund at a later era (Caleb, 2026-10-19).
+--
+-- FOCUSED BLOW and SIEGE (#328; Caleb, 2026-10-21, decision sheet item 6). RTK has no script for either, so their
+-- numbers are the Nexus Atlas pages': Focused Blow "Takes 2/3 of current Vita in a Strong Attack. The attack does 2
+-- times current vitality in damage at 0 AC", Mana Cost 3,000, Aethers 38 Seconds (live rogue page); Siege "leaves the
+-- caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC", Mana
+-- Cost 8,000, Aethers 43 Seconds (live warrior page, fetched 2026-10-21). Siege's three alignment names run the same
+-- branch. Before this both fell to the `else` arms: 60 mana, a 60 s wait, 0 damage (raised to 1) and no vita cost.
+-- Their overkill still takes the ctx:overflow arm below, unchanged. That is off at our date; whether Focused Blow, a
+-- rogue strike, refunded or splashed at a later era no source says, so it is left for that era's own decision.
 function verbs.sacrifice(ctx, row)
   local fam = ctx.sacrificeFamily
   local mana, aether
@@ -1175,6 +1184,8 @@ function verbs.sacrifice(ctx, row)
   elseif fam == "DesperateAttack" then mana, aether = 60, 11000
   elseif fam == "Berserk"         then mana, aether = 60, 12000
   elseif fam == "Whirlwind"       then mana, aether = 120, (ctx.alignment == 0 and 30000 or 25000)
+  elseif fam == "FocusedBlow"     then mana, aether = 3000, 38000
+  elseif fam == "Siege"           then mana, aether = 8000, 43000
   else                                 mana, aether = 60, 60000 end
 
   if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
@@ -1190,6 +1201,8 @@ function verbs.sacrifice(ctx, row)
   elseif fam == "DesperateAttack" then damage = preHp + preMp
   elseif fam == "Berserk"         then damage = math.ceil(preHp * 0.75)
   elseif fam == "Whirlwind"       then damage = math.ceil(preHp * (ctx.alignment >= 2 and 1.525 or 1.75))
+  elseif fam == "FocusedBlow"     then damage = preHp * 2
+  elseif fam == "Siege"           then damage = math.ceil(preHp * 1.875) + math.ceil(preMp * 0.5)
   else                                 damage = 0 end
   if (fam == "Berserk" or fam == "Whirlwind") and baekho then damage = math.ceil(damage * 1.5) end
 
@@ -1205,6 +1218,8 @@ function verbs.sacrifice(ctx, row)
     elseif fam == "DesperateAttack" then newHp = math.ceil(ctx.hp / 2)
     elseif fam == "Berserk"         then newHp = math.ceil(ctx.hp / 3)
     elseif fam == "Whirlwind"       then newHp = (ctx.alignment >= 2 and math.ceil(ctx.hp * 0.10) or 10)
+    elseif fam == "FocusedBlow"     then newHp = math.ceil(ctx.hp / 3)      -- takes 2/3, keeps a third
+    elseif fam == "Siege"           then newHp = math.ceil(ctx.hp * 0.25)   -- leaves 25%
     else                                 newHp = ctx.hp end
     ctx:setHp(newHp)
     if fam == "DesperateAttack" then ctx:setMana(0) end
