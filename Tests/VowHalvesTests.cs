@@ -1121,9 +1121,12 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// (<c>EndReadLoopAsync</c>: the teardown and its save), and B logs back in, at once (fenced) or later. B's half is
     /// kept through A's end, in memory and in the row, and B reads "Your engagement to A has ended." (or marriage)
     /// exactly once, at that login. A pays and reads as before.
-    /// <para>The order of the two flags is the other way round from the logout fact above: a close the server makes
-    /// itself sets <c>_closed</c> first, without the monitor, and the read loop's teardown sets <c>_leaving</c> only
-    /// later. The told end checks both.</para>
+    /// <para>The order of the two flags is the other way round from the logout fact above: here the server's close sets
+    /// <c>_closed</c> first, without the monitor, and the read loop's teardown sets <c>_leaving</c> only later. A kick
+    /// does the same in play: it sets <c>_closed</c> before it closes the socket the read loop waits on. The writer's
+    /// exit does it here only because the fact makes its close directly, before the read loop exits; in play it closes
+    /// the socket first and sets <c>_closed</c> after, so it races the teardown (<c>Session.EndEngagement</c>'s doc).
+    /// The told end checks both.</para>
     /// <para>Red on b787430, Debug and Release (PR #350 re-check, Finding 1, probe P1): the told end checked
     /// <c>_leaving</c> alone, so it ended B's half and wrote the row; the line was dropped at the closed connection;
     /// and the teardown and the next login had nothing left to settle: B was never told.</para>

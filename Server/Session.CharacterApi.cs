@@ -1163,8 +1163,9 @@ public sealed partial class Session : QuestState.ISessionStore
     /// line. Two flags say "going away", and which is set first depends on the path, so both are checked:</para>
     /// <list type="bullet">
     /// <item><c>_leaving</c>: on the read loop's own exit, <c>TearDownWorldState</c> sets it first, under this
-    /// monitor, and <c>EndReadLoopAsync</c> closes the connection only after the teardown lets go. In between,
-    /// <c>_closed</c> is still clear.</item>
+    /// monitor, and <c>EndReadLoopAsync</c> closes the connection only after the teardown lets go. In between, that
+    /// close has not run, but another one (a GM kick, the slow-client drop in <c>Send</c>, the writer's exit) can
+    /// still set <c>_closed</c>; that changes nothing, since <c>_leaving</c> is already set.</item>
     /// <item><c>_closed</c>: a connection the server closes itself sets it, from another thread and without this
     /// monitor. A GM kick or ban (<c>Disconnect</c>) and the slow-client drop in <c>Send</c> set it first, before the
     /// socket closes, so the read loop's teardown, and <c>_leaving</c>, come only once the loop wakes to it. The
