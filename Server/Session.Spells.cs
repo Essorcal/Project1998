@@ -3819,8 +3819,10 @@ public sealed partial class Session
         else
         {
             // The proposer's line goes out inside the proposer's monitor (PR #368's review, N4; Caleb, 2026-10-22,
-            // decision 32): this is the beloved's thread, and a send numbers the packet with the proposer's own
-            // counter, which that monitor guards. The beloved's line is already under the beloved's.
+            // decision 32): this is the beloved's thread, and #29's rule 2 enters another player's session under that
+            // player's monitor. The proposer's logout teardown takes the same monitor, so the line is handed over
+            // before that teardown can start, or, if it has already started, after it ends. The beloved's line is
+            // already under the beloved's.
             proposer.WithState(() => proposer.SendMiniText($"{me} regretably must decline."));
             SendMiniText("What but love can last forever?");
         }
@@ -3849,8 +3851,10 @@ public sealed partial class Session
             new[] { "I do. (you will lose much xp if you divorce)", "I don't." });
 
         // From here on this is the FIANCÉ's thread, under his monitor: his reply resumed the ceremony. A line to the
-        // bride is therefore sent inside her monitor (#29 rule 2; PR #365's review, O2; Caleb, 2026-10-22, decision
-        // 32): the send numbers the packet with her own counter, which her monitor guards. His lines are under his.
+        // bride is therefore sent inside her monitor, as #29's rule 2 enters another player's session (PR #365's
+        // review, O2; Caleb, 2026-10-22, decision 32). Her logout teardown takes the same monitor, so a line to her
+        // is handed over before that teardown can start, or, if it has already started, after it ends. His lines are
+        // under his.
         var bride = this;
         if (choice != 1)
         {

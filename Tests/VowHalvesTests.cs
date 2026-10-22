@@ -52,8 +52,8 @@ namespace Tests;
 /// 32). The fiancé's answer resumes the ceremony on his thread, and the beloved's answer resumes the proposal on
 /// theirs, so a line to the bride, or to the proposer, is a send into another player. Each is now sent inside that
 /// player's monitor: the wedding's "I now pronounce you (married)" inside the pair's section, after the writes, and the
-/// two declines inside the receiver's own. A bride whose logout follows the wedding is told before her teardown
-/// runs.</para>
+/// two declines inside the receiver's own. A bride whose logout follows the wedding has her line handed to her
+/// connection before her teardown runs, and so before its close.</para>
 ///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
