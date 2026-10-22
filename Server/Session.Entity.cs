@@ -949,7 +949,7 @@ public sealed partial class Session
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         // Positional "attacked from behind while both face the same way" 2x (RTK swingDamage.lua's
-        // side==target.side rule; the pipeline applies it AFTER armor, matching the Lua's own order). NOT
+        // side==target.side rule; the pipeline multiplies it in with the other terms and floors once, #78). NOT
         // ported: the item-flag-gated backstab/flank abilities a handful of legendary weapons grant (see
         // Combat.cs).
         bool behind = Combat.IsBehindTarget(mob.Dir, _facing, mob.X, mob.Y, _char.X, _char.Y);
@@ -1022,8 +1022,9 @@ public sealed partial class Session
     // deduction reduction (sanctuary / Baekho's Cunning), HP, per-hit durability (RTK clif_deductarmor rolls
     // every worn slot on a hit, unlike magic), the over-head HP bar to the whole map, the mutual PvP-foe mark
     // (so arena pets know who to go for), and death -> ghost. No "X hits you" chat line: melee shows only the
-    // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll.
-    public void ReceiveMeleeDamage(int rawDmg, Session attacker, bool crit)
+    // HP bar, matching a mob hit. crit is the wire-visual byte from the swing roll. `rawDmg` arrives unfloored
+    // (PlayerSwingRaw), so the intake's one floor is the only rounding the blow takes (#78).
+    public void ReceiveMeleeDamage(double rawDmg, Session attacker, bool crit)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         TakeDamage(new DamageIntake(DamageKind.PlayerMelee, rawDmg)

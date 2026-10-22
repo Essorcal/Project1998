@@ -256,14 +256,16 @@ public sealed partial class Session
         {
             if (!ReferenceEquals(pc, this) && !pc.IsDead && Content.IsPvpMap(_char.Map))
             {
-                var (pdmg, pcrit) = PlayerSwingDamage(SwingTarget.Of(pc), reach);   // target AC + positional already applied
-                if (pdmg > 0)
+                // Target AC + positional + reach already applied, and NOT floored: the defender's intake multiplies
+                // in its amplifier and deduction and floors once (#78).
+                var (phit, praw, pcrit) = PlayerSwingRaw(SwingTarget.Of(pc), reach);
+                if (phit)
                 {
                     var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);   // EQ_WEAP: dura on a landed hit, same as vs a mob
                     if (weapon is not null) DeductDura(weapon);
                     PlayHitSfx(pc._char.Id);                                          // 0x19: our on-connect impact sfx
-                    pc.ReceiveMeleeDamage(pdmg, this, pcrit);                         // HP/death/PvP-foe/HP-bar on the defender side
-                    Log.Info($"   -> PvP MELEE hit player {pc._char.Id} '{pc._char.Name}' for {pdmg}{(pcrit ? " (CRIT)" : "")}");
+                    pc.ReceiveMeleeDamage(praw, this, pcrit);                         // HP/death/PvP-foe/HP-bar on the defender side
+                    Log.Info($"   -> PvP MELEE hit player {pc._char.Id} '{pc._char.Name}' for {praw:0.###} before their intake{(pcrit ? " (CRIT)" : "")}");
                 }
             }
             return;   // a body blocks the swing regardless of whether the hit landed

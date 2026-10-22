@@ -119,8 +119,9 @@ public sealed class SpellContext
     /// <summary>Check + debit the caster's mana; false (with a "not enough mana" notice) if short.</summary>
     public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
     /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
-    /// and the PvP gate for a player). False if there is none.</summary>
-    public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
+    /// and the PvP gate for a player). False if there is none. The amount goes over unrounded, to the one floor
+    /// at the armour step (#78): Bolt's 2 + 1.5 x Will keeps its half at an odd Will.</summary>
+    public bool damage(double amt)      => _s.LuaDamageTarget(amt, _sp, Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by

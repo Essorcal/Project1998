@@ -977,9 +977,10 @@ public sealed partial class Session
     // behind-x2 as a single universal rule. Backstab/Flank no longer multiply at all — they RETARGET, at
     // reduced damage, via the `reach` scale below (see Session.SwingTargets).
     //   reach = 1.0 on an ordinary faced-tile swing; 0.5 when Backstab reaches the rear tile or Flank
-    //           reaches a side one. Applied LAST, after armor and after the positional x2, because the
-    //           source states it as a fraction of "the front attack damage" — i.e. of the whole result.
-    //           Spell-driven attacks (lethal strike etc.) always pass the default 1.0.
+    //           reaches a side one. A fraction of the whole result, because the source states it as one of
+    //           "the front attack damage". Spell-driven attacks (lethal strike etc.) always pass the default 1.0.
+    // Armor, the positional x2 and reach are ONE product, floored once and raised to 1 (#78): see
+    // PlayerSwingRaw, whose unfloored figure a PvP swing hands to the defender's intake.
     // The defender stats a player swing needs, abstracted so a MOB and a PLAYER both feed the ONE live-validated
     // formula below (no parallel PvP copy to drift). grace/level feed the hit+crit roll; Ac + ArmorFloor the
     // armor mitigation (mob floor -95 = RTK minimumArmor for a mob; player floor -80 = RTK's human floor, same
@@ -999,6 +1000,17 @@ public sealed partial class Session
 
     private (int dmg, bool crit) PlayerSwingDamage(SwingTarget target, double reach = 1.0)
     {
+        var (hit, raw, crit) = PlayerSwingRaw(target, reach);
+        return hit ? (Combat.FloorOnce(raw), crit) : (0, false);
+    }
+
+    /// <summary><see cref="PlayerSwingDamage"/>'s figure before its one floor, for the PvP swing: the defender's
+    /// intake multiplies its own amplifier and deduction in before it floors (#78; Caleb, 2026-10-21: "multiply
+    /// everything, round down once, minimum 1"). It used to receive this already floored, at least 1, and rounded
+    /// it again after each of its own terms. <c>hit</c> is false on a miss, which deals nothing; a
+    /// landed hit may net below 1 here and is raised to 1 at the end.</summary>
+    private (bool hit, double raw, bool crit) PlayerSwingRaw(SwingTarget target, double reach = 1.0)
+    {
         var eq = Totals();
         int pathId = Content.PathIdForClass(_char.ClassName);
         double might = Math.Max(EffMight, 1);
@@ -1010,7 +1022,7 @@ public sealed partial class Session
         // no longer feed hit chance — kept only for the damage terms.
         var outcome = Combat.RollPlayerSwingRtk(_char.Grace + eq.grace, _char.Level, _char.Hit + eq.hit,
                                                 target.Grace, target.Level);
-        if (outcome == Combat.SwingOutcome.Miss) return (0, false);
+        if (outcome == Combat.SwingOutcome.Miss) return (false, 0, false);
         bool crit = outcome == Combat.SwingOutcome.Crit;
 
         var w = WeaponTotals();
@@ -1064,9 +1076,11 @@ public sealed partial class Session
         bool wasStealthed = Stealthed;   // read once — landing the hit clears it below
 
         double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? 5 : 1) * (crit ? 3 : 1);
-        // Pass the RAW DOUBLE into ApplyArmor — do NOT truncate here. Flooring twice (once to int, once
-        // inside ApplyArmor) is disproven live; see the ApplyArmor doc comment for the n=178 evidence.
-        int dmg = Combat.ApplyArmor(swing, target.Ac, floor: target.ArmorFloor);   // -95 mob / -80 player (see SwingTarget)
+        // Keep the RAW DOUBLE through armor — do NOT truncate here. Flooring twice (once to int, once in the
+        // armor step) is disproven live; see the ApplyArmor doc comment for the n=178 evidence. The rear x2 and
+        // the reach scale below multiply into the same figure, and it is floored ONCE, by PlayerSwingDamage or,
+        // for a PvP swing, by the defender's intake (#78). With neither, this is exactly ApplyArmor's product.
+        double dmg = swing * Combat.ArmorFactor(target.Ac, target.ArmorFloor);   // -95 mob / -80 player (see SwingTarget)
         // POSITIONAL BONUS — AT MOST x2, EVER. This is deliberately ONE decision feeding ONE multiply
         // rather than the old pair of independent `if (...) dmg *= 2;` lines, which could in principle
         // compound to x4. They never actually did (IsBehindTarget requires attackerDir == targetDir while
@@ -1084,14 +1098,14 @@ public sealed partial class Session
         byte attackDir = Combat.AttackDir(_char.X, _char.Y, target.X, target.Y);
         if (Combat.IsBehindTarget(attackDir, target.Dir, _char.X, _char.Y, target.X, target.Y)) dmg *= 2;
 
-        // Reach penalty LAST — the sources state it as a fraction of "the front attack damage", i.e. of the
-        // finished number, so it comes after armor and after the positional x2. Still floored at 1: a
+        // Reach penalty — the sources state it as a fraction of "the front attack damage", i.e. of the
+        // finished number. Inside the one floor with the rest (#78), which still raises a connected hit to 1: a
         // connected hit never deals 0 (that is what a MISS is, and it returned above).
-        if (reach != 1.0) dmg = Math.Max(1, (int)Math.Floor(dmg * reach));
+        if (reach != 1.0) dmg *= reach;
 
         if (wasStealthed) { _stealthUntil = 0; RevertStealth(); }   // RTK: landing a hit strips stealth (removeDuras(invis)) — drop the faded look now
 
-        return (dmg, crit);
+        return (true, dmg, crit);
     }
 
     // Active timed stat buffs (from casting Buff spells). Session-local, like cooldowns — they clear on relog.

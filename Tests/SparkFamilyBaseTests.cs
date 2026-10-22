@@ -15,7 +15,8 @@ namespace Tests;
 /// <c>ctx:magicDamage</c>) and take this base: Spark, Glimpse of the Void and Nature's Ire for mage, and all four for
 /// poet. Mage Bolt does not: <c>game-data/SpellParams.csv</c> binds <c>bolt_mage</c> to <c>verbs.magic_damage</c>
 /// (2 + 1.5 x Will, 4 mana), which is not the Spark row at all, so moving it is a different decision, held for Caleb.
-/// The last fact here pins that it was left as it is.</para>
+/// The Bolt facts at the end pin that its formula and cost were left as they are, and that its odd-Will half now
+/// reaches the armour step like every other path's (#78).</para>
 ///
 /// <para>Before this, the rows read <c>50 + floor((level + will)/4)</c>, a whole number, so an odd level could never
 /// show its half: the level-11 rabbit reading (111) came out 110. Removing the floor in the data alone would not have
@@ -163,6 +164,32 @@ public sealed class SparkFamilyBaseTests
 
             Assert.Equal(Mana - 4, cc.Mp);
             Assert.Equal(47, CreatureHp - mob.Hp);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Town);
+            _fx.World.DespawnMob(Town, mob);
+        }
+    }
+
+    /// <summary>Bolt keeps its own formula, but its half now reaches the armour step like every other path's (#78:
+    /// one floor). At an odd Will, 2 + 1.5 x Will ends in .5: Will 31 is 48.5, which lands 97 against AC +100, and
+    /// Will 33 is 51.5, which lands 51 against AC 0. <c>ctx:damage</c> used to round it first, half to even, to 48
+    /// and 52, so it landed 96 and 52: up one at one Will, down one at the other.</summary>
+    [Theory]
+    [InlineData(31, 100, 97)]
+    [InlineData(33, 0, 51)]
+    public void MageBoltsOddWillHalfReachesTheArmourStep(int will, int ac, int expected)
+    {
+        var sp = Spell("bolt_mage");
+        var mob = Creature(Town, ac);
+        var (caster, _, cc) = Caster(Town, level: 50, will, ownAc: 0, sp);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+
+            Assert.Equal(Mana - 4, cc.Mp);
+            Assert.Equal(expected, CreatureHp - mob.Hp);
         }
         finally
         {
