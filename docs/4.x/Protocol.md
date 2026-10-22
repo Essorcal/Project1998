@@ -3365,8 +3365,9 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     Nature's Ire for mage; all four for poet) read `50 + level/2`, no longer `50 + floor((level + will)/4)`. The
     half is kept to the armor step: `Session.CastArch` no longer rounds the evaluated amount, and `ctx:magicDamage`,
     `LuaMagicDamage`, `LuaDamageTarget`, `SpellNet`, `HitPlayerWithSpell`, `ReceiveSpellDamage` and
-    `DamageIntake.Raw` carry a double to `Combat.ApplyArmor`, so a level-15 self-cast at AC 85 lands
-    floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). Mage Bolt is not on that row:
+    `DamageIntake.Raw` carry a double to the armor step: `SpellNet`'s `Combat.ApplyArmor` against a creature, and
+    `Combat.ArmorFactor` and `Combat.FloorOnce` in `Session.TakeDamage` against a player. So a level-15 self-cast at
+    AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). Mage Bolt is not on that row:
     `game-data/SpellParams.csv` binds `bolt_mage` to `verbs.magic_damage`, 2 + 1.5 × Will for 4 mana, held for a
     decision of its own. `Tests/SparkFamilyBaseTests.cs` casts each row through the real frame.
 

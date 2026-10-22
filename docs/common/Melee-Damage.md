@@ -22,7 +22,10 @@ damage    *= 2                                       if attacking from behind (C
 
 **One floor, then the rear x2 (#78, 2026-10-21).** Every term is multiplied unrounded and the product is floored
 once and raised to 1 (`Combat.FloorOnce`); a hit from behind then doubles that whole number, as RTK's
-`swingDamage.lua` doubles its floored figure (:147-150). Caleb: "multiply everything, round down once, minimum 1",
+`swingDamage.lua` doubles its floored figure (:147-150). One exception, against a **slept creature**: its sleep
+amplifier is not in that product. `World.TryDamage` applies it afterwards, after the floor and the x2, rounded half to
+even (`Server/World.cs:2473`), so that hit is rounded twice (issue #363). Caleb: "multiply everything, round down once,
+minimum 1",
 and "Round down once (minimum 1), then double for a hit from behind. Ordinary hits from behind stay exactly as
 today." The reach scale sits inside the floor. Against a **player**, the swing's figure is handed over unfloored
 (`Session.PlayerSwingRaw`) with the rear x2 as a flag, and the defender's intake (`Session.TakeDamage`) multiplies in
@@ -521,7 +524,8 @@ same character (military fork S 90-100 gave a window of 113-123, fixing the non-
 `damage = max(1, floor(raw * (1 + ac/100)))` — **one** floor, applied at the end. Never truncate the raw
 swing to int first; double-flooring is disproven (n=178). Any other term — the sleep amplifier, the
 Sanctuary/Cunning deduction, the reach scale — multiplies into the same product before that floor, and the rear x2
-doubles its result (#78; see §1).
+doubles its result (#78; see §1). The exception is a slept creature's amplifier, which `World.TryDamage` applies after
+the floor, rounded half to even (`Server/World.cs:2473`; issue #363).
 
 Confirmed on 11/11 spell readings spanning AC −22 to +100, and on every melee window since.
 
