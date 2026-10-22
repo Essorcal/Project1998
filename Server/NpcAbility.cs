@@ -1391,13 +1391,16 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// the shape of the login line (<c>Session.SettleVowHalves</c>). The player has by then read the status line the partner's
 /// visit sent them; RTK has no equivalent to follow (its divorce never touches the other side), so the words are
 /// ours.</para>
-/// <para><b>A "No", and a stale Marriage, read the same line</b> (PR #350's review, N3; Caleb, 2026-10-21). The check
-/// comes before the answer is read, so a "No" to Break Off Engagement's question, or to Divorce's first, after the
-/// partner ended the vow reads it too, not "I hope you can salvage your relationship." or "Patience and love will save
-/// your marriage. ...". Marriage, offered by a top menu built while the player was engaged, first asks the same of the
-/// fiancé it was offered for, so a pick after the fiancé broke it off reads it as well, not "The proposee should start
-/// the marriage ceremony." (the end clears the proposee flag). All three were free before as now; only the words were
-/// wrong.</para></summary>
+/// <para><b>A "No", a stale Marriage and the ceremony's question read the same line</b> (PR #350's review, N3; Caleb,
+/// 2026-10-21). The check comes before the answer is read, so a "No" to Break Off Engagement's question, or to
+/// Divorce's first, after the partner ended the vow reads it too, not "I hope you can salvage your relationship." or
+/// "Patience and love will save your marriage. ...". Marriage, offered by a top menu built while the player was
+/// engaged, first asks the same of the fiancé it was offered for, so a pick after the fiancé broke it off reads it as
+/// well, not "The proposee should start the marriage ceremony." (the end clears the proposee flag). It asks again once
+/// its own question ("Are you certain ...?") is answered, so a "Yes" or a "No" there after the fiancé broke it off
+/// reads it too, not "Both parties must be present for the ceremony to commence" (the emptied fiancé name finds
+/// nobody) or "Come back when you are firm in your resolve to marry.". All five were free before as now; only the
+/// words were wrong.</para></summary>
 public sealed class ChapelAbility : INpcAbility
 {
     public static readonly ChapelAbility Instance = new();
@@ -1468,6 +1471,8 @@ public sealed class ChapelAbility : INpcAbility
 
         int confirm = await ctx.Menu("Are you certain you wish to devote yourself to this man or woman for life?",
             new[] { "Yes", "No" });
+        // Asked again: the fiancé may have broken it off while this question waited, whatever the answer (the class doc).
+        if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
         if (confirm != 1) { await ctx.Say("Come back when you are firm in your resolve to marry."); return; }
 
         string? result = await ctx.Marry();

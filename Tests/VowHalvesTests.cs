@@ -34,11 +34,12 @@ namespace Tests;
 /// <para><b>And then</b> (#344's Follow-ups; Caleb, 2026-10-18, "As recommended"). A confirm whose vow the partner
 /// already ended is free: the dialog re-checks the clicker's own half, under the clicker's own monitor, before it
 /// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead; she says the same to a
-/// "No" there, and to a Marriage picked from a menu built before the end (PR #350's review, N3). And a partner whose
-/// half a Chapel visit ends while they are online reads the login line, "Your marriage to X has ended." (or
-/// engagement), sent from inside their monitor where the end runs; a partner who is offline, whose logout reaches their
-/// monitor before the end does, or whose connection the server has already closed, reads it once, at their next login;
-/// and a partner whose half names someone else, or nobody, reads nothing.</para>
+/// "No" there, to a Marriage picked from a menu built before the end, and to either answer to the ceremony's question
+/// (PR #350's review, N3). And a partner whose half a Chapel visit ends while they are online reads the login line,
+/// "Your marriage to X has ended." (or engagement), sent from inside their monitor where the end runs; a partner who is
+/// offline, whose logout reaches their monitor before the end does, or whose connection the server has already
+/// closed, reads it once, at their next login; and a partner whose half names someone else, or nobody, reads
+/// nothing.</para>
 ///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
@@ -701,12 +702,17 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         DivorceAtTheQuestionNo,
         /// <summary>Crystal's top menu, which offered Marriage (and Break Off Engagement), answered "Marriage".</summary>
         MarriageAtTheMenu,
+        /// <summary>The ceremony's "Are you certain you wish to devote yourself to this man or woman for life?", A the
+        /// proposee and the wait over, answered "Yes".</summary>
+        MarriageAtTheQuestion,
+        /// <summary>The same question, answered "No".</summary>
+        MarriageAtTheQuestionNo,
     }
 
     /// <summary>
     /// <b>A confirm whose vow the partner already ended is free.</b> A and B stand beside Crystal, engaged (or married)
     /// to each other. A's dialog is left waiting (<see cref="LateConfirm"/>), and B ends the vow at Crystal meanwhile,
-    /// which ends both halves. Then A answers yes to everything, to the end of the dialog; or, in the last three cases,
+    /// which ends both halves. Then A answers yes to everything, to the end of the dialog; or, in the last five cases,
     /// answers "No" to the waiting question, or picks Marriage from the waiting top menu, and then yes to the end. A pays
     /// nothing (experience, base Vita and base Mana, in memory and in A's row) and reads Crystal's "Your engagement to B
     /// has already ended." (or marriage) once, never "It is done." / "You are now divorced.", never the sacrifice's offer
@@ -716,9 +722,12 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// <para>The first six cases are red on c7878f2, Debug and Release: A is charged (<c>MaxMp * 1000</c> or
     /// <c>MaxHp * 2550</c> exp, or 8000 base Vita on the sacrifice path) and reads "It is done." or "You are now
     /// divorced."; A reads no status line.</para>
-    /// <para>The last three cases (PR #350's review, N3) are red on 6de1d24, Debug and Release: A, who pays nothing there
+    /// <para>The next three cases (PR #350's review, N3) are red on 6de1d24, Debug and Release: A, who pays nothing there
     /// either, reads "I hope you can salvage your relationship.", "Patience and love will save your marriage. ..." or
-    /// "The proposee should start the marriage ceremony.", and no "has already ended." page.</para>
+    /// "The proposee should start the marriage ceremony.", and no "has already ended." page. The last two, the
+    /// ceremony's own question, are red on bf0e6e6, Debug and Release: A reads "Both parties must be present for the
+    /// ceremony to commence" or "Come back when you are firm in your resolve to marry.", and no "has already ended."
+    /// page.</para>
     /// </summary>
     [Theory]
     [InlineData(LateConfirm.BreakAtTheQuestion)]
@@ -730,15 +739,19 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     [InlineData(LateConfirm.BreakAtTheQuestionNo)]
     [InlineData(LateConfirm.DivorceAtTheQuestionNo)]
     [InlineData(LateConfirm.MarriageAtTheMenu)]
+    [InlineData(LateConfirm.MarriageAtTheQuestion)]
+    [InlineData(LateConfirm.MarriageAtTheQuestionNo)]
     public void AConfirmWhoseVowThePartnerAlreadyEndedIsFree(LateConfirm when)
     {
         using var db = new IsolatedDatabase();
         var (npc, def) = ChapelNpc();
-        bool married = when is not (LateConfirm.BreakAtTheQuestion or LateConfirm.BreakAtTheMenu
-                                    or LateConfirm.BreakAtTheQuestionNo or LateConfirm.MarriageAtTheMenu);
+        bool ceremony = when is LateConfirm.MarriageAtTheQuestion or LateConfirm.MarriageAtTheQuestionNo;
+        bool married = !ceremony && when is not (LateConfirm.BreakAtTheQuestion or LateConfirm.BreakAtTheMenu
+                                                 or LateConfirm.BreakAtTheQuestionNo or LateConfirm.MarriageAtTheMenu);
         bool sacrifice = when is LateConfirm.SacrificeAtTheQuestion or LateConfirm.SacrificeAtTheConfirm;
         bool atTheMenu = when is LateConfirm.BreakAtTheMenu or LateConfirm.DivorceAtTheMenu or LateConfirm.MarriageAtTheMenu;
-        bool no = when is LateConfirm.BreakAtTheQuestionNo or LateConfirm.DivorceAtTheQuestionNo;
+        bool no = when is LateConfirm.BreakAtTheQuestionNo or LateConfirm.DivorceAtTheQuestionNo
+                       or LateConfirm.MarriageAtTheQuestionNo;
         string label = when == LateConfirm.MarriageAtTheMenu ? "Marriage" : married ? "Divorce" : "Break Off Engagement";
         string a = Name("A"), b = Name("B");
         // On the sacrifice path A has 10,000 Vita, so a divorce costs 25,500,000 exp, against 1,000 held, and the
@@ -756,6 +769,9 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             bHeld = bS;
             Vow(aS, b, married);
             Vow(bS, a, married);
+            // The ceremony asks its question only of the proposee, once the three days' wait is over.
+            if (ceremony)
+                aS.WithState(() => aS.SetEngaged(b, isProposee: true, DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1));
             var aPools = Pools(aS);
             var aRowPools = Pools(Row(db.Store, a));
             uint bExp = bS.CharExp;
@@ -767,6 +783,14 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 {
                     Click(aS, npc);
                     entry = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf(label) + 1;
+                }
+                else if (ceremony)
+                {
+                    Click(aS, npc);
+                    int marriage = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf("Marriage") + 1;
+                    Assert.True(marriage > 0, "Crystal's top menu did not offer A Marriage");
+                    aS.Receive(MenuFrame((byte)marriage));
+                    LastMenu(aOut, "Are you certain you wish to devote yourself to this man or woman for life?");
                 }
                 else
                 {
@@ -1622,13 +1646,16 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         "Hmmm.. you don't have the experience to divorce, but there is something else you can offer.";
 
     /// <summary>What Crystal says to a player whose vow still holds, for a "No" to Break Off Engagement's question or to
-    /// Divorce's first, and for Marriage picked by the partner who proposed. Before PR #350's N3 follow-up a player
-    /// whose vow the partner had already ended read them too.</summary>
+    /// Divorce's first, for Marriage picked by the partner who proposed, and for the ceremony's question answered "Yes"
+    /// while the fiancé is offline, or "No". Before PR #350's N3 follow-up a player whose vow the partner had already
+    /// ended read them too.</summary>
     private static readonly string[] StillVowedLines =
     {
         "I hope you can salvage your relationship.",
         "Patience and love will save your marriage.\n\nDivorce is not something to take lightly.",
         "The proposee should start the marriage ceremony.",
+        "Both parties must be present for the ceremony to commence",
+        "Come back when you are firm in your resolve to marry.",
     };
 
     /// <summary>What the Chapel charges in experience: a divorce <c>MaxHp * 2550</c>, a break <c>MaxMp * 1000</c>
