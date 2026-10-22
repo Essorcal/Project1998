@@ -61,6 +61,19 @@ public sealed class BarrierSpellTests
     public static TheoryData<string> HumanBarriers => new()
         { "blockade_human_poet", "block_entry_poet", "distance_self_poet", "protect_sides_poet" };
 
+    /// <summary>Barrier's Kwi-Sin twin is named "Spirit Body", the name the 2002 Nexus Atlas Poet page gives it
+    /// (<c>atlas-2002-12-30-spells-classes</c>, the highest-weight dated source; every other twin name matches it).
+    /// The live Atlas pages say "Spirit barrier"; Caleb chose the 2002 name on 2026-10-21 (decision sheet item 5). Only
+    /// the name moved: the key stays <c>spirit_barrier_poet</c> and the id 4098, which saved spell books store. Red on
+    /// 6de1d24: "Spirit Barrier".</summary>
+    [Fact]
+    public void BarriersKwiSinTwinIsNamedSpiritBody()
+    {
+        var sp = Content.SpellById(4098);
+        Assert.NotNull(sp);
+        Assert.Equal(("spirit_barrier_poet", "Spirit Body", 1), (sp!.Key, sp.Name, sp.Alignment));
+    }
+
     // ===== Barrier ===================================================================================
 
     /// <summary>A cast takes 300 mana through its own row, starts no aether, holds the <c>barriers</c> slot for

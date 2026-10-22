@@ -3,7 +3,7 @@ using Shared;
 namespace Server;
 
 /// <summary>
-/// Barrier and Human Barrier (Poet; their alignment twins Spirit Barrier, Life Barrier, Balance Barrier and Block
+/// Barrier and Human Barrier (Poet; their alignment twins Spirit Body, Life Barrier, Balance Barrier and Block
 /// Entry, Distance Self, Protect Sides): the four tiles beside the Poet are closed, and what stands on them is held
 /// until the barrier wears off (#334).
 ///
