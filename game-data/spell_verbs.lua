@@ -277,12 +277,17 @@ end
 -- the blow's own question before the spend. On a PvP map it answers yes to everything it did before, a cast at
 -- nothing included (unaimed, it lands on its caster there). RTK differs there too; that is left for its own decision.
 --
+-- A player off a PvP map is refused before the spend too (item 9b): "You can't attack that target.", the line the
+-- blow's own PvP gate sends, which it used to send after the debit, so the refusal cost the mana, the pose and
+-- "You cast X." as well (the Poet whip's Freeze proc 800 at any player it faced in a town). RTK refuses there before
+-- any cost (global_zap.lua:26-30).
+--
 -- The target is asked only when the cast can be paid for, so a caster short of mana still hears spendMana's own
--- line, as before.
+-- line, as before, and as RTK's zap orders it (mana at global_zap.lua:14-17, before the PvP refusal).
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
   local mana = row.mana or 0
-  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- nothing to strike here: free
+  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- nothing, or a player, it may not strike here: free
   if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true

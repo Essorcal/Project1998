@@ -749,6 +749,13 @@ public sealed partial class Session
     /// as <see cref="LuaDamageTarget"/> already refused it after the spend. Bolt cost 4 mana and Freeze 800, with the
     /// pose and "You cast X.", for a blow that struck nothing. RTK's zap returns at a missing target before it spends
     /// (<c>Spells/common/global_zap.lua:8-10</c>).</para>
+    /// <para><b>Off a PvP map, a player is refused too</b> (item 9b), yourself included: "You can't attack that
+    /// target.", the blow's own gate and line (<see cref="HitPlayerWithSpell(Session, int, int, SpellDef, out int)"/>),
+    /// asked before the spend instead of after it. The refusal used to cost Bolt's 4 mana and Freeze's 800, the pose
+    /// and "You cast X." as well, and the Poet whip's Freeze proc 800 at any player it faced in a town. RTK refuses
+    /// before any cost, with "You cannot attack that target." (<c>Spells/common/global_zap.lua:26-30</c>); this server
+    /// already sends its own wording of that line for this case, so that wording is kept. The blow still asks again
+    /// when it lands.</para>
     /// <para><b>On a PvP map nothing changes</b>, and it answers yes to everything the blow took before. With the slot
     /// alone and nothing faced, the victim is the caster (<see cref="ResolveDamageTarget"/>'s PvP fallback), and the zap
     /// lands on them. Aimed at an id that finds nobody there, the victim is none, and the cast still pays for a blow
@@ -757,7 +764,13 @@ public sealed partial class Session
     internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (Content.IsPvpMap(_char.Map)) return true;
-        if (victim.mob is null && victim.pc is null) { LogNoTarget(sp); return false; }   // silent, free
+        if (victim.pc is not null)
+        {
+            SendMiniText("You can't attack that target.");
+            Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't strike player {victim.pc._char.Id}, nothing spent");
+            return false;
+        }
+        if (victim.mob is null) { LogNoTarget(sp); return false; }   // silent, free
         return true;
     }
 

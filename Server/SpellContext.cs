@@ -123,9 +123,9 @@ public sealed class SpellContext
     public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
     /// <summary>May <see cref="damage"/> strike this cast's victim (<see cref="Victim"/>) here? A verb that spends
     /// before it strikes (<c>magic_damage</c>) asks it first, so a blow that would strike nothing costs nothing. Off a
-    /// PvP map a cast that finds nothing is refused, silently. On a PvP map it answers yes to everything
-    /// <see cref="damage"/> took there before, a cast that finds nothing included (see
-    /// <c>Session.LuaCanStrike</c>).</summary>
+    /// PvP map a cast that finds nothing is refused, silently, and a player with "You can't attack that target.". On a
+    /// PvP map it answers yes to everything <see cref="damage"/> took there before, a cast that finds nothing included
+    /// (see <c>Session.LuaCanStrike</c>).</summary>
     public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't

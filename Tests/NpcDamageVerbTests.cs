@@ -490,6 +490,123 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} on map {map}, an NPC faced: {r}");
     }
 
+    // ===== at a player =================================================================================
+
+    public static TheoryData<string, ushort, bool> PlayerCases
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort, bool>();
+            foreach (var map in new[] { Town, Arena })
+            {
+                data.Add("bolt_mage", map, false);
+                data.Add("bolt_mage", map, true);
+                data.Add("freeze", map, false);
+            }
+            return data;
+        }
+    }
+
+    /// <summary>Bolt and Freeze at a faced player. Off a PvP map they are refused for free (Caleb, 2026-10-21, decision
+    /// sheet item 9b), with the line the blow's PvP gate has always sent, "You can't attack that target."
+    /// (<c>Session.HitPlayerWithSpell</c>): no mana, no pose, no "You cast X.", and the player keeps their HP and is
+    /// told nothing. On a PvP map, the control, the blow lands as it did: "You cast X.", the mana, the pose, and the
+    /// player's HP down. By the slot alone, the stock client's frame, and for Bolt by the player's id as well.
+    /// <para>Red on 6de1d24 off a PvP map: the gate ran after the spend, so the refusal cost 4 or 800 mana, the pose and
+    /// "You cast X." too. The PvP rows are green there as well.</para></summary>
+    [Theory]
+    [MemberData(nameof(PlayerCases))]
+    public void ABoltOrFreezeAtAPlayerIsRefusedForFreeOffAPvpMap(string key, ushort map, bool byId)
+    {
+        var sp = Spell(key);
+        uint cost = (uint)int.Parse(Content.SpellParams[key]["mana"]);
+        var r = CastAtAPlayer(sp, map, byId, Mana);
+        string what = $"{sp.Name} at a faced player{(byId ? ", by their id," : "")} on map {map}: {r}";
+        if (Content.IsPvpMap(map))
+            Assert.True(r.Lines == $"You cast {sp.Name}." && r.Spent == cost && r.Pose == 1 && r.TargetHp < Creature, what);
+        else
+            Assert.True(r.Lines == "You can't attack that target." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature
+                        && r.TargetLines == "", what);
+    }
+
+    /// <summary>Bolt aimed at its caster's own id off a PvP map is refused for free the same way: the blow's PvP gate
+    /// covers the caster too (<c>Session.HitPlayerWithSpell</c>), and it is now asked before the spend.
+    /// <para>Red on 6de1d24: "You can't attack that target. | You cast Bolt.", 4 mana and the pose.</para></summary>
+    [Fact]
+    public void BoltAtYourselfOffAPvpMapIsRefusedForFree()
+    {
+        var sp = Spell("bolt_mage");
+        var (caster, cOut, cc) = Caster(Town, ch => ch.Spells.Add(sp.Id));
+        try
+        {
+            uint mp0 = cc.Mp, hp0 = cc.Hp;
+            cOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, caster.PlayerId));
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(lines == "You can't attack that target." && cc.Mp == mp0 && cc.Hp == hp0
+                        && cOut.BodiesOf(ServerOp.Action).Count == 0,
+                        $"{sp.Name} at its caster's id on map {Town}: [{lines}], spent {mp0 - cc.Mp}, hp {hp0} -> {cc.Hp}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Town);
+        }
+    }
+
+    /// <summary>With too little mana, Bolt at a player off a PvP map still answers what it did: "Not enough mana to cast
+    /// Bolt.", for nothing. RTK's zap orders it the same way, mana before the PvP refusal
+    /// (<c>Spells/common/global_zap.lua:14-17</c>, <c>:26-30</c>).
+    /// <para>Green on 6de1d24 as well.</para></summary>
+    [Fact]
+    public void BoltAtAPlayerWithTooLittleManaSaysWhatItDid()
+    {
+        var sp = Spell("bolt_mage");
+        var r = CastAtAPlayer(sp, Town, byId: false, mana: 3);
+        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature,
+                    $"{sp.Name} at a faced player on map {Town}: {r}");
+    }
+
+    /// <summary>The Poet whip's Freeze proc, through real swings at a faced player. Off a PvP map each proc is refused
+    /// for free: "You can't attack that target.", once a proc, and no mana. On a PvP map, the control, each proc costs
+    /// its 800 as before.
+    /// <para>Red on 6de1d24 off a PvP map: 800 mana a proc, with the same line. The PvP row is green there as
+    /// well.</para></summary>
+    [Theory]
+    [InlineData(Town)]
+    [InlineData(Arena)]
+    public void ThePoetWhipsFreezeProcAtAPlayerCostsNothingOffAPvpMap(ushort map)
+    {
+        var (target, tOut, tc) = Onlooker("NdvProcTarget", CX + 1, CY, map);
+        var (caster, cOut, cc) = Swinger(map, "poet_whip", "freeze");
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            int procs = 0, swings = 0;
+            var lines = new List<string>();
+            while (procs < 3 && swings < MaxSwings)
+            {
+                cOut.Clear();
+                Swing(caster);
+                swings++;
+                procs = Procs(log, "poet_whip", "freeze", target.PlayerId);
+                lines.AddRange(SpellCastSupport.MiniTexts(cOut));
+            }
+            string what = $"poet_whip on map {map}: {procs} procs in {swings} swings; spent {Mana - cc.Mp}, " +
+                          $"lines [{string.Join(" | ", lines)}], the player's lines [{string.Join(" | ", SpellCastSupport.MiniTexts(tOut))}]";
+            Assert.True(procs >= 3, what);
+            if (Content.IsPvpMap(map))
+                Assert.True(Mana - cc.Mp == 800 * procs, what);
+            else
+                Assert.True(cc.Mp == Mana && lines.Count == procs && lines.All(l => l == "You can't attack that target.")
+                            && tc.Hp == Creature, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, map);
+            _fx.World.LeaveMap(target, map);
+        }
+    }
+
     // ===== the cast ======================================================================================
 
     private const int Creature = 10_000_000;
@@ -533,6 +650,33 @@ public sealed class NpcDamageVerbTests
             _fx.World.LeaveMap(far, Elsewhere);
             if (target is { IsNpc: true }) Remove(map, target);
             else if (target is not null) _fx.World.DespawnMob(map, target);
+        }
+    }
+
+    private sealed record AtAPlayer(string Lines, long Spent, int Pose, uint TargetHp, string TargetLines);
+
+    /// <summary>A fresh caster on <paramref name="map"/>, holding <paramref name="mana"/>, faces a fresh player and casts
+    /// <paramref name="sp"/> from slot 0, by the slot alone or by that player's id. Returns what the caster saw and
+    /// spent, and what the player kept and read.</summary>
+    private AtAPlayer CastAtAPlayer(SpellDef sp, ushort map, bool byId, uint mana)
+    {
+        var (target, tOut, tc) = Onlooker("NdvTarget", CX + 1, CY, map);
+        var (caster, cOut, cc) = Caster(map, ch => { ch.Spells.Add(sp.Id); ch.Mp = mana; });
+        try
+        {
+            uint mp0 = cc.Mp;
+            cOut.Clear(); tOut.Clear();
+
+            caster.Receive(SpellCastSupport.CastFrame(0, byId ? target.PlayerId : null));
+
+            return new AtAPlayer(string.Join(" | ", SpellCastSupport.MiniTexts(cOut)), (long)mp0 - cc.Mp,
+                                 cOut.BodiesOf(ServerOp.Action).Count, tc.Hp,
+                                 string.Join(" | ", SpellCastSupport.MiniTexts(tOut)));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, map);
+            _fx.World.LeaveMap(target, map);
         }
     }
 
@@ -640,16 +784,18 @@ public sealed class NpcDamageVerbTests
             Wide(ch, map);
         }, map, CX, CY);
 
-    /// <summary>A level-50 player on the arena at (<paramref name="x"/>, <paramref name="y"/>), with an HP pool no
-    /// strike here can empty, so a strike that lands shows as lost HP and not as a death.</summary>
-    private (Session session, RecordingOutbound outbound, Character c) Onlooker(string name, ushort x, ushort y) =>
+    /// <summary>A level-50 player on <paramref name="map"/> (the arena unless named) at (<paramref name="x"/>,
+    /// <paramref name="y"/>), with an HP pool no strike here can empty, so a strike that lands shows as lost HP and not
+    /// as a death.</summary>
+    private (Session session, RecordingOutbound outbound, Character c) Onlooker(string name, ushort x, ushort y,
+                                                                               ushort map = Arena) =>
         _fx.PlayerWith($"{name}{Interlocked.Increment(ref _serial)}", ch =>
         {
             ch.Level = 50;
             ch.MaxHp = Creature; ch.Hp = Creature;
             ch.MaxMp = 1_000; ch.Mp = 1_000;
-            Wide(ch, Arena);
-        }, Arena, x, y);
+            Wide(ch, map);
+        }, map, x, y);
 
     /// <summary>Every frame the recorder was sent, in order, as its opcode and its decrypted body in hex.</summary>
     private static List<string> Wire(RecordingOutbound o)
