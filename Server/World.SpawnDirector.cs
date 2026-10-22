@@ -121,6 +121,35 @@ public sealed partial class World
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             int points = 0, skipped = 0, capped = 0;
+
+            // Area rows fork by system (see AreaSpawnDef.Timer): a timer means one member of a batch group, no
+            // timer means the trap supplement, which stays on the point model it was ported to. The groups are
+            // built first, so a boss point filed below can see a batch group of its own creature on its rooms'
+            // maps (AddSpawn, #333); the trap points are filed after the Spawns.csv points, as they always were,
+            // so every map's point list keeps its order.
+            var byGroup = new Dictionary<(ushort Map, int Group), SpawnGroup>();
+            foreach (var ad in Content.AreaSpawns)
+            {
+                if (ad.Timer <= 0) continue;                                                 // a trap row: below
+                if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
+                var def = Content.MobById(ad.MobId);
+                if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
+
+                if (!byGroup.TryGetValue((ad.Map, ad.Group), out var g))
+                {
+                    g = new SpawnGroup
+                    {
+                        Map = ad.Map, TimerSec = ad.Timer,
+                        MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
+                    };
+                    byGroup[(ad.Map, ad.Group)] = g;
+                    if (!_groups.TryGetValue(ad.Map, out var list)) { list = new(); _groups[ad.Map] = list; }
+                    list.Add(g);
+                }
+                g.Members.Add((def, ad.Count));
+                capped += ad.Count;
+            }
+
             foreach (var sd in Content.Spawns)
             {
                 if (!Content.Maps.ContainsKey(sd.Map)) { skipped++; continue; }   // map the client can't render
@@ -131,32 +160,12 @@ public sealed partial class World
                 points++;
             }
 
-            // Area rows fork by system (see AreaSpawnDef.Timer): a timer means one member of a batch group, no
-            // timer means the trap supplement, which stays on the point model it was ported to.
-            var byGroup = new Dictionary<(ushort Map, int Group), SpawnGroup>();
             foreach (var ad in Content.AreaSpawns)
             {
+                if (ad.Timer > 0) continue;                                                  // a group member: above
                 if (!Content.Maps.ContainsKey(ad.Map)) { skipped += ad.Count; continue; }   // unrenderable map
                 var def = Content.MobById(ad.MobId);
                 if (def is null) { skipped += ad.Count; continue; }                          // unknown mob id
-
-                if (ad.Timer > 0)
-                {
-                    if (!byGroup.TryGetValue((ad.Map, ad.Group), out var g))
-                    {
-                        g = new SpawnGroup
-                        {
-                            Map = ad.Map, TimerSec = ad.Timer,
-                            MinX = ad.MinX, MinY = ad.MinY, MaxX = ad.MaxX, MaxY = ad.MaxY,
-                        };
-                        byGroup[(ad.Map, ad.Group)] = g;
-                        if (!_groups.TryGetValue(ad.Map, out var list)) { list = new(); _groups[ad.Map] = list; }
-                        list.Add(g);
-                    }
-                    g.Members.Add((def, ad.Count));
-                    capped += ad.Count;
-                    continue;
-                }
 
                 // RespawnSec > 0 ⇒ a rare trap-ambush boss with its own long delay; the rest of the trap rows
                 // respawn on their creature's own MobSpawnTime like any other point.
@@ -199,15 +208,33 @@ public sealed partial class World
         /// rooms is one of them) did not exist until someone entered map 4, and a killed one came back only
         /// while someone stood there. Filed under the rooms' maps, the boss is built on the first entry to any
         /// of them and refilled while any of them has a player: the normal rules of a point, applied where the
-        /// creature actually lives. Every other point is filed under its row's map, as before.</para></summary>
+        /// creature actually lives. Every other point is filed under its row's map, as before.</para>
+        ///
+        /// <para><b>Unless a batch group already places its creature in its rooms.</b> Then the point stays
+        /// filed under its row's map, as before #333. Gim Yi's Den (1308) is the one case: <c>gimyi</c>'s room
+        /// is 1308:2:5 and the Den's own group (<c>AreaSpawns.csv</c>) keeps one Gim Yi anywhere on it. Filed
+        /// under 1308, the point added a second on every first entry, because a map's groups fill before its
+        /// points. Caleb's word (2026-10-21): one Gim Yi in its den, as before. The test is the creature's id
+        /// among the members of a group on one of its rooms' maps, which <see cref="Build"/> files before any
+        /// point for this.</para></summary>
         private void AddSpawn(ushort mapId, Spawn sp)
         {
             Debug.Assert(world.HoldsWorldLock, LockNote);
             sp.Map = mapId;
             var rooms = RoomMapsOf(sp.Def);
-            if (rooms.Length > 0) { sp.RoomMaps = rooms; _roomPoints.Add(sp); return; }
+            if (rooms.Length > 0 && !GroupedInItsRooms(sp.Def.Id, rooms)) { sp.RoomMaps = rooms; _roomPoints.Add(sp); return; }
             if (!_spawns.TryGetValue(mapId, out var list)) { list = new(); _spawns[mapId] = list; }
             list.Add(sp);
+
+            bool GroupedInItsRooms(int creature, ushort[] maps)
+            {
+                foreach (var m in maps)
+                    if (_groups.TryGetValue(m, out var groups))
+                        foreach (var g in groups)
+                            foreach (var (def, _) in g.Members)
+                                if (def.Id == creature) return true;
+                return false;
+            }
         }
 
         /// <summary>The maps a creature's rooms are on, each once and in its rule's order, without a map the

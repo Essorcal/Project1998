@@ -725,8 +725,9 @@ public class SpawnDirectorRoomTests
     /// creature has rooms is filed under every one of its rooms' maps but a room off its map (no tile of the map
     /// within two; <see cref="ARoomWithNoTileOfItsMapWithinTwoIsLeftOutOfTheFilingAndThePick"/> pins the one
     /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere is ignored by
-    /// <c>Materialize</c>, which then builds the boss on map 4 instead). The three nine-tailed foxes, which
-    /// have no rule, are all that stays on map 4.
+    /// <c>Materialize</c>, which then builds the boss on map 4 instead). What stays on map 4 is the three
+    /// nine-tailed foxes, which have no rule, and <c>gimyi</c>, whose room's map already has a batch group of
+    /// it (<see cref="GimYisDenKeepsItsOneGimYiAndItsPointStaysOnMapFour"/>).
     ///
     /// <para>Falsified by filing every point under its row's map again (<c>AddSpawn</c>): red, a boss is
     /// filed under map 4.</para></summary>
@@ -739,7 +740,8 @@ public class SpawnDirectorRoomTests
         foreach (var row in Content.SpawnsFor(NpcChamber))
         {
             if (Content.MobById(row.MobId) is not { } def) continue;   // Build skips an unknown creature too
-            if (!Content.MobSpawnRules.TryGetValue(def.Key, out var rule) || rule.Rooms.Length == 0)
+            if (!Content.MobSpawnRules.TryGetValue(def.Key, out var rule) || rule.Rooms.Length == 0
+                || Content.AreaSpawns.Any(a => a.Timer > 0 && a.MobId == def.Id && rule.Rooms.Any(r => r.Map == a.Map)))
             {
                 Assert.Contains(def.Key, onChamber);
                 continue;
@@ -755,7 +757,7 @@ public class SpawnDirectorRoomTests
             }
         }
         Assert.True(bosses > 0, "no point on map 4 has rooms any more; this fact pins nothing");
-        Assert.Equal(new[] { "nine_tailed_fox_buya", "nine_tailed_fox_buya2", "nine_tailed_fox_buya3" },
+        Assert.Equal(new[] { "gimyi", "nine_tailed_fox_buya", "nine_tailed_fox_buya2", "nine_tailed_fox_buya3" },
                      onChamber.OrderBy(k => k, StringComparer.Ordinal));
     }
 
@@ -811,27 +813,29 @@ public class SpawnDirectorRoomTests
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
-    /// (<c>AreaSpawns.csv</c>: one <c>gimyi</c>, a 300 s clock, anywhere on the map). Its first entry runs
-    /// the group first, as every map's does, which places one Gim Yi anywhere; the point, now filed under
-    /// 1308, then builds a second in its room. The group's cap counts both (its live count is map-wide by
-    /// creature), so it adds none while either lives. This is what the PR body states for gimyi.
+    /// (<c>AreaSpawns.csv</c>: one <c>gimyi</c>, a 300 s clock, anywhere on the map). A map's first entry runs
+    /// its groups before its points, so a <c>gimyi</c> point filed under 1308 added a second Gim Yi to the
+    /// group's on every first visit. Caleb's word (2026-10-21): one Gim Yi in its den, as before #333. So the
+    /// point stays filed under map 4, its row's map; the Den's first entry finds the group's one Gim Yi and no
+    /// other.
     ///
-    /// <para>Red on master's code: one Gim Yi, the group's. Falsified like the map-4 filing fact.</para></summary>
+    /// <para>Falsified by dropping the batch-group test from <c>AddSpawn</c>: red, <c>gimyi</c> is filed under
+    /// 1308, not map 4, and the first entry finds two.</para></summary>
     [Fact]
-    public void GimYisDenGetsItsRoomsBossBesideItsGroupsOne()
+    public void GimYisDenKeepsItsOneGimYiAndItsPointStaysOnMapFour()
     {
         var rule = RoomRule("gimyi", GimYisDen);
         var def = Content.Mobs.Single(m => m.Key == "gimyi");
         var group = Assert.Single(Content.AreaSpawns, a => a.MobId == def.Id);
         Assert.True(group.Map == GimYisDen && group.Count == 1 && group.Timer > 0, "gimyi's batch group changed under the fact");
         var world = new World();
+        Assert.Contains(def.Key, Locked(world, () => world.SpawnsForTest.PointKeysForTest(NpcChamber)));
+        Assert.DoesNotContain(def.Key, Locked(world, () => world.SpawnsForTest.PointKeysForTest(GimYisDen)));
 
         var visitor = Seat(world, "DenVisitor", GimYisDen, (9, 22));   // the tile the Den's warps land on
         world.EnterMap(visitor, GimYisDen);
 
-        var both = InTheirRooms(world, visitor, rule, def);
-        Assert.Equal(2, both.Count);
-        Assert.Contains(both, b => Math.Max(Math.Abs(b.Mob.X - b.Room.X), Math.Abs(b.Mob.Y - b.Room.Y)) <= 2);
+        Assert.Single(InTheirRooms(world, visitor, rule, def));   // the group's, anywhere on the map
     }
 
     /// <summary>The two gates <c>Materialize</c> reads under the map it is asked about, not the map the
