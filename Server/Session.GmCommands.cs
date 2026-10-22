@@ -314,11 +314,16 @@ public sealed partial class Session
     //
     // Stationary on purpose (wander: false): these are calibration dummies for melee / sfx / sprite work, and
     // one that wanders off mid-measurement is worthless. Use @summon for a mob with its registry AI.
+    //
+    // HP 1 or more. An HP below 1 is refused with the usage line and spawns nothing: it used to spawn a
+    // creature that is not Alive (Mob.Alive is Hp > 0), which SyncMobs never draws and World.DespawnMob
+    // refuses, so only @kill could take it off again (PR #320's verdict, follow-ups).
     private void MobOne(CommandArgs a)
     {
         int look = a.Int(0, 0);
         int hp = a.Int(1, 6);
         int color = a.Int(2, 0);
+        if (hp < 1) { Refuse(a.Usage()); return; }
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);
@@ -708,7 +713,11 @@ public sealed partial class Session
         // from the character.
         if (!a.Int(0, out var id))
         { Refuse($"{a.Usage()}   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
-        _char.Nation = (byte)Math.Clamp(id, 0, Character.Nations.Length - 1);   // 0..7 only — the crest table; the client has no crest past it, and a login keeps what is saved (PR #337 review F1)
+        // 0..7 only: the crest table the @nat sweep mapped (Character.Nations). What the 4.95 HUD draws past it
+        // was never observed. A login keeps a saved 0..7 and re-derives only a nation past the table
+        // (CharacterFactory.RestoreUnusableFromCreation), so what this stores is what the character keeps
+        // (PR #337 review F1).
+        _char.Nation = (byte)Math.Clamp(id, 0, Character.Nations.Length - 1);
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply($"nation set to {_char.Nation} ({Character.NationName(_char.Nation)}).");

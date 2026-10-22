@@ -174,14 +174,18 @@ public sealed class GmKillTests
     // =====================================================================================================
 
     /// <summary>Three kinds of non-NPC creature and an NPC on one map: a spawn point's creature, a GM summon
-    /// (<c>@mob 1 20</c>), and a GM summon made with no hit points (<c>@mob 1 0</c>), which no client draws,
-    /// nothing can damage and <c>DespawnMob</c> refuses, so <c>@kill</c> is the only way to remove it short of a
-    /// reload. <c>@kill</c> takes all three, leaves the NPC, and its reply counts the three.
+    /// (<c>@mob 1 20</c>), and a creature with no hit points, which no client draws, nothing can damage and
+    /// <c>DespawnMob</c> refuses, so <c>@kill</c> is the only way to remove it short of a reload. <c>@kill</c>
+    /// takes all three, leaves the NPC, and its reply counts the three.
+    ///
+    /// <para>The no-HP creature is placed directly. A GM's <c>@mob 1 0</c> made one until <c>@mob</c> refused
+    /// an HP below 1 (<see cref="CommandTableTests.MobRefusesAnHpBelowOneAndSpawnsNothing"/>); ClearMap still
+    /// takes one, so this keeps the filter honest.</para>
     ///
     /// <para>Falsified by narrowing <c>World.ClearMap</c>'s filter to <c>DespawnMob</c>'s whole predicate
-    /// (<c>Alive &amp;&amp; !IsNpc</c>): red with the no-HP summon still on the map. Also red when ClearMap takes
-    /// the NPC, when it despawns an id it did not take, and when it returns the list's size before the removal
-    /// ("cleared 4 world mob(s)").</para></summary>
+    /// (<c>Alive &amp;&amp; !IsNpc</c>): red with the no-HP creature still on the map. Also red when ClearMap
+    /// takes the NPC, when it despawns an id it did not take, and when it returns the list's size before the
+    /// removal ("cleared 4 world mob(s)").</para></summary>
     [Fact]
     public void KillTakesEveryNonNpcCreatureAndCountsOnlyThose()
     {
@@ -190,16 +194,17 @@ public sealed class GmKillTests
         _fx.World.UnderWorldLockForTest(() => Spawns.AddPointForTest(MixedMap, def, 2, 2, respawnEvery: 1_000));
         var (gm, gmOut, _) = _fx.PlayerWith(GmName, c => c.Dir = 0, MixedMap, 5, 10);   // facing north
         var npc = new Mob(_fx.World.AllocateMobId(), 1, 8, 8, "Test kill NPC", 1) { IsNpc = true, NpcDefId = npcDefId };
+        var noHp = new Mob(_fx.World.AllocateMobId(), 1, 5, 9, "Test kill no-HP", 0);
         try
         {
             _fx.World.AddMob(MixedMap, npc);
             Run(gm, "@mob 1 20");
-            Run(gm, "@mob 1 0");
+            _fx.World.AddMob(MixedMap, noHp);                                // what "@mob 1 0" made, on its tile
             var before = _fx.World.View(gm, MixedMap).mobs;
             Assert.Equal(4, before.Length);
             Assert.Single(before, m => m.DefId == def.Id);                  // the point's creature
             Assert.Single(before, m => m.Hp == 20 && !m.IsNpc);              // the summon
-            Assert.Single(before, m => m.Hp == 0 && !m.Alive);               // the summon with no hit points
+            Assert.Single(before, m => m.Hp == 0 && !m.Alive);               // the creature with no hit points
 
             gmOut.Clear();
             Run(gm, "@kill");

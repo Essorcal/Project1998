@@ -199,7 +199,7 @@ public sealed partial class Session
         G("restart", (s, a) => s.RestartCmd(a),    "[minutes 0-1440] [reason] | cancel|off", "schedule a server restart, warning everyone as it nears (minutes may be fractional; bare @restart reports)"),
         G("announce",(s, a) => s.AnnounceCmd(a),   "<message>",           "system line to every player online (the restart-countdown channel)"),
         G("rabbit",  (s, a) => s.SpawnRabbit(),    "",                    "one wandering, killable rabbit"),
-        G("kill",    (s, a) => s.KillMobs(),       "",                    "despawn every mob on this map"),
+        G("kill",    (s, a) => s.KillMobs(),       "",                    "despawn every creature except NPCs on this map"),
 
         // ---- character ------------------------------------------------------------------------------
         // These REBUILD the character (see Session.RespecTo): stats and the spellbook always come out exactly

@@ -19,7 +19,7 @@ public sealed partial class Session
     //                           monster's idle frame — the first ~19 monsters start at 0,20,40,...,360.
     //                           So "@mobrow 0 360 20" shows one idle sprite per monster 0..18.
     //   "@spawn [hi] [lo]"      drop a little pack of critters around you at one graphic id.
-    //   "@kill"                 despawn every mob.
+    //   "@kill"                 despawn every creature except NPCs.
 
 
     // ===== MVP: spawn a rabbit, watch it wander, kill it =====================================
