@@ -36,9 +36,14 @@ namespace Tests;
 /// nothing.</para>
 ///
 /// <para>The controls: each verb still strikes a creature (by the slot alone, by its id, and through #343's off-map
-/// fallback), each proc still lands on one, a cast at nothing still costs what it did (Bolt and the sacrifice strikes
-/// still charge for one), the area spells still skip an NPC and strike the creatures around it, and the rogue's Ambush,
-/// which spends nothing, still leaps behind an NPC.</para>
+/// fallback), each proc still lands on one, a sacrifice strike at nothing still charges for it, the area spells still
+/// skip an NPC and strike the creatures around it, and the rogue's Ambush, which spends nothing, still leaps behind an
+/// NPC.</para>
+///
+/// <para>Caleb's decision of 2026-10-21 (decision sheet item 9) added three refusals, each before anything is spent:
+/// Bolt and Freeze at nothing off a PvP map, silently (9a); Bolt and Freeze, the Poet whip's proc included, at a player
+/// off a PvP map, with "You can't attack that target." (9b); and every curse, from the book or one of the five curse
+/// procs, at an NPC, silently (9c). On a PvP map a cast at nothing or at a player is unchanged.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, and every swing the real 0x13 frame, by a
 /// fresh caster facing a fresh target. The NPC is built as <c>World.PlaceNpc</c> builds one: 1 HP, <c>IsNpc</c>, no Will
@@ -130,25 +135,116 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} at {aim} on map {map}: {r}");
     }
 
+    /// <summary>A curse from the book for each category: Pestilence and the poet's Scourge (<c>curses</c>), Vex
+    /// (<c>minorcurses</c>) and Dishearten (<c>disheartens</c>). Every one is a "Which target? &gt;" spell.</summary>
+    private static readonly string[] Curses = { "pestilence_mage", "scourge_poet", "vex_mage", "dishearten_poet" };
+
+    public static TheoryData<string, ushort, Aim> CurseNpcCases
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort, Aim>();
+            foreach (var map in new[] { Arena, Town })
+                foreach (var key in Curses)
+                    foreach (var aim in new[] { Aim.Slot, Aim.TargetId, Aim.OffMapPlayerId })
+                        data.Add(key, map, aim);
+            return data;
+        }
+    }
+
+    /// <summary>With an NPC faced, or aimed at by its id, a curse refuses before it spends anything (Caleb, 2026-10-21,
+    /// decision sheet item 9c), and says nothing, the curse's answer to a cast that finds nothing. No mana, no pose, no
+    /// animation, no "You cast X."; the NPC carries nothing, and neither does the caster: the NPC ends the search for a
+    /// target, so on the arena the cast never falls through to its caster. Through #343's fallback as well, where an id
+    /// naming a player on another map takes the faced tile.
+    /// <para>Red on 6de1d24 for all of them: the curse's mana, the pose and "You cast X.", and the NPC cursed, or, when
+    /// the curse lost its roll, "Something went wrong." for the same mana.</para></summary>
+    [Theory]
+    [MemberData(nameof(CurseNpcCases))]
+    public void ACurseRefusesAnNpcBeforeItSpendsAnything(string key, ushort map, Aim aim)
+    {
+        var sp = Spell(key);
+        Assert.Equal("curse", VerbOf(key));
+        Assert.Equal(map == Arena, Content.IsPvpMap(map));
+        var r = Cast(sp, map, aim, npc: true);
+        Assert.True(r.Lines == "" && r.Spent == 0 && r.HpDelta == 0 && r.Pose == 0 && r.Fx == 0 && !r.CasterCarries,
+                    $"{sp.Name} at {aim} on map {map}, an NPC faced: {r}");
+        Assert.True(r.TargetHp == 1 && r.TargetState == "" && r.FarHp == Hp && r.FarLines == "",
+                    $"{sp.Name} at {aim} on map {map}: {r}");
+    }
+
+    public static TheoryData<string, ushort> CurseCreatureCases
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort>();
+            foreach (var map in new[] { Arena, Town })
+                foreach (var key in Curses) data.Add(key, map);
+            return data;
+        }
+    }
+
+    /// <summary>The control: the same curses at a faced creature still land. Each cast costs the curse's mana and says
+    /// "You cast X."; a curse rolls to take hold (75 to 85%), and one that loses the roll says "Something went wrong."
+    /// first. Fresh casters at fresh creatures until one takes hold, at most 20: the creature then carries the curse's
+    /// slot.
+    /// <para>Green on 6de1d24 as well.</para></summary>
+    [Theory]
+    [MemberData(nameof(CurseCreatureCases))]
+    public void ACurseStillLandsOnACreature(string key, ushort map)
+    {
+        var sp = Spell(key);
+        uint cost = (uint)int.Parse(Content.SpellParams[key]["mana"]);
+        string category = Content.SpellParams[key]["category"];
+        string slot = category == "minorcurses" ? "curses" : category;   // Session.CatFamily
+        for (int i = 0; i < 20; i++)
+        {
+            var r = Cast(sp, map, Aim.Slot, npc: false);
+            string what = $"{sp.Name} on map {map}, a creature faced: {r}";
+            Assert.True(r.Lines.EndsWith($"You cast {sp.Name}.", StringComparison.Ordinal) && r.Spent == cost && r.Pose == 1,
+                        what);
+            if (r.TargetState.Contains(slot, StringComparison.Ordinal)) return;
+            Assert.True(r.Lines == $"Something went wrong. | You cast {sp.Name}.", what);
+        }
+        Assert.Fail($"{sp.Name} on map {map}: no curse took hold on a creature in 20 casts");
+    }
+
+    /// <summary>The weapons whose on-swing proc casts a spell at whatever is faced (game-data/WeaponProcs.csv), one per
+    /// refusing verb's proc: the Poet whip's Freeze (<c>magic_damage</c>), a Blood weapon's Venom and Flamefang's Burn
+    /// (<c>venom</c>), and the five curse procs (<c>curse</c>): the Cursed, Corrupted, Tainted and Forsaken blades and
+    /// the Frost sabre.</summary>
+    private static readonly (string Item, string Spell)[] ProcWeapons =
+    {
+        ("poet_whip", "freeze"), ("blood", "venom"), ("flamefang", "burn"),
+        ("cursed_blade", "curse"), ("frost_sabre", "chill"), ("corrupted_blade", "corrupt"), ("tainted_blade", "taint"),
+        ("forsaken_blade", "forsake"),
+    };
+
     public static TheoryData<string, string, ushort> ProcCases
     {
         get
         {
             var data = new TheoryData<string, string, ushort>();
             foreach (var map in new[] { Arena, Town })
-                foreach (var (item, spell) in new[] { ("poet_whip", "freeze"), ("blood", "venom"), ("flamefang", "burn") })
+                foreach (var (item, spell) in ProcWeapons)
                     data.Add(item, spell, map);
             return data;
         }
     }
 
+    private static string VerbOf(string key) => Content.SpellParams[key].GetValueOrDefault("verb", "");
+
     /// <summary>The stock client's procs, through real swings at a faced NPC, cost nothing: three procs or more fired
     /// (each one's own log line, naming the NPC's id), and the caster kept every point of mana and HP and heard no
-    /// shout. The Poet whip's Freeze says nothing; the Venom and Burn procs say Venom's "It doesn't work.", once a
-    /// proc, as the Charm weapons' Endear proc and the Forsaken staff's Blind proc already do at an NPC. The NPC is
-    /// untouched and carries no venom.
+    /// shout. The Poet whip's Freeze and the curse procs say nothing; the Venom and Burn procs say Venom's "It doesn't
+    /// work.", once a proc, as the Charm weapons' Endear proc and the Forsaken staff's Blind proc already do at an NPC.
+    /// The NPC is untouched and carries no venom and no curse.
     /// <para>Red on 63efdd8: Freeze cost 800 a proc; the first Venom or Burn proc cost 60 or 200 and venomed the NPC,
-    /// and each later one said "You already cast that spell.".</para></summary>
+    /// and each later one said "You already cast that spell.".</para>
+    /// <para>The curse procs were added for Caleb's decision of 2026-10-21 (decision sheet item 9c). Red on 6de1d24:
+    /// the first proc cost the curse's mana (40 to 500) and cursed the NPC, or lost the curse's roll and said "Something
+    /// went wrong." for the same mana; each later one said "You already cast that spell." once the NPC carried
+    /// it.</para></summary>
     [Theory]
     [MemberData(nameof(ProcCases))]
     public void AProcAtAnNpcCostsNothing(string item, string spell, ushort map)
@@ -174,7 +270,7 @@ public sealed class NpcDamageVerbTests
                           $"speech {speech}, fx over the NPC {fx}, lines [{string.Join(" | ", lines)}], npc hp {npc.Hp}, " +
                           $"npc carries [{State(npc)}]";
             Assert.True(procs >= 3, what);
-            bool venom = spell != "freeze";
+            bool venom = VerbOf(spell) == "venom";
             Assert.True(cc.Mp == Mana && cc.Hp == Hp && speech == 0 && fx == 0, what);
             Assert.True(venom ? lines.Count == procs && lines.All(l => l == "It doesn't work.") : lines.Count == 0, what);
             Assert.True(npc.Hp == 1 && State(npc) == "", what);
@@ -317,9 +413,11 @@ public sealed class NpcDamageVerbTests
     }
 
     /// <summary>The control: each proc, through real swings at a faced creature, still lands. Until it fires a swing
-    /// costs no mana; the swing it fires on costs the spell's mana and strikes the creature (Freeze) or venoms it
-    /// (Venom, Burn). The creature's HP is out of the swings' reach.
-    /// <para>Green on 63efdd8 as well.</para></summary>
+    /// costs no mana; the swing it fires on costs the spell's mana and strikes the creature (Freeze), venoms it (Venom,
+    /// Burn) or curses it (the curse procs). A curse rolls to take hold (75% for this category), and a proc that loses
+    /// the roll costs the mana too and says "Something went wrong."; the swings go on until one takes hold. The
+    /// creature's HP is out of the swings' reach.
+    /// <para>Green on 63efdd8 as well, and on 6de1d24 with the curse procs.</para></summary>
     [Theory]
     [MemberData(nameof(ProcCases))]
     public void AProcAtACreatureStillLands(string item, string spell, ushort map)
@@ -330,10 +428,12 @@ public sealed class NpcDamageVerbTests
         {
             using var log = LogLineSink.Acquire();
             uint cost = (uint)int.Parse(Content.SpellParams[spell]["mana"]);
+            string verb = VerbOf(spell);
             for (int swings = 1; swings <= MaxSwings; swings++)
             {
                 uint mp0 = cc.Mp;
                 int procsBefore = Procs(log, item, spell, mob.Id);
+                cOut.Clear();
                 Swing(caster);
                 int procs = Procs(log, item, spell, mob.Id) - procsBefore;
                 if (procs == 0)
@@ -341,13 +441,24 @@ public sealed class NpcDamageVerbTests
                     Assert.True(cc.Mp == mp0, $"{item} on map {map}, swing {swings}: no proc, yet mana {mp0} -> {cc.Mp}");
                     continue;
                 }
+                var lines = SpellCastSupport.MiniTexts(cOut);
                 string what = $"{item} on map {map}, swing {swings}: spent {mp0 - cc.Mp} (the spell costs {cost}), " +
-                              $"the creature on {mob.Hp}, carrying [{State(mob)}]";
+                              $"lines [{string.Join(" | ", lines)}], the creature on {mob.Hp}, carrying [{State(mob)}]";
                 Assert.True(mp0 - cc.Mp == cost, what);
-                Assert.True(spell == "freeze" ? mob.Hp < Creature : State(mob).Contains("venoms", StringComparison.Ordinal), what);
+                if (verb == "curse" && !State(mob).Contains("curses", StringComparison.Ordinal))
+                {
+                    Assert.True(lines.SequenceEqual(new[] { "Something went wrong." }), what);   // lost the roll
+                    continue;
+                }
+                Assert.True(verb switch
+                {
+                    "magic_damage" => mob.Hp < Creature,
+                    "venom" => State(mob).Contains("venoms", StringComparison.Ordinal),
+                    _ => State(mob).Contains("curses", StringComparison.Ordinal),
+                }, what);
                 return;
             }
-            Assert.Fail($"{item} on map {map}: no proc in {MaxSwings} swings");
+            Assert.Fail($"{item} on map {map}: no proc landed in {MaxSwings} swings");
         }
         finally
         {
@@ -356,27 +467,72 @@ public sealed class NpcDamageVerbTests
         }
     }
 
-    public static TheoryData<string, ushort, string, int, int, int> NothingCases => new()
+    public static TheoryData<string, ushort, Aim, string, int, int, int> NothingCases => new()
     {
-        // key, map, the line, mana, pose, shout
-        { "bolt_mage", Town, "You cast Bolt.", 4, 1, 0 },
-        { "freeze", Town, "You cast Freeze.", 800, 1, 0 },
-        { "whirlwind_warrior", Town, "You cast Whirlwind.", 120, 1, 1 },
-        { "whirlwind_warrior", Arena, "You cast Whirlwind.", 120, 1, 1 },
+        // key, map, aim, the line, mana, pose, shout
+        { "bolt_mage", Town, Aim.Slot, "", 0, 0, 0 },
+        { "bolt_mage", Town, Aim.OffMapPlayerId, "", 0, 0, 0 },
+        { "freeze", Town, Aim.Slot, "", 0, 0, 0 },
+        { "whirlwind_warrior", Town, Aim.Slot, "You cast Whirlwind.", 120, 1, 1 },
+        { "whirlwind_warrior", Arena, Aim.Slot, "You cast Whirlwind.", 120, 1, 1 },
     };
 
-    /// <summary>The control for "only an NPC": a cast at nothing costs what it did. <c>magic_damage</c> charges for a
-    /// blow at nothing off a PvP map, and a sacrifice strike charges its mana and aether for nothing in front (RTK's
-    /// order, kept on purpose; see the verb). Neither changes here: only an NPC is refused for free.
-    /// <para>Green on 63efdd8 as well.</para></summary>
+    /// <summary>What a cast at nothing costs, off a PvP map and with the mana to pay for it. Bolt and Freeze
+    /// (<c>magic_damage</c>) cost nothing and say nothing (Caleb, 2026-10-21, decision sheet item 9a): by the slot alone
+    /// with nothing faced, and aimed at a player on another map with nothing faced, which #343 answers as nothing. A
+    /// sacrifice strike still charges its mana and aether for nothing in front (RTK's order, kept on purpose; see the
+    /// verb), on either map.
+    /// <para>Red on 6de1d24 for Bolt and Freeze: "You cast X.", 4 or 800 mana and the pose, for a blow that struck
+    /// nothing. The strikes are green there as well.</para></summary>
     [Theory]
     [MemberData(nameof(NothingCases))]
-    public void ACastAtNothingCostsWhatItDid(string key, ushort map, string line, int mana, int pose, int shout)
+    public void WhatACastAtNothingCosts(string key, ushort map, Aim aim, string line, int mana, int pose, int shout)
     {
         var sp = Spell(key);
-        var r = Cast(sp, map, Aim.Slot, npc: null);
-        Assert.True(r.Lines == line && r.Spent == mana && r.HpDelta == 0 && r.Pose == pose && r.Speech == shout,
-                    $"{sp.Name} at nothing on map {map}: {r}");
+        Assert.Equal(map == Arena, Content.IsPvpMap(map));
+        var r = Cast(sp, map, aim, npc: null);
+        Assert.True(r.Lines == line && r.Spent == mana && r.HpDelta == 0 && r.Pose == pose && r.Speech == shout
+                    && r.FarHp == Hp && r.FarLines == "",
+                    $"{sp.Name} at nothing ({aim}) on map {map}: {r}");
+    }
+
+    /// <summary>With too little mana, Bolt at nothing off a PvP map still answers what it did: "Not enough mana to cast
+    /// Bolt.", for nothing. The verb asks for its target only when the cast can be paid for, so a short caster hears
+    /// <c>spendMana</c>'s line first, as before.
+    /// <para>Green on 6de1d24 as well.</para></summary>
+    [Fact]
+    public void BoltAtNothingWithTooLittleManaSaysWhatItDid()
+    {
+        var sp = Spell("bolt_mage");
+        var r = Cast(sp, Town, Aim.Slot, npc: null, mana: 3);
+        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0, $"{sp.Name} at nothing: {r}");
+    }
+
+    public static TheoryData<string, Aim, string, int, bool> PvpNothingCases => new()
+    {
+        // key, aim, the line, mana, the caster struck
+        { "bolt_mage", Aim.Slot, "You cast Bolt.", 4, true },
+        { "freeze", Aim.Slot, "You cast Freeze.", 800, true },
+        { "bolt_mage", Aim.OffMapPlayerId, "You cast Bolt.", 4, false },
+    };
+
+    /// <summary>On a PvP map a cast at nothing is unchanged. By the slot alone (the stock client's frame) with nothing
+    /// faced, the damage resolver gives the caster (<c>Session.ResolveDamageTarget</c>'s PvP fallback), so Bolt and
+    /// Freeze land on their caster, for their mana. Aimed at a player on another map with nothing faced, the resolver
+    /// gives nobody (#343), and the cast still costs its mana and its line and strikes nothing.
+    /// <para>RTK differs on both: its zap returns at a missing target before it asks for mana
+    /// (<c>Spells/common/global_zap.lua:8-10</c>), so it is free and silent there. A change on a PvP map is left for a
+    /// decision of its own. Green on 6de1d24 as well.</para></summary>
+    [Theory]
+    [MemberData(nameof(PvpNothingCases))]
+    public void OnAPvpMapACastAtNothingIsUnchanged(string key, Aim aim, string line, int mana, bool struck)
+    {
+        var sp = Spell(key);
+        Assert.True(Content.IsPvpMap(Arena));
+        var r = Cast(sp, Arena, aim, npc: null);
+        Assert.True(r.Lines == line && r.Spent == mana && r.Pose == 1 && (r.HpDelta < 0) == struck
+                    && r.FarHp == Hp && r.FarLines == "",
+                    $"{sp.Name} at nothing ({aim}) on map {Arena}: {r}");
     }
 
     public static TheoryData<string, ushort, int, int> AreaCases
@@ -442,22 +598,140 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} on map {map}, an NPC faced: {r}");
     }
 
+    // ===== at a player =================================================================================
+
+    public static TheoryData<string, ushort, bool> PlayerCases
+    {
+        get
+        {
+            var data = new TheoryData<string, ushort, bool>();
+            foreach (var map in new[] { Town, Arena })
+            {
+                data.Add("bolt_mage", map, false);
+                data.Add("bolt_mage", map, true);
+                data.Add("freeze", map, false);
+            }
+            return data;
+        }
+    }
+
+    /// <summary>Bolt and Freeze at a faced player. Off a PvP map they are refused for free (Caleb, 2026-10-21, decision
+    /// sheet item 9b), with the line the blow's PvP gate has always sent, "You can't attack that target."
+    /// (<c>Session.HitPlayerWithSpell</c>): no mana, no pose, no "You cast X.", and the player keeps their HP and is
+    /// told nothing. On a PvP map, the control, the blow lands as it did: "You cast X.", the mana, the pose, and the
+    /// player's HP down. By the slot alone, the stock client's frame, and for Bolt by the player's id as well.
+    /// <para>Red on 6de1d24 off a PvP map: the gate ran after the spend, so the refusal cost 4 or 800 mana, the pose and
+    /// "You cast X." too. The PvP rows are green there as well.</para></summary>
+    [Theory]
+    [MemberData(nameof(PlayerCases))]
+    public void ABoltOrFreezeAtAPlayerIsRefusedForFreeOffAPvpMap(string key, ushort map, bool byId)
+    {
+        var sp = Spell(key);
+        uint cost = (uint)int.Parse(Content.SpellParams[key]["mana"]);
+        var r = CastAtAPlayer(sp, map, byId, Mana);
+        string what = $"{sp.Name} at a faced player{(byId ? ", by their id," : "")} on map {map}: {r}";
+        if (Content.IsPvpMap(map))
+            Assert.True(r.Lines == $"You cast {sp.Name}." && r.Spent == cost && r.Pose == 1 && r.TargetHp < Creature, what);
+        else
+            Assert.True(r.Lines == "You can't attack that target." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature
+                        && r.TargetLines == "", what);
+    }
+
+    /// <summary>Bolt aimed at its caster's own id off a PvP map is refused for free the same way: the blow's PvP gate
+    /// covers the caster too (<c>Session.HitPlayerWithSpell</c>), and it is now asked before the spend.
+    /// <para>Red on 6de1d24: "You can't attack that target. | You cast Bolt.", 4 mana and the pose.</para></summary>
+    [Fact]
+    public void BoltAtYourselfOffAPvpMapIsRefusedForFree()
+    {
+        var sp = Spell("bolt_mage");
+        var (caster, cOut, cc) = Caster(Town, ch => ch.Spells.Add(sp.Id));
+        try
+        {
+            uint mp0 = cc.Mp, hp0 = cc.Hp;
+            cOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, caster.PlayerId));
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(lines == "You can't attack that target." && cc.Mp == mp0 && cc.Hp == hp0
+                        && cOut.BodiesOf(ServerOp.Action).Count == 0,
+                        $"{sp.Name} at its caster's id on map {Town}: [{lines}], spent {mp0 - cc.Mp}, hp {hp0} -> {cc.Hp}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Town);
+        }
+    }
+
+    /// <summary>With too little mana, Bolt at a player off a PvP map still answers what it did: "Not enough mana to cast
+    /// Bolt.", for nothing. RTK's zap orders it the same way, mana before the PvP refusal
+    /// (<c>Spells/common/global_zap.lua:14-17</c>, <c>:26-30</c>).
+    /// <para>Green on 6de1d24 as well.</para></summary>
+    [Fact]
+    public void BoltAtAPlayerWithTooLittleManaSaysWhatItDid()
+    {
+        var sp = Spell("bolt_mage");
+        var r = CastAtAPlayer(sp, Town, byId: false, mana: 3);
+        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature,
+                    $"{sp.Name} at a faced player on map {Town}: {r}");
+    }
+
+    /// <summary>The Poet whip's Freeze proc, through real swings at a faced player. Off a PvP map each proc is refused
+    /// for free: "You can't attack that target.", once a proc, and no mana. On a PvP map, the control, each proc costs
+    /// its 800 as before.
+    /// <para>Red on 6de1d24 off a PvP map: 800 mana a proc, with the same line. The PvP row is green there as
+    /// well.</para></summary>
+    [Theory]
+    [InlineData(Town)]
+    [InlineData(Arena)]
+    public void ThePoetWhipsFreezeProcAtAPlayerCostsNothingOffAPvpMap(ushort map)
+    {
+        var (target, tOut, tc) = Onlooker("NdvProcTarget", CX + 1, CY, map);
+        var (caster, cOut, cc) = Swinger(map, "poet_whip", "freeze");
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            int procs = 0, swings = 0;
+            var lines = new List<string>();
+            while (procs < 3 && swings < MaxSwings)
+            {
+                cOut.Clear();
+                Swing(caster);
+                swings++;
+                procs = Procs(log, "poet_whip", "freeze", target.PlayerId);
+                lines.AddRange(SpellCastSupport.MiniTexts(cOut));
+            }
+            string what = $"poet_whip on map {map}: {procs} procs in {swings} swings; spent {Mana - cc.Mp}, " +
+                          $"lines [{string.Join(" | ", lines)}], the player's lines [{string.Join(" | ", SpellCastSupport.MiniTexts(tOut))}]";
+            Assert.True(procs >= 3, what);
+            if (Content.IsPvpMap(map))
+                Assert.True(Mana - cc.Mp == 800 * procs, what);
+            else
+                Assert.True(cc.Mp == Mana && lines.Count == procs && lines.All(l => l == "You can't attack that target.")
+                            && tc.Hp == Creature, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, map);
+            _fx.World.LeaveMap(target, map);
+        }
+    }
+
     // ===== the cast ======================================================================================
 
     private const int Creature = 10_000_000;
 
     private sealed record Outcome(string Lines, long Spent, int HpDelta, int Pose, int Speech, int Fx, int Bars,
-                                  long Aether, bool Moved, int TargetHp, string TargetState, uint FarHp, string FarLines);
+                                  long Aether, bool Moved, int TargetHp, string TargetState, uint FarHp, string FarLines,
+                                  bool CasterCarries);
 
     /// <summary>A fresh caster on <paramref name="map"/> faces a fresh NPC (<paramref name="npc"/> true), a fresh
     /// creature (false) or nothing (null), with a fresh player on a content-free map, and casts <paramref name="sp"/>
-    /// from slot 0 at <paramref name="aim"/>. Returns what the caster saw, spent and kept, and what the target and the
-    /// other player kept.</summary>
-    private Outcome Cast(SpellDef sp, ushort map, Aim aim, bool? npc)
+    /// from slot 0 at <paramref name="aim"/>, holding <paramref name="mana"/>. Returns what the caster saw, spent, kept
+    /// and carries of the spell, and what the target and the other player kept.</summary>
+    private Outcome Cast(SpellDef sp, ushort map, Aim aim, bool? npc, uint mana = Mana)
     {
         Mob? target = npc switch { true => Npc(map, CX + 1), false => CreatureAt(map, CX + 1), null => null };
         var (far, farOut, farc) = Player("NdvFar", Elsewhere);
-        var (caster, cOut, cc) = Caster(map, ch => ch.Spells.Add(sp.Id));
+        var (caster, cOut, cc) = Caster(map, ch => { ch.Spells.Add(sp.Id); ch.Mp = mana; });
         try
         {
             uint? id = aim switch
@@ -477,7 +751,8 @@ public sealed class NpcDamageVerbTests
                                cOut.BodiesOf(ServerOp.Effect).Count, cOut.BodiesOf(ServerOp.Damage).Count,
                                SpellCastSupport.AetherLeft(caster, sp.Key),
                                cc.X != CX || cc.Y != CY, target?.Hp ?? 0, target is null ? "" : State(target),
-                               farc.Hp, string.Join(" | ", SpellCastSupport.MiniTexts(farOut)));
+                               farc.Hp, string.Join(" | ", SpellCastSupport.MiniTexts(farOut)),
+                               SpellCastSupport.BuffEntry(caster, sp.Key) is not null);
         }
         finally
         {
@@ -485,6 +760,33 @@ public sealed class NpcDamageVerbTests
             _fx.World.LeaveMap(far, Elsewhere);
             if (target is { IsNpc: true }) Remove(map, target);
             else if (target is not null) _fx.World.DespawnMob(map, target);
+        }
+    }
+
+    private sealed record AtAPlayer(string Lines, long Spent, int Pose, uint TargetHp, string TargetLines);
+
+    /// <summary>A fresh caster on <paramref name="map"/>, holding <paramref name="mana"/>, faces a fresh player and casts
+    /// <paramref name="sp"/> from slot 0, by the slot alone or by that player's id. Returns what the caster saw and
+    /// spent, and what the player kept and read.</summary>
+    private AtAPlayer CastAtAPlayer(SpellDef sp, ushort map, bool byId, uint mana)
+    {
+        var (target, tOut, tc) = Onlooker("NdvTarget", CX + 1, CY, map);
+        var (caster, cOut, cc) = Caster(map, ch => { ch.Spells.Add(sp.Id); ch.Mp = mana; });
+        try
+        {
+            uint mp0 = cc.Mp;
+            cOut.Clear(); tOut.Clear();
+
+            caster.Receive(SpellCastSupport.CastFrame(0, byId ? target.PlayerId : null));
+
+            return new AtAPlayer(string.Join(" | ", SpellCastSupport.MiniTexts(cOut)), (long)mp0 - cc.Mp,
+                                 cOut.BodiesOf(ServerOp.Action).Count, tc.Hp,
+                                 string.Join(" | ", SpellCastSupport.MiniTexts(tOut)));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, map);
+            _fx.World.LeaveMap(target, map);
         }
     }
 
@@ -571,13 +873,19 @@ public sealed class NpcDamageVerbTests
         }, map, CX, CY);
 
     /// <summary>The same caster, wielding <paramref name="item"/>, whose on-swing proc casts <paramref name="spell"/>
-    /// (game-data/WeaponProcs.csv), and knowing no spell.</summary>
+    /// (game-data/WeaponProcs.csv), and knowing no spell. Its base pool is 1,000 above its mana, so a weapon that lowers
+    /// the pool (the Corrupted blade's ItmMana is -200) never clamps the mana at the first stats push, which would read
+    /// as a cost.</summary>
     private (Session session, RecordingOutbound outbound, Character c) Swinger(ushort map, string item, string spell)
     {
         var def = Content.ItemByKey(item);
         Assert.NotNull(def);
         Assert.Equal(spell, Content.WeaponProcFor(item)?.Spell);
-        var s = Caster(map, ch => ch.Equipment.Add(new InvItem { Slot = 1, ItemId = def!.Id }));
+        var s = Caster(map, ch =>
+        {
+            ch.MaxMp = Mana + 1_000;
+            ch.Equipment.Add(new InvItem { Slot = 1, ItemId = def!.Id });
+        });
         s.outbound.Clear();
         return s;
     }
@@ -592,16 +900,18 @@ public sealed class NpcDamageVerbTests
             Wide(ch, map);
         }, map, CX, CY);
 
-    /// <summary>A level-50 player on the arena at (<paramref name="x"/>, <paramref name="y"/>), with an HP pool no
-    /// strike here can empty, so a strike that lands shows as lost HP and not as a death.</summary>
-    private (Session session, RecordingOutbound outbound, Character c) Onlooker(string name, ushort x, ushort y) =>
+    /// <summary>A level-50 player on <paramref name="map"/> (the arena unless named) at (<paramref name="x"/>,
+    /// <paramref name="y"/>), with an HP pool no strike here can empty, so a strike that lands shows as lost HP and not
+    /// as a death.</summary>
+    private (Session session, RecordingOutbound outbound, Character c) Onlooker(string name, ushort x, ushort y,
+                                                                               ushort map = Arena) =>
         _fx.PlayerWith($"{name}{Interlocked.Increment(ref _serial)}", ch =>
         {
             ch.Level = 50;
             ch.MaxHp = Creature; ch.Hp = Creature;
             ch.MaxMp = 1_000; ch.Mp = 1_000;
-            Wide(ch, Arena);
-        }, Arena, x, y);
+            Wide(ch, map);
+        }, map, x, y);
 
     /// <summary>Every frame the recorder was sent, in order, as its opcode and its decrypted body in hex.</summary>
     private static List<string> Wire(RecordingOutbound o)

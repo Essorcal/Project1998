@@ -37,8 +37,8 @@ public sealed class SpellContext
     /// as they refuse no creature, before they spend anything.</para>
     /// <para>So do the other verbs that strike it (#349's review, F1). <see cref="hasDamageTarget"/> (the
     /// <c>generic</c> verb's gate) and <see cref="magicDamage"/> (<c>arch_damage</c>) read this victim too, so each
-    /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> charges for a cast that finds
-    /// nothing, so it asks <see cref="victimIsNpc"/> before it spends.</para>
+    /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> spends before it strikes, so it asks
+    /// <see cref="victimIsNpc"/> and then <see cref="canStrike"/> before it spends.</para>
     /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
     /// a queued or proc cast included.</para></summary>
     private (Mob? mob, Session? pc) Victim
@@ -51,6 +51,19 @@ public sealed class SpellContext
     }
     private (Mob? mob, Session? pc)? _victim;
     private bool _victimIsNpc;
+
+    /// <summary>What this cast's curse or hold lands on, resolved ONCE, the way <see cref="Victim"/> is: the hostile
+    /// status resolver's answer (<c>Session.LuaStatusTarget</c>: an aimed id on the caster's map, else the faced tile,
+    /// player first, else on a PvP map the caster), taken the first time a verb asks and kept for the rest of the cast.
+    /// <see cref="targetKind"/>, <see cref="canCurse"/>, <see cref="hasStatus"/>, <see cref="alreadyCast"/>,
+    /// <see cref="applyCurse"/>, <see cref="canHold"/>, <see cref="holdTarget"/> and <see cref="amplify"/> all read it,
+    /// so the target whose slot and map the verb's questions checked is the one its write lands on, or nobody.
+    /// <para>They used to resolve separately (#343's review, F1). A target that changed between two of them was
+    /// replaced by what the later one found: the faced tile, a player who had stepped onto it, or the caster. Each
+    /// read now passes through <c>Session.LuaStatusTargetHere</c>, so a target that has gone since (a player off the
+    /// caster's map, a dead creature) is nobody, never a substitute.</para></summary>
+    private Session.StatusTarget StatusTarget => _s.LuaStatusTargetHere(_statusTarget ??= _s.LuaStatusTarget(_targetId));
+    private Session.StatusTarget? _statusTarget;
 
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
@@ -109,8 +122,8 @@ public sealed class SpellContext
     /// It reads this cast's victim (<see cref="Victim"/>), the one the blow strikes, so an NPC is no target.</summary>
     public bool   hasDamageTarget => _s.LuaHasDamageTarget(Victim);
     /// <summary>Did this cast's victim (<see cref="Victim"/>) resolve to an NPC, which no blow can hurt and which the
-    /// victim therefore answers as none? For a verb that charges for a cast that finds nothing (<c>magic_damage</c>),
-    /// so it can refuse an NPC before it spends without changing what a cast at nothing costs.</summary>
+    /// victim therefore answers as none? <c>magic_damage</c> refuses one first, before it looks at its mana, as #349's
+    /// follow-up made it.</summary>
     public bool   victimIsNpc { get { _ = Victim; return _victimIsNpc; } }
     /// <summary>The player's typed answer to the spell's question prompt (empty if none).</summary>
     public string answer    { get; }
@@ -122,6 +135,12 @@ public sealed class SpellContext
     /// and the PvP gate for a player). False if there is none. The amount goes over unrounded, to the one floor
     /// at the armour step (#78): Bolt's 2 + 1.5 x Will keeps its half at an odd Will.</summary>
     public bool damage(double amt)      => _s.LuaDamageTarget(amt, _sp, Victim);
+    /// <summary>May <see cref="damage"/> strike this cast's victim (<see cref="Victim"/>) here? A verb that spends
+    /// before it strikes (<c>magic_damage</c>) asks it first, so a blow that would strike nothing costs nothing. Off a
+    /// PvP map a cast that finds nothing is refused, silently, and a player with "You can't attack that target.". On a
+    /// PvP map it answers yes to everything <see cref="damage"/> took there before, a cast that finds nothing included
+    /// (see <c>Session.LuaCanStrike</c>).</summary>
+    public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
@@ -216,21 +235,24 @@ public sealed class SpellContext
     /// what stops a hold being chain-cast; <paramref name="hold"/> freezes it, <paramref name="blind"/> takes
     /// its sight; <paramref name="repeatFxMs"/> &gt; 0 re-draws the spell's animation on that cadence for the
     /// whole duration (RTK <c>while_cast</c>). Mob-only — a PC gets "It doesn't work.", per RTK.
-    /// False (no mana spent) on no target or an occupied slot.</summary>
+    /// False (no mana spent) on no target or an occupied slot. It reads this cast's one target
+    /// (<see cref="StatusTarget"/>), the one <see cref="canHold"/> asked about, or nobody if that target has gone.</summary>
     public bool holdTarget(string category, double durMs, bool hold, bool blind, double repeatFxMs) =>
-        _s.LuaHoldTarget(category, (int)durMs, hold, blind, (int)repeatFxMs, _sp, _targetId);
+        _s.LuaHoldTarget(category, (int)durMs, hold, blind, (int)repeatFxMs, _sp, StatusTarget);
 
     /// <summary>May <see cref="holdTarget"/> land on what this cast resolves to? Its own refusals, asked without
     /// holding anything: a player for anything but the Doze family ("It doesn't work."), a player off a PvP map
     /// ("You can't attack that target."), an NPC ("It doesn't work."), nothing at all (silent), and an occupied
     /// <paramref name="category"/> slot. Each says its line and spends nothing. Ask it before anything that can
-    /// charge — the deflect, the take-hold roll — as <c>curse</c> asks <see cref="canCurse"/> before its roll.</summary>
-    public bool canHold(string category) => _s.LuaCanHoldTarget(category, _sp, _targetId);
+    /// charge — the deflect, the take-hold roll — as <c>curse</c> asks <see cref="canCurse"/> before its roll.
+    /// Reads this cast's one target (<see cref="StatusTarget"/>).</summary>
+    public bool canHold(string category) => _s.LuaCanHoldTarget(category, _sp, StatusTarget);
 
     /// <summary>Arm the sleep-family damage amplifier on whatever this cast just held: the NEXT attack on
     /// them is multiplied by <paramref name="mult"/> (Doze 1.3x, Sleep 1.5x per NexusAtlas), then it's
-    /// spent. Works on a player or a creature.</summary>
-    public void amplify(double mult, double durMs) => _s.LuaAmplify(mult, (int)durMs, _targetId);
+    /// spent. Works on a player or a creature. Reads this cast's one target (<see cref="StatusTarget"/>), the one
+    /// the hold landed on, or nobody if it has gone since.</summary>
+    public void amplify(double mult, double durMs) => _s.LuaAmplify(mult, (int)durMs, StatusTarget);
 
     /// <summary>Mind-control the faced/targeted mob for <paramref name="durMs"/> ms (RTK endear): it becomes
     /// yours via the same ownership the pet system uses, then reverts to a normal world mob when the timer
@@ -322,8 +344,10 @@ public sealed class SpellContext
     /// <summary>What a targeted cast is aimed at, resolved from the client target id or the faced tile:
     /// "player" (incl. a self-cast), "mob" (a mob/NPC/pet), or "none". Read by <c>arch_debuff</c>, which needs
     /// the distinction (Doze can land on a player, so <see cref="hasTarget"/> — mobs only — would refuse it).
-    /// The buff verbs use <see cref="buffTarget"/> instead, which resolves AND remembers.</summary>
-    public string targetKind            => _s.LuaTargetBuffKind(_targetId);
+    /// It is <c>arch_debuff</c>'s first question, so it resolves this cast's one target (<see cref="StatusTarget"/>);
+    /// a cast aimed at nothing that falls back to the caster on a PvP map is "none" here, as it always was. The buff
+    /// verbs use <see cref="buffTarget"/> instead, which resolves AND remembers.</summary>
+    public string targetKind            => _s.LuaTargetBuffKind(StatusTarget);
 
     /// <summary>Roll the RTK magic-deflect check against the resolved mob (only if the spell can fail); true if
     /// the cast was deflected (no mana is spent — the verb should return true without applying).</summary>
@@ -342,21 +366,23 @@ public sealed class SpellContext
     public string cureCat               => _fx?.CureCat ?? "";
     /// <summary>Is the resolved curse target a legal one (a PC only in a PvP map — incl. yourself — or a mob)?
     /// False otherwise — silently when nothing is there, with "You can't attack that target." when it is
-    /// someone you may not curse here.</summary>
-    public bool canCurse()              => _s.LuaCanCurseTarget(_sp, _targetId);
+    /// someone you may not curse here. An NPC is no curse target, silently. Every curse primitive here reads this
+    /// cast's one target (<see cref="StatusTarget"/>), so the target this asked about is the one the curse lands on, or
+    /// nobody.</summary>
+    public bool canCurse()              => _s.LuaCanCurseTarget(_sp, StatusTarget);
     /// <summary>Does the resolved curse target already carry a status of <paramref name="category"/>? (The
     /// checkIfCast guard — a same-category curse is then blocked, which is what makes self-pestilence a defense.)</summary>
-    public bool hasStatus(string category) => _s.LuaCurseHasCategory(category, _targetId);
+    public bool hasStatus(string category) => _s.LuaCurseHasCategory(category, StatusTarget);
     /// <summary>Is the status occupying <paramref name="category"/> on the resolved target THIS spell's own? Pass
     /// the category that actually blocked the cast (see blockedBy) — the answer picks the refusal wording:
     /// "You already cast that spell." for your own running spell, "Another spell of this type…" for anyone
     /// else's. False when the blocker is a broader category you didn't put there (a protection, say).</summary>
-    public bool alreadyCast(string category) => _s.LuaAlreadyCastOnTarget(category, _sp, _targetId);
+    public bool alreadyCast(string category) => _s.LuaAlreadyCastOnTarget(category, _sp, StatusTarget);
     /// <summary>Apply a categorized status to the resolved curse target: <paramref name="category"/> occupies the
     /// exclusivity slot; <paramref name="stat"/>/<paramref name="amount"/> is the effect (e.g. armor -5 → take more
     /// damage). Plays fx + the target's flavor line.</summary>
     public void applyCurse(string category, string stat, double amount, double durMs) =>
-        _s.LuaApplyCurse(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp, _targetId);
+        _s.LuaApplyCurse(category, stat, (int)System.Math.Round(amount), (int)durMs, _sp, StatusTarget);
     /// <summary>Remove every active status of <paramref name="category"/> from the caster (RTK cure-by-category).</summary>
     public void cureCategory(string category) => _s.LuaCureCategory(category);
 

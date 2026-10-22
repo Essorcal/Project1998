@@ -730,8 +730,9 @@ public sealed partial class Session
     /// <c>generic</c> damage spells 5, and Call Lightning 120, Hellfire and Dooms Fire most or all of the pool, and
     /// Assault half its caster's HP. <see cref="LuaHasDamageTarget"/> (the <c>generic</c> gate) and <see cref="LuaMagicDamage"/>
     /// (<c>arch_damage</c>) now take this victim instead of resolving their own, so each refuses an NPC as it refuses
-    /// a cast that finds nothing, silently and free. <c>magic_damage</c> charges for a cast that finds nothing, so it
-    /// reads <paramref name="npc"/> (<c>ctx.victimIsNpc</c>) and refuses an NPC alone.</para></summary>
+    /// a cast that finds nothing, silently and free. <c>magic_damage</c> spends before it strikes, so it reads
+    /// <paramref name="npc"/> (<c>ctx.victimIsNpc</c>) and refuses an NPC first, then asks <see cref="LuaCanStrike"/>
+    /// before it spends.</para></summary>
     /// <param name="npc">True when the resolver ended at an NPC, which this answers as no victim.</param>
     internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId, out bool npc)
     {
@@ -748,6 +749,37 @@ public sealed partial class Session
     /// (<see cref="LuaDamageVictim"/>), the one the blow then strikes, so an NPC is nothing to land on: the
     /// <c>generic</c> verb's gate used to resolve again for itself and answer yes for one.</summary>
     internal bool LuaHasDamageTarget((Mob? mob, Session? pc) victim) => victim.mob is not null || victim.pc is not null;
+
+    /// <summary>May <see cref="LuaDamageTarget"/> strike this cast's victim here? <c>magic_damage</c> asks before it
+    /// spends, because its blow comes after its debit and returns nothing the verb reads.
+    /// <para><b>Off a PvP map, nothing is no target</b> (Caleb, 2026-10-21, decision sheet item 9a): refused, silently,
+    /// as <see cref="LuaDamageTarget"/> already refused it after the spend. Bolt cost 4 mana and Freeze 800, with the
+    /// pose and "You cast X.", for a blow that struck nothing. RTK's zap returns at a missing target before it spends
+    /// (<c>Spells/common/global_zap.lua:8-10</c>).</para>
+    /// <para><b>Off a PvP map, a player is refused too</b> (item 9b), yourself included: "You can't attack that
+    /// target.", the blow's own gate and line (<see cref="HitPlayerWithSpell(Session, double, int, SpellDef, out int)"/>),
+    /// asked before the spend instead of after it. The refusal used to cost Bolt's 4 mana and Freeze's 800, the pose
+    /// and "You cast X." as well, and the Poet whip's Freeze proc 800 at any player it faced in a town. RTK refuses
+    /// before any cost, with "You cannot attack that target." (<c>Spells/common/global_zap.lua:26-30</c>); this server
+    /// already sends its own wording of that line for this case, so that wording is kept. The blow still asks again
+    /// when it lands.</para>
+    /// <para><b>On a PvP map nothing changes</b>, and it answers yes to everything the blow took before. With the slot
+    /// alone and nothing faced, the victim is the caster (<see cref="ResolveDamageTarget"/>'s PvP fallback), and the zap
+    /// lands on them. Aimed at an id that finds nobody there, the victim is none, and the cast still pays for a blow
+    /// that strikes nothing. RTK is free and silent in both. That difference is on a PvP map, so it is left for a
+    /// decision of its own.</para></summary>
+    internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
+    {
+        if (Content.IsPvpMap(_char.Map)) return true;
+        if (victim.pc is not null)
+        {
+            SendMiniText("You can't attack that target.");
+            Log.Info($"      -x {sp.Name}: not a PvP map ({_char.Map}) — can't strike player {victim.pc._char.Id}, nothing spent");
+            return false;
+        }
+        if (victim.mob is null) { LogNoTarget(sp); return false; }   // silent, free
+        return true;
+    }
 
     internal bool LuaSpendMana(int amt, SpellDef sp)
     {
@@ -1573,7 +1605,10 @@ public sealed partial class Session
     /// id nobody has, so in an arena a Venom or a curse aimed at a player who had just left landed on its caster
     /// (#343's mutant M5, which Caleb sent to the follow-up slice to be considered). An id nobody has, and a cast
     /// with no id, keep the line. The map is a bare read of the other session's character, as #342's is.</remarks>
-    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp = false)
+    /// <param name="toCaster">True when the caster came from the <paramref name="selfIfUnaimedInPvp"/> line: a cast
+    /// aimed at nothing, not one aimed at the caster.</param>
+    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp,
+                                   out bool toCaster)
     {
         pc = null; mob = null;
         bool byFacedTile = true, offMapId = false;
@@ -1590,13 +1625,58 @@ public sealed partial class Session
             pc = _world.PeerAt(_char.Map, fxT, fyT);
             if (pc is null) mob = _world.MobAt(_char.Map, fxT, fyT);
         }
-        if (selfIfUnaimedInPvp && !offMapId && pc is null && mob is null && Content.IsPvpMap(_char.Map)) pc = this;
+        toCaster = selfIfUnaimedInPvp && !offMapId && pc is null && mob is null && Content.IsPvpMap(_char.Map);
+        if (toCaster) pc = this;
     }
-    internal string LuaTargetBuffKind(uint? targetId)
+    private void ResolveTargetBuff(uint? targetId, out Session? pc, out Mob? mob, bool selfIfUnaimedInPvp = false) =>
+        ResolveTargetBuff(targetId, out pc, out mob, selfIfUnaimedInPvp, out _);
+
+    /// <summary>What a curse or a hold lands on: <see cref="ResolveTargetBuff(uint?, out Session?, out Mob?, bool, out bool)"/>'s
+    /// answer with the PvP fallback to the caster, resolved ONCE per cast. <c>SpellContext</c> takes it at the verb's
+    /// first question about its target and hands that one answer to every later step: <see cref="LuaTargetBuffKind"/>,
+    /// the gates (<see cref="LuaCanCurseTarget"/>, <see cref="LuaCanHoldTarget"/>), the exclusivity questions
+    /// (<see cref="LuaCurseHasCategory"/>, <see cref="LuaAlreadyCastOnTarget"/>) and the writes
+    /// (<see cref="LuaApplyCurse"/>, <see cref="LuaHoldTarget"/>, <see cref="LuaAmplify"/>), as
+    /// <see cref="LuaDamageVictim"/>'s victim is shared by a damage verb's read and blow.
+    /// <para>#343's review, F1. Each of those used to resolve the target again, so a target that changed between two
+    /// of them was replaced by what the second found. An aimed player who left the caster's map was replaced by the
+    /// faced tile: a curse passed its exclusivity questions on that player and landed on the faced one, whose
+    /// protection would have refused it, and a Doze held the faced player and armed the 1.3x on them. With the slot
+    /// alone (the stock client), a faced creature that stepped aside or died gave its tile to a player who walked onto
+    /// it, and the curse or the 1.3x landed on that player, in a town as well, where no hostile status reaches a
+    /// player.</para></summary>
+    /// <param name="Unaimed">The caster came from the PvP fallback, a cast aimed at nothing. <see cref="LuaTargetBuffKind"/>
+    /// answers "none" for it, as it always has; every other step takes the caster.</param>
+    internal readonly record struct StatusTarget(Session? Pc, Mob? Mob, bool Unaimed);
+
+    internal StatusTarget LuaStatusTarget(uint? targetId)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob);
-        return pc is not null ? "player" : mob is not null ? "mob" : "none";
+        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true, out bool toCaster);
+        return new StatusTarget(pc, mob, toCaster);
     }
+
+    /// <summary>The resolved status target as it stands now: the same target, or nobody if it has gone since. Read by
+    /// every step after the resolution (<c>SpellContext</c>), so a target that leaves mid-cast is never replaced.
+    /// <para>A player who has left the caster's map is gone, by the same bare read of their map that the resolver
+    /// makes, so the cast never lands on a player on another map, which #342 and #343 made true of the resolution. A
+    /// creature that has died is gone too. A target still here is kept wherever it stands: a creature that stepped off
+    /// the faced tile still takes the curse its slot was checked for, and the player who stepped onto that tile is
+    /// never asked about. The caster is always here.</para>
+    /// <para>What a cast does when its target has gone: each step asks a gone target what it asks nobody. A curse finds
+    /// nothing in the slots it asks about and its write lands on no one; if its target goes after its roll, it has
+    /// paid by then, so it costs what a cast whose target vanished always cost. A hold refuses, silently, before the
+    /// verb's debit, so it costs nothing, and the 1.3x is armed on no one. The window is the few microseconds between
+    /// two of the verb's steps on the caster's own thread, and no lock is taken: a target that leaves between this read
+    /// and the write still takes it, as with any bare read.</para></summary>
+    internal StatusTarget LuaStatusTargetHere(StatusTarget t)
+    {
+        if (t.Pc is { } pc && !ReferenceEquals(pc, this) && pc.CharMap != CharMap) return default;
+        if (t.Mob is { Alive: false }) return default;
+        return t;
+    }
+
+    internal string LuaTargetBuffKind(StatusTarget t) =>
+        t.Pc is not null && !t.Unaimed ? "player" : t.Mob is not null ? "mob" : "none";
     // (The buff apply + deduction live up with the rest of the BUFF primitives — LuaApplyBuff /
     // LuaApplyDeduction — since both archetypes now share one resolved target.)
 
@@ -1636,9 +1716,9 @@ public sealed partial class Session
     /// which is what stops the same hold being chain-cast to keep something locked down forever. Those refusals
     /// are <see cref="HoldRefused"/>, which the verbs also ask first, through <see cref="LuaCanHoldTarget"/>.</summary>
     internal bool LuaHoldTarget(string category, int durMs, bool hold, bool blind, int repeatFxMs,
-                                SpellDef sp, uint? targetId)
+                                SpellDef sp, StatusTarget target)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         if (HoldRefused(category, sp, pc, mob)) return false;
 
         // PLAYER target — the Doze family on a PvP map, with its slot free (HoldRefused said no otherwise).
@@ -1680,16 +1760,13 @@ public sealed partial class Session
     /// "You can't attack that target." for free about four times in five, and the fifth time "Something went
     /// wrong.", "You cast Doze.", the pose, 30 mana and Doze's 36-second aether. A Blind at a player or an NPC did the
     /// same one time in four.</para></summary>
-    internal bool LuaCanHoldTarget(string category, SpellDef sp, uint? targetId)
-    {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
-        return !HoldRefused(category, sp, pc, mob);
-    }
+    internal bool LuaCanHoldTarget(string category, SpellDef sp, StatusTarget target) =>
+        !HoldRefused(category, sp, target.Pc, target.Mob);
 
     /// <summary>The refusals a hold makes before it lands, in order, each with the line it has always had. True when
     /// it refused. One body for <see cref="LuaCanHoldTarget"/> (the verb's gate) and <see cref="LuaHoldTarget"/>
-    /// (the authority, which asks again because the faced tile can change between the two), so the gate and the
-    /// hold cannot drift apart.</summary>
+    /// (the authority, which asks again of the same target because its slot can fill, or the target leave, between
+    /// the two), so the gate and the hold cannot drift apart.</summary>
     private bool HoldRefused(string category, SpellDef sp, Session? pc, Mob? mob)
     {
         // PLAYER target — legal for the Doze family only.
@@ -1794,21 +1871,31 @@ public sealed partial class Session
     /// <summary>Was the slot that just blocked this cast filled by this same spell? <paramref name="category"/>
     /// is the category that actually did the blocking (which for a curse may be a broader one than the spell's
     /// own — a protection bouncing a curse, say — in which case this is simply false).</summary>
-    internal bool LuaAlreadyCastOnTarget(string category, SpellDef sp, uint? targetId)
+    internal bool LuaAlreadyCastOnTarget(string category, SpellDef sp, StatusTarget target)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         if (pc is not null) return pc.HasStatusFromSpell(sp.Key);
         if (mob is not null) return _world.MobStatusKey(mob, CatFamily(category)) == sp.Key;
         return false;
     }
 
     // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
-    // in a PvP map (approximates RTK canPK); a mob is always fair game; nothing faced -> a silent refusal. NPCs
-    // aren't distinguished from mobs on 4.95 (stationary mobs), so curse-on-NPC isn't specifically blocked yet.
-    internal bool LuaCanCurseTarget(SpellDef sp, uint? targetId)
+    // in a PvP map (approximates RTK canPK); a creature is always fair game; nothing faced -> a silent refusal.
+    //
+    // An NPC is no curse target (Caleb, 2026-10-21, decision sheet item 9c): refused here, silently and before the
+    // verb spends anything, as a cast that finds nothing is. It used to pass, so a curse from the book and the five
+    // curse procs (the Cursed, Corrupted, Tainted and Forsaken blades, the Frost sabre) charged their mana and put
+    // the curse's slot on an NPC, or lost the roll and said "Something went wrong." for the same mana. RTK never
+    // curses one: its cast dispatch runs a spell at a target only when the target has HP or is a player
+    // (rtk/src/map/clif.c:8937), and an NPC is neither, so nothing is said or spent. The resolver still ends its
+    // search at the NPC, so a curse at one never falls through to a player on its tile or, on a PvP map, to the
+    // caster.
+    internal bool LuaCanCurseTarget(SpellDef sp, StatusTarget target)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         if (pc is null && mob is null) { LogNoTarget(sp); return false; }
+        if (mob is { IsNpc: true })
+        { Log.Info($"      -x {sp.Name}: mob {mob.Id} is an NPC — no curse target, silent refusal"); return false; }
         // The PvP-map gate covers YOURSELF too — same rule, and for the same reason, as HitPlayerWithSpell's.
         // Self-pestilence IS a real defence (occupy your own exclusivity slot with a mild curse so a worse one
         // can't land), but it is only ever worth anything where someone can curse you, so keeping it PvP-only
@@ -1824,10 +1911,10 @@ public sealed partial class Session
     // was the whole of the "a weak curse doesn't block a strong one" bug — the exclusivity that makes Vex
     // (minorcurses) bar Scourge (curses) only ever ran against players, so on a monster every curse simply
     // overwrote the last one and the checkIfCast rule may as well not have existed.
-    internal bool LuaCurseHasCategory(string category, uint? targetId)
+    internal bool LuaCurseHasCategory(string category, StatusTarget target)
     {
         if (string.IsNullOrEmpty(category)) return false;
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         if (pc is not null) return pc.HasStatusCategory(category);
         // CatFamily on BOTH sides, same as HasStatusCategory: minorcurses collapses into curses so the two
         // block each other symmetrically (RTK's curse scripts all guard on the broad `curses` table).
@@ -1839,9 +1926,9 @@ public sealed partial class Session
     // Apply a categorized status to the resolved curse target (PC via _buffs+Category; mob via the timed-buff
     // path). stat/amount is the mechanical effect (e.g. armor -5 -> raises effective AC -> victim takes MORE
     // damage, our inverted-AC equivalent of RTK's cursing "armor += 5"); amount may be 0 for a pure blocker.
-    internal void LuaApplyCurse(string category, string stat, int amount, int durMs, SpellDef sp, uint? targetId)
+    internal void LuaApplyCurse(string category, string stat, int amount, int durMs, SpellDef sp, StatusTarget target)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         var fx = Content.FxFor(sp);
         int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
         int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : 0;
@@ -2085,9 +2172,9 @@ public sealed partial class Session
     }
 
     /// <summary>Arm the sleep-family damage amplifier on whatever this cast just held (player or mob).</summary>
-    internal void LuaAmplify(double mult, int durMs, uint? targetId)
+    internal void LuaAmplify(double mult, int durMs, StatusTarget target)
     {
-        ResolveTargetBuff(targetId, out var pc, out var mob, selfIfUnaimedInPvp: true);
+        var (pc, mob, _) = target;
         if (pc is not null) pc.ArmDamageAmp(mult, durMs);
         else if (mob is not null) _world.ArmDamageAmp(mob, mult, durMs);
     }
