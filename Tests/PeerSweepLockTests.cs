@@ -46,10 +46,11 @@ namespace Tests;
 public sealed class PeerSweepLockTests
 {
     // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62460,
-    // 62467 and 62468 for the Propose-kept-until-"yes" facts (#345's item 5c).
+    // 62467-62469 for the Propose facts (#345's item 5c, and Propose's 20-minute aether).
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
-                         PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468;
+                         PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468,
+                         AetherMap = 62469;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -314,6 +315,58 @@ public sealed class PeerSweepLockTests
         finally
         {
             Leave(GoneProposerMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>A cast of Propose arms RTK's 20-minute aether, and a cast inside it asks nobody</b> (propose.lua:11-12; Caleb,
+    /// 2026-10-21). The real cast, and then either a declined proposal ("declined") or a name prompt answered with
+    /// nothing ("no name": RTK sets the aether before it asks, so that costs the wait too). Right after the first
+    /// cast the aether has 20 minutes on it; a second cast says "Propose isn't ready yet.", opens no name prompt and
+    /// puts no box on the beloved; once the aether is gone (cleared here, standing in for the 20 minutes) a cast asks
+    /// for a name again.
+    /// <para>Red on a9f9449 in Debug and Release, both cases: "Expected ["Propose isn't ready yet."] / Actual ["You cast
+    /// Propose."]", no aether was armed and the second cast asked again. Red with the check gone from the verb (the
+    /// same), with the aether armed at the typed name instead of the cast ("no name" alone), and with 2 minutes for 20
+    /// ("the aether after the first cast had 120000 ms on it").</para>
+    /// </summary>
+    [Theory]
+    [InlineData("declined")]
+    [InlineData("no name")]
+    public void ProposeWaitsTwentyMinutesAfterACast(string first)
+    {
+        var (b, bOut, _) = Player("AetherBeloved", AetherMap, 22, 20);
+        var (p, pOut, _) = Player("AetherProposer", AetherMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        string ask = $"{p.CharName} proposes marriage. Do you accept?";
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(first == "declined" ? b.CharName : ""));
+                if (first == "declined") b.Receive(MenuFrame(2));
+            });
+            long left = SpellCastSupport.AetherLeft(p, Propose.Key);
+            Assert.False(p.DialogBusy || b.DialogBusy, "a box is still up after the first proposal");
+            int asked = bOut.MenusWith(ask);
+            pOut.Clear();
+
+            OnOwnThread(() => p.Receive(SpellCastSupport.CastFrame(0)));
+
+            // The outcome first, so a red run shows what the second cast did.
+            Assert.Equal(new[] { $"{Propose.Name} isn't ready yet." }, pOut.MiniTexts());
+            Assert.Equal((false, asked), (p.DialogBusy, bOut.MenusWith(ask)));
+            Assert.True(left is > 1_190_000 and <= 1_200_000, $"the aether after the first cast had {left} ms on it");
+            p.WithState(() => Assert.True(p.KnowsSpellId(Propose.Id), "the refused cast took the spell"));
+
+            SpellCastSupport.ClearAether(p, Propose.Key);
+            OnOwnThread(() => p.Receive(SpellCastSupport.CastFrame(0)));
+            Assert.True(p.DialogBusy, "a cast after the aether did not ask for a name");
+        }
+        finally
+        {
+            Leave(AetherMap, p, b);
         }
     }
 
@@ -878,6 +931,9 @@ public sealed class PeerSweepLockTests
                     {
                         for (int i = 0; i < Rounds; i++)
                         {
+                            // Propose's 20-minute aether (propose.lua:11-12) cleared before each cast, as the clock
+                            // would after the wait: this fact is about the checks' reads, not the wait.
+                            SpellCastSupport.ClearAether(p, propose.Key);
                             p.WithState(() => Cast(p, propose, null));
                             p.Receive(InputFrame(b.CharName));
                             race.Progress.Bump();

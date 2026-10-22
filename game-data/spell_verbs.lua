@@ -1125,12 +1125,21 @@ end
 
 -- Propose (RTK common/propose.lua): a marriage proposal — kicks off a scripted async dialog (ask beloved's name,
 -- then prompt them). No mana; the real outcome resolves asynchronously. Blocked if already engaged/married.
+-- RTK's 20-minute aether (propose.lua:11-12, setAether 1200000 at the cast, before the name is even asked): the
+-- spell now stays in the book until the beloved says "yes" (Session.PromptProposal), and this is what keeps a
+-- proposer from asking again at once, or asking two people at the same moment (Caleb, 2026-10-21). Checked first,
+-- where RTK's engine refuses an aethered cast before the script runs (clif.c, "Wait %d second(s) for aethers to
+-- settle."); the line is this file's own for a verb's aether. Set at the cast, so a name never typed, or a refused
+-- one, costs the wait as in RTK.
+local PROPOSE_AETHER = 1200000
 function verbs.propose(ctx, row)
+  if ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
   if ctx:hasLegend("engaged") or ctx:hasLegend("married") then
     ctx:forgetSpell()
     ctx:say("You are already committed to someone else!")
     return false
   end
+  ctx:setCooldown(ctx.spellKey, PROPOSE_AETHER)
   ctx:propose()                                          -- fires RunProposeAsync; the cast anim plays regardless
   return true
 end
