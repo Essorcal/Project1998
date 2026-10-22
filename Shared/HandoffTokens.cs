@@ -156,10 +156,20 @@ public static class HandoffTokens
     public static bool Consume(byte[] token, string expectedUser, string ip) =>
         Consume(token, expectedUser, ip, Db.Open, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
-    /// <summary><see cref="Consume(byte[], string, string)"/> against a connection source and a clock the
-    /// caller names (see the <see cref="Mint(string, string, Func{SqliteConnection}, long)"/> overload). One
-    /// autocommit UPDATE: SQLite runs it under the write lock both processes share, so of two arrivals
-    /// presenting the same token only one can change the row.</summary>
+    /// <summary>
+    /// <see cref="Consume(byte[], string, string)"/> against a connection source and a clock the caller names
+    /// (see the <see cref="Mint(string, string, Func{SqliteConnection}, long)"/> overload). One autocommit
+    /// UPDATE: SQLite runs it under the write lock both processes share, so of two arrivals presenting the same
+    /// token only one can change the row.
+    ///
+    /// <para>A database fault (a write lock held past the busy timeout, a missing table, a file that will not
+    /// open) is logged at Error with its exception and the account, never the token, and answered as an
+    /// invalid token: false, the answer it got before the fault was logged (#332). What the arrival does with
+    /// that false is its own decision and is unchanged: it refuses, or with <c>P1998_ENFORCE_HANDOFF=0</c> lets
+    /// the client in with a warning. Either way it still writes its own "invalid/expired" or "invalid handoff
+    /// token" line after this one, because false is the only answer this method has for a token it could not
+    /// check; the Error line before it is what tells the two apart.</para>
+    /// </summary>
     internal static bool Consume(byte[] token, string expectedUser, string ip, Func<SqliteConnection> open, long now)
     {
         int need = SurvivingBytes(expectedUser);
@@ -178,7 +188,12 @@ public static class HandoffTokens
             cmd.Parameters.AddWithValue("$now", now);
             return cmd.ExecuteNonQuery() == 1;   // exactly one row updated -> valid & now consumed
         }
-        catch { return false; }
+        catch (Exception e)
+        {
+            Log.Error($"handoff token for '{Auth.Key(expectedUser)}' could not be checked (database fault) — "
+                      + "answered as an invalid token", e);
+            return false;
+        }
     }
 
     private static string HashHex(byte[] sig) => Convert.ToHexString(SHA256.HashData(sig));

@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 namespace Shared;
 
 /// <summary>One account's moderation state. <see cref="BanUntil"/>/<see cref="MuteUntil"/> are unix seconds;
@@ -50,12 +52,18 @@ public static class Moderation
 
     // ---- account state ---------------------------------------------------------------------------
 
-    /// <summary>This account's moderation row, or null if it has never been actioned.</summary>
-    public static ModRecord? Get(string username)
+    /// <summary>This account's moderation row, or null if it has never been actioned. A read that fails
+    /// answers null too, and is logged at Error with its exception (#332).</summary>
+    public static ModRecord? Get(string username) => Get(username, Db.Open);
+
+    /// <summary><see cref="Get(string)"/> against a connection source the caller names: the public overload
+    /// passes the shared database, and the tests pass a database file of their own so a read can be made to
+    /// fail without breaking the process database.</summary>
+    internal static ModRecord? Get(string username, Func<SqliteConnection> open)
     {
         try
         {
-            using var cn = Db.Open();
+            using var cn = open();
             using var cmd = cn.CreateCommand();
             cmd.CommandText = @"SELECT ban_until, ban_reason, ban_by, ban_at,
                                        mute_until, mute_reason, mute_by, mute_at
@@ -67,12 +75,19 @@ public static class Moderation
                 r.GetInt64(0), r.IsDBNull(1) ? "" : r.GetString(1), r.IsDBNull(2) ? "" : r.GetString(2), r.IsDBNull(3) ? 0 : r.GetInt64(3),
                 r.GetInt64(4), r.IsDBNull(5) ? "" : r.GetString(5), r.IsDBNull(6) ? "" : r.GetString(6), r.IsDBNull(7) ? 0 : r.GetInt64(7));
         }
-        catch { return null; }
+        catch (Exception e)
+        {
+            // Qualified: inside this class, Log is the mod_log writer below.
+            global::Shared.Log.Error($"moderation read for '{Auth.Key(username)}' failed — "
+                                     + "answered as no ban and no mute", e);
+            return null;
+        }
     }
 
     /// <summary>Is this account currently banned? Returns the reason too, so the caller can say why.
     /// <b>Fails CLOSED is wrong here</b> — a database hiccup must not lock every player out of the game, so a
-    /// read failure returns "not banned" and is logged by <see cref="Get"/>'s caller instead.</summary>
+    /// read failure returns "not banned". <see cref="Get(string)"/> logs that failure itself, because its
+    /// caller cannot: null also means the account has no row.</summary>
     public static bool IsBanned(string username, out string reason, out long until)
     {
         var r = Get(username);
@@ -139,13 +154,19 @@ public static class Moderation
         }
     }
 
-    /// <summary>Every account with a ban or mute still in effect, most recently actioned first.</summary>
-    public static List<ModRecord> ActiveList(int limit = 50)
+    /// <summary>Every account with a ban or mute still in effect, most recently actioned first. A read that
+    /// fails answers with what it had read so far (an empty list when it fails at the start) and is logged at
+    /// Error with its exception (#332).</summary>
+    public static List<ModRecord> ActiveList(int limit = 50) => ActiveList(limit, Db.Open);
+
+    /// <summary><see cref="ActiveList(int)"/> against a connection source the caller names (see
+    /// <see cref="Get(string, Func{SqliteConnection})"/>).</summary>
+    internal static List<ModRecord> ActiveList(int limit, Func<SqliteConnection> open)
     {
         var list = new List<ModRecord>();
         try
         {
-            using var cn = Db.Open();
+            using var cn = open();
             using var cmd = cn.CreateCommand();
             cmd.CommandText = @"SELECT username, ban_until, ban_reason, ban_by, ban_at,
                                        mute_until, mute_reason, mute_by, mute_at
@@ -161,7 +182,12 @@ public static class Moderation
                     r.GetInt64(1), r.IsDBNull(2) ? "" : r.GetString(2), r.IsDBNull(3) ? "" : r.GetString(3), r.IsDBNull(4) ? 0 : r.GetInt64(4),
                     r.GetInt64(5), r.IsDBNull(6) ? "" : r.GetString(6), r.IsDBNull(7) ? "" : r.GetString(7), r.IsDBNull(8) ? 0 : r.GetInt64(8)));
         }
-        catch { /* an unreadable list is an empty list, not a crash */ }
+        catch (Exception e)
+        {
+            // An unreadable list is an empty list, not a crash; but not a silent one.
+            global::Shared.Log.Error("moderation list read failed — answered with the "
+                                     + $"{list.Count} row(s) read before the fault", e);
+        }
         return list;
     }
 
@@ -169,14 +195,20 @@ public static class Moderation
 
     /// <summary>Is this source address banned? Called on the LOGIN path only — checking it per-packet would
     /// put a database read on the hot path for no benefit, since a ban placed mid-session is followed by an
-    /// explicit kick.</summary>
-    public static bool IsIpBanned(string ip, out string reason)
+    /// explicit kick. A read that fails answers "not banned", as <see cref="IsBanned"/> does and for the same
+    /// cause (a database hiccup must not lock every address out), and is logged at Error with its exception
+    /// (#332).</summary>
+    public static bool IsIpBanned(string ip, out string reason) => IsIpBanned(ip, out reason, Db.Open);
+
+    /// <summary><see cref="IsIpBanned(string, out string)"/> against a connection source the caller names (see
+    /// <see cref="Get(string, Func{SqliteConnection})"/>).</summary>
+    internal static bool IsIpBanned(string ip, out string reason, Func<SqliteConnection> open)
     {
         reason = "";
         if (string.IsNullOrWhiteSpace(ip)) return false;
         try
         {
-            using var cn = Db.Open();
+            using var cn = open();
             using var cmd = cn.CreateCommand();
             cmd.CommandText = "SELECT until, reason FROM banned_ips WHERE ip=$ip LIMIT 1;";
             cmd.Parameters.AddWithValue("$ip", ip);
@@ -186,7 +218,11 @@ public static class Moderation
             reason = r.IsDBNull(1) ? "" : r.GetString(1);
             return until > Now;
         }
-        catch { return false; }
+        catch (Exception e)
+        {
+            global::Shared.Log.Error($"ip ban read for {ip} failed — answered as not banned", e);
+            return false;
+        }
     }
 
     public static bool BanIp(string ip, long until, string reason, string by)
