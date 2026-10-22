@@ -437,6 +437,115 @@ public sealed class ResolverTargetMapTests
         }
     }
 
+    /// <summary>The stock client's frame on a map with PvP off: a Vex or a Doze at a faced creature, whose questions
+    /// read the creature; then, before the write, the creature is taken off the map alive (<c>World.DespawnMob</c>: an
+    /// expired pet, a ridden horse, a script's <c>vanish()</c>, a freed captive). Its HP is untouched, so only the map
+    /// can say it has gone.
+    /// <para>A creature the map no longer holds is nobody (PR #356's review, F1). The Vex lands on no one and sends no
+    /// animation; the Doze's holdTarget refuses, so the verb spends nothing, and amplify arms no one.</para>
+    /// <para>Red on fc14434, which asked only whether the creature had died: the Vex put the curse's slot on the
+    /// removed creature and sent its animation to an id the clients had dropped; the Doze held it and armed the 1.3x,
+    /// and the verb would then have charged for it. On 6de1d24 the later step resolved the empty tile again and found
+    /// nobody.</para></summary>
+    [Theory]
+    [InlineData("vex_mage")]
+    [InlineData("doze_mage")]
+    public void ACurseOrAHoldAtAFacedCreatureDespawnedMidCastLandsOnNobody(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        bool hold = key == "doze_mage";
+        Assert.False(Content.IsPvpMap(Swapped));
+        var mob = new Mob(_fx.World.AllocateMobId(), 1, CX, CY - 1, "Rtm despawned creature", 1_000);
+        _fx.World.AddMob(Swapped, mob);
+        var (caster, cOut, _) = Caster(sp, Swapped, CX, CY);   // facing north, at the creature
+        try
+        {
+            var ctx = new SpellContext(caster, sp, null, null);
+            bool asked = hold
+                ? caster.WithState(() => ctx.targetKind == "mob" && !ctx.hasStatus("sleeps") && ctx.canHold("sleeps"))
+                : caster.WithState(() => ctx.canCurse() && !ctx.hasStatus("curses") && !ctx.hasStatus("protections"));
+            Assert.True(_fx.World.DespawnMob(Swapped, mob));
+            Assert.True(mob.Alive);
+            cOut.Clear();
+
+            bool held = false;
+            if (hold)
+            {
+                held = caster.WithState(() => ctx.holdTarget("sleeps", 10_000, true, false, 1_000));
+                caster.WithState(() => ctx.amplify(1.3, 10_000));
+            }
+            else caster.WithState(() => ctx.applyCurse("minorcurses", "armor", 30, 425_000));
+
+            int fx = cOut.BodiesOf(ServerOp.Effect)
+                         .Count(b => b.Length >= 4 && (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) == mob.Id);
+            string slot = hold ? "sleeps" : "curses";
+            string what = $"{sp.Name}, the creature despawned: asked={asked} held={held}; the creature carries " +
+                          $"[{slot}]={_fx.World.MobHasStatus(mob, slot)} amp={mob.DamageAmp}; animations over it {fx}";
+            Assert.True(asked, what);
+            Assert.True(!held && !_fx.World.MobHasStatus(mob, slot) && mob.DamageAmp == 0 && fx == 0, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Swapped);
+            if (ReferenceEquals(_fx.World.MobById(Swapped, mob.Id), mob)) _fx.World.DespawnMob(Swapped, mob);
+        }
+    }
+
+    /// <summary>A Vex or a Doze aimed by id at a player P on the arena, whose questions read P; then, before the write,
+    /// P logs off. A logout takes P off the map's roster (<c>Session</c>'s teardown calls <c>World.LeaveMap</c>) and
+    /// leaves their map field as it was, so only the online registry can say they have gone. Nothing is on the caster's
+    /// faced tile.
+    /// <para>A player the registry no longer finds is nobody (PR #356's review, F1): the Vex lands on no one and the
+    /// departed session is told nothing; the Doze's holdTarget refuses, so the verb spends nothing, and amplify arms no
+    /// one. The caster is not a substitute either.</para>
+    /// <para>Red on fc14434, which asked only whether P's map had changed: the departed session was cursed and sent "...
+    /// casts Vex on you.", or put to sleep and armed with the 1.3x. Red on 6de1d24 too, the other way: the later step
+    /// resolved again, found no one by that id and, on a PvP map, took the caster, who was cursed or fell asleep.</para></summary>
+    [Theory]
+    [InlineData("vex_mage")]
+    [InlineData("doze_mage")]
+    public void ACurseOrAHoldAimedAtAPlayerWhoLogsOffMidCastLandsOnNobody(string key)
+    {
+        var sp = Content.SpellByKey(key)!;
+        bool hold = key == "doze_mage";
+        var (p, pOut, pc) = Player("RtmLogoff", Arena, NearX, CY);
+        var (caster, _, _) = Caster(sp, Arena, CX, CY);   // facing north: (CX, CY - 1) is empty
+        bool pOnline = true;
+        try
+        {
+            var ctx = new SpellContext(caster, sp, p.PlayerId, null);
+            bool asked = hold
+                ? caster.WithState(() => ctx.targetKind == "player" && !ctx.hasStatus("sleeps") && ctx.canHold("sleeps"))
+                : caster.WithState(() => ctx.canCurse() && !ctx.hasStatus("curses") && !ctx.hasStatus("protections"));
+            _fx.World.LeaveMap(p, Arena);   // the logout's own step; P's map field stays the arena
+            pOnline = false;
+            Assert.Equal(Arena, pc.Map);
+            Assert.Null(_fx.World.Online.ById(p.PlayerId));
+            pOut.Clear();
+
+            bool held = false;
+            if (hold)
+            {
+                held = caster.WithState(() => ctx.holdTarget("sleeps", 10_000, true, false, 1_000));
+                caster.WithState(() => ctx.amplify(1.3, 10_000));
+            }
+            else caster.WithState(() => ctx.applyCurse("minorcurses", "armor", 30, 425_000));
+
+            bool pHit = hold ? p.Asleep || (double)DmgAmp.GetValue(p)! > 0 : SpellCastSupport.BuffEntry(p, sp.Key) is not null;
+            bool casterHit = hold ? caster.Asleep || (double)DmgAmp.GetValue(caster)! > 0
+                                  : SpellCastSupport.BuffEntry(caster, sp.Key) is not null;
+            string what = $"{sp.Name}, P logged off: asked={asked} held={held}; P hit={pHit} " +
+                          $"[{string.Join(" | ", SpellCastSupport.MiniTexts(pOut))}]; the caster hit={casterHit}";
+            Assert.True(asked, what);
+            Assert.True(!held && !pHit && SpellCastSupport.MiniTexts(pOut).Count == 0 && !casterHit, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Arena);
+            if (pOnline) _fx.World.LeaveMap(p, Arena);
+        }
+    }
+
     // ===== the casts =====================================================================================
 
     /// <summary>A fresh caster on <paramref name="casterMap"/>, facing an empty tile, casts <paramref name="sp"/> at
