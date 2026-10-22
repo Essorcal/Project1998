@@ -46,14 +46,15 @@ namespace Tests;
 public sealed class PeerSweepLockTests
 {
     // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62469 and
-    // 62485-62491 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the re-check at "yes").
+    // 62485-62492 for the Propose facts (#345's item 5c, Propose's 20-minute aether, the re-check at "yes" and a
+    // "yes" while one of the two is going away).
     // The kept/yes/gone-proposer facts first stood on 62460, 62467 and 62468, which upstream's VowHalvesTests and
     // ResolverTargetMapTests took meanwhile (7d21d8c); they moved to 62489-62491.
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
                          PromptMidMap = 62453, KeptMap = 62489, YesMap = 62490, GoneProposerMap = 62491,
-                         AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487,
-                         RelogMap = 62488;
+                         GoneHeldMap = 62492, AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486,
+                         YesRaceMap = 62487, RelogMap = 62488;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -86,6 +87,14 @@ public sealed class PeerSweepLockTests
         typeof(Session).GetMethod("RestoreTimedEffects", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo StatusFlagsField =
         typeof(Session).GetField("_statusFlags", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    /// <summary>The server closing a connection itself (a kick, a replacing login, the slow-client drop): sets
+    /// <c>_closed</c> before any teardown runs.</summary>
+    private static readonly MethodInfo CloseConnectionMethod =
+        typeof(Session).GetMethod("CloseConnection", BindingFlags.Instance | BindingFlags.NonPublic, new[] { typeof(string) })!;
+    private static readonly FieldInfo LeavingField =
+        typeof(Session).GetField("_leaving", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ClosedField =
+        typeof(Session).GetField("_closed", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     /// <summary>Propose's 20 minutes gone by: its aether (the session's) and its duration (the status flag the row
     /// keeps, RTK's <c>setDuration</c>) both cleared, as the clock would clear them.</summary>
@@ -298,19 +307,134 @@ public sealed class PeerSweepLockTests
         }
     }
 
+    /// <summary>The cast's line for a player who is not there (<c>RunProposeAsync</c>, RTK propose.lua's
+    /// <c>target == nil</c> branch), which a "yes" to or from a player going away reads.</summary>
+    private const string NotOnline = "Player is not valid or not online.";
+
     /// <summary>
-    /// <b>A proposer who logged out before the "yes" comes back engaged and without Propose</b>, the way the "yes"
-    /// already treated their legend: written to their departed session, and saved. The real cast and name; the
-    /// proposer's real teardown (off the map, the row saved with the spell); then the beloved's "yes".
-    /// <para>Green on 6de1d24 too, where the cast had already forgotten it; this pins the handling. Red in Debug and
-    /// Release if the "yes" skips a departed proposer's spellbook while it still writes their legend:
-    /// "Expected (False, True) / Actual (True, True)".</para>
+    /// <b>A "yes" while one of the two is going away engages nobody</b> (PR #358's review, F3, probe R4; Caleb,
+    /// 2026-10-22, decision 27; the wedding's rule from PR #365). The real cast and name put the box up on the beloved;
+    /// then, before the beloved says "yes", one of the two starts to go away (<paramref name="away"/>):
+    /// <list type="bullet">
+    /// <item>"the proposer logged out": the proposer's real teardown (off the map, the row saved), and they stay out:
+    ///   <c>_leaving</c>. Until this fix the "yes" engaged them in their absence, and saved it.</item>
+    /// <item>"the proposer logged back in": the teardown, and a new login for the account within one autosave
+    ///   interval, which fences the session left behind (<c>ClaimAccountSlot</c>, <c>KickForReplacement</c>). R4's
+    ///   shape: the "yes" engaged the beloved and took the ring, while the fence kept the proposer's row unengaged
+    ///   and with Propose.</item>
+    /// <item>"the proposer's connection closed": the server closed it (the slow-client drop) and the read loop's
+    ///   teardown has not run yet: <c>_closed</c> without <c>_leaving</c>.</item>
+    /// <item>"the beloved leaving": the beloved's teardown has run and their connection is not yet closed when their
+    ///   "yes" is handled: <c>_leaving</c> on the beloved. On a live connection the two run one after the other on
+    ///   the beloved's read loop, so this drives them apart to pin the rule's other half.</item>
+    /// </list>
+    /// Nothing is written or taken: neither player is engaged in memory, the beloved keeps the ring, the proposer
+    /// keeps Propose, and both saved rows are as they were just before the "yes". The one still there reads the cast's
+    /// line for a player who is not there, handed over inside their own monitor; the one going away reads nothing.
+    /// <para>Red on 91add59 in Debug and Release, all four cases: the "yes" engaged. Red, Debug and Release, for "the
+    /// beloved leaving" alone in three more ways: the check moved, lines and all, to just before the section, or to
+    /// before the "yes" reads the proposer's name (the proposer's line is then handed over without the proposer's
+    /// monitor), or the beloved's half of the check dropped (the "yes" engages). With <c>_closed</c> dropped from the
+    /// rule only "the proposer's connection closed" goes red, and with <c>_leaving</c> dropped "the proposer logged
+    /// out" and "the beloved leaving" do (the fenced session has both flags).</para>
     /// </summary>
-    [Fact]
-    public void AProposerWhoLoggedOutBeforeTheYesIsSavedEngagedAndWithoutPropose()
+    [Theory]
+    [InlineData("the proposer logged out")]
+    [InlineData("the proposer logged back in")]
+    [InlineData("the proposer's connection closed")]
+    [InlineData("the beloved leaving")]
+    public void AYesWhileOneOfTheTwoIsGoingAwayEngagesNobody(string away)
     {
         var (b, bOut, _) = Player("GoneBeloved", GoneProposerMap, 22, 20);
-        var (p, _, _) = Player("GoneProposer", GoneProposerMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        var (p, pOut, _) = Player("GoneProposer", GoneProposerMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        bool belovedAway = away == "the beloved leaving";
+        string key = CharacterStore.Key(p.CharName);
+        Session? back = null;
+        try
+        {
+            GiveRing(b);
+            if (away == "the proposer logged back in")
+            {
+                _fx.World.Online.Register(key, p, out var before);   // the slot a real login holds, for the teardown to park
+                Assert.Null(before);
+            }
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+
+            switch (away)
+            {
+                case "the proposer logged out":
+                    OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));
+                    Assert.Null(_fx.World.Online.FindPlayer(p.CharName));
+                    break;
+                case "the proposer logged back in":
+                    OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));
+                    Assert.True(_fx.World.Online.HoldsDepartedForTest(key, p), "the teardown did not park the slot");
+                    back = new Session(new HeldRecorder($"held:{p.CharName}:back"), 2005, _fx.Store, _fx.World);
+                    var arriving = back;
+                    OnOwnThread(() => arriving.WithState(() => arriving.ClaimAccountSlot(p.CharName)));
+                    Assert.True(p.IsReplaced, "the new login did not fence the session the proposer left");
+                    break;
+                case "the proposer's connection closed":
+                    CloseConnectionMethod.Invoke(p, new object[] { "slow client (outbound queue full)" });
+                    Assert.False((bool)LeavingField.GetValue(p)!, "the proposer's teardown ran");
+                    break;
+                default:
+                    OnOwnThread(() => b.WithState(() => TearDown.Invoke(b, null)));
+                    Assert.Equal(0, (int)ClosedField.GetValue(b)!);
+                    break;
+            }
+            Assert.True(b.DialogBusy, "the proposal is no longer waiting for the beloved");
+            string pRow = RowVow(p.CharName), bRow = RowVow(b.CharName);
+            pOut.Clear();
+            bOut.Clear();
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            // The whole outcome in one comparison, so a red run shows what the "yes" did: each player in memory, each
+            // saved row, and each player's lines with whether their own monitor was held as each went out.
+            Assert.Equal((Untouched, UntouchedBeloved, pRow, bRow, belovedAway ? TheLine : "", belovedAway ? "" : TheLine),
+                         (ProposerVow(p), BelovedVow(b), RowVow(p.CharName), RowVow(b.CharName), Said(pOut), Said(bOut)));
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
+            Assert.False(b.DialogBusy, "the beloved's box is still up");
+        }
+        finally
+        {
+            if (back is not null) _fx.World.Online.Unregister(key, back);
+            Leave(GoneProposerMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>A "yes" reads a going-away that lands while it waits for the proposer's monitor.</b> The real cast and name
+    /// put the box up; a third thread holds the proposer's monitor, as the proposer's own read loop does mid-packet;
+    /// the beloved says "yes", and their thread waits for that monitor. While it waits, inside the hold, one of the two
+    /// starts to go away (<paramref name="who"/>): the proposer's read loop exits and runs the teardown there ("the
+    /// proposer logs out"), or the server closes the beloved's connection ("the beloved's connection closes", a kick
+    /// or the slow-client drop). Then the hold lets go. Nobody is engaged and nothing is taken, and the one still there
+    /// reads the cast's line for a player who is not there, inside their own monitor.
+    /// <para>The "yes" waits at its read of the proposer's name, before its branch: that read takes the proposer's
+    /// monitor first (see <see cref="TwoYesesAtOnceEngageTheProposerOnce"/>). Red on 91add59 in Debug and Release, both
+    /// cases: the "yes" engaged. Red, Debug and Release, both cases with the check moved, lines and all, to before the
+    /// name read: it passes, the going-away lands while the "yes" waits, and the "yes" engages. With the check moved
+    /// instead to after the name read, just before the section, "the beloved's connection closes" is red, Debug and
+    /// Release: the proposer's line is handed over without the proposer's monitor. The same case is red with the
+    /// beloved's half of the check dropped or <c>_closed</c> dropped from the rule, and "the proposer logs out" with
+    /// <c>_leaving</c> dropped.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("the proposer logs out")]
+    [InlineData("the beloved's connection closes")]
+    public void AYesWaitingForTheProposersMonitorReadsAGoingAwayThatLandsMeanwhile(string who)
+    {
+        var (b, bOut, _) = Player("HeldGoneBeloved", GoneHeldMap, 22, 20);
+        var (p, pOut, _) = Player("HeldGoneProposer", GoneHeldMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        bool belovedAway = who == "the beloved's connection closes";
+        var run = new HeldRun();
         try
         {
             GiveRing(b);
@@ -320,21 +444,53 @@ public sealed class PeerSweepLockTests
                 p.Receive(InputFrame(b.CharName));
             });
             LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
-            OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));
-            Assert.Null(_fx.World.Online.FindPlayer(p.CharName));   // the logout took them off the map
+            pOut.Clear();
+            bOut.Clear();
 
-            OnOwnThread(() => b.Receive(MenuFrame(1)));
+            WhileAnotherThreadHolds(run, p, () => b.Receive(MenuFrame(1)),   // "yes": waits for the proposer's monitor
+                untouched: () =>
+                {
+                    if (belovedAway) CloseConnectionMethod.Invoke(b, new object[] { "kicked" });
+                    else TearDown.Invoke(p, null);   // inside the proposer's monitor, as their read-loop exit runs it
+                    bool gone = belovedAway ? (int)ClosedField.GetValue(b)! != 0
+                                            : (bool)LeavingField.GetValue(p)! && _fx.World.Online.FindPlayer(p.CharName) is null;
+                    return gone && pOut.MiniTexts().Count == 0 && bOut.MiniTexts().Count == 0;
+                });
+            AssertWaited(run, "the \"yes\"", $"{who}: the going-away did not land, or the \"yes\" said something, while it waited");
 
-            var row = _fx.Store.Load(p.CharName);
-            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
-            Assert.Equal((false, true), (row.Character!.Spells.Contains(Propose.Id),
-                                         row.Character.Legends.Any(l => l.Name == "engaged")));
-            b.WithState(() => Assert.True(b.HasLegend("engaged") && b.CharFiance == p.CharName, "the beloved is not engaged"));
+            Assert.Equal((Untouched, UntouchedBeloved, belovedAway ? TheLine : "", belovedAway ? "" : TheLine),
+                         (ProposerVow(p), BelovedVow(b), Said(pOut), Said(bOut)));
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
         }
         finally
         {
-            Leave(GoneProposerMap, p, b);
+            if (run.Settled) Leave(GoneHeldMap, p, b);
         }
+    }
+
+    /// <summary>A proposer and a beloved as a refused "yes" leaves them in memory (<see cref="ProposerVow"/>,
+    /// <see cref="BelovedVow"/>), and the one line the one still there reads (<see cref="Said"/>).</summary>
+    private const string Untouched = "engaged False, fiance '', Propose True", UntouchedBeloved = "engaged False, fiance '', rings 1",
+                         TheLine = "'" + NotOnline + "' held True";
+
+    private static string ProposerVow(Session p) =>
+        p.WithState(() => $"engaged {p.HasLegend("engaged")}, fiance '{p.CharFiance}', Propose {p.KnowsSpellId(Propose.Id)}");
+
+    private static string BelovedVow(Session b) =>
+        b.WithState(() => $"engaged {b.HasLegend("engaged")}, fiance '{b.CharFiance}', rings {b.CountItem("engagement_ring")}");
+
+    /// <summary>Every mini-text line <paramref name="o"/> recorded, each with whether it was handed over inside its
+    /// recipient's monitor.</summary>
+    private static string Said(HeldRecorder o) => string.Join(" | ", o.HeldMiniTexts().Select(l => $"'{l.Text}' held {l.Held}"));
+
+    /// <summary>What <paramref name="name"/>'s saved row says of a proposal: whether there is one, then its engaged
+    /// legend, its fiancé and whether it knows Propose.</summary>
+    private string RowVow(string name)
+    {
+        var row = _fx.Store.Load(name);
+        if (row.Status != CharacterLoadStatus.Ok) return row.Status.ToString();
+        var c = row.Character!;
+        return $"engaged {c.Legends.Any(l => l.Name == "engaged")}, fiance '{c.Fiance}', Propose {c.Spells.Contains(Propose.Id)}";
     }
 
     /// <summary>
@@ -2209,9 +2365,13 @@ public sealed class PeerSweepLockTests
         }
 
         /// <summary>Every 0x0A mini-text line, as ASCII.</summary>
-        public List<string> MiniTexts() =>
+        public List<string> MiniTexts() => HeldMiniTexts().Select(l => l.Text).ToList();
+
+        /// <summary>Every 0x0A mini-text line, as ASCII, with whether it was handed over inside the recipient's
+        /// monitor.</summary>
+        public List<(string Text, bool Held)> HeldMiniTexts() =>
             Bodies(ServerOp.MiniText).Where(b => b.Body.Length >= 3)
-                .Select(b => Encoding.ASCII.GetString(b.Body, 3, Math.Min((b.Body[1] << 8) | b.Body[2], b.Body.Length - 3)))
+                .Select(b => (Encoding.ASCII.GetString(b.Body, 3, Math.Min((b.Body[1] << 8) | b.Body[2], b.Body.Length - 3)), b.Held))
                 .ToList();
 
         /// <summary>How many mini-text lines (any channel) say exactly <paramref name="line"/>.</summary>

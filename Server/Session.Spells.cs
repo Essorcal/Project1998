@@ -3695,6 +3695,10 @@ public sealed partial class Session
     // sentinel from F1 (0xFFFFFFFF) / subpath-chat (0xFFFFFFFE) / Trade (0xFFFFFFFD) / WorldMap (0xFFFFFFFC).
     private static readonly Mob MarriageVirtualNpc = new(0xFFFFFFFB, 0, 0, 0, "Cupid", 1);
 
+    /// <summary>The cast's line for a named player who is not there (RTK propose.lua, the <c>target == nil</c>
+    /// branch). The "yes" reuses it for a proposer, or a beloved, who is going away (<see cref="PromptProposal"/>).</summary>
+    private const string ProposalPartnerNotOnline = "Player is not valid or not online.";
+
     private async Task RunProposeAsync(SpellDef sp)
     {
         string? name = await DlgInput(MarriageVirtualNpc, "What is the name of your beloved?");
@@ -3702,7 +3706,7 @@ public sealed partial class Session
         if (string.Equals(name, _char.Name, StringComparison.OrdinalIgnoreCase))
         { SendMiniText("You can't marry yourself."); return; }
 
-        var target = ResolveOnlinePlayer(name, "Player is not valid or not online.", RefuseChannel.MiniText);
+        var target = ResolveOnlinePlayer(name, ProposalPartnerNotOnline, RefuseChannel.MiniText);
         if (target is null) return;
         // RTK checks the beloved is physically nearby (getObjectsInArea); same-map is our practical proxy
         // for "nearby", matching the gate Trade already uses for its own "must be present" check.
@@ -3757,10 +3761,17 @@ public sealed partial class Session
     /// are now one section holding both monitors (<see cref="WithStatePair"/>, the wedding's shape in
     /// <see cref="RunMarriageCeremony"/>): the same two monitors in the same order, held across the decision, so two
     /// beloveds saying "yes" to one proposer at once are taken one after the other and the second finds the first's
-    /// engagement. Nothing in the section enters the Lua gate or <c>World._lock</c>. A proposer who logged out before
-    /// the "yes" is handled the way their legend is: it is written to their departed session and saved, and so is the
-    /// forget, so the row that session saves is engaged and without the spell. RTK has nothing to follow there: its
-    /// Player object keeps a raw pointer to the departed session.</para></summary>
+    /// engagement. Nothing in the section enters the Lua gate or <c>World._lock</c>.</para>
+    /// <para><b>"Yes" engages nobody if either player is going away</b> (PR #358's review, F3; Caleb, 2026-10-22,
+    /// decision 27), by the rule the wedding uses (<see cref="GoingAway"/>). The box stays up while the proposer
+    /// logs out, or logs out and back in. The "yes" then ran on the session the proposer had left: back at once, that
+    /// session is fenced, so the beloved was engaged and lost the ring while the proposer's row stayed unengaged and
+    /// kept Propose; staying out, the proposer was engaged with nothing said. Now the section asks first, before the
+    /// committed checks: nothing is written or taken, and whichever of the two is still there reads the cast's line
+    /// for a player who is not there, <see cref="ProposalPartnerNotOnline"/>, sent inside both monitors. The one going
+    /// away reads nothing. A close that lands after this read, without the monitor, is not seen, as the wedding's rule
+    /// says of itself. RTK has nothing to follow here: its Player object keeps a raw pointer to the departed
+    /// session.</para></summary>
     internal async Task PromptProposal(Session proposer, SpellDef propose)
     {
         int choice = await DlgMenu(MarriageVirtualNpc,
@@ -3773,6 +3784,15 @@ public sealed partial class Session
             var beloved = this;
             WithStatePair(beloved, proposer, () =>
             {
+                // Inside the section, as the wedding's read is: made before it, the read could pass while the
+                // proposer's teardown is about to take their monitor, and the writes below would land on what it left.
+                bool proposerAway = GoingAway(proposer), belovedAway = GoingAway(beloved);
+                if (proposerAway || belovedAway)
+                {
+                    if (!belovedAway) beloved.SendMiniText(ProposalPartnerNotOnline);
+                    if (!proposerAway) proposer.SendMiniText(ProposalPartnerNotOnline);
+                    return;
+                }
                 if (proposer.HasLegend("engaged") || proposer.HasLegend("married"))
                 {
                     proposer.SendMiniText("You are already committed to someone else!");
@@ -3892,11 +3912,13 @@ public sealed partial class Session
         // Chapel's Divorce reads. Called inside the pair's section, so it reads only what that section holds.
         static bool StillEngaged(Session s, string partner) =>
             VowNames(s._char.Fiance, partner) && string.IsNullOrEmpty(s._char.Spouse) && !s.HasLegend("married");
-
-        // Going away, by the Chapel's ends' rule (EndEngagement): the teardown's latch, read under the section's
-        // monitor, or the connection's close, set once and read with Volatile as everywhere else.
-        static bool GoingAway(Session s) => s._leaving || Volatile.Read(ref s._closed) != 0;
     }
+
+    /// <summary>Going away, by the Chapel's ends' rule (<see cref="EndEngagement"/>): the teardown's latch, read under
+    /// the caller's section's monitor, or the connection's close, set once and read with Volatile as everywhere else.
+    /// The wedding (<see cref="RunMarriageCeremony"/>) and the proposal's "yes" (<see cref="PromptProposal"/>) read it
+    /// inside their pair's section.</summary>
+    private static bool GoingAway(Session s) => s._leaving || Volatile.Read(ref s._closed) != 0;
 
     /// <summary>Which <c>Inns.csv</c> group this character returns to (RTK <c>Player.returnFunc</c>, which
     /// reads <c>registry["home"]</c> before falling through to <c>returnToInn</c>'s country switch).
