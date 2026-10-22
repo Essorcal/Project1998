@@ -858,6 +858,143 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
+    /// <summary>An answer at the Chapel from a player whose vow still holds, at one of the places a late answer's check
+    /// now comes before the answer is acted on.</summary>
+    public enum VowedAnswer
+    {
+        /// <summary>Break Off Engagement's "Are you sure you want to end the engagement?", answered "No, I need to
+        /// consider further.".</summary>
+        BreakNo,
+        /// <summary>Divorce's "It will cost N experience. Are you sure you want this divorce?", answered "No".</summary>
+        DivorceNo,
+        /// <summary>Marriage, picked by the partner who proposed, the wait over.</summary>
+        MarriageByTheProposer,
+        /// <summary>Marriage, picked by the proposee before the three days' wait is over.</summary>
+        MarriageTooSoon,
+        /// <summary>The ceremony's "Are you certain you wish to devote yourself to this man or woman for life?", asked of
+        /// the proposee with the wait over, answered "No".</summary>
+        CeremonyNo,
+        /// <summary>The same question answered "Yes" while the fiancé is offline.</summary>
+        CeremonyYesWithTheFianceOffline,
+    }
+
+    /// <summary>
+    /// <b>A player whose vow still holds reads what they always read, and pays nothing.</b> A stands beside Crystal,
+    /// engaged (or married) to B, whose half names A back; B stands beside A, or is offline for
+    /// <see cref="VowedAnswer.CeremonyYesWithTheFianceOffline"/>. A takes the entry, gives the answer
+    /// (<see cref="VowedAnswer"/>) and then "next" to the end. A reads Crystal's line for that answer once and never
+    /// "has already ended."; A pays nothing (experience, base Vita and base Mana, in memory and in A's row); A's half,
+    /// keepsake, proposee flag and ceremony timer are as they were, and A reads no status line; B, when online, is not
+    /// asked, not charged and not changed, and B's row keeps its half when B is offline.
+    /// <para>Every check the late answers make (<see cref="AConfirmWhoseVowThePartnerAlreadyEndedIsFree"/>) now comes
+    /// before one of these answers, so a check that misfires for a player who is still vowed would turn each into a free
+    /// "has already ended." (PR #355's review, F1). Red, Debug and Release, with the check at one site made to misfire by
+    /// comparing "", which names nobody: Break Off Engagement's for <see cref="VowedAnswer.BreakNo"/>, Divorce's first
+    /// for <see cref="VowedAnswer.DivorceNo"/>, the ceremony's first for all four Marriage cases and its second for the
+    /// two at its question; and all six with <c>NpcContext.IsEngagedTo</c> and <c>IsMarriedTo</c> answering
+    /// false.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(VowedAnswer.BreakNo)]
+    [InlineData(VowedAnswer.DivorceNo)]
+    [InlineData(VowedAnswer.MarriageByTheProposer)]
+    [InlineData(VowedAnswer.MarriageTooSoon)]
+    [InlineData(VowedAnswer.CeremonyNo)]
+    [InlineData(VowedAnswer.CeremonyYesWithTheFianceOffline)]
+    public void AnAnswerWhoseVowStillHoldsReadsWhatItAlwaysRead(VowedAnswer answer)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        bool married = answer == VowedAnswer.DivorceNo;
+        bool fianceOnline = answer != VowedAnswer.CeremonyYesWithTheFianceOffline;
+        bool proposee = answer is VowedAnswer.MarriageTooSoon or VowedAnswer.CeremonyNo
+                                  or VowedAnswer.CeremonyYesWithTheFianceOffline;
+        (string Entry, string Line, bool No) want = answer switch
+        {
+            VowedAnswer.BreakNo => ("Break Off Engagement", "I hope you can salvage your relationship.", true),
+            VowedAnswer.DivorceNo =>
+                ("Divorce", "Patience and love will save your marriage.\n\nDivorce is not something to take lightly.", true),
+            VowedAnswer.MarriageByTheProposer => ("Marriage", "The proposee should start the marriage ceremony.", false),
+            VowedAnswer.MarriageTooSoon =>
+                ("Marriage", "You have engaged too recently. Let your hearts settle a while longer.", false),
+            VowedAnswer.CeremonyNo => ("Marriage", "Come back when you are firm in your resolve to marry.", true),
+            _ => ("Marriage", "Both parties must be present for the ceremony to commence", false),
+        };
+        string a = Name("A"), b = Name("B");
+        var aRow = NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y);
+        var bRow = NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y);
+        VowRow(aRow, b, married);
+        VowRow(bRow, a, married);
+        if (!married)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            aRow.IsProposee = proposee;
+            bRow.IsProposee = !proposee;
+            aRow.MarriageTimer = bRow.MarriageTimer = answer == VowedAnswer.MarriageTooSoon ? now + 259200 : now - 1;
+        }
+        Seed(db, aRow, bRow);
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            RecordingOutbound? bOut = null;
+            if (fianceOnline) (bHeld, bOut) = Arrive(db.Store, b);
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            Assert.True(Vowed(aS, b, married, keepsakes: 1), $"A did not log in vowed: {VowState(aS)}");
+            string Whole(Session s) => s.WithState(() => $"{VowState(s)} proposee={s.CharIsProposee} timer={s.CharMarriageTimer}");
+            string aBefore = Whole(aS);
+            string? bBefore = bHeld is null ? null : Whole(bHeld);
+            var aPools = Pools(aS);
+            var aRowPools = Pools(Row(db.Store, a));
+            uint bExp = bHeld?.CharExp ?? 0;
+            aOut.Clear();
+            bOut?.Clear();
+
+            OnOwnThread(() =>
+            {
+                Click(aS, npc);
+                int pick = LastMenu(aOut, $"{def.Name}: How can I help you today?").IndexOf(want.Entry) + 1;
+                Assert.True(pick > 0, $"Crystal's top menu did not offer A {want.Entry}");
+                aS.Receive(MenuFrame((byte)pick));
+                // "next" through every page; the one question, if this entry asks one, gets the answer.
+                for (int i = 0; i < 8 && aS.DialogBusy; i++)
+                {
+                    var last = aOut.BodiesOf(ServerOp.NpcDialog).Last();
+                    aS.Receive(last[0] == 0x02 ? MenuFrame((byte)(want.No ? 2 : 1)) : NextFrame());
+                }
+            });
+            var aNow = Pools(aS);
+            _out.WriteLine($"[{answer}] A paid exp {aPools.Exp - aNow.Exp}, Vita {aPools.MaxHp - aNow.MaxHp}, Mana " +
+                           $"{aPools.MaxMp - aNow.MaxMp}; A read: the line {Shown(aOut, want.Line)}, already " +
+                           $"{Shown(aOut, AlreadyLine(married, b))}; A's lines: " +
+                           $"[{string.Join(" | ", SpellCastSupport.MiniTexts(aOut))}]; A {Whole(aS)}");
+
+            Assert.False(aS.DialogBusy, "A's dialog was still open");
+            Assert.True(Shown(aOut, want.Line) == 1, $"A did not read \"{want.Line}\" once");
+            Assert.Equal(0, Shown(aOut, AlreadyLine(married, b)));
+            Assert.Equal(aPools, aNow);
+            Assert.Equal(aRowPools, Pools(Row(db.Store, a)));
+            Assert.Equal(aBefore, Whole(aS));
+            Assert.True(RowVowed(db.Store, a, b, married), $"A's row: {RowVowState(db.Store, a)}");
+            Assert.DoesNotContain(SpellCastSupport.MiniTexts(aOut), l => l.Contains(" has ended."));
+            if (bHeld is not null)
+            {
+                Assert.False(bHeld.DialogBusy, "B was asked");
+                Assert.Equal(bBefore, Whole(bHeld));
+                Assert.Equal(bExp, bHeld.CharExp);
+                Assert.DoesNotContain(SpellCastSupport.MiniTexts(bOut!), l => l.Contains(" has ended."));
+            }
+            else
+                Assert.True(RowVowed(db.Store, b, a, married), $"B's row: {RowVowState(db.Store, b)}");
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
     /// <summary>Where the partner whose half A's Chapel visit is about stands, and what their half names.</summary>
     public enum PartnerAtTheVisit
     {
