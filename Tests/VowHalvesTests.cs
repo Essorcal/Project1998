@@ -41,6 +41,13 @@ namespace Tests;
 /// closed, reads it once, at their next login; and a partner whose half names someone else, or nobody, reads
 /// nothing.</para>
 ///
+/// <para><b>And the ceremony</b> (PR #355's review, O1; Caleb, 2026-10-21, "8: fix it now"). The fiancé's "I do"
+/// marries only an engagement that still holds. Inside the pair's section, before it writes anything, the ceremony
+/// reads both halves again: a pair who no longer name each other, or of whom either is married, is written nothing,
+/// and each reads the "has already ended." line naming the other. Before that it refuses a wedding if either of the two
+/// is going away, logging out or with a connection the server has closed (Caleb, 2026-10-22, decision 17): nothing is
+/// written, and the one still present reads "Both parties must be present for the ceremony to commence".</para>
+///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
 /// Crystal's dialog on the Crystalline Chapel (map 3815) through the real <c>0x43</c> click and <c>0x3A</c> replies,
@@ -69,6 +76,10 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     private static readonly FieldInfo StateField =
         typeof(Session).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
+    /// <summary>A session's character, so a fact can read its legends' text (under the session's monitor).</summary>
+    private static readonly FieldInfo CharField =
+        typeof(Session).GetField("_char", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
     /// <summary>A session's read-loop exit in its two parts, so a fact can stop between them: the teardown
     /// (<c>TearDownWorldState</c>, run under the session's monitor) and the close that <c>EndReadLoopAsync</c> makes
     /// after it lets go (<c>CloseConnection(string)</c>).</summary>
@@ -93,6 +104,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
     private const int ChapelRaceRounds = 100;
     private const int ArrivalRaceRounds = 60;
+    private const int CeremonyRaceRounds = 64;
 
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
@@ -1548,6 +1560,450 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
+    // ===== the ceremony: the fiancé's answer reads the engagement again ====================================
+
+    /// <summary>What has become of the engagement by the time the fiancé answers the ceremony's question.</summary>
+    public enum EngagementAtTheAnswer
+    {
+        /// <summary>The bride clicked Crystal again and broke it off, paying for it: both halves ended, and the fiancé
+        /// was told (PR #355's review, O1).</summary>
+        BrokenOffByTheBride,
+        /// <summary>The bride's half names C (the legend and the fields a proposal's "yes" writes); the fiancé's still
+        /// names her.</summary>
+        TheBrideEngagedToAnother,
+        /// <summary>The fiancé's half names C; the bride's still names him.</summary>
+        TheFianceEngagedToAnother,
+        /// <summary>Both halves still name each other, and the bride holds a marriage to C besides (the legend, the
+        /// spouse and the keepsake a wedding writes).</summary>
+        TheBrideMarried,
+        /// <summary>Both halves still name each other, and the fiancé holds a marriage to C besides.</summary>
+        TheFianceMarried,
+    }
+
+    /// <summary>
+    /// <b>An "I do" to an engagement that no longer holds marries nobody.</b> A, the proposee, stands beside Crystal
+    /// engaged to B, the three days' wait over; A picks Marriage and answers "Yes", and the ceremony asks B "Do you, B
+    /// take A as your partner?". While that question waits the engagement stops holding
+    /// (<see cref="EngagementAtTheAnswer"/>), and then B answers "I do". The answer writes nothing: A's and B's vows,
+    /// keepsakes and experience, in memory and in their saved rows, are exactly as they were just before it. A reads no
+    /// "Congratulations! You are both now married." box and nobody reads "I now pronounce you (married)". Instead each
+    /// reads one status line, the Chapel's "has already ended." line naming the other: A "Your engagement to B has
+    /// already ended.", B "Your engagement to A has already ended.", each handed over by a thread that held that
+    /// player's monitor (both log in on a <see cref="HeldOutbound"/>): the section sends them, holding both. Both
+    /// dialogs are then closed.
+    /// <para>Red on 7d21d8c, Debug and Release, every case: the "I do" marries both, whatever the halves held. After
+    /// the bride's own break-off, both end married with a keepsake each, A having paid 100,000 experience to end the
+    /// engagement, and A reads the "Congratulations!" box.</para>
+    /// <para>The first case is the path in play. The other four write one half directly, as a proposal's "yes" or a
+    /// wedding writes it, so that each clause of the re-check (the bride's half names the fiancé, his names her, and
+    /// neither is married) has a case that only it decides.</para>
+    /// <para>Red, Debug and Release, every case, with the re-check left inside the section and only its two sends moved
+    /// to after it (PR #365's review, F1): A's line is then handed over by B's thread, which holds B's monitor and not
+    /// A's. B's own line still goes out under B's monitor, which his thread holds for the whole answer.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(EngagementAtTheAnswer.BrokenOffByTheBride)]
+    [InlineData(EngagementAtTheAnswer.TheBrideEngagedToAnother)]
+    [InlineData(EngagementAtTheAnswer.TheFianceEngagedToAnother)]
+    [InlineData(EngagementAtTheAnswer.TheBrideMarried)]
+    [InlineData(EngagementAtTheAnswer.TheFianceMarried)]
+    public void AnIDoToAnEngagementThatNoLongerHoldsMarriesNobody(EngagementAtTheAnswer at)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B"), c = Name("C");
+        Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (bS, bWire) = ArriveHeld(db.Store, b);
+            bHeld = bS;
+            var (aS, aWire) = ArriveHeld(db.Store, a);
+            aHeld = aS;
+            RecordingOutbound aOut = aWire.Rec, bOut = bWire.Rec;
+            var aPools = Pools(aS);
+            uint bExp = bS.CharExp;
+
+            OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
+            Assert.True(bS.DialogBusy, "the ceremony did not ask B");
+            LastMenu(bOut, $"Do you, {b} take {a} as your partner?");
+            Assert.False(aS.DialogBusy, "A's dialog is not free while B's question waits");
+
+            switch (at)
+            {
+                case EngagementAtTheAnswer.BrokenOffByTheBride:
+                    aOut.Clear();
+                    bOut.Clear();
+                    OnOwnThread(() =>
+                    {
+                        OpenVowEntry(aS, aOut, npc, def, divorce: false);
+                        aS.Receive(MenuFrame(1));   // "Yes, it is necessary"
+                        AnswerYesToTheEnd(aS, aOut);
+                    });
+                    Assert.Equal(aPools.Exp - Price(married: false), aS.CharExp);
+                    Assert.Equal(1, Shown(aOut, DonePage(married: false)));
+                    Assert.Equal(1, SpellCastSupport.MiniTexts(bOut).Count(l => l == Line(married: false, a)));
+                    Assert.True(VowGone(aS, married: false) && VowGone(bS, married: false),
+                        $"the break did not end both halves: A {VowState(aS)}, B {VowState(bS)}");
+                    break;
+                case EngagementAtTheAnswer.TheBrideEngagedToAnother:
+                    EngageTo(aS, c);
+                    break;
+                case EngagementAtTheAnswer.TheFianceEngagedToAnother:
+                    EngageTo(bS, c);
+                    break;
+                case EngagementAtTheAnswer.TheBrideMarried:
+                    Vow(aS, c, married: true);
+                    break;
+                default:
+                    Vow(bS, c, married: true);
+                    break;
+            }
+            Assert.True(bS.DialogBusy, "B's question is no longer waiting");
+
+            string aBefore = WholeVow(aS), bBefore = WholeVow(bS);
+            string aRow = RowJson(db, a), bRow = RowJson(db, b);
+            uint aExp = aS.CharExp;
+            aWire.Clear();
+            bWire.Clear();
+
+            OnOwnThread(() => bS.Receive(MenuFrame(1)));   // "I do."
+            bool aBoxed = aS.DialogBusy;
+            var aLines = SpellCastSupport.MiniTexts(aOut);
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            var aHeldLines = aWire.Lines();
+            var bHeldLines = bWire.Lines();
+            _out.WriteLine($"[{at}] after B's \"I do\": A {VowState(aS)}, B {VowState(bS)}; A's lines " +
+                           $"[{string.Join(" | ", aHeldLines.Select(l => $"'{l.Text}' held={l.Held}"))}], A's box open {aBoxed}, " +
+                           $"congratulated {Shown(aOut, Congratulations)}; B's lines " +
+                           $"[{string.Join(" | ", bHeldLines.Select(l => $"'{l.Text}' held={l.Held}"))}]; rows unchanged A " +
+                           $"{RowJson(db, a) == aRow}, B {RowJson(db, b) == bRow}");
+            if (aBoxed) OnOwnThread(() => AnswerYesToTheEnd(aS, aOut));
+
+            Assert.Equal(aBefore, WholeVow(aS));
+            Assert.Equal(bBefore, WholeVow(bS));
+            Assert.True(RowJson(db, a) == aRow, $"A's row changed: {RowVowState(db.Store, a)}");
+            Assert.True(RowJson(db, b) == bRow, $"B's row changed: {RowVowState(db.Store, b)}");
+            Assert.Equal(aExp, aS.CharExp);
+            Assert.Equal(bExp, bS.CharExp);
+            Assert.False(aBoxed, "the Chapel opened a box on A");
+            Assert.Equal(0, Shown(aOut, Congratulations));
+            Assert.DoesNotContain(Pronounced, aLines);
+            Assert.DoesNotContain(Pronounced, bLines);
+            Assert.Equal(new[] { AlreadyLine(married: false, b) }, aLines);
+            Assert.Equal(new[] { AlreadyLine(married: false, a) }, bLines);
+            Assert.All(aHeldLines, l => Assert.True(l.Held, $"A's line \"{l.Text}\" was sent by a thread that did not hold A's monitor"));
+            Assert.All(bHeldLines, l => Assert.True(l.Held, $"B's line \"{l.Text}\" was sent by a thread that did not hold B's monitor"));
+            Assert.False(bS.DialogBusy, "B's dialog was still open");
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    /// <summary>
+    /// <b>An answer to the ceremony whose engagement still holds does what it always did.</b> A, the proposee, and B
+    /// stand beside Crystal engaged to each other, the wait over; A picks Marriage and answers "Yes", and B answers the
+    /// ceremony's question. "I do": both are married, in memory and in their rows (the "married" legend, the spouse, one
+    /// love keepsake each, the engagement gone); A reads the "Congratulations! You are both now married." box once and
+    /// both read "I now pronounce you (married)" once. "I don't.": nothing changes, in memory or in the rows; A reads
+    /// "B regretably must decline." and B "What but love can last forever?". Neither pays anything, and neither reads a
+    /// "has already ended." line. Each player's frames from the answer on are logged as a fingerprint (opcodes and a
+    /// hash of the bodies, the names put back to &lt;A&gt; and &lt;B&gt;), for a reader comparing two builds.
+    /// <para>Green on 7d21d8c. The re-check the "I do" now makes (<see cref="AnIDoToAnEngagementThatNoLongerHoldsMarriesNobody"/>)
+    /// sits on the path to every wedding, so one that misfired for a pair still engaged would turn each wedding into
+    /// two "has already ended." lines: red, Debug and Release, with the re-check made to compare against "", which
+    /// names nobody.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnAnswerToTheCeremonyWhoseEngagementHoldsDoesWhatItAlwaysDid(bool iDo)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (bS, bOut) = Arrive(db.Store, b);
+            bHeld = bS;
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
+            Assert.True(bS.DialogBusy, "the ceremony did not ask B");
+
+            string aBefore = WholeVow(aS), bBefore = WholeVow(bS);
+            string aRow = RowJson(db, a), bRow = RowJson(db, b);
+            uint aExp = aS.CharExp, bExp = bS.CharExp;
+            aOut.Clear();
+            bOut.Clear();
+
+            OnOwnThread(() => bS.Receive(MenuFrame((byte)(iDo ? 1 : 2))));   // "I do." / "I don't."
+            var aLines = SpellCastSupport.MiniTexts(aOut);
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            int congratulated = Shown(aOut, Congratulations);
+            bool aBoxed = aS.DialogBusy;
+            _out.WriteLine($"[{(iDo ? "I do" : "I don't")}] A {VowState(aS)}, B {VowState(bS)}; A's lines " +
+                           $"[{string.Join(" | ", aLines)}], congratulated {congratulated}, box open {aBoxed}; B's lines " +
+                           $"[{string.Join(" | ", bLines)}]");
+            _out.WriteLine($"[{(iDo ? "I do" : "I don't")}] A's frames {Fingerprint(aOut, a, b)}; B's frames {Fingerprint(bOut, a, b)}");
+            if (aBoxed) OnOwnThread(() => AnswerYesToTheEnd(aS, aOut));
+
+            Assert.Equal(aExp, aS.CharExp);
+            Assert.Equal(bExp, bS.CharExp);
+            Assert.DoesNotContain(aLines, l => l.Contains("has already ended."));
+            Assert.DoesNotContain(bLines, l => l.Contains("has already ended."));
+            Assert.False(bS.DialogBusy, "B's dialog was still open");
+            if (iDo)
+            {
+                Assert.True(aBoxed, "the Chapel did not open its closing box on A");
+                Assert.Equal(1, congratulated);
+                Assert.Equal(new[] { Pronounced }, aLines);
+                Assert.Equal(new[] { Pronounced }, bLines);
+                Assert.True(Vowed(aS, b, married: true, keepsakes: 1) && VowGone(aS, married: false), $"A: {VowState(aS)}");
+                Assert.True(Vowed(bS, a, married: true, keepsakes: 1) && VowGone(bS, married: false), $"B: {VowState(bS)}");
+                Assert.True(RowVowed(db.Store, a, b, married: true) && RowVowGone(db.Store, a, married: false, keepsakes: 1),
+                    $"A's row: {RowVowState(db.Store, a)}");
+                Assert.True(RowVowed(db.Store, b, a, married: true) && RowVowGone(db.Store, b, married: false, keepsakes: 1),
+                    $"B's row: {RowVowState(db.Store, b)}");
+            }
+            else
+            {
+                Assert.False(aBoxed, "the Chapel opened a box on A");
+                Assert.Equal(0, congratulated);
+                Assert.Equal(new[] { $"{b} regretably must decline." }, aLines);
+                Assert.Equal(new[] { "What but love can last forever?" }, bLines);
+                Assert.Equal(aBefore, WholeVow(aS));
+                Assert.Equal(bBefore, WholeVow(bS));
+                Assert.True(RowJson(db, a) == aRow, $"A's row changed: {RowVowState(db.Store, a)}");
+                Assert.True(RowJson(db, b) == bRow, $"B's row changed: {RowVowState(db.Store, b)}");
+            }
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    /// <summary>Which of the two is going away when the fiancé's "I do" reaches the wedding's section.</summary>
+    public enum GoingAwayAtTheAnswer
+    {
+        /// <summary>The bride logged out through the read loop's real exit while the question waited, and stays
+        /// out.</summary>
+        TheBrideLoggedOut,
+        /// <summary>The bride logged out and straight back in: the new login is handed the session she left and fences
+        /// it.</summary>
+        TheBrideLoggedBackIn,
+        /// <summary>The bride logged out and back in after her departed entry was dropped (as the sweep drops it an
+        /// interval later), so the session she left is not fenced.</summary>
+        TheBrideLoggedBackInLater,
+        /// <summary>The server closed the bride's connection (a kick, the slow-client drop) and her read loop's teardown
+        /// has not run yet: <c>_closed</c> without <c>_leaving</c>.</summary>
+        TheBridesConnectionClosed,
+        /// <summary>The fiancé's teardown has run and his connection is not yet closed when his "I do" is handled:
+        /// <c>_leaving</c> on the fiancé. On a live connection the two run one after the other on his read loop, so
+        /// this drives them apart to pin the rule's other half.</summary>
+        TheFianceLeaving,
+    }
+
+    /// <summary>
+    /// <b>An "I do" while one of the two is going away marries nobody</b> (Caleb, 2026-10-22, decision 17; PR #365's
+    /// review, O1). A, the proposee, stands beside Crystal engaged to B, the wait over; A picks Marriage and answers
+    /// "Yes", and the ceremony asks B. While that question waits, one of them starts to go away
+    /// (<see cref="GoingAwayAtTheAnswer"/>), and then B answers "I do". Nothing is written: the vows (legend text
+    /// included), keepsakes and experience of B, of the session A left and of A's new one, and both saved rows, are
+    /// exactly as they were just before the answer. Nobody reads "I now pronounce you (married)" or the
+    /// "Congratulations!" box. The one still present reads one status line, the ceremony's own line for an absent
+    /// partner: "Both parties must be present for the ceremony to commence", handed over by a thread that held that
+    /// player's monitor (both log in on a <see cref="HeldOutbound"/>); the one going away, and A's new session, read
+    /// nothing.
+    /// <para>Red on e1d95c3, Debug and Release, every case: the "I do" marries. After a relog the fiancé ends married
+    /// in memory and in his row while A's new session, and her row once it saves, stay engaged; a bride who stays out,
+    /// or whose connection the server closed, is married with nothing said; and the fiancé who was leaving is married
+    /// in his row.</para>
+    /// <para>Red, Debug and Release, for <see cref="GoingAwayAtTheAnswer.TheFianceLeaving"/>, with the check left inside
+    /// the section and only its line moved to after it (PR #365's review, F1): A's line is then handed over by B's
+    /// thread without A's monitor. When the bride is the one going away the line is B's, and B's thread holds B's
+    /// monitor for the whole answer, so those cases cannot see that move.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(GoingAwayAtTheAnswer.TheBrideLoggedOut)]
+    [InlineData(GoingAwayAtTheAnswer.TheBrideLoggedBackIn)]
+    [InlineData(GoingAwayAtTheAnswer.TheBrideLoggedBackInLater)]
+    [InlineData(GoingAwayAtTheAnswer.TheBridesConnectionClosed)]
+    [InlineData(GoingAwayAtTheAnswer.TheFianceLeaving)]
+    public void AnIDoWhileOneOfThePairIsGoingAwayMarriesNobody(GoingAwayAtTheAnswer away)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+        bool brideAway = away != GoingAwayAtTheAnswer.TheFianceLeaving;
+
+        Session? aHeld = null, bHeld = null, aBack = null;
+        try
+        {
+            var (bS, bWire) = ArriveHeld(db.Store, b);
+            bHeld = bS;
+            var (aS, aWire) = ArriveHeld(db.Store, a);
+            aHeld = aS;
+            RecordingOutbound aOut = aWire.Rec, bOut = bWire.Rec;
+            OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
+            Assert.True(bS.DialogBusy, "the ceremony did not ask B");
+
+            RecordingOutbound? aBackOut = null;
+            switch (away)
+            {
+                case GoingAwayAtTheAnswer.TheBrideLoggedOut:
+                    Logout(aS);
+                    break;
+                case GoingAwayAtTheAnswer.TheBrideLoggedBackIn:
+                    Logout(aS);
+                    (aBack, aBackOut) = Arrive(db.Store, a);
+                    Assert.True(aS.IsReplaced, "the new login did not fence the session A left");
+                    break;
+                case GoingAwayAtTheAnswer.TheBrideLoggedBackInLater:
+                    Logout(aS);
+                    Release(a, aS);   // the departed entry dropped, as the sweep drops it an interval later
+                    (aBack, aBackOut) = Arrive(db.Store, a);
+                    Assert.False(aS.IsReplaced, "the session A left was fenced");
+                    break;
+                case GoingAwayAtTheAnswer.TheBridesConnectionClosed:
+                    CloseConnection.Invoke(aS, new object[] { "slow client (outbound queue full)" });
+                    Assert.False((bool)LeavingField.GetValue(aS)!, "A's teardown ran");
+                    break;
+                default:
+                    bS.WithState(() => TearDownWorldState.Invoke(bS, null));
+                    Assert.True((int)ClosedField.GetValue(bS)! == 0, "B's connection was closed");
+                    break;
+            }
+            Assert.True(bS.DialogBusy, "B's question is no longer waiting");
+            if (aBack is not null) Assert.True(Vowed(aBack, b, married: false, keepsakes: 0), $"A's new session: {VowState(aBack)}");
+
+            string aBefore = WholeVow(aS), bBefore = WholeVow(bS), aBackBefore = aBack is null ? "" : WholeVow(aBack);
+            string aRow = RowJson(db, a), bRow = RowJson(db, b);
+            uint aExp = aS.CharExp, bExp = bS.CharExp;
+            aWire.Clear();
+            bWire.Clear();
+            aBackOut?.Clear();
+
+            OnOwnThread(() => bS.Receive(MenuFrame(1)));   // "I do."
+            var aLines = SpellCastSupport.MiniTexts(aOut);
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            var aBackLines = aBackOut is null ? new List<string>() : SpellCastSupport.MiniTexts(aBackOut);
+            var heldLines = aWire.Lines().Select(l => ("A", l.Text, l.Held)).Concat(bWire.Lines().Select(l => ("B", l.Text, l.Held))).ToList();
+            _out.WriteLine($"[{away}] after B's \"I do\": A {VowState(aS)}, A back {(aBack is null ? "-" : VowState(aBack))}, " +
+                           $"B {VowState(bS)}; rows A {RowVowState(db.Store, a)} (unchanged {RowJson(db, a) == aRow}), B " +
+                           $"{RowVowState(db.Store, b)} (unchanged {RowJson(db, b) == bRow}); lines " +
+                           $"[{string.Join(" | ", heldLines.Select(l => $"{l.Item1} '{l.Text}' held={l.Held}"))}], " +
+                           $"A back's lines [{string.Join(" | ", aBackLines)}]");
+            if (away == GoingAwayAtTheAnswer.TheFianceLeaving) CloseConnection.Invoke(bS, new object[] { "read-loop exit" });
+
+            Assert.Equal(aBefore, WholeVow(aS));
+            Assert.Equal(bBefore, WholeVow(bS));
+            if (aBack is not null) Assert.Equal(aBackBefore, WholeVow(aBack));
+            Assert.True(RowJson(db, a) == aRow, $"A's row changed: {RowVowState(db.Store, a)}");
+            Assert.True(RowJson(db, b) == bRow, $"B's row changed: {RowVowState(db.Store, b)}");
+            Assert.Equal(aExp, aS.CharExp);
+            Assert.Equal(bExp, bS.CharExp);
+            Assert.Equal(0, Shown(aOut, Congratulations));
+            Assert.False(aS.DialogBusy, "the Chapel opened a box on the session A left");
+            if (aBack is not null) Assert.False(aBack.DialogBusy, "A's new session has a box open");
+            Assert.Empty(aBackLines);
+            Assert.Equal(brideAway ? Array.Empty<string>() : new[] { BothPresent }, aLines);
+            Assert.Equal(brideAway ? new[] { BothPresent } : Array.Empty<string>(), bLines);
+            Assert.All(heldLines, l => Assert.True(l.Held, $"{l.Item1}'s line \"{l.Text}\" was sent by a thread that did not hold {l.Item1}'s monitor"));
+            Assert.False(bS.DialogBusy, "B's dialog was still open");
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+            Release(a, aBack);
+        }
+    }
+
+    /// <summary>
+    /// <b>The "I do" reads the bride's logout inside the wedding's section.</b> A, the proposee, stands beside Crystal
+    /// engaged to B, the wait over; A picks Marriage and answers "Yes", and the ceremony asks B. A third thread takes
+    /// A's monitor, as A's read-loop exit does to tear her down; B's "I do", on a thread of its own, then waits for that
+    /// monitor at the wedding's section. Still inside A's monitor, the third thread runs A's teardown (it sets
+    /// <c>_leaving</c> first, leaves the map and saves her row), lets go, and A's connection closes. The wedding is
+    /// refused: nothing is written, in memory or in either row, and B reads "Both parties must be present for the
+    /// ceremony to commence" once. Both <c>StateRank</c> orders. Deterministic, and bounded by the held-monitor run's
+    /// waits.
+    /// <para>Red on e1d95c3, Debug and Release: the "I do" marries both once the teardown lets go. Red, Debug and
+    /// Release, with the going-away check moved out of the section to just before it (the same reads, on B's thread):
+    /// B reads A still present before he waits for her monitor, and marries her once her teardown has run. The race
+    /// below (<see cref="AnIDoRacingTheBridesLogoutNeverMarriesHerUntold"/>) seldom meets that window, since the
+    /// teardown sets <c>_leaving</c> as soon as it holds the monitor.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheIDoReadsTheBridesLogoutInsideTheWeddingsSection(bool brideRanksFirst)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+
+        Session aS, bS;
+        RecordingOutbound aOut, bOut;
+        if (brideRanksFirst) { (aS, aOut) = Arrive(db.Store, a); (bS, bOut) = Arrive(db.Store, b); }
+        else { (bS, bOut) = Arrive(db.Store, b); (aS, aOut) = Arrive(db.Store, a); }
+        Assert.Equal(brideRanksFirst, aS.StateRank < bS.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            OnOwnThread(() => AskTheFiance(aS, aOut, npc, def));
+            Assert.True(bS.DialogBusy, "the ceremony did not ask B");
+            string bBefore = WholeVow(bS), bRow = RowJson(db, b);
+            aOut.Clear();
+            bOut.Clear();
+
+            bool leftWhileHeld = false;
+            WhileAnotherThreadHolds(run, aS, () => bS.Receive(MenuFrame(1)),   // "I do.": waits for A's monitor
+                untouched: () =>
+                {
+                    // Inside A's monitor, once B's answer is seen waiting for it: A's teardown, as her read-loop exit runs it.
+                    TearDownWorldState.Invoke(aS, null);
+                    leftWhileHeld = (bool)LeavingField.GetValue(aS)! && _fx.World.Online.FindPlayer(a) is null;
+                    return leftWhileHeld;
+                });
+            CloseConnection.Invoke(aS, new object[] { "read-loop exit" });
+            var bLines = SpellCastSupport.MiniTexts(bOut);
+            _out.WriteLine($"[A ranks first {brideRanksFirst}] B's answer waited for A: {!run.FinishedWhileHeld}; A torn down while it " +
+                           $"waited {leftWhileHeld}; after: A {VowState(aS)}, B {VowState(bS)}; rows A {RowVowState(db.Store, a)}, B " +
+                           $"{RowVowState(db.Store, b)}; B's lines [{string.Join(" | ", bLines)}]");
+
+            AssertWaited(run, "B's \"I do\"", "A's teardown did not run while B's answer waited");
+            Assert.True(Vowed(aS, b, married: false, keepsakes: 0) && VowGone(aS, married: true), $"A: {VowState(aS)}");
+            Assert.True(RowVowed(db.Store, a, b, married: false) && RowVowGone(db.Store, a, married: true, keepsakes: 0),
+                $"A's row: {RowVowState(db.Store, a)}");
+            Assert.Equal(bBefore, WholeVow(bS));
+            Assert.True(RowJson(db, b) == bRow, $"B's row changed: {RowVowState(db.Store, b)}");
+            Assert.Equal(new[] { BothPresent }, bLines);
+            Assert.False(bS.DialogBusy, "B's dialog was still open");
+        }
+        finally
+        {
+            if (run.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
+        }
+    }
+
     // ===== races ===========================================================================================
 
     /// <summary>
@@ -1761,6 +2217,274 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
+    /// <summary>
+    /// <b>The fiancé's "I do" racing the bride's break-off never marries what the break ended.</b> Each round A, the
+    /// proposee, and B are engaged, the wait over, and log in beside Crystal, created in alternating order so that both
+    /// <c>StateRank</c> orders run. A picks Marriage and answers "Yes", so the ceremony asks B; then A clicks Crystal
+    /// again and opens Break Off Engagement to its question. Then A answers "Yes" on one thread and B "I do" on another,
+    /// at the same moment or one up to 0.7 ms after the other (<see cref="CeremonyStagger"/>: each 0.1 ms step is held
+    /// for four rounds, which run both orders with either side waiting), while the world ticks. Nothing may stall, and
+    /// every round ends one of two ways, in memory and in both rows:
+    /// <list type="bullet">
+    /// <item>The wedding first: both married, a keepsake each, the engagement gone; both read "I now pronounce you
+    /// (married)" once; A paid nothing (the break either found the engagement already gone, as #355 made free, or never
+    /// resumed, its question replaced by the Chapel's closing box) and nobody read a "has ended." or "has already ended."
+    /// status line.</item>
+    /// <item>The break first: neither engaged nor married, no keepsake; A paid the price and read "It is done."; B read
+    /// "Your engagement to A has ended." once; each read the "has already ended." status line once; nobody was
+    /// pronounced married.</item>
+    /// </list>
+    /// B never pays. Both kinds of round must occur.
+    /// <para>Red on 7d21d8c, Debug and Release: a round the break wins marries both anyway, after A has paid to end the
+    /// engagement. Red, Debug and Release, with the re-check moved out of the wedding's section to just before it (the
+    /// same reads, of both halves, on B's thread): B's answer reads both halves intact while A's break holds A's
+    /// monitor and has not yet ended A's half, then waits for that monitor, and once the break has ended both halves
+    /// marries them anyway.</para>
+    /// </summary>
+    [Fact]
+    public void AnIDoRacingTheBridesBreakOffNeverMarriesWhatTheBreakEnded()
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var race = new Race();
+        int wrong = 0, wed = 0, broken = 0;
+        string? firstWrong = null;
+        var wrongRounds = new List<string>();
+        Session? aS = null, bS = null;
+        RecordingOutbound? aOut = null, bOut = null;
+        uint price = Price(married: false);
+
+        try
+        {
+            var barrier = new Barrier(2);
+
+            void ASide()
+            {
+                for (int i = 0; i < CeremonyRaceRounds; i++)
+                {
+                    Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+                    if (ARanksFirst(i)) { (aS, aOut) = Arrive(db.Store, a); (bS, bOut) = Arrive(db.Store, b); }
+                    else { (bS, bOut) = Arrive(db.Store, b); (aS, aOut) = Arrive(db.Store, a); }
+                    var self = aS;
+                    var selfOut = aOut;
+                    AskTheFiance(self, selfOut, npc, def);
+                    Assert.True(bS.DialogBusy, $"round {i}: the ceremony did not ask B");
+                    OpenVowEntry(self, selfOut, npc, def, divorce: false);
+                    uint aExp = self.CharExp, bExp = bS.CharExp;
+                    selfOut.Clear();
+                    bOut.Clear();
+
+                    barrier.SignalAndWait(race.Cancel.Token);
+                    if (AWaits(i)) Spin(CeremonyStagger(i));
+                    self.Receive(MenuFrame(1));   // "Yes, it is necessary"
+                    barrier.SignalAndWait(race.Cancel.Token);
+
+                    var aLines = SpellCastSupport.MiniTexts(selfOut);
+                    var bLines = SpellCastSupport.MiniTexts(bOut);
+                    uint aPaid = aExp - self.CharExp, bPaid = bExp - bS.CharExp;
+                    int done = Shown(selfOut, DonePage(married: false));
+                    bool married = Vowed(self, b, married: true, keepsakes: 1) && VowGone(self, married: false)
+                                   && Vowed(bS, a, married: true, keepsakes: 1) && VowGone(bS, married: false)
+                                   && RowVowed(db.Store, a, b, married: true) && RowVowed(db.Store, b, a, married: true)
+                                   && RowVowGone(db.Store, a, married: false, keepsakes: 1)
+                                   && RowVowGone(db.Store, b, married: false, keepsakes: 1);
+                    bool ended = VowGone(self, married: false) && VowGone(self, married: true)
+                                 && VowGone(bS, married: false) && VowGone(bS, married: true)
+                                 && self.WithState(() => self.CountItem("love")) == 0 && bS.WithState(() => bS.CountItem("love")) == 0
+                                 && RowVowGone(db.Store, a, married: false, keepsakes: 0) && RowVowGone(db.Store, a, married: true, keepsakes: 0)
+                                 && RowVowGone(db.Store, b, married: false, keepsakes: 0) && RowVowGone(db.Store, b, married: true, keepsakes: 0);
+                    // The vow lines only: the world's tick also streams its advice hints into the same channel.
+                    int Count(List<string> lines, string line) => lines.Count(l => l == line);
+                    int vowLines = aLines.Concat(bLines).Count(l => l.Contains(" has ended.") || l.Contains(" has already ended."));
+                    bool weddingFirst = married && aPaid == 0 && vowLines == 0
+                                        && Count(aLines, Pronounced) == 1 && Count(bLines, Pronounced) == 1;
+                    bool breakFirst = ended && aPaid == price && done == 1 && vowLines == 3
+                                      && Count(aLines, AlreadyLine(married: false, b)) == 1
+                                      && Count(bLines, Line(married: false, a)) == 1
+                                      && Count(bLines, AlreadyLine(married: false, a)) == 1
+                                      && Count(aLines, Pronounced) == 0 && Count(bLines, Pronounced) == 0;
+                    if (weddingFirst) wed++;
+                    if (breakFirst) broken++;
+                    bool right = bPaid == 0 && (weddingFirst || breakFirst);
+                    if (!right)
+                        wrongRounds.Add($"{i} ({(ARanksFirst(i) ? "A" : "B")} ranks first, {(AWaits(i) ? "A" : "B")} waits " +
+                                        $"{CeremonyStagger(i).TotalMilliseconds} ms)");
+                    if (!right && Interlocked.Increment(ref wrong) == 1)
+                        firstWrong = $"round {i} (A ranks first {self.StateRank < bS.StateRank}): A {VowState(self)}, B {VowState(bS)}, " +
+                                     $"A paid {aPaid} of {price}, B paid {bPaid}, A read done {done}; A's lines " +
+                                     $"[{string.Join(" | ", aLines)}]; B's lines [{string.Join(" | ", bLines)}]";
+
+                    if (self.DialogBusy) AnswerYesToTheEnd(self, selfOut);
+                    Logout(bS);
+                    Release(b, bS);
+                    Logout(self);
+                    Release(a, self);
+                    (aS, bS) = (null, null);
+                    race.Progress.Bump();
+                }
+            }
+
+            void BSide()
+            {
+                for (int i = 0; i < CeremonyRaceRounds; i++)
+                {
+                    barrier.SignalAndWait(race.Cancel.Token);
+                    var fiance = bS!;
+                    if (!AWaits(i)) Spin(CeremonyStagger(i));
+                    fiance.Receive(MenuFrame(1));   // "I do."
+                    barrier.SignalAndWait(race.Cancel.Token);
+                }
+            }
+
+            RunRace(race, "the fiance's \"I do\" racing the bride's break-off", ASide, BSide);
+            _out.WriteLine($"{race.Progress.Rounds} rounds: the wedding first {wed}, the break first {broken}; {wrong} wrong " +
+                           $"[{string.Join(", ", wrongRounds)}]; first: {firstWrong ?? "none"}");
+
+            Assert.Null(race.Fault);
+            Assert.Equal(CeremonyRaceRounds, race.Progress.Rounds);
+            Assert.True(wrong == 0, $"{wrong} rounds ended wrong; the first: {firstWrong}");
+            Assert.True(wed > 0 && broken > 0, $"the answers never crossed both ways: the wedding first {wed}, the break first {broken}");
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <b>The fiancé's "I do" racing the bride's logout never marries her without her being told</b> (Caleb,
+    /// 2026-10-22, decision 17). Each round A, the proposee, and B are engaged, the wait over, and log in beside
+    /// Crystal, in alternating order so that both <c>StateRank</c> orders run. A picks Marriage and answers "Yes", so
+    /// the ceremony asks B. Then A logs out through the read loop's real exit on one thread while B answers "I do" on
+    /// another, staggered as <see cref="AnIDoRacingTheBridesBreakOffNeverMarriesWhatTheBreakEnded"/> is, while the
+    /// world ticks. Nothing may stall, and every round ends one of two ways, in memory (the session A left, and B) and
+    /// in both rows:
+    /// <list type="bullet">
+    /// <item>The wedding first, before A's teardown: both married, a keepsake each, the engagement gone, and each read
+    /// "I now pronounce you (married)" once.</item>
+    /// <item>The teardown first: both still engaged to each other, married to nobody, no keepsake; B read "Both parties
+    /// must be present for the ceremony to commence" once, and nobody was pronounced married.</item>
+    /// </list>
+    /// Both kinds of round must occur.
+    /// <para>Red on e1d95c3, Debug and Release: a round whose teardown runs first still marries both, and A, whose
+    /// connection is closed by then, is never told.</para>
+    /// <para>One window is left, and it is not this fact's: the wedding's "I now pronounce you (married)" goes to A
+    /// after the section, from B's thread (PR #365's review, O2). A round in which B's thread stalls between the section
+    /// and that send for as long as A's whole teardown takes would lose A's line and fail here.</para>
+    /// </summary>
+    [Fact]
+    public void AnIDoRacingTheBridesLogoutNeverMarriesHerUntold()
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var race = new Race();
+        int wrong = 0, wed = 0, refused = 0;
+        string? firstWrong = null;
+        var wrongRounds = new List<string>();
+        Session? aS = null, bS = null;
+        RecordingOutbound? aOut = null, bOut = null;
+
+        try
+        {
+            var barrier = new Barrier(2);
+
+            void ASide()
+            {
+                for (int i = 0; i < CeremonyRaceRounds; i++)
+                {
+                    Seed(db, EngagedForTheCeremony(a, b, def, proposee: true), EngagedForTheCeremony(b, a, def, proposee: false));
+                    if (ARanksFirst(i)) { (aS, aOut) = Arrive(db.Store, a); (bS, bOut) = Arrive(db.Store, b); }
+                    else { (bS, bOut) = Arrive(db.Store, b); (aS, aOut) = Arrive(db.Store, a); }
+                    var self = aS;
+                    var selfOut = aOut;
+                    AskTheFiance(self, selfOut, npc, def);
+                    Assert.True(bS.DialogBusy, $"round {i}: the ceremony did not ask B");
+                    selfOut.Clear();
+                    bOut.Clear();
+
+                    barrier.SignalAndWait(race.Cancel.Token);
+                    if (AWaits(i)) Spin(CeremonyStagger(i));
+                    Logout(self);
+                    barrier.SignalAndWait(race.Cancel.Token);
+
+                    // The vow lines only: the world's tick also streams its advice hints into the same channel.
+                    var aLines = SpellCastSupport.MiniTexts(selfOut);
+                    var bLines = SpellCastSupport.MiniTexts(bOut);
+                    int Count(List<string> lines, string line) => lines.Count(l => l == line);
+                    bool married = Vowed(self, b, married: true, keepsakes: 1) && VowGone(self, married: false)
+                                   && Vowed(bS, a, married: true, keepsakes: 1) && VowGone(bS, married: false)
+                                   && RowVowed(db.Store, a, b, married: true) && RowVowed(db.Store, b, a, married: true)
+                                   && RowVowGone(db.Store, a, married: false, keepsakes: 1)
+                                   && RowVowGone(db.Store, b, married: false, keepsakes: 1);
+                    bool engaged = Vowed(self, b, married: false, keepsakes: 0) && VowGone(self, married: true)
+                                   && Vowed(bS, a, married: false, keepsakes: 0) && VowGone(bS, married: true)
+                                   && self.WithState(() => self.CountItem("love")) == 0 && bS.WithState(() => bS.CountItem("love")) == 0
+                                   && RowVowed(db.Store, a, b, married: false) && RowVowed(db.Store, b, a, married: false)
+                                   && RowVowGone(db.Store, a, married: true, keepsakes: 0)
+                                   && RowVowGone(db.Store, b, married: true, keepsakes: 0);
+                    bool weddingFirst = married && Count(aLines, Pronounced) == 1 && Count(bLines, Pronounced) == 1
+                                        && Count(aLines, BothPresent) + Count(bLines, BothPresent) == 0;
+                    bool teardownFirst = engaged && Count(bLines, BothPresent) == 1 && Count(aLines, BothPresent) == 0
+                                         && Count(aLines, Pronounced) + Count(bLines, Pronounced) == 0;
+                    if (weddingFirst) wed++;
+                    if (teardownFirst) refused++;
+                    if (!(weddingFirst || teardownFirst))
+                    {
+                        wrongRounds.Add($"{i} ({(ARanksFirst(i) ? "A" : "B")} ranks first, {(AWaits(i) ? "A" : "B")} waits " +
+                                        $"{CeremonyStagger(i).TotalMilliseconds} ms)");
+                        if (Interlocked.Increment(ref wrong) == 1)
+                            firstWrong = $"round {i} (A ranks first {self.StateRank < bS.StateRank}): A {VowState(self)}, B {VowState(bS)}; " +
+                                         $"rows A {RowVowState(db.Store, a)}, B {RowVowState(db.Store, b)}; A's lines " +
+                                         $"[{string.Join(" | ", aLines)}]; B's lines [{string.Join(" | ", bLines)}]";
+                    }
+
+                    Logout(bS);
+                    Release(b, bS);
+                    Release(a, self);
+                    (aS, bS) = (null, null);
+                    race.Progress.Bump();
+                }
+            }
+
+            void BSide()
+            {
+                for (int i = 0; i < CeremonyRaceRounds; i++)
+                {
+                    barrier.SignalAndWait(race.Cancel.Token);
+                    var fiance = bS!;
+                    if (!AWaits(i)) Spin(CeremonyStagger(i));
+                    fiance.Receive(MenuFrame(1));   // "I do."
+                    barrier.SignalAndWait(race.Cancel.Token);
+                }
+            }
+
+            RunRace(race, "the fiance's \"I do\" racing the bride's logout", ASide, BSide);
+            _out.WriteLine($"{race.Progress.Rounds} rounds: the wedding first {wed}, the teardown first {refused}; {wrong} wrong " +
+                           $"[{string.Join(", ", wrongRounds)}]; first: {firstWrong ?? "none"}");
+
+            Assert.Null(race.Fault);
+            Assert.Equal(CeremonyRaceRounds, race.Progress.Rounds);
+            Assert.True(wrong == 0, $"{wrong} rounds ended wrong; the first: {firstWrong}");
+            Assert.True(wed > 0 && refused > 0, $"the two never crossed both ways: the wedding first {wed}, the teardown first {refused}");
+        }
+        finally
+        {
+            race.Done = true;
+            if (race.Settled)
+            {
+                Release(a, aS);
+                Release(b, bS);
+            }
+        }
+    }
+
     // ===== logging in and out ==============================================================================
 
     private static string Name(string tag) => $"Vh{tag}{Interlocked.Increment(ref _serial)}";
@@ -1777,6 +2501,16 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
     /// <summary>The Chapel's last line for a paid break or divorce.</summary>
     private static string DonePage(bool married) => married ? "You are now divorced." : "It is done.";
+
+    /// <summary>The Chapel's closing box to the bride once the ceremony has married both.</summary>
+    private const string Congratulations = "Congratulations! You are both now married.";
+
+    /// <summary>The status line the ceremony sends each of the two it married.</summary>
+    private const string Pronounced = "I now pronounce you (married)";
+
+    /// <summary>The ceremony's line for a partner who is not there: the Chapel's answer when the fiancé is not online,
+    /// and the status line a wedding refused for one of the two going away sends the other.</summary>
+    private const string BothPresent = "Both parties must be present for the ceremony to commence";
 
     /// <summary>The divorce's page for a player with too little experience, before the sacrifice is offered.</summary>
     private const string SacrificeOffer =
@@ -1844,6 +2578,18 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
+    /// <summary><paramref name="name"/>'s row, standing beside Crystal and engaged to <paramref name="other"/> with the
+    /// three days' wait over, as the proposee (who may start the ceremony) or the proposer (who is asked).</summary>
+    private static Character EngagedForTheCeremony(string name, string other, NpcDef def, bool proposee)
+    {
+        var (x, y) = proposee ? NearCrystal : AlsoNearCrystal;
+        var c = NewCharacter(name, def.Map, x, y);
+        VowRow(c, other, married: false);
+        c.IsProposee = proposee;
+        c.MarriageTimer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1;
+        return c;
+    }
+
     private static void GiveRow(Character c, string key)
     {
         var def = Content.ItemByKey(key)!;
@@ -1868,6 +2614,16 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
                 self.AddLegend($"Engaged to {other} ({Character.GameDate})", "engaged", 6, 1);
                 self.SetEngaged(other, isProposee: false, DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200);
             }
+        });
+
+    /// <summary>An online player's engagement moved to <paramref name="other"/>, as a proposal's "yes" writes the
+    /// proposer's half (<c>PromptProposal</c>: the legend, replaced by name, and the fields), under its own
+    /// monitor.</summary>
+    private static void EngageTo(Session self, string other) =>
+        self.WithState(() =>
+        {
+            self.AddLegend($"Engaged to {other} ({Character.GameDate})", "engaged", 6, 1);
+            self.SetEngaged(other, isProposee: false, DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200);
         });
 
     /// <summary>Loves in the bag up to <paramref name="count"/>: the keepsake, plus any bought from the Chapel's shop
@@ -1905,14 +2661,21 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
 
     /// <summary>An outbound that keeps every frame and whether the thread that handed it over held the owner's state
     /// monitor at that moment (<c>Session.StateHeld</c>, <c>Monitor.IsEntered</c>): <c>Session.Send</c> hands each
-    /// frame to <see cref="IOutbound.Send"/> synchronously, on the sending thread.</summary>
+    /// frame to <see cref="IOutbound.Send"/> synchronously, on the sending thread. Every frame also goes on to
+    /// <see cref="Rec"/>, so the class's dialog helpers can drive and read a player who logged in on this.</summary>
     private sealed class HeldOutbound : IOutbound
     {
         private readonly List<(byte[] Frame, bool Held)> _frames = new();
         private readonly object _gate = new();
         public Session? Owner;
+        public readonly RecordingOutbound Rec;
 
-        public HeldOutbound(string remote) => Remote = remote;
+        public HeldOutbound(string remote)
+        {
+            Remote = remote;
+            Rec = new RecordingOutbound(remote);
+        }
+
         public string Remote { get; }
         public int Capacity => int.MaxValue;
         public int QueueDepth => 0;
@@ -1922,15 +2685,24 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         {
             bool held = Owner?.StateHeld ?? false;
             lock (_gate) _frames.Add((frame, held));
-            return true;
+            return Rec.Send(frame);
         }
 
-        public void Close() => Closed = true;
+        public void Close()
+        {
+            Closed = true;
+            Rec.Close();
+        }
 
         public void Clear()
         {
             lock (_gate) _frames.Clear();
+            Rec.Clear();
         }
+
+        /// <summary>Every status line (<c>0x0A</c>) so far, with its flag.</summary>
+        public List<(string Text, bool Held)> Lines() =>
+            Sent().Where(s => s.Op == ServerOp.MiniText).Select(s => (MiniTextOf(s.Body), s.Held)).ToList();
 
         /// <summary>Every frame so far, decrypted as <see cref="RecordingOutbound.BodiesOf"/> does, with its flag.</summary>
         public List<(byte Op, byte[] Body, bool Held)> Sent()
@@ -1948,6 +2720,24 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// <summary>A <c>0x0A</c> body's text: the type, the u16BE length, the ASCII (<c>SpellCastSupport.MiniTexts</c>).</summary>
     private static string MiniTextOf(byte[] body) =>
         body.Length < 3 ? "" : Encoding.ASCII.GetString(body, 3, Math.Min((body[1] << 8) | body[2], body.Length - 3));
+
+    /// <summary>Every frame <paramref name="o"/> holds, as its opcodes in order and the first 16 hex digits of a SHA-256
+    /// over each opcode and decrypted body, with the names <paramref name="a"/> and <paramref name="b"/> put back to
+    /// &lt;A&gt; and &lt;B&gt;: two builds that send the same frames print the same line.</summary>
+    private static string Fingerprint(RecordingOutbound o, string a, string b)
+    {
+        var ops = new List<string>();
+        var all = new StringBuilder();
+        foreach (var frame in o.Frames)
+        {
+            if (!TkPacket.TryParse(frame, out var pkt, out _)) { ops.Add("?"); continue; }
+            ops.Add($"{pkt.Opcode:x2}");
+            string body = Encoding.Latin1.GetString(TkCrypt.Crypt(pkt.Body, pkt.Increment, TkCrypt.LoginKey));
+            all.Append($"{pkt.Opcode:x2}:{body.Replace(a, "<A>").Replace(b, "<B>")}\n");
+        }
+        byte[] hash = System.Security.Cryptography.SHA256.HashData(Encoding.Latin1.GetBytes(all.ToString()));
+        return $"[{string.Join(" ", ops)}] sha256 {Convert.ToHexString(hash)[..16]}";
+    }
 
     /// <summary>The read loop's exit on a socket-free session: the teardown leaves the map, parks the slot and saves.
     /// Its only await is on an already-completed writer, so it runs to its end here.</summary>
@@ -1994,6 +2784,13 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     private static string VowState(Session s) =>
         s.WithState(() => $"[married={s.HasLegend("married")} engaged={s.HasLegend("engaged")} spouse='{s.CharSpouseName}' " +
                           $"fiance='{s.CharFiance}' love={s.CountItem("love")}]");
+
+    /// <summary>Everything a wedding or an engagement writes on a player, legends by their text: compared before and
+    /// after an answer that must write nothing.</summary>
+    private static string WholeVow(Session s) =>
+        s.WithState(() => $"{VowState(s)} proposee={s.CharIsProposee} timer={s.CharMarriageTimer} legends=[" +
+                          string.Join(" + ", ((Character)CharField.GetValue(s)!).Legends
+                                                 .Where(l => l.Name is "engaged" or "married").Select(l => l.Text)) + "]");
 
     private static Character Row(CharacterStore store, string name)
     {
@@ -2106,6 +2903,18 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         Assert.True(s.DialogBusy, "the Chapel's last question is not waiting");
         var question = LastMenu(o, divorce ? "Are you sure you want this divorce?" : "Are you sure you want to end the engagement?");
         Assert.Equal(2, question.Count);
+    }
+
+    /// <summary>Click Crystal, pick Marriage by its label on the wire and answer "Yes" to "Are you certain you wish to
+    /// devote yourself to this man or woman for life?": the ceremony then asks the fiancé, and waits for him.</summary>
+    private static void AskTheFiance(Session s, RecordingOutbound o, Mob npc, NpcDef def)
+    {
+        Click(s, npc);
+        int pick = LastMenu(o, $"{def.Name}: How can I help you today?").IndexOf("Marriage") + 1;
+        Assert.True(pick > 0, "Crystal's top menu did not offer Marriage");
+        s.Receive(MenuFrame((byte)pick));
+        LastMenu(o, "Are you certain you wish to devote yourself to this man or woman for life?");
+        s.Receive(MenuFrame(1));   // "Yes"
     }
 
     /// <summary>Answer every prompt the dialog sends from here on as a player who says yes to everything: the first
@@ -2283,6 +3092,15 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// <paramref name="stepMs"/>, each step held for two rounds so both sides (or both <c>StateRank</c> orders) run
     /// it.</summary>
     private static TimeSpan Stagger(int round, double stepMs = 0.4) => TimeSpan.FromMilliseconds(round / 2 % 8 * stepMs);
+
+    /// <summary>The ceremony race's round <paramref name="round"/>: whether A logs in first (and so ranks first),
+    /// whether A's answer is the one that waits, and how long it waits: 0 to 0.7 ms in 0.1 ms steps, each step held
+    /// for four rounds, so that every step runs both orders with either side waiting. The window the race is about is
+    /// narrower than a millisecond: B's answer has to read A's half while A's break holds A's monitor and has not yet
+    /// ended it.</summary>
+    private static bool ARanksFirst(int round) => round % 2 == 0;
+    private static bool AWaits(int round) => round / 2 % 2 == 0;
+    private static TimeSpan CeremonyStagger(int round) => TimeSpan.FromMilliseconds(round / 4 % 8 * 0.1);
 
     /// <summary>Busy-wait <paramref name="span"/> on the calling thread, holding whatever it holds.</summary>
     private static void Spin(TimeSpan span)

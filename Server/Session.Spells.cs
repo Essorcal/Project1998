@@ -3805,12 +3805,14 @@ public sealed partial class Session
 
     /// <summary>Runs the wedding ceremony against this player's current fiancé (RTK
     /// <c>ChapelNpc.marriageprompt</c>): asks the FIANCÉ (the original proposer) for their "I do", then
-    /// marries both on accept. Returns the message the Chapel should show, or null if the outcome was
-    /// already messaged directly (a decline).</summary>
+    /// marries both on accept, if the engagement still holds and neither of the two is going away. Returns the
+    /// message the Chapel should show, or null if the outcome was already messaged directly (a decline, or a
+    /// wedding refused when the fiancé answered).</summary>
     internal async Task<string?> RunMarriageCeremony()
     {
+        const string BothPresent = "Both parties must be present for the ceremony to commence";
         var fiance = _world.Online.FindPlayer(_char.Fiance);
-        if (fiance is null) return "Both parties must be present for the ceremony to commence";
+        if (fiance is null) return BothPresent;
         // The fiancé's legends, read inside the fiancé's monitor (#29), as the proposer's checks of the beloved are
         // (RunProposeAsync): this runs on the bride's thread, under the bride's monitor and never World._lock, and
         // FindPlayer searches every map, so the fiancé may be anywhere with his own handlers editing that list. Read
@@ -3834,19 +3836,66 @@ public sealed partial class Session
         // Both characters change together — legend, engagement, spouse and the keepsake — and the whole
         // ceremony runs on the FIANCÉ's thread (their dialog reply is what resumed us). One critical section
         // across the pair, in the usual rank order, so neither half can be saved or read mid-wedding (#29).
+        //
+        // The section reads the engagement again before it writes anything (PR #355's review, O1; Caleb,
+        // 2026-10-21). The question waits as long as the fiancé takes to answer, and the bride's own dialog is
+        // free meanwhile: she could break it off at the Chapel, paying for it and ending both halves, and his
+        // "I do" then married them anyway. Now both halves must still name each other and neither may hold a
+        // marriage. Otherwise nothing is written, and each reads the Chapel's "has already ended." line naming
+        // the other, sent here inside both monitors (a send numbers the packet with that player's own counter,
+        // which their monitor guards), and the Chapel says nothing more. The read must be inside the section:
+        // made before it, it could pass while a break that holds the bride's monitor has not yet ended her
+        // half, and this thread would then wait for that monitor and marry what the break had ended.
+        //
+        // Before that, the section refuses a wedding if either of the two is going away (Caleb, 2026-10-22,
+        // decision 17; PR #365's review, O1). The bride can log out while the question waits, and log back in.
+        // The wedding then ran on the session she had left: the fiancé ended married in memory and in his row
+        // while her new session and her row stayed engaged, and a bride who stayed out was married with nothing
+        // said, her lines going to a closed connection. Going away is the rule the Chapel's ends use
+        // (EndEngagement): _leaving, which the read loop's teardown sets first, under this monitor, or _closed,
+        // which a connection the server closes itself (a kick, a replacing login, the slow-client drop) sets
+        // before its teardown runs. Nothing is written, and each of the two still present reads the line the
+        // ceremony gives a partner who is not there. A close that lands after this read, without the monitor,
+        // is not seen: the wedding is written and that player's lines are lost, as the ends' own rule says.
         var bride = this;
+        bool wed = false;
         WithStatePair(bride, fiance, () =>
         {
+            bool brideAway = GoingAway(bride), fianceAway = GoingAway(fiance);
+            if (brideAway || fianceAway)
+            {
+                if (!brideAway) bride.SendMiniText(BothPresent);
+                if (!fianceAway) fiance.SendMiniText(BothPresent);
+                return;
+            }
+            if (!StillEngaged(bride, them) || !StillEngaged(fiance, me))
+            {
+                bride.SendMiniText(ChapelAbility.AlreadyEnded("engagement", them));
+                fiance.SendMiniText(ChapelAbility.AlreadyEnded("engagement", me));
+                return;
+            }
             bride.AddLegend($"Married to {them} ({date})", "married", 6, 1);
             fiance.AddLegend($"Married to {me} ({date})", "married", 6, 1);
             bride.RemoveLegend("engaged"); fiance.RemoveLegend("engaged");
             bride.ClearEngagement(); fiance.ClearEngagement();
             bride.SetSpouse(them); fiance.SetSpouse(me);
             bride.GiveRewardItem("love", 1); fiance.GiveRewardItem("love", 1);
+            wed = true;
         });
+        if (!wed) return null;
         SendMiniText("I now pronounce you (married)");
         fiance.SendMiniText("I now pronounce you (married)");
         return "Congratulations! You are both now married.";
+
+        // Still engaged to the partner, by the Chapel's own match (VowNames, as NpcContext.IsEngagedTo), and married
+        // to nobody, in either form a marriage takes: the legend the fiancé's check above reads, and the spouse the
+        // Chapel's Divorce reads. Called inside the pair's section, so it reads only what that section holds.
+        static bool StillEngaged(Session s, string partner) =>
+            VowNames(s._char.Fiance, partner) && string.IsNullOrEmpty(s._char.Spouse) && !s.HasLegend("married");
+
+        // Going away, by the Chapel's ends' rule (EndEngagement): the teardown's latch, read under the section's
+        // monitor, or the connection's close, set once and read with Volatile as everywhere else.
+        static bool GoingAway(Session s) => s._leaving || Volatile.Read(ref s._closed) != 0;
     }
 
     /// <summary>Which <c>Inns.csv</c> group this character returns to (RTK <c>Player.returnFunc</c>, which
