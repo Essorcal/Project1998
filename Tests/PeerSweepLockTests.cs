@@ -19,7 +19,9 @@ namespace Tests;
 /// and the pending reply (<c>_dlgReply</c>) their next 0x3A answers. The proposal, the mentorship offer and the
 /// wedding's question open them on the OTHER player from the asker's thread, and the wedding's closing box is opened
 /// on the bride from the fiancé's thread (the ceremony resumes there). Both halves were written without that
-/// player's monitor, while their own read loop reads and clears <c>_dlgReply</c> under it.</item>
+/// player's monitor, while their own read loop reads and clears <c>_dlgReply</c> under it. The proposal's "yes" is
+/// also where the proposer now gives up Propose, on the beloved's thread inside the proposer's monitor (#345's
+/// item 5c); before, the cast took it.</item>
 /// <item><b>Sends into another player</b> on those paths. No fact here: a send writes nothing a monitor guards
 /// (the report says why), so nothing changed.</item>
 /// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
@@ -43,10 +45,11 @@ namespace Tests;
 [Collection("world")]
 public sealed class PeerSweepLockTests
 {
-    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group.
+    // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62460,
+    // 62467 and 62468 for the Propose-kept-until-"yes" facts (#345's item 5c).
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
-                         PromptMidMap = 62453;
+                         PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -73,6 +76,12 @@ public sealed class PeerSweepLockTests
         typeof(Session).GetMethod("ApplyCast", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo DlgReplyField =
         typeof(Session).GetField("_dlgReply", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo TearDown =
+        typeof(Session).GetMethod("TearDownWorldState", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    /// <summary>The Propose spell (Spells.csv 409), which <c>Session.PromptProposal</c> takes from the proposer on
+    /// "yes".</summary>
+    private static SpellDef Propose => Content.SpellByKey("propose")!;
 
     public PeerSweepLockTests(SessionFixture fx)
     {
@@ -151,7 +160,7 @@ public sealed class PeerSweepLockTests
         var run = new HeldRun();
         try
         {
-            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p)),
+            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p, Propose)),
                                     untouched: () => !b.DialogBusy && !bOut.HasMenu(prompt));
             AssertWaited(run, "the proposal", "the beloved's prompt was opened while another thread held their monitor");
 
@@ -164,6 +173,147 @@ public sealed class PeerSweepLockTests
         finally
         {
             if (run.Settled) Leave(PromptHeldMap, p, b);
+        }
+    }
+
+    // ----- Propose is given up on "yes" only (#345's pre-existing item 5c) -----------------------------
+
+    /// <summary>
+    /// <b>Anything but "yes" leaves the proposer their Propose spell</b> (#345's item 5c; RTK propose.lua removes it in
+    /// the accept branch alone, :102 and :118, and its decline at :120-124 keeps it). The real cast and the typed
+    /// name, then one of: the beloved declines ("decline"); the box is still up and nobody has answered, which is
+    /// also where a beloved who never answers leaves it, since nothing times the prompt out ("unanswered"); the
+    /// beloved logs out with the box up (the real teardown, "logout"). The proposer still knows Propose, in the
+    /// book they will save, and the decline still tells both what it always did.
+    /// <para>Red on 6de1d24 in Debug and Release, all three ("the proposer lost Propose"): the spell was forgotten at
+    /// the cast, before the prompt opened, so it was gone whatever the beloved did.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("decline")]
+    [InlineData("unanswered")]
+    [InlineData("logout")]
+    public void AProposerKeepsProposeUnlessTheBelovedSaysYes(string answer)
+    {
+        var (b, bOut, _) = Player("KeptBeloved", KeptMap, 22, 20);
+        var (p, pOut, _) = Player("KeptProposer", KeptMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            Assert.True(LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?").Held, "the proposal never opened");
+            pOut.Clear();
+
+            switch (answer)
+            {
+                case "decline":
+                    OnOwnThread(() => b.Receive(MenuFrame(2)));
+                    Assert.Contains($"{b.CharName} regretably must decline.", pOut.MiniTexts());
+                    Assert.Contains(Declined, bOut.MiniTexts());
+                    break;
+                case "unanswered":
+                    Assert.True(b.DialogBusy, "the beloved's box is not waiting");
+                    break;
+                case "logout":
+                    OnOwnThread(() => b.WithState(() => TearDown.Invoke(b, null)));
+                    Assert.Empty(pOut.MiniTexts());   // told nothing, as before: the prompt's await never resumes
+                    break;
+            }
+
+            p.WithState(() => Assert.True(p.KnowsSpellId(Propose.Id) && !p.HasLegend("engaged"),
+                                          $"the proposer lost Propose ({answer})"));
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
+        }
+        finally
+        {
+            Leave(KeptMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>"Yes" takes Propose from the proposer inside the proposer's monitor, and saves it.</b> The real cast, name and
+    /// "yes". The beloved's reply resumes the prompt on the BELOVED's thread, so this is a write to another player's
+    /// spellbook: each of its 0x18 frames to the proposer was sent with the proposer's monitor held, the book no longer
+    /// has the spell, and the proposer's saved row is engaged and without it.
+    /// <para>Red on 6de1d24 in Debug and Release: "Assert.NotEmpty() Failure: Collection was empty", the "yes" sent the
+    /// proposer no 0x18, since the cast had already taken the spell. Red in both builds with a plain <c>lock</c> on the
+    /// proposer object in place of the monitor, or with no lock: "Tuple ([1], False)", the frame went out with the
+    /// proposer's monitor not held (and in Debug, <c>SaveChar</c>'s guard also stops the rest of the "yes").</para>
+    /// </summary>
+    [Fact]
+    public void AYesTakesProposeFromTheProposerInsideTheirMonitor()
+    {
+        var (b, bOut, _) = Player("YesBeloved", YesMap, 22, 20);
+        var (p, pOut, _) = Player("YesProposer", YesMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            pOut.Clear();
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            var removes = pOut.Bodies(ServerOp.RemoveSpell);
+            Assert.NotEmpty(removes);
+            Assert.All(removes, f => Assert.True(f.Held, "a 0x18 went to the proposer outside the proposer's monitor"));
+            p.WithState(() => Assert.True(!p.KnowsSpellId(Propose.Id) && p.HasLegend("engaged"),
+                                          "the proposer still knows Propose after the yes, or is not engaged"));
+            var row = _fx.Store.Load(p.CharName);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            Assert.Equal((false, true), (row.Character!.Spells.Contains(Propose.Id),
+                                         row.Character.Legends.Any(l => l.Name == "engaged")));
+            Assert.Contains($"{b.CharName} accepts!", pOut.MiniTexts());
+        }
+        finally
+        {
+            Leave(YesMap, p, b);
+        }
+    }
+
+    /// <summary>
+    /// <b>A proposer who logged out before the "yes" comes back engaged and without Propose</b>, the way the "yes"
+    /// already treated their legend: written to their departed session, and saved. The real cast and name; the
+    /// proposer's real teardown (off the map, the row saved with the spell); then the beloved's "yes".
+    /// <para>Green on 6de1d24 too, where the cast had already forgotten it; this pins the handling. Red in Debug and
+    /// Release if the "yes" skips a departed proposer's spellbook while it still writes their legend:
+    /// "Expected (False, True) / Actual (True, True)".</para>
+    /// </summary>
+    [Fact]
+    public void AProposerWhoLoggedOutBeforeTheYesIsSavedEngagedAndWithoutPropose()
+    {
+        var (b, bOut, _) = Player("GoneBeloved", GoneProposerMap, 22, 20);
+        var (p, _, _) = Player("GoneProposer", GoneProposerMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            OnOwnThread(() => p.WithState(() => TearDown.Invoke(p, null)));
+            Assert.Null(_fx.World.Online.FindPlayer(p.CharName));   // the logout took them off the map
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            var row = _fx.Store.Load(p.CharName);
+            Assert.Equal(CharacterLoadStatus.Ok, row.Status);
+            Assert.Equal((false, true), (row.Character!.Spells.Contains(Propose.Id),
+                                         row.Character.Legends.Any(l => l.Name == "engaged")));
+            b.WithState(() => Assert.True(b.HasLegend("engaged") && b.CharFiance == p.CharName, "the beloved is not engaged"));
+        }
+        finally
+        {
+            Leave(GoneProposerMap, p, b);
         }
     }
 
@@ -201,7 +351,7 @@ public sealed class PeerSweepLockTests
         bool ownAnswered = false, engaged = false;
         try
         {
-            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p)),
+            WhileAnotherThreadHolds(run, b, () => p.WithState(() => _ = b.PromptProposal(p, Propose)),
                 untouched: () =>
                 {
                     b.Receive(MenuFrame(1));   // the pick being handled: "Yes" on the beloved's own menu
@@ -402,7 +552,7 @@ public sealed class PeerSweepLockTests
                     Dwell();
                     if (!ReferenceEquals(DlgReplyField.GetValue(self), before)) Interlocked.Increment(ref torn);
                 });
-                self.WithState(() => _ = other.PromptProposal(self));
+                self.WithState(() => _ = other.PromptProposal(self, Propose));
                 self.Receive(MenuFrame(2));
                 self.WithState(() => _ = other.PromptMentorship(self));
                 self.Receive(MenuFrame(2));

@@ -3571,13 +3571,35 @@ public sealed partial class Session
         if (rings < 1)
         { SendMiniText("You have not given them an engagement ring yet."); return; }
 
-        ForgetOneSpell(sp.Id);
-        _ = target.PromptProposal(this);
+        // Propose stays in the book until the beloved says "yes" (PromptProposal, RTK propose.lua:102).
+        _ = target.PromptProposal(this, sp);
     }
 
     /// <summary>Runs on the PROPOSEE's own session (called cross-session — same pattern as Trade/Party):
-    /// shows the accept/decline prompt and, on accept, engages both parties.</summary>
-    internal async Task PromptProposal(Session proposer)
+    /// shows the accept/decline prompt and, on accept, engages both parties.
+    /// <para><b>The proposer gives <paramref name="propose"/> up on "yes", and only then</b> (#345's pre-existing
+    /// item 5c; Caleb, 2026-10-21). RTK removes it in the accept branch alone (propose.lua:102, and again at :118),
+    /// and its decline (:120-124) keeps it. This port used to forget it at the cast, before this prompt opened, so
+    /// anything but "yes" cost the proposer the spell, and a new ring (4000 gold, a 24-hour wait) to get it back.
+    /// What each answer does, before and after:</para>
+    /// <list type="bullet">
+    /// <item>"Yes": engaged as before; the spell was already gone, and is now forgotten here, in RTK's place: after
+    ///   the proposer's legend, before the ring is taken. Saved once (<c>ForgetOneSpell</c>'s own save).</item>
+    /// <item>"No" (or the box closed): the proposer is told as before; the spell was lost, and is now kept.</item>
+    /// <item>The beloved logs out, or warps, with the box up: this await never resumes (nothing completes an
+    ///   orphaned reply) and the proposer is told nothing, as before; the spell was lost, and is now kept.</item>
+    /// <item>The beloved never answers: the same; there is no timeout. Lost before, kept now.</item>
+    /// </list>
+    /// <para>Keeping it means the proposer can cast Propose again while a box is up, or straight after a "no". RTK
+    /// pairs its keep-on-decline with a 20-minute aether set at the cast (propose.lua:11-12), which the verb here
+    /// does not set.</para>
+    /// <para>This runs on the PROPOSEE's thread (their reply resumed it, under their monitor), so the forget is a
+    /// write to another player's spellbook: it takes the proposer's monitor, by <c>StateRank</c>, the way
+    /// <c>AddLegend</c> just above takes it for their legend; no new lock order. A proposer who logged out before
+    /// the "yes" is handled the way their legend is: <c>AddLegend</c> writes it to their departed session and saves
+    /// it, and the forget does the same, so the row that session saves is engaged and without the spell. RTK has
+    /// nothing to follow there: its Player object keeps a raw pointer to the departed session.</para></summary>
+    internal async Task PromptProposal(Session proposer, SpellDef propose)
     {
         int choice = await DlgMenu(MarriageVirtualNpc,
             $"{proposer.Snapshot().Name} proposes marriage. Do you accept?",
@@ -3588,6 +3610,7 @@ public sealed partial class Session
         {
             AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
             proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
+            proposer.WithState(() => proposer.ForgetOneSpell(propose.Id));   // RTK propose.lua:102, once
             TakeItem("engagement_ring", 1);
             long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
             SetEngaged(them, isProposee: true, timer);
