@@ -1,4 +1,5 @@
 ﻿using System.Linq;
+using MoonSharp.Interpreter;
 using Server;
 using Shared;
 using Xunit;
@@ -1418,6 +1419,113 @@ public class ContentSmokeTests
                 $"'{key}' is archetype '{fx.Archetype}' — it no longer reaches the verb that owns the slot guard");
             Assert.Equal("might", fx.BuffStat);
         }
+    }
+
+    /// <summary>THE ARCH_BUFF CENSUS (#334's, which #338 left unwritten). Every spell a player can learn whose cast
+    /// reaches <c>arch_buff</c> has a non-zero stat or an exclusivity slot, so a cast leaves an entry in the buff
+    /// list. A row with neither takes its mana, says "You cast X." and changes nothing, and a recast takes the mana
+    /// again: nothing refuses it, because the slot is what refuses it. That is the silent no-op 28 self-buffs had
+    /// until #338 (the fury twins, Serpent's Fury, Second Sight, Barrier and Human Barrier).
+    ///
+    /// <para>Each part is read from what the server itself uses.</para>
+    /// <list type="bullet">
+    /// <item><b>The route</b> is the recorded one, <c>Tests/Fixtures/spell-dispatch-routes.txt</c>, which
+    ///   <see cref="SpellDispatchRouteTests"/> holds to what <c>Session.ApplyCast</c> really does.</item>
+    /// <item><b>Taught</b> is what a trainer offers a path a character can be, at every alignment and rank
+    ///   (<see cref="Content.SpellsForClass"/>, the Learn Secret menu), and the Dog spells
+    ///   (<see cref="Content.DogSpellsFor"/>). The GM, shrine and system rows that also route to <c>arch_buff</c>
+    ///   are taught by neither, so they are not in the census.</item>
+    /// <item><b>A stat</b> is <c>Session.ReceiveTimedBuff</c>'s rule: a named stat whose amount floors to non-zero.
+    ///   <c>deduction</c> is the one stat <c>apply_buff</c> sends elsewhere, to a multiplier of its own.</item>
+    /// <item><b>The slot</b> is the answer of <c>spell_verbs.lua</c>'s own <c>buff_slot</c>: the verb's table
+    ///   first, then the row's <c>cureCat</c>. The file is compiled into a script of this fact's own, so the
+    ///   live verb host is not touched.</item>
+    /// </list>
+    ///
+    /// <para>Red when a taught <c>arch_buff</c> row loses both: with Barrier's <c>cureCat</c> emptied it names
+    /// <c>barrier_poet</c>.</para></summary>
+    [Fact]
+    public void EveryTaughtArchBuffSpellHasAStatOrASlot()
+    {
+        EnsureLoaded();
+
+        string routes = Path.Combine(RepoPaths.Root(), "Tests", "Fixtures", "spell-dispatch-routes.txt");
+        var archBuff = File.ReadLines(routes)
+            .Where(l => l.Length > 0 && l[0] != '#')
+            .Select(l => l.Split('\t'))
+            .Where(p => p.Length == 3 && p[2] == "verb=arch_buff")
+            .Select(p => p[0])
+            .ToHashSet(StringComparer.Ordinal);
+
+        var taught = new HashSet<string>(StringComparer.Ordinal);
+        var alignments = Content.Spells.Select(s => s.Alignment).Where(a => a >= 0).Distinct().ToList();
+        int topMark = Content.Spells.Max(s => s.Mark);
+        foreach (int path in Content.PlayablePaths)
+        {
+            foreach (int alignment in alignments)
+                for (int mark = 0; mark <= topMark; mark++)
+                    taught.UnionWith(Content.SpellsForClass(path, Content.MarkSpellLevel, alignment, mark)
+                                            .Select(s => s.Key));
+            taught.UnionWith(Content.DogSpellsFor(path, Content.MarkSpellLevel).Select(s => s.Key));
+        }
+
+        var census = archBuff.Where(taught.Contains).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        // A census that reaches nothing passes on nothing. These three are read only through a trainer row, an
+        // aligned twin and the Dog.
+        Assert.True(census.Count >= 30, $"the census holds only {census.Count} spells: {string.Join(", ", census)}");
+        Assert.Contains("might_rogue", census);
+        Assert.Contains("spirit_barrier_poet", census);
+        Assert.Contains("greater_blessing", census);
+
+        var buffSlot = SpellVerbsBuffSlot();
+        var bare = new List<string>();
+        foreach (var key in census)
+        {
+            var fx = Content.FxFor(Content.SpellByKey(key)!);
+            if (fx is null) bare.Add($"{key} (no spell_effects.csv row)");
+            else if (!LandsAStat(fx) && buffSlot(key, fx.CureCat) is null) bare.Add(key);
+        }
+        Assert.True(bare.Count == 0,
+            $"{bare.Count} taught arch_buff spells have no stat and no slot, so a cast takes the mana and does " +
+            $"nothing: {string.Join(", ", bare)}");
+    }
+
+    /// <summary><c>Session.ReceiveTimedBuff</c>'s test for an entry of its own, over the row's '|'-separated stats
+    /// and amounts (split as <c>Session.LuaApplyBuff</c> splits them), plus <c>apply_buff</c>'s deduction
+    /// branch.</summary>
+    private static bool LandsAStat(SpellFx fx)
+    {
+        if (fx.BuffStat == "deduction") return true;
+        static List<string> Bar(string s) =>
+            s.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()).ToList();
+        var stats = Bar(fx.BuffStat);
+        var amounts = Bar(fx.BuffAmt);
+        for (int i = 0; i < stats.Count; i++)
+        {
+            int amt = i < amounts.Count && double.TryParse(amounts[i], out var d) ? (int)Math.Floor(d) : 0;
+            if (stats[i].Length > 0 && amt != 0) return true;
+        }
+        return false;
+    }
+
+    /// <summary><c>spell_verbs.lua</c>'s chunk-level <c>buff_slot(ctx)</c>, handed back by one line appended to a
+    /// private copy of the file, and called with a table carrying the two fields it reads. Null when it names no
+    /// slot.</summary>
+    private static Func<string, string, string?> SpellVerbsBuffSlot()
+    {
+        var script = new Script(CoreModules.Preset_HardSandbox);
+        DynValue fn = script.DoString(File.ReadAllText(RepoPaths.GameData("spell_verbs.lua")) + "\nreturn buff_slot\n",
+                                      null, "spell_verbs.lua");
+        Assert.True(fn.Type == DataType.Function,
+            "spell_verbs.lua has no chunk-level buff_slot any more — the census cannot read arch_buff's slot");
+        return (key, cureCat) =>
+        {
+            var ctx = new Table(script);
+            ctx["spellKey"] = key;
+            ctx["cureCat"] = cureCat;
+            DynValue slot = script.Call(fn, ctx);
+            return slot.Type == DataType.String && slot.String.Length > 0 ? slot.String : null;
+        };
     }
 
     /// <summary>The two soundtracks are separate id SPACES, not one list. mp3 2 ("buyeo", 5.x) and midi 2
