@@ -708,7 +708,11 @@ public sealed partial class Session
         // from the character.
         if (!a.Int(0, out var id))
         { Refuse($"{a.Usage()}   (now: {_char.Nation} — {Character.NationName(_char.Nation)})"); return; }
-        _char.Nation = (byte)Math.Clamp(id, 0, Character.Nations.Length - 1);   // 0..7 only — the crest table; the client has no crest past it, and a login keeps what is saved (PR #337 review F1)
+        // 0..7 only: the crest table the @nat sweep mapped (Character.Nations). What the 4.95 HUD draws past it
+        // was never observed. A login keeps a saved 0..7 and re-derives only a nation past the table
+        // (CharacterFactory.RestoreUnusableFromCreation), so what this stores is what the character keeps
+        // (PR #337 review F1).
+        _char.Nation = (byte)Math.Clamp(id, 0, Character.Nations.Length - 1);
         if (_enteredWorld) StoreSave();
         SendStats();
         Reply($"nation set to {_char.Nation} ({Character.NationName(_char.Nation)}).");
