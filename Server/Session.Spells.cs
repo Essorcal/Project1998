@@ -3590,15 +3590,28 @@ public sealed partial class Session
     ///   orphaned reply) and the proposer is told nothing, as before; the spell was lost, and is now kept.</item>
     /// <item>The beloved never answers: the same; there is no timeout. Lost before, kept now.</item>
     /// </list>
-    /// <para>Keeping it means the proposer can cast Propose again while a box is up, or straight after a "no". RTK
-    /// pairs its keep-on-decline with a 20-minute aether set at the cast (propose.lua:11-12), which the verb here
-    /// does not set.</para>
-    /// <para>This runs on the PROPOSEE's thread (their reply resumed it, under their monitor), so the forget is a
-    /// write to another player's spellbook: it takes the proposer's monitor, by <c>StateRank</c>, the way
-    /// <c>AddLegend</c> just above takes it for their legend; no new lock order. A proposer who logged out before
-    /// the "yes" is handled the way their legend is: <c>AddLegend</c> writes it to their departed session and saves
-    /// it, and the forget does the same, so the row that session saves is engaged and without the spell. RTK has
-    /// nothing to follow there: its Player object keeps a raw pointer to the departed session.</para></summary>
+    /// <para>Keeping it is why the verb now sets RTK's 20-minute aether at the cast (propose.lua:11-12;
+    /// <c>verbs.propose</c>): without it a proposer could ask again at once after a "no", or ask two people at the
+    /// same moment.</para>
+    /// <para><b>"Yes" checks again that neither player is already engaged or married</b> (Caleb, 2026-10-21). The
+    /// cast checked both, but a box can stay up for as long as the beloved leaves it, and either player can be
+    /// committed by then: a second proposal the proposer made after the aether, accepted first, is the ordinary way.
+    /// Neither RTK's accept branch nor this one used to look again, so both "yes"es engaged, and one beloved was left
+    /// engaged to a proposer engaged to the other. Now a committed player refuses the "yes" for free: no legend, no
+    /// ring taken, no spell forgotten, nothing saved. Each player reads the line the cast gives for that case, from
+    /// their own side: the committed one "You are already committed to someone else!" (the verb's), the other one
+    /// "&lt;name&gt; is already committed to someone else!" (<see cref="RunProposeAsync"/>'s). The proposer is checked
+    /// first, as the cast checks the caster before the beloved.</para>
+    /// <para><b>Locks.</b> This runs on the PROPOSEE's thread (their reply resumed it, under their monitor), and the
+    /// "yes" writes both players: their legends, the proposer's spellbook (the forget), the ring, the engagement. It
+    /// took the proposer's monitor, by <c>StateRank</c>, for each of the proposer's writes. The check and the writes
+    /// are now one section holding both monitors (<see cref="WithStatePair"/>, the wedding's shape in
+    /// <see cref="RunMarriageCeremony"/>): the same two monitors in the same order, held across the decision, so two
+    /// beloveds saying "yes" to one proposer at once are taken one after the other and the second finds the first's
+    /// engagement. Nothing in the section enters the Lua gate or <c>World._lock</c>. A proposer who logged out before
+    /// the "yes" is handled the way their legend is: it is written to their departed session and saved, and so is the
+    /// forget, so the row that session saves is engaged and without the spell. RTK has nothing to follow there: its
+    /// Player object keeps a raw pointer to the departed session.</para></summary>
     internal async Task PromptProposal(Session proposer, SpellDef propose)
     {
         int choice = await DlgMenu(MarriageVirtualNpc,
@@ -3608,15 +3621,31 @@ public sealed partial class Session
         string me = Snapshot().Name, them = proposer.Snapshot().Name;
         if (choice == 1)
         {
-            AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
-            proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
-            proposer.WithState(() => proposer.ForgetOneSpell(propose.Id));   // RTK propose.lua:102, once
-            TakeItem("engagement_ring", 1);
-            long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
-            SetEngaged(them, isProposee: true, timer);
-            proposer.SetEngaged(me, isProposee: false, timer);
-            proposer.SendMiniText($"{me} accepts!");
-            SendMiniText($"You are now engaged to {them}!");
+            var beloved = this;
+            WithStatePair(beloved, proposer, () =>
+            {
+                if (proposer.HasLegend("engaged") || proposer.HasLegend("married"))
+                {
+                    proposer.SendMiniText("You are already committed to someone else!");
+                    beloved.SendMiniText($"{them} is already committed to someone else!");
+                    return;
+                }
+                if (beloved.HasLegend("engaged") || beloved.HasLegend("married"))
+                {
+                    proposer.SendMiniText($"{me} is already committed to someone else!");
+                    beloved.SendMiniText("You are already committed to someone else!");
+                    return;
+                }
+                beloved.AddLegend($"Engaged to {them} ({Character.GameDate})", "engaged", 6, 1);
+                proposer.AddLegend($"Engaged to {me} ({Character.GameDate})", "engaged", 6, 1);
+                proposer.ForgetOneSpell(propose.Id);   // RTK propose.lua:102, once; under the proposer's monitor (the pair)
+                beloved.TakeItem("engagement_ring", 1);
+                long timer = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 259200;   // RTK: 3-day cool-down
+                beloved.SetEngaged(them, isProposee: true, timer);
+                proposer.SetEngaged(me, isProposee: false, timer);
+                proposer.SendMiniText($"{me} accepts!");
+                beloved.SendMiniText($"You are now engaged to {them}!");
+            });
         }
         else
         {

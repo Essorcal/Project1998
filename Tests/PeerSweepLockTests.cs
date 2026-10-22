@@ -46,11 +46,12 @@ namespace Tests;
 public sealed class PeerSweepLockTests
 {
     // Content-free maps (no Maps.csv row) that no other class uses: 62430-62455, one line per group, and 62460,
-    // 62467-62469 for the Propose facts (#345's item 5c, and Propose's 20-minute aether).
+    // 62467-62469 and 62485-62487 for the Propose facts (#345's item 5c, Propose's 20-minute aether and the
+    // re-check at "yes").
     private const ushort PromptMap = 62430, PromptHeldMap = 62431, PromptRaceMap = 62432, PromptPinMap = 62433,
                          MentorMap = 62434, MentorHeldMap = 62435, WeddingMap = 62436, WeddingRaceMap = 62437,
                          PromptMidMap = 62453, KeptMap = 62460, YesMap = 62467, GoneProposerMap = 62468,
-                         AetherMap = 62469;
+                         AetherMap = 62469, CommittedMap = 62485, TwoYesMap = 62486, YesRaceMap = 62487;
     private const ushort SlotRaceMap = 62438, ClickHeldMap = 62440, ClickRaceMap = 62441, AskRaceMap = 62442,
                          ApproachFrom = 62446, ApproachTo = 62447, ApproachSpellFrom = 62448, ApproachSpellTo = 62449,
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
@@ -240,9 +241,10 @@ public sealed class PeerSweepLockTests
     /// spellbook: each of its 0x18 frames to the proposer was sent with the proposer's monitor held, the book no longer
     /// has the spell, and the proposer's saved row is engaged and without it.
     /// <para>Red on 6de1d24 in Debug and Release: "Assert.NotEmpty() Failure: Collection was empty", the "yes" sent the
-    /// proposer no 0x18, since the cast had already taken the spell. Red in both builds with a plain <c>lock</c> on the
-    /// proposer object in place of the monitor, or with no lock: "Tuple ([1], False)", the frame went out with the
-    /// proposer's monitor not held (and in Debug, <c>SaveChar</c>'s guard also stops the rest of the "yes").</para>
+    /// proposer no 0x18, since the cast had already taken the spell. The proposer's monitor here is the "yes" branch's
+    /// pair (both players, the re-check and every write). Red in both builds with a plain <c>lock</c> on the proposer
+    /// object in place of the pair, or with no lock: "Tuple ([1], False)", the frame went out with the proposer's
+    /// monitor not held (and in Debug, <c>SaveChar</c>'s guard also stops the rest of the "yes").</para>
     /// </summary>
     [Fact]
     public void AYesTakesProposeFromTheProposerInsideTheirMonitor()
@@ -369,6 +371,197 @@ public sealed class PeerSweepLockTests
             Leave(AetherMap, p, b);
         }
     }
+
+    private const string YouAreCommitted = "You are already committed to someone else!";
+
+    /// <summary>
+    /// <b>"Yes" from or to a player who has become engaged or married since the cast is refused, for free</b> (Caleb,
+    /// 2026-10-21). The real cast and name put the box up on the beloved; then one of the two (<paramref name="who"/>)
+    /// becomes committed to a third player (<paramref name="vow"/>: engaged, both halves, or a marriage legend),
+    /// standing in for however that came about while the box was up; then the beloved says "yes". Nobody is engaged
+    /// by it: the beloved keeps the ring, the proposer keeps Propose, the third player's vow is untouched, and each of
+    /// the two reads the cast's line for the case from their own side.
+    /// <para>Red on a9f9449 in Debug and Release, all four ("the proposer was engaged to the beloved, or lost
+    /// Propose"): the "yes" engaged them anyway. Red the same way with the re-check removed (all four), with only the
+    /// proposer's half removed (the proposer cases), and with only the beloved's half removed (the beloved cases).</para>
+    /// </summary>
+    [Theory]
+    [InlineData("proposer", "engaged")]
+    [InlineData("proposer", "married")]
+    [InlineData("beloved", "engaged")]
+    [InlineData("beloved", "married")]
+    public void AYesWithAPlayerAlreadyCommittedIsRefusedForFree(string who, string vow)
+    {
+        var (b, bOut, _) = Player("CommitBeloved", CommittedMap, 22, 20);
+        var (p, pOut, _) = Player("CommitProposer", CommittedMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        var (x, _, _) = Player("CommitThird", CommittedMap, 24, 20);
+        try
+        {
+            GiveRing(b);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(b.CharName));
+            });
+            LastMenu(bOut, $"{p.CharName} proposes marriage. Do you accept?");
+            var committed = who == "proposer" ? p : b;
+            if (vow == "engaged") { Engage(committed, x, proposee: false); Engage(x, committed, proposee: true); }
+            else committed.WithState(() => committed.AddLegend($"Married to {x.CharName} ({Character.GameDate})", "married", 6, 1));
+            pOut.Clear(); bOut.Clear();
+
+            OnOwnThread(() => b.Receive(MenuFrame(1)));
+
+            // Nobody engaged to the other, and the "yes" cost nothing.
+            p.WithState(() => Assert.True(p.CharFiance != b.CharName && p.KnowsSpellId(Propose.Id),
+                                          "the proposer was engaged to the beloved, or lost Propose"));
+            b.WithState(() => Assert.True(b.CharFiance != p.CharName && b.CountItem("engagement_ring") == 1,
+                                          "the beloved was engaged to the proposer, or lost the ring"));
+            if (vow == "engaged")
+                committed.WithState(() => Assert.True(committed.CharFiance == x.CharName && committed.HasLegend("engaged"),
+                                                      "the existing engagement was touched"));
+            var (committedOut, otherOut) = who == "proposer" ? (pOut, bOut) : (bOut, pOut);
+            string other = who == "proposer" ? p.CharName : b.CharName;
+            Assert.Equal(new[] { YouAreCommitted }, committedOut.MiniTexts());
+            Assert.Equal(new[] { $"{other} is already committed to someone else!" }, otherOut.MiniTexts());
+            Assert.Empty(pOut.Bodies(ServerOp.RemoveSpell));
+        }
+        finally
+        {
+            Leave(CommittedMap, p, b, x);
+        }
+    }
+
+    /// <summary>
+    /// <b>Two beloveds saying "yes" to one proposer engage the proposer once</b>: the ordinary way to a committed
+    /// proposer at "yes". The proposer proposes to one, waits out the aether (cleared here), proposes to a second; the
+    /// second says "yes" first and is engaged; then the first says "yes" and is refused for free.
+    /// <para>Red on a9f9449 in Debug and Release ("the proposer's fiance is" the first beloved): both "yes"es engaged,
+    /// and the second beloved was left engaged to a proposer engaged to the first. Red the same way with the re-check
+    /// removed, or only its proposer's half.</para>
+    /// </summary>
+    [Fact]
+    public void TwoBelovedsSayingYesEngageTheProposerOnce()
+    {
+        var (first, firstOut, _) = Player("TwoYesFirst", TwoYesMap, 22, 20);
+        var (second, secondOut, _) = Player("TwoYesSecond", TwoYesMap, 18, 20);
+        var (p, pOut, _) = Player("TwoYesProposer", TwoYesMap, 20, 20, c => c.Spells.Add(Propose.Id));
+        try
+        {
+            GiveRing(first);
+            GiveRing(second);
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(first.CharName));
+            });
+            LastMenu(firstOut, $"{p.CharName} proposes marriage. Do you accept?");
+            SpellCastSupport.ClearAether(p, Propose.Key);   // the 20 minutes, while the first box stays up
+            OnOwnThread(() =>
+            {
+                p.Receive(SpellCastSupport.CastFrame(0));
+                p.Receive(InputFrame(second.CharName));
+            });
+            LastMenu(secondOut, $"{p.CharName} proposes marriage. Do you accept?");
+
+            OnOwnThread(() => second.Receive(MenuFrame(1)));
+            firstOut.Clear(); pOut.Clear();
+            OnOwnThread(() => first.Receive(MenuFrame(1)));
+
+            p.WithState(() => Assert.True(p.CharFiance == second.CharName, $"the proposer's fiance is '{p.CharFiance}'"));
+            first.WithState(() => Assert.True(!first.HasLegend("engaged") && first.CountItem("engagement_ring") == 1,
+                                              "the first beloved was engaged, or lost the ring"));
+            Assert.Equal(new[] { YouAreCommitted }, pOut.MiniTexts());
+            Assert.Equal(new[] { $"{p.CharName} is already committed to someone else!" }, firstOut.MiniTexts());
+        }
+        finally
+        {
+            Leave(TwoYesMap, p, first, second);
+        }
+    }
+
+    /// <summary>
+    /// <b>Two "yes"es at the same moment that would both engage the proposer engage them once</b>: the check and the
+    /// writes are one section holding both players' monitors, so the second "yes" is decided only after the first has
+    /// written. Each round puts the boxes up (the cast's last step, from each proposer's thread) and releases both
+    /// "yes"es together, each on a thread of its own as two read loops would deliver them. Two shapes:
+    /// <list type="bullet">
+    /// <item>"two beloveds": the proposer proposed to two players, and both say "yes". Exactly one is engaged to the
+    ///   proposer, and the other keeps the ring.</item>
+    /// <item>"the proposer's own yes": the proposer proposed to a beloved, a third player proposed to the proposer, and
+    ///   the beloved and the proposer say "yes" at once. Exactly one of the two engagements is made, and the ring of the
+    ///   other "yes" is kept.</item>
+    /// </list>
+    /// <para>Red on a9f9449 in Debug and Release, both shapes, 40 of 40 rounds: both "yes"es engaged. The negative
+    /// control for the check's lock, no lock in place of the pair (the answering player's own monitor only, which their
+    /// reply holds): "two beloveds" red in both builds, 40 of 40 rounds, both passing the check before either writes.
+    /// "The proposer's own yes" stays green under it: the proposer's reply holds the proposer's monitor from its first
+    /// line, and the other "yes" takes that monitor for the proposer's name (<c>Snapshot</c>) before its branch, so it
+    /// is decided after the proposer's whatever the branch locks; that shape is red without the re-check. A plain
+    /// <c>lock</c> on the proposer object in place of the pair leaves both shapes green (the two beloveds' "yes"es lock
+    /// the same object); <see cref="AYesTakesProposeFromTheProposerInsideTheirMonitor"/> is red under it, in both builds.
+    /// The same <c>Snapshot</c> is why a held proposer monitor cannot test the pair: the "yes" waits there first.</para>
+    /// </summary>
+    [Theory]
+    [InlineData("two beloveds")]
+    [InlineData("the proposer's own yes")]
+    public void TwoYesesAtOnceEngageTheProposerOnce(string shape)
+    {
+        bool twoBeloveds = shape == "two beloveds";
+        string tag = twoBeloveds ? "Two" : "Own";
+        var (p, _, _) = Player($"YesRace{tag}P", YesRaceMap, 20, 20);
+        var (first, _, _) = Player($"YesRace{tag}First", YesRaceMap, 22, 20);
+        var (second, _, _) = Player($"YesRace{tag}Second", YesRaceMap, 18, 20);   // a second beloved, or the proposer's suitor
+        var wrong = new List<string>();
+        try
+        {
+            for (int round = 0; round < YesRaceRounds; round++)
+            {
+                foreach (var s in new[] { p, first, second })
+                    s.WithState(() => { s.RemoveLegend("engaged"); s.ClearEngagement(); });
+                foreach (var holder in twoBeloveds ? new[] { first, second } : new[] { first, p })
+                    if (holder.WithState(() => holder.CountItem("engagement_ring")) == 0) GiveRing(holder);
+                OnOwnThread(() =>
+                {
+                    p.WithState(() => { _ = first.PromptProposal(p, Propose); });
+                    if (twoBeloveds) p.WithState(() => { _ = second.PromptProposal(p, Propose); });
+                    else second.WithState(() => { _ = p.PromptProposal(second, Propose); });
+                });
+                var answering = twoBeloveds ? new[] { first, second } : new[] { first, p };
+                Assert.True(answering.All(a => a.DialogBusy), "a proposal box is not up");
+
+                using var go = new ManualResetEventSlim();
+                Exception? fault = null;
+                var threads = answering.Select(a =>
+                {
+                    var t = new Thread(() =>
+                    {
+                        try { go.Wait(); a.Receive(MenuFrame(1)); }
+                        catch (Exception e) { fault = e; }
+                    }) { IsBackground = true };
+                    t.Start();
+                    return t;
+                }).ToList();
+                go.Set();
+                Assert.True(threads.All(t => t.Join(TimeSpan.FromSeconds(30))), "deadlock: a yes never finished");
+                Assert.Null(fault);
+
+                // The proposer's partners this round: the two beloveds, or the beloved and the suitor.
+                string fiance = p.WithState(() => p.CharFiance);
+                var partners = new[] { first, second }.Where(o => o.WithState(() => o.CharFiance == p.CharName)).ToList();
+                int rings = answering.Sum(a => a.WithState(() => a.CountItem("engagement_ring")));
+                if (partners.Count != 1 || fiance != partners[0].CharName || rings != 1)
+                    wrong.Add($"round {round}: {partners.Count} engaged to the proposer, whose fiance is '{fiance}', " +
+                              $"{rings} ring(s) left");
+            }
+            Assert.True(wrong.Count == 0, $"{wrong.Count} of {YesRaceRounds} rounds wrong; the first: {wrong.FirstOrDefault()}");
+        }
+        finally
+        {
+            Leave(YesRaceMap, p, first, second);
+        }
+    }
+
+    private const int YesRaceRounds = 40;
 
     /// <summary>What the swap could do to a player. The beloved is in a conversation of their own and has just picked
     /// "Yes" in it; their read loop is handling that pick (a third thread holds their monitor, as <c>Handle</c> does)
