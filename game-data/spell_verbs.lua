@@ -271,23 +271,26 @@ end
 -- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
 -- archetype and the generic damage spells give a cast that finds nothing.
 --
--- A cast at nothing off a PvP map is refused the same way, once the caster can pay for it (Caleb, 2026-10-21,
--- decision sheet item 9a). It used to cost 4 or 800 mana, the pose and "You cast X." for a blow that struck nothing;
--- RTK's zap returns at a missing target before it spends (Spells/common/global_zap.lua:8-10). ctx:canStrike asks
--- the blow's own question before the spend. On a PvP map it answers yes to everything it did before, a cast at
--- nothing included (unaimed, it lands on its caster there). RTK differs there too; that is left for its own decision.
+-- A cast at nothing is refused the same way, on every map and whatever the caster's mana: no mana, no line, no pose.
+-- RTK's zap returns at a missing target before anything else (Spells/common/global_zap.lua:8-10). Off a PvP map that
+-- was Caleb's 2026-10-21 decision sheet item 9a, and it used to cost 4 or 800 mana, the pose and "You cast X." for a
+-- blow that struck nothing. On a PvP map (Caleb, 2026-10-21) the unaimed cast used to land on its caster, by the
+-- resolver's fallback, and a cast aimed at an id that found nobody paid for nothing; both are free and silent now.
+-- With too little mana (Caleb: "silent like RTK") it used to say "Not enough mana to cast Bolt."; it says nothing.
+-- An id aimed at the caster is not nothing, and still strikes them where PvP is on. ctx.castAtNothing asks it.
 --
 -- A player off a PvP map is refused before the spend too (item 9b): "You can't attack that target.", the line the
 -- blow's own PvP gate sends, which it used to send after the debit, so the refusal cost the mana, the pose and
 -- "You cast X." as well (the Poet whip's Freeze proc 800 at any player it faced in a town). RTK refuses there before
 -- any cost (global_zap.lua:26-30).
 --
--- The target is asked only when the cast can be paid for, so a caster short of mana still hears spendMana's own
--- line, as before, and as RTK's zap orders it (mana at global_zap.lua:14-17, before the PvP refusal).
+-- At a real target that question is asked only when the cast can be paid for, so a caster short of mana hears
+-- spendMana's own line, as RTK's zap orders it (mana at global_zap.lua:14-17, before the PvP refusal).
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
+  if ctx.castAtNothing then return false end                  -- silent, free, whatever the mana: nothing to strike
   local mana = row.mana or 0
-  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- nothing, or a player, it may not strike here: free
+  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- a player it may not strike here: free, with its line
   if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true

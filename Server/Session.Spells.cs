@@ -763,11 +763,10 @@ public sealed partial class Session
     /// before any cost, with "You cannot attack that target." (<c>Spells/common/global_zap.lua:26-30</c>); this server
     /// already sends its own wording of that line for this case, so that wording is kept. The blow still asks again
     /// when it lands.</para>
-    /// <para><b>On a PvP map nothing changes</b>, and it answers yes to everything the blow took before. With the slot
-    /// alone and nothing faced, the victim is the caster (<see cref="ResolveDamageTarget"/>'s PvP fallback), and the zap
-    /// lands on them. Aimed at an id that finds nobody there, the victim is none, and the cast still pays for a blow
-    /// that strikes nothing. RTK is free and silent in both. That difference is on a PvP map, so it is left for a
-    /// decision of its own.</para></summary>
+    /// <para><b>On a PvP map it answers yes.</b> A cast at nothing never reaches it from <c>magic_damage</c> now: the
+    /// verb asks <see cref="LuaCastAtNothing"/> first, on every map and before the mana (Caleb, 2026-10-21: Bolt and
+    /// Freeze at nothing on a PvP map are free and silent as in RTK, and "silent like RTK" with too little
+    /// mana).</para></summary>
     internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (Content.IsPvpMap(_char.Map)) return true;
@@ -778,6 +777,30 @@ public sealed partial class Session
             return false;
         }
         if (victim.mob is null) { LogNoTarget(sp); return false; }   // silent, free
+        return true;
+    }
+
+    /// <summary>Is this cast aimed at nothing? <c>magic_damage</c> (Bolt, Freeze) asks it first, before its mana and
+    /// before <see cref="LuaCanStrike"/>, and refuses silently and for free when it is: no mana, no aether, no line, no
+    /// pose. RTK's zap returns at a missing target before anything else (<c>Spells/common/global_zap.lua:8-10</c>).
+    /// <para><b>Nothing</b> is no victim at all (an id that finds nobody, or nothing faced off a PvP map), and, on a
+    /// PvP map, the caster when <see cref="ResolveDamageTarget"/> gave them only as its fallback for a cast aimed at
+    /// nothing (the slot alone, nothing faced). Caleb, 2026-10-21: on a PvP map Bolt and Freeze at nothing are free
+    /// and silent, as RTK is. They used to land on their caster there by the slot alone, and to pay 4 or 800 mana for
+    /// a blow that struck nobody when aimed at an id that found nobody. A cast aimed at the caster's own id is aimed,
+    /// and is not nothing: it still strikes them where PvP is on.</para>
+    /// <para><b>Whatever the mana</b> (Caleb, 2026-10-21: "silent like RTK"): a caster too short to pay used to hear
+    /// "Not enough mana to cast Bolt." for a cast at nothing. RTK asks for the target before the mana
+    /// (global_zap.lua:8-10, then :14-17), so it says nothing. At a real target the mana line stays, before the PvP
+    /// refusal, as RTK orders it.</para>
+    /// <para>Only <c>magic_damage</c> asks this. The Damage archetype still lands an unaimed cast on its caster on a
+    /// PvP map; that is not part of this decision.</para></summary>
+    internal bool LuaCastAtNothing(SpellDef sp, (Mob? mob, Session? pc) victim, uint? targetId)
+    {
+        if (victim.mob is not null) return false;
+        bool unaimedFallback = ReferenceEquals(victim.pc, this) && targetId is null or 0;
+        if (victim.pc is not null && !unaimedFallback) return false;
+        LogNoTarget(sp);
         return true;
     }
 

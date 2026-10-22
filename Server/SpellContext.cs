@@ -38,7 +38,7 @@ public sealed class SpellContext
     /// <para>So do the other verbs that strike it (#349's review, F1). <see cref="hasDamageTarget"/> (the
     /// <c>generic</c> verb's gate) and <see cref="magicDamage"/> (<c>arch_damage</c>) read this victim too, so each
     /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> spends before it strikes, so it asks
-    /// <see cref="victimIsNpc"/> and then <see cref="canStrike"/> before it spends.</para>
+    /// <see cref="victimIsNpc"/>, <see cref="castAtNothing"/> and then <see cref="canStrike"/> before it spends.</para>
     /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
     /// a queued or proc cast included.</para></summary>
     private (Mob? mob, Session? pc) Victim
@@ -141,6 +141,11 @@ public sealed class SpellContext
     /// PvP map it answers yes to everything <see cref="damage"/> took there before, a cast that finds nothing included
     /// (see <c>Session.LuaCanStrike</c>).</summary>
     public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
+    /// <summary>Is this cast aimed at nothing: no victim (<see cref="Victim"/>), or, on a PvP map, the caster only as
+    /// the resolver's fallback for a cast aimed at nothing? <c>magic_damage</c> asks it first, before its mana, and
+    /// refuses silently and for free (Caleb, 2026-10-21; RTK's zap returns there first, global_zap.lua:8-10). An id
+    /// aimed at the caster is not nothing. See <c>Session.LuaCastAtNothing</c>.</summary>
+    public bool castAtNothing           => _s.LuaCastAtNothing(_sp, Victim, _targetId);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
