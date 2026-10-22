@@ -10,9 +10,11 @@ namespace Tests;
 /// #78 on the player's own swing (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"). The swing's
 /// armor, rear x2 and reach used to be floored step by step on the attacker's side (<c>Session.PlayerSwingDamage</c>:
 /// <c>Combat.ApplyArmor</c>'s floor, then x2, then a second floor for reach), and a PvP swing then went through the
-/// defender's intake, which rounded its own amplifier and deduction again. Now the swing is one product
-/// (<c>Session.PlayerSwingRaw</c>): a creature target floors it once, and a PvP swing hands it UNFLOORED to the
-/// defender's intake, which multiplies its own terms in and floors once.
+/// defender's intake, which rounded its own amplifier and deduction again. Now the swing is one product of armor and
+/// reach (<c>Session.PlayerSwingRaw</c>): a creature target floors it once, and a PvP swing hands it UNFLOORED to the
+/// defender's intake, which multiplies its own terms in and floors once. A hit from behind is doubled after that
+/// floor, in RTK's order (Caleb, 2026-10-21: "Round down once (minimum 1), then double for a hit from behind.
+/// Ordinary hits from behind stay exactly as today.").
 ///
 /// <para>The swings are real 0x13 frames through <c>Session.Receive</c>. The hit and crit rolls and the bare hand's
 /// S roll (1 or 2) are random, so each fact swings until a non-crit hit lands, and every hit that lands must be one
@@ -68,10 +70,12 @@ public sealed class SwingSingleFloorTests
     }
 
     /// <summary>A swing from behind a creature (both facing east, the attacker to its west) at AC -65: the rear x2
-    /// multiplies inside the one floor, 4.5 x 0.35 x 2 = 3.15 and 5.0 x 0.35 x 2 = 3.5, so 3 (9 or 10 on a crit).
-    /// <para>Red on 6de1d24: 2. The armor was floored first, 1.575 and 1.75 to 1, and the 1 doubled.</para></summary>
+    /// doubles the once-floored figure, floor(4.5 x 0.35) = floor(5.0 x 0.35) = 1, so 2 (8 or 10 on a crit), exactly
+    /// as on 6de1d24.
+    /// <para>Red on d5edcf8, which doubled inside the floor: 4.5 x 0.35 x 2 = 3.15, so 3 (9 or 10 on a
+    /// crit).</para></summary>
     [Fact]
-    public void ASwingFromBehindACreatureDoublesInsideTheOneFloor()
+    public void ASwingFromBehindACreatureDoublesAfterTheOneFloor()
     {
         var mob = new Mob(_fx.World.AllocateMobId(), 1, 11, 10, $"Ssf creature {Interlocked.Increment(ref _serial)}",
                           10_000_000) { Ac = -65, Dir = 1 };
@@ -80,14 +84,42 @@ public sealed class SwingSingleFloorTests
         var (attacker, _, _) = Attacker(Field);
         try
         {
-            var landed = SwingUntilANonCritLands(attacker, () => (uint)mob.Hp, () => { }, nonCrit: new uint[] { 3 });
-            Assert.True(landed.Count > 0 && landed.All(d => d is 3 or 9 or 10) && landed.Any(d => d is 3),
+            var landed = SwingUntilANonCritLands(attacker, () => (uint)mob.Hp, () => { }, nonCrit: new uint[] { 2 });
+            Assert.True(landed.Count > 0 && landed.All(d => d is 2 or 8 or 10) && landed.Any(d => d is 2),
                         $"landed: {string.Join(", ", landed)}");
         }
         finally
         {
             _fx.World.LeaveMap(attacker, Field);
             _fx.World.DespawnMob(Field, mob);
+        }
+    }
+
+    /// <summary>A PvP swing from behind (both facing east, the attacker to the victim's west) at AC +75, nothing else:
+    /// the defender's intake floors the unfloored swing once and then doubles it, floor(4.5 x 1.75) = 7 and
+    /// floor(5.0 x 1.75) = 8, so 14 or 16 (46 or 52 on a crit), exactly as on 6de1d24.
+    /// <para>Red on d5edcf8, which doubled inside the floor: 15 or 17 (47 or 52).</para></summary>
+    [Fact]
+    public void APvpSwingFromBehindDoublesAfterTheDefendersFloor()
+    {
+        Assert.True(Content.IsPvpMap(Arena));
+        var (victim, _, vc) = _fx.PlayerWith($"SsfRearVictim{Interlocked.Increment(ref _serial)}", c =>
+        {
+            c.MaxHp = FullHp; c.Hp = FullHp; c.Ac = 75; c.Level = 1;
+            c.Dir = 1;   // facing east, the way the attacker faces: the attacker is behind
+            c.MapXs = 100; c.MapYs = 100;
+        }, Arena, 11, 10);
+        var (attacker, _, _) = Attacker(Arena);
+        try
+        {
+            var landed = SwingUntilANonCritLands(attacker, () => vc.Hp, () => { }, nonCrit: new uint[] { 14, 16 });
+            Assert.True(landed.Count > 0 && landed.All(d => d is 14 or 16 or 46 or 52) && landed.Any(d => d is 14 or 16),
+                        $"landed: {string.Join(", ", landed)}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(attacker, Arena);
+            _fx.World.LeaveMap(victim, Arena);
         }
     }
 

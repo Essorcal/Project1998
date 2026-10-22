@@ -63,7 +63,8 @@ public class DamageIntakeTests
     // ---- the damage math, one intake at a time ------------------------------------------------------------
     //
     // #78 (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"). Every term multiplies the
-    // unrounded figure and the product is floored once and raised to 1 (Combat.FloorOnce). Each step used to
+    // unrounded figure and the product is floored once and raised to 1 (Combat.FloorOnce); a hit from behind is
+    // then doubled ("Round down once (minimum 1), then double for a hit from behind"). Each step used to
     // round on its own: the armor floor, then Math.Round (half to even) after the amplifier and again after the
     // deduction, and the two armored kinds ran armor and the amplifier in opposite orders. The facts below use
     // figures where the two rules part, and each says what 6de1d24 (step rounding) gave.
@@ -155,18 +156,23 @@ public class DamageIntakeTests
         Assert.Contains(SuteAi.FrigidText, MiniTexts(outbound));
     }
 
-    /// <summary>The positional rear x2 belongs to the mob swing alone, and multiplies inside the one floor with
-    /// armor (#78's "side terms"). Same facing, attacker to the south of a north-facing victim:
-    /// 101 x 0.5 x 2 = 101. Step rounding floored the armor first, floor(50.5) = 50, and doubled that to 100.
-    /// (RTK's swingDamage.lua doubles after its floor, :147, which is the 100; the packet puts it inside.)</summary>
+    /// <summary>The positional rear x2 belongs to the mob swing alone, and doubles the figure AFTER the one floor,
+    /// as RTK's swingDamage.lua does (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a
+    /// hit from behind. Ordinary hits from behind stay exactly as today." Same facing, attacker to the south of a
+    /// north-facing victim: floor(101 x 0.5) = 50, doubled to 100, as on 6de1d24. Under a 1.5x amplifier,
+    /// floor(101 x 0.5 x 1.5) = 75, doubled to 150 (6de1d24 also 150, by its own rounding).
+    /// <para>Red on d5edcf8, which put the double inside the floor: 101 and 151.</para></summary>
     [Fact]
-    public void MobMeleeRearDoubleIsInsideTheOneFloor()
+    public void MobMeleeDoublesFromBehindAfterTheOneFloor()
     {
-        var (victim, _, character) = Victim("DmgRear");
+        var (plain, _, plainChar) = Victim("DmgRear");
+        plain.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), Raw);
+        Assert.Equal(FullHp - 100, plainChar.Hp);
 
-        victim.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), Raw);
-
-        Assert.Equal(FullHp - 101, character.Hp);
+        var (slept, _, sleptChar) = Victim("DmgRearSlept");
+        slept.ArmDamageAmp(1.5, 60_000);
+        slept.ApplyMobHit(Attacker(dir: 0, x: 5, y: 11), Raw);
+        Assert.Equal(FullHp - 150, sleptChar.Hp);
     }
 
     /// <summary>The sanctuary/Cunning deduction multiplies into the same product on every intake. The decision

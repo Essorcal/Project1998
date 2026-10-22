@@ -37,7 +37,8 @@ public sealed class DamageIntake
     public DamageKind Kind { get; }
 
     /// <summary>Damage before any intake-side term. What "before" means differs by kind — a PvP melee figure
-    /// has already had the victim's armor and rear-x2 applied attacker-side, a mob swing has not.
+    /// has already had the victim's armor applied attacker-side (its rear x2 comes over as
+    /// <see cref="DoubleForRear"/>), a mob swing has not.
     /// <para>A double, not an int (#200): a player's Spark-family spell arrives as 50 + level/2, and the live probe's
     /// self-casts read that half at the armour step (level 15 at AC 85: floor(57.5 x 1.85) = 106). An int here
     /// rounded it away first.</para></summary>
@@ -145,7 +146,9 @@ public sealed class DamageIntake
     public Mob? StampMobAttacker { get; init; }
 
     /// <summary>The positional "attacked from behind while both face the same way" x2 (RTK
-    /// swingDamage.lua's <c>side == target.side</c> rule). Decided by the caller, which owns the geometry.</summary>
+    /// swingDamage.lua's <c>side == target.side</c> rule). Decided by the caller, which owns the geometry: the
+    /// creature swing, and the PvP swing, whose attacker passes it over with its unfloored figure. Applied after
+    /// the one floor (#78; RTK's order).</summary>
     public bool DoubleForRear { get; init; }
 
     /// <summary>The over-head bar's hit-animation byte (RTK: 33 normal, 255 critical). Ignored when
@@ -202,7 +205,8 @@ public sealed class DamageIntake
     /// (swingDamage.lua:92, :101-102, :105-108; player.lua:210-244). #78, decided by Caleb on 2026-10-21
     /// ("multiply everything, round down once, minimum 1"): every term is one product and is floored once,
     /// so the order of the terms cannot change a result and the column has nothing left to say. The floor
-    /// is the live-proven one (the Spark probe, <c>Combat.ApplyArmor</c>), not RTK's spell ceiling.</para>
+    /// is the live-proven one (the Spark probe, <c>Combat.ApplyArmor</c>), not RTK's spell ceiling. The rear
+    /// x2 stays outside it, after the floor, as RTK's swingDamage.lua doubles (:147-150).</para>
     /// <para><b>DeductsDurability</b> — RTK clif_deductarmor rolls every worn slot on a HIT; magic and the
     /// room do not touch gear.</para>
     /// </summary>
@@ -222,10 +226,10 @@ public sealed partial class Session
 {
     /// <summary>
     /// The one player-damage pipeline (#28). Every blow a player takes runs this sequence: immunity gate,
-    /// wake, attacker stamp, armor x amplifier x rear x2 x deduction floored once (#78), HP, durability, stats,
-    /// over-head bar, sound, chat line, our own PvP foe mark, log, death — and then, last of all, the foe's half
-    /// of that mark (#174: it is the one statement here that enters ANOTHER session's monitor, so it goes where
-    /// dropping ours costs nothing). The per-kind subset comes from <see cref="DamageIntake.Terms"/>.
+    /// wake, attacker stamp, armor x amplifier x deduction floored once and then the rear x2 (#78), HP,
+    /// durability, stats, over-head bar, sound, chat line, our own PvP foe mark, log, death — and then, last of
+    /// all, the foe's half of that mark (#174: it is the one statement here that enters ANOTHER session's monitor,
+    /// so it goes where dropping ours costs nothing). The per-kind subset comes from <see cref="DamageIntake.Terms"/>.
     ///
     /// <para>It replaces five hand-copied versions of that sequence. Three checked
     /// <see cref="DamageImmune"/> and two did not, which is the finding this pipeline exists to make
@@ -281,8 +285,8 @@ public sealed partial class Session
         // raises it to 1. Every step used to round on its own (the armor floor, then Math.Round, half to even,
         // after the amplifier and again after the deduction), so the order of the steps changed results by up
         // to 2 HP, and a deduction could round a landed hit down to 0: raw 9 on an AC -80 player under
-        // Sanctuary was floor(1.8) = 1, then round(0.5) = 0. It is 1 now. With no amplifier, no rear and no
-        // deduction this is exactly Combat.ApplyArmor's product and floor, so the common hit is unchanged.
+        // Sanctuary was floor(1.8) = 1, then round(0.5) = 0. It is 1 now. With no amplifier and no deduction
+        // this is exactly Combat.ApplyArmor's product and floor, so the common hit is unchanged, from behind too.
         //
         // Armor — RTK swingDamage.lua: finalDamage = floor(finalDamage * (1 + max(armor,-80)/100)). AC is
         // signed and LOWER is better, and gear/buff armor is an AC delta in the same units, so it simply ADDS
@@ -297,15 +301,16 @@ public sealed partial class Session
         double amp = TakeDamageAmp();
         if (amp > 1.0) net *= amp;
 
-        // The positional rear x2, inside the one floor with the rest ("side terms", #78's packet). RTK's
-        // swingDamage.lua doubles AFTER its floor (:147), which can differ from this by 1 HP.
-        if (intake.DoubleForRear) net *= 2;
-
         // RTK player.deduction: a flat damage-reduction multiplier from the sanctuary line / Baekho's Cunning
         // (1.0 normally, down to 0.5/0.15 while active).
         if (EffDeduction < 1.0) net *= EffDeduction;
 
         int dmg = Combat.FloorOnce(net);
+
+        // The positional rear x2 comes AFTER the one floor and its minimum of 1, as RTK's swingDamage.lua doubles
+        // its floored figure (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a hit
+        // from behind. Ordinary hits from behind stay exactly as today." Doubling a whole number rounds nothing.
+        if (intake.DoubleForRear) dmg *= 2;
 
         _char.Hp = (uint)Math.Max(0, (int)_char.Hp - dmg);
         // RTK clif_deductarmor: taking a hit rolls durability loss on every worn slot (not just armor —
