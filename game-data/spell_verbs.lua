@@ -241,8 +241,8 @@ function verbs.arch_debuff(ctx, row)
   if ch >= 100 then ch = HOLD_CHANCE[kind] or 100 end
   if ch < 100 and not ctx:roll(ch) then ctx:debitMana(ctx.mana); ctx:say("Something went wrong."); return true end
 
-  -- holdTarget owns the boss cap, and asks canHold's questions again in case the faced tile changed since. It
-  -- returns false without spending anything.
+  -- holdTarget owns the boss cap, and asks canHold's questions again of the same target, in case its slot filled
+  -- or it left since (a target that has left is nobody). It returns false without spending anything.
   if not ctx:holdTarget(d.cat, dur, d.hold, d.blind, d.repeatMs) then return false end
   local amp = AMP_BY_SPELL[ctx.spellKey] or d.amp
   if amp > 1.0 then ctx:amplify(amp, dur) end   -- the next hit on them lands harder, then the hold breaks
@@ -863,6 +863,8 @@ end
 -- makes self-pestilence a real defense (occupy your own 'curses' slot with a mild curse; row.amount is the stat
 -- effect, e.g. armor +5 -> raises effective AC -> take MORE damage) AND what makes a protection curse-immune.
 -- Row: mana, category (curses/disheartens/...), stat, amount, duration. Removed later by a Cure of that category.
+-- canCurse, hasStatus, alreadyCast and applyCurse all read the cast's one target, resolved at canCurse (#343's
+-- review, F1), so the slot checked is the slot written; a target that has left since is nobody.
 -- Take-hold chance per curse category. Like HOLD_CHANCE above these are OURS: RTK's curse scripts have no
 -- failure roll at all, so a curse always stuck. A per-spell `chance` column in SpellParams.csv overrides.
 -- Note what this interacts with: because a landed curse OCCUPIES its category slot and blocks every other
@@ -873,7 +875,7 @@ local CURSE_CHANCE = { curses = 75, minorcurses = 85, disheartens = 80 }
 function verbs.curse(ctx, row)
   local mana = row.mana or 0
   if not ctx:enoughMana(mana) then return false end
-  if not ctx:canCurse() then return false end                                    -- PvP-legal PC (incl self) or a mob
+  if not ctx:canCurse() then return false end                  -- PvP-legal PC (incl self) or a creature; not an NPC
   local by = blockedBy(function(c) return ctx:hasStatus(c) end, row.category)
   if by then ctx:say(blockMsg(by, ctx:alreadyCast(by))); return false end
   local ch = row.chance or CURSE_CHANCE[row.category] or 100
