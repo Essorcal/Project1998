@@ -26,6 +26,7 @@ that is called out too.
 6. [World-entry packet sequence (the working burst)](#6-world-entry-packet-sequence-the-working-burst)
 7. [Packet reference](#7-packet-reference)
 8. [The appearance system](#8-the-appearance-system)
+&nbsp;&nbsp;&nbsp;&nbsp;8.2 [Drawing a player: layers, order and frames](#82-drawing-a-player-the-four-layers-their-order-and-their-frames)
 9. [Character creation & the creation packet](#9-character-creation--the-creation-packet)
 10. [Movement model](#10-movement-model)
 11. [Speech & actions](#11-speech--actions)
@@ -1018,8 +1019,8 @@ layout:**
 | Byte | Meaning | Notes |
 |---|---|---|
 | `[0]` | **Body / sex** | `0` = male, `1+` = female. |
-| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), most other values = **no sprite (blank)**. Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). Client swaps to the horse+rider composite (SPR `0x158`/`0x159` = 344/345). |
-| `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head: 12 poses × facings, sub-frame 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
+| `[1]` | **Form / state** | `0`/`4` = normal human, `1` = ghost/dead, `3` = **mounted (horse)**, `5` = invisible-spell (faded), `2` and `6`+ = **no sprite (blank)** (`0x432364`). Driven by `Character.Mounted` via `Session.MountForm()`; toggled with `@ride`/`@mount`, re-drawn on self (`SendSelfLook`) **and** peers (`ShowPlayer` carries `Mounted` in `PlayerSnapshot`). There is no separate horse sprite: the mounted poses of the worn body art (`Body.epf` pose numbers 80–91) are horse and rider in one frame, with the head drawn on top (§8.2). |
+| `[2]` | **Face / head** | **Exactly 90 heads, ids `0..89`** — read off the client's own asset table, not guessed: `NexusTK.dat` → `Head.tbl` is plain text beginning `NumFaces 90`, then `ID n, Palette 0, Starting n*100` for every `n` in 0..89, and `Head.epf` holds the matching 9000 frames (100 per head, one per pose number of §8.2; pose 6 is the front view). All 90 were rendered and eyeballed — every one is a complete player head, hairstyle included. **Anything ≥ 90 draws no head at all** (headless character, no error). Creation byte `[0]` feeds this directly and every observed sample (`00`,`12`,`23`,`29`,`32`,`34`,`3d`,`55`) sits in range. `Session.FaceLook()` clamps on send so stale out-of-range saved data can't leave a character headless. |
 | `[3]` | **Armor / coat** | Class armors (rogue/mage/warrior…). |
 | `[4]` | **Body-layer colour (ramp shift)** | Recolours the worn armor/coat. **Not a palette index — a ramp selector:** the tinted blit does `if (pixel >= 0x30) pixel += colour * 8` before the palette lookup, so garment colours live in 8-entry ramps from index `0x30` and this byte picks the ramp (skin/outline indices below `0x30` are untouched). See the ⚠ below. Driven by `Session.ArmorDye()` = the worn armor's `ItmLookColor` **when that is a real ramp (0..9)**, overridden by `Character.ArmorColor` (Arena Master war paint, §11e) when set. See the second ⚠ below. |
 | `[5]` | **Weapon** | **FAMILY-RANGED, not a flat id — see the ⚠ below.** `0x00..0x7F` = Sword.epf art, `0x80..0xBF` = Spear.epf art−0x80, `0xC0..0xDF` = Bow.epf (no 4.95 art — empty hand), `0xE0..0xFE` = Fan.epf art−0xE0. **`0` is a REAL weapon sprite — "no weapon" is `0xFF` (`-1`).** |
@@ -1027,7 +1028,8 @@ layout:**
 
 > **⚠ Byte `[4]` is a RAMP SHIFT on the body layer, and it must carry the armor's own `ItmLookColor`
 > (RE'd end-to-end 2026-08-07).** The real player draw is **`0x432320`** (reached from the entity draw at
-> `0x462999`/`0x462a2e` → `call 0x432320`). It resolves the four layer frames via `0x433040`, fetches each
+> `0x462999`/`0x462a2e` → `call 0x432320`). It resolves the four layer frames via `0x433040` (which layers,
+> in what order, and how each frame is computed: §8.2), fetches each
 > layer's palette from its table record (`rec+4`) through `0x467470(kind, palIdx)`, and **remembers which
 > loop index is the body layer in `[ebp+0x28]`**. At blit time:
 > ```
@@ -1167,8 +1169,8 @@ value in `[1]` (the form byte) risks blanking the whole sprite — that was the 
 The parser `0x436120` stores the 7 bytes into an entity sub-struct at offsets +4,+5,+7,+8,+9,+A,+B
 (with a special case: if byte[3]==0 it defaults to `byte[0]!=0`). The core entity/body is built by
 `0x44d7d0` (create-entity) directly (ctor `0x462ec0`/reposition `0x44c660` for self — see below); the
-appearance pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution lives deep in the
-sprite archives and was **not** cheaply static-RE-able — it was faster to decode by observation.
+appearance pointer is stashed at `[entity+0x108]`. The byte→sprite-layer resolution, once decoded only by
+observation, is now read from the binary in §8.2.
 
 ### 8.1 The floating nameplate marker — leaked every appearance refresh, patched out (2026-07-27)
 
@@ -1203,6 +1205,120 @@ File offset == RVA == `0x63380` for this exe. Requires an elevated terminal (`Pr
 backs up the original exe first (`re/*.prenametagpatch.bak`, gitignored — never commit a full client
 binary). `--check`/`--revert` also supported. See `memory/nexustk-495-nametag-litter.md` (session memory)
 for the full investigation trail and the Frida tracer (`re/frida_nametag.py`) used to find it.
+
+### 8.2 Drawing a player: the four layers, their order and their frames
+
+*(Read statically from the 4.95 binary and its own `NexusTK.dat` and `Inter.dat`, 2026-10-21. Composites
+built from these rules alone with `re/render_player.py` (every facing standing and walking; the attack with
+sword, spear and fan, with and without a shield; the mount; the other actions; the emotes; the ghost) all draw
+as whole characters, weapon in hand and shield on the arm.)*
+
+**Inputs.** Peers and the self draw through one method, `0x462950` (slot `+0x70` of vtable `0x4cd098`; the
+self entity's vtable holds the same pointer at `0x4cf05c`). When `[entity+0x178] == 0` it calls `0x432320`
+(`this` = the player-sprite tables at `[0x501cf8]`) with:
+
+- the 12-byte look at `[entity+0x178]`, laid out as `0x436120` parses it: `+4` sex `[0]`, `+5` form `[1]`,
+  `+7` face `[2]`, `+8` armor `[3]`, `+9` colour `[4]`, `+0xA` weapon `[5]`, `+0xB` shield `[6]`;
+- the facing **`d` = `[entity+0x18d]`: 0 = N (back view), 1 = E (faces right), 2 = S (front view), 3 = W
+  (faces left)**, the walk encoding of §10 and the byte the `0x11` turn stores (`0x462410`);
+- the walk phase `w` = `[entity+0x18e]`: 0 standing, then `(w + 1) & 3` per walk tick (`0x48eef4` for the
+  self, `0x4627c1` for peers);
+- the running action at `[entity+0x188]` (null when idle). The `0x1A` handler `0x4503a0` builds it through
+  `[vtbl+0x78]` = `0x462460` → `0x4612f0`, which keeps the action **type `t`** at `+0x108` and the action
+  **frame `f`** at `+0x10f`. The tick `0x461800` steps `f` from 0 to `n − 1`, one step per `time × 10`, and ends
+  the action when `f` reaches `n`; `n` (`+0x110`, set at `0x46133f`–`0x461361`) is 2 for `t` 1 (attack) and
+  2 (throw), 4 for 22 (dance), 1 for 3–21, 23 and 24, and 0 above 24.
+
+**The layers.** `0x433040` turns those inputs into four frame numbers (`0xFFFF` = none) and a four-letter
+draw order; `0x432320` loads each frame (`0x430de0`) from the archive below (names in UTF-16 in the exe):
+
+| Letter | Layer | Archive | Palette: the table record's `Palette`, through `0x467470` |
+|---|---|---|---|
+| `b` | body (armor `[3]`) | `BODY.EPF` (`0x4f1bf4`) | `Body.tbl[armor]`; the only layer the `[4]` ramp shift touches (⚠ above) |
+| `h` | head (face `[2]`) | `HEAD.EPF` (`0x4f1be0`); **`EMOTION.EPF`** (`0x4f1c08`) while `t` is 11–24 (`0x4323f4`); **`GHOST.EPF`** (`0x4f1c20`) for form 1 | `Head.tbl[face]`; the ghost takes `GHOST.PAL` by name (`0x432541`) |
+| `w` | weapon `[5]` | `SWORD.EPF` / `SPEAR.EPF` / `FAN.EPF` by the `0x432fe0` class (weapon ⚠ above); a bow loads nothing | `Sword` / `Spear` / `Fan.tbl[art]` |
+| `s` | shield `[6]` | `SHIELD.EPF` (`0x4f1bc8`) | `Shield.tbl[shield]` |
+
+**The order.** The draw loop (`0x432821`) takes the letters left to right, so **the first letter is the
+bottom layer**. `0` marks an empty place, and a layer whose letter is absent is not drawn even when its frame
+exists. The string comes from **`DrwOrder.tbl`, an entry of `Inter.dat`, not `NexusTK.dat`** (the resource
+lookup `0x416f00` searches Inter.dat's directory first): 100 records of four letters and a `;` (502 bytes with a
+trailing CRLF; `0x431a62` counts `size / 5`), indexed by the pose number `p` below (`0x432f90`; a `p` outside
+0–99 gives `bh00`). The emotes `t` 11–19, 21 and 23 use the literal `bhws` instead (`0x43389d`, `0x4338fe`).
+
+**The pose number and the frames.** One pose number `p` picks the head and the body frame together: **head =
+`Head.Starting + p`, body = `Body.Starting + p`** (16-bit adds). A head art is a block of 100 frames
+(`Starting = 100 × id`, 90 heads) and a body art a block of 104 (`Body.tbl`: 67 bodies, `Starting = 104 × id`).
+Weapon and shield arts are 20-frame blocks (`Starting = 20 × art`) with their own index `q`. With the
+sub-frame `s = {0, 1, 0, 2}[w]` (`0x4cb508`) and the weapon class `c` from `0x432fe0` (0 = none `0xFF`,
+1 sword, 2 spear, 3 bow, 4 fan):
+
+| What is playing (branch) | `p` | weapon and shield `q` |
+|---|---|---|
+| nothing: standing or walking (`0x433164`) | `{0, 12, 32, 52, 12}[c] + 3d + s` (`0x4cb510`) | `3d + s` |
+| nothing, form 3 mounted (`0x4330cb`) | `80 + 3d + s` | none |
+| `t` 1 attack (`0x43336b`) | `{24, 24, 44, 64, 24}[c] + 2d + f` (`0x4cb524`) | `12 + 2d + f` |
+| `t` 2 throw, 3 shot | `24 + 2d + f`, `64 + 2d + f` | none |
+| `t` 4 pick up, 5 drop | `76 + d` | none |
+| `t` 6 magic | `72 + d` | none |
+| `t` 7 and 8 eat, 9 respect, 10 triumph | `92`, `96 + d`, `93` | none |
+| `t` 11–19, 21, 23 (emotes) | body `3d` with order `bhws`; head = `EMOTION.EPF` frame `20 × face + (t − 11)` (for `t` 23, `+ 15`) | none |
+| `t` 20 shrug, 22 dance, 24 kiss | `95`, `100 + f`, `96 + d`; head = `EMOTION.EPF` frame `20 × face + 9`, `+ 11 + f`, `+ 16 + d` | none |
+| `t` above 24 | all four frames `0xFFFF`: nothing is drawn | none |
+
+The branch for each `t` is the jump table behind `0x433350`. As a frame map: a weapon or shield block holds
+the idle and walk frames at 0–11 (three per facing) and two swing frames per facing at 12–19 (the odd ones are
+the arcs); a head or body block holds unarmed 0–11, one-handed (sword, fan) 12–23, the swing 24–31, spear
+32–43, the spear thrust 44–51, bow 52–63, the bow shot 64–71, magic 72–75, pick-up and drop 76–79, mounted
+80–91 and single poses 92–99, and a body block also the dance at 100–103. `EMOTION.EPF` holds 20 frames per
+face (1800 = 90 × 20).
+
+**Which case wins** (`0x433040`, in this order): form 2 draws nothing (`0x432320` already returns for form 2
+and 6 and up, `0x432364`); form 1 draws **the ghost alone**, order `h`, `GHOST.EPF` frame = face (90 frames, one
+per face, no facing) and no body, weapon or shield (`0x43308b`, `0x4323db`); then **any action, ahead of the
+mount** (`0x4330b8`), so a mounted rider is drawn dismounted while an action or emote plays; then form 3; then
+forms 0, 4 and 5 alike (5 changes only the blit, below).
+
+**The orders by facing.** `DrwOrder.tbl` read at those `p`, bottom layer first (a walk shows the sub-frames
+0, 1, 0, 2):
+
+| Pose | N (`d` 0) | E (1) | S (2) | W (3) |
+|---|---|---|---|---|
+| unarmed, sub-frame 0 / 1 / 2 | `wbhs` / `wbhs` / `sbhw` | `sbhw` | `bhsw` / `sbhw` / `wbhs` | `wbhs` |
+| sword or fan, sub-frame 0 / 1 / 2 | `wbhs` / `wbhs` / `swbh` | `sbhw` | `bhsw` / `sbhw` / `bhsw` | `wbhs` |
+| attack (none, sword, fan), `f` 0 / 1 | `sbhw` / `wbhs` | `sbhw` / `wsbh` | `wbhs` / `sbhw` | `wbhs` / `sbwh` |
+| spear: standing, walking, thrusting | `wbh0` | `bhw0` | `bhw0` | `wbh0` |
+
+Every other pose draws the body under the head (`bhw0`, `wbh0` or `bh00`, with no weapon or shield frame),
+except magic facing E and W (`p` 73 and 75, `whb0`), where the body frame's raised hands cover the face. **No
+spear or bow pose has an `s`, so a shield is never drawn with a spear or a bow**, and none is drawn mounted or
+during actions 2–24, whose shield frame is `0xFFFF`.
+
+**What is skipped.** A layer draws only if its letter is in the order and its frame loaded (the `[obj+4]`
+tests at `0x432522`, `0x432584`, `0x4325d2` and `0x432690`):
+
+- weapon `0xFF` and shield `0xFF` give frame `0xFFFF` (`0x43324b` and `0x4331fc` idle, `0x43344c` and
+  `0x433405` attack); a bow (`0xC0`–`0xDF`) loads no archive but still selects the bow body poses;
+- **a face of 90 or more**: the head table's default record has `Starting = 0xFFFFFF01` (`0x431dad`), so the
+  frame is `0xFF01 + p`, past `Head.epf`'s 9000: no head. Such a face has no `EMOTION.EPF` or `GHOST.EPF`
+  frame either;
+- an armor, weapon art or shield art past its table's count is **not** skipped: those tables' default record
+  has `Starting 0` and `Palette −1` (loaders `0x431f60` and `0x432140`), so art 0's frames draw, in whatever
+  palette `0x467470` falls back to (`0x467460`). The server never sends one (`ArmorWireLook`,
+  `WeaponWireLook`, `ShieldWireLook`).
+
+**Placing and blitting.** The layers share one space: every EPF frame box (top, left, bottom, right) is signed
+from the same origin, so a composite is each frame drawn at its own box. `0x432320` takes the union of the four
+boxes (`0x4240c0`, `0x4241d0`) and offsets each layer by its box within it. Every form but 5 blits through
+`[renderer+0x94]`, and the body through the tinted `[renderer+0x98]` when `[4]` is not 0; form 5 blits every
+layer through `[renderer+0xac]` with a 0.7 factor (`0x3f333333`), keeping the body's tint. The ramp shift
+reaches every body pixel at index `0x30` or above, so on a mounted body it recolours the horse too.
+
+**Not settled here.** A non-zero `[entity+0x1a8]` sends every layer through `[renderer+0x9c]` instead, and a
+pre-pass gated by `0x44f600` draws the same order through `[renderer+0xa0]` first; neither is decoded. None of
+this section was compared with a running client: a live look (or a Frida read of `0x433040`'s outputs) would
+confirm it, in particular the rider drawn dismounted during an action and what the `Palette −1` fallback looks
+like.
 
 ---
 
