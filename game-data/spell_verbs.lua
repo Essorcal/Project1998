@@ -1240,6 +1240,17 @@ function verbs.misc(ctx, row)
   return true
 end
 
+-- Not castable: a spell a character can learn but whose effect no source describes, so there is nothing true to
+-- run. Bound per spell by a SpellParams.csv row (its notes say why). The cast is refused silently and for free: a
+-- false return before anything is spent, so ApplyCast charges no mana, arms no aether and summons nothing, and
+-- HandleCast prints no "You cast X." line and plays no pose. Today only Wind master (cotw_wind_master_poet): the
+-- live Nexus Atlas poet page says "Summons a ??? vita creature", RTK has no script for it and mobs.csv no
+-- creature, so it routed to `misc` and charged 10 mana and an 8-minute wait for nothing (Caleb, 2026-10-21,
+-- decision sheet item 3: not castable until a source names its creature).
+function verbs.not_castable(ctx, row)
+  return false
+end
+
 -- Ju Jak's Evocation (RTK subpath guardian spell): refills the mana pool outright and converts what you were
 -- ALREADY holding into vitality, capped at a third of your maximum mana. Cast on a full pool it is a big heal;
 -- cast on an empty one it is only a refill, which is why the flavour line has two forms.

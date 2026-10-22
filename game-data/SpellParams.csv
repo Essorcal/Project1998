@@ -97,3 +97,4 @@ harden_body_poet,harden_body,300,,,,,,,12000,"Harden Body: temporary IMMORTALITY
 deaths_guard_poet,harden_body,300,,,,,,,12000,Death's Guard: harden body clone,rtk-lua,,,,,
 lifes_protection_poet,harden_body,300,,,,,,,12000,Life's Protection: harden body clone,rtk-lua,,,,,
 body_of_alignment_poet,harden_body,300,,,,,,,12000,Body of Alignment: harden body clone,rtk-lua,,,,,
+cotw_wind_master_poet,not_castable,,,,,,,,,"Wind master is not castable: refused silently and for free (Caleb, 2026-10-21, decision sheet item 3). No source names its creature: the live Nexus Atlas poet page says 'Summons a ??? vita creature', RTK has no script for it and mobs.csv no creature. Still learnable as before (SpellLearnCosts.csv); bind it to a summon verb once a source names the creature",atlas-poet-spells,,,,,

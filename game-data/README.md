@@ -98,7 +98,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `AmbushConfig.csv` | 21 | 21 | from file |
 | `BoardLocations.csv` | 1 | 1 | from file |
 | `ShopCatalogues.csv` | 11 | 11 | from file |
-| `SpellParams.csv` | 98 | 98 | from file |
+| `SpellParams.csv` | 99 | 99 | from file |
 | `ItemParams.csv` | 60 | 60 | from file |
 | `Pets.csv` | 29 | 29 | from file |
 | `WeaponProcs.csv` | 25 | 25 | from file |
