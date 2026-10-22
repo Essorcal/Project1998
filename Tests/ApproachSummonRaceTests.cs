@@ -67,6 +67,9 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     // outdoors, not PvP, casting allowed, and named by no other test class. This class's World is its own (the class
     // fixture below), so nothing here is left standing on them for anyone else.
     private const ushort ResQuitMap = 1003, ResBusyMap = 1008;
+    // The same class through ReviveInPlace (PR #358 review, R5): @rez <name> and a direct call on a departed ghost.
+    // Content-free, claimed by no other class: ReviveInPlace does not move anyone, so no real map is needed.
+    private const ushort RezHere = 61359, RezThere = 61360, RezGoneMap = 61361;
 
     private const int SummonSlot = 1;
     private const uint StartMp = 100;
@@ -462,6 +465,71 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
 
         AssertNotRevived(t, tc, ResBusyMap);
         AssertPaid(c, co, cc);
+    }
+
+    /// <summary>
+    /// <b>A <c>@rez</c> waiting on a ghost who logs out revives nobody and saves no revived row</b> (#330's class through
+    /// <c>ReviveInPlace</c>; PR #358 review, R5; Caleb, 2026-10-21). The ghost's own thread holds its monitor; the GM's
+    /// <c>@rez &lt;name&gt;</c> finds them by name and waits on that monitor inside <c>ReviveInPlace</c>; the ghost
+    /// disconnects (the real teardown, off the map, the corpse saved). The revive must find them leaving before its
+    /// heal: still a ghost in memory and in the row, nothing sent to them, and the GM reads the lookup's own line.
+    /// <para>Red on 34c9c93 in Debug and Release: "Expected (0, False, 0, 0) / Actual (0, False, 50, 50)", the departed
+    /// ghost healed in memory and the healed row on disk. Red the same way with the check removed; with the check moved
+    /// after the heal, "(0, False, 50, 0)", the heal left on the departed session; with <c>@rez</c> ignoring the answer,
+    /// on the GM's line alone.</para>
+    /// </summary>
+    [Fact]
+    public void ARezWaitingOnAGhostWhoLogsOutRevivesNobody()
+    {
+        var (t, to, tc) = Make("RezQuitT", RezThere, 10, 10, ghost: true);
+        var (gm, gmo) = Gm(RezHere, 5, 5);
+        Assert.True(t.StateRank < gm.StateRank, "the ghost was made first");
+
+        using var tHeld = new ManualResetEventSlim();
+        using var go = new ManualResetEventSlim();
+        var own = Run("target", () => t.WithState(() => { tHeld.Set(); go.Wait(); TearDown.Invoke(t, null); }));
+        Assert.True(tHeld.Wait(5000), "the ghost's thread never took its monitor");
+
+        var rez = Run("gm", () => gm.Receive(ChatFrame($"@rez {tc.Name}")));
+        Assert.True(Stable(() => Parked(rez) && MonitorFree(gm) && !MonitorFree(t)),
+                    "the @rez never parked on the ghost's monitor");
+        to.Clear();
+
+        go.Set();
+        Assert.True(rez.Join(5000) && own.Join(5000), "deadlock: the @rez or the logout never finished");
+
+        var stored = _fx.Store.Load(tc.Name);
+        Assert.Equal(CharacterLoadStatus.Ok, stored.Status);
+        Assert.Equal((0, false, 0u, 0u), (MapsHolding(t), _fx.World.Online.FindPlayer(tc.Name) is not null,
+                                          tc.Hp, stored.Character!.Hp));
+        Assert.Empty(MiniTexts(to));
+        Assert.Contains(Speech(gmo), s => s.Contains($"'{tc.Name}' isn't online.", StringComparison.Ordinal));
+        Assert.DoesNotContain(MiniTexts(gmo), l => l.Contains("Restored", StringComparison.Ordinal));   // Reply's pane line
+    }
+
+    /// <summary>
+    /// <b><c>ReviveInPlace</c> on a ghost who has already logged out heals nothing and saves nothing</b>: R5's shape, the
+    /// call made straight on the departed session (as a caller that looked them up before the logout would make it).
+    /// The ghost (500 vita) dies for real, logs out (the corpse row saved), and the revive is asked for.
+    /// <para>Red on 34c9c93 in Debug and Release: "Expected (True, 0, 0) / Actual (False, 500, 500)", healed in memory
+    /// and the row rewritten from Hp 0 to 500, as the review's probe found. Red the same way with the check removed, and
+    /// "(False, 500, 0)" with it moved after the heal.</para>
+    /// </summary>
+    [Fact]
+    public void ReviveInPlaceOnADepartedGhostRevivesNobody()
+    {
+        var (t, to, tc) = _fx.PlayerWith("RezGoneT", ch => { Dims(ch, RezGoneMap); ch.MaxHp = 500; ch.Hp = 500; },
+                                         RezGoneMap, 10, 10);
+        t.ReceiveEnvironmentDamage(9999, "a test");
+        Assert.True(t.IsDead, "the kill did not land");
+        t.WithState(() => TearDown.Invoke(t, null));
+        Assert.Equal(0u, _fx.Store.Load(tc.Name).Character!.Hp);   // the logout saved the corpse
+        to.Clear();
+
+        t.ReviveInPlace("A test revived you.");   // its answer is @rez's to read; the state is what this pins
+
+        Assert.Equal((true, 0u, 0u), (t.IsDead, tc.Hp, _fx.Store.Load(tc.Name).Character!.Hp));
+        Assert.Empty(MiniTexts(to));
     }
 
     /// <summary>Nobody revived: on no map's list, not found by name, still a ghost in memory (what the next login's

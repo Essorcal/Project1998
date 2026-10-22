@@ -1172,10 +1172,26 @@ public sealed partial class Session
     /// form here (ReviveAt gets that implicitly from EnterMap).
     /// <para>Ends in <c>SaveChar</c> for the reason given on <see cref="ReviveAt"/> (#196): the death this
     /// undoes saved itself, so a revive that only marked the character dirty left the corpse on disk until
-    /// the next autosave sweep.</para></summary>
-    internal void ReviveInPlace(string message)
+    /// the next autosave sweep.</para>
+    /// <para><b>A player who is logging out is not revived</b> (#330's class; PR #358 review, R5; Caleb,
+    /// 2026-10-21), the check <see cref="ReviveAt"/> makes, in the same place: <c>_leaving</c>, read under this
+    /// monitor before the heal. <c>@rez &lt;name&gt;</c> looks its target up on the GM's thread with no monitor,
+    /// so the target's whole logout can run before this <c>EnterState</c>; the heal then landed on the departed
+    /// session (what the next login's fence writes), was broadcast, and <c>SaveChar</c> wrote a revived row for a
+    /// player who logged out dead. Nothing is done then, and false tells the caller nobody was revived. There is
+    /// no exchange step to take first, as <c>ReviveAt</c> takes <c>EnterMap</c>'s: nothing before the heal
+    /// gives this monitor up. A logout that gets in later, while <c>ResyncPeers</c> waits on a peer, finds a
+    /// living player and saves them so. The NPC Rebirth and the Shaman's revival reach here on the player's own
+    /// thread and never meet the flag.</para></summary>
+    /// <returns>False when nobody was revived: the player is logging out. Only <c>@rez &lt;name&gt;</c> reads it.</returns>
+    internal bool ReviveInPlace(string message)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving)
+        {
+            Log.Info($"   -> REVIVE (in place) refused: '{_char.Name}' is logging out — nobody healed");
+            return false;
+        }
         _char.Hp = EffMaxHp;
         _char.Mp = EffMaxMp;
         RefreshAppearance();   // redraw self + everyone watching as living again (MountForm drops form 1)
@@ -1184,6 +1200,7 @@ public sealed partial class Session
         SendMiniText(message);
         SaveChar();   // #196: MarkDirty left the death's row (Hp 0, penalised exp) on disk for up to AutoSaveMs
         Log.Info($"   -> REVIVED (in place): {_char.Name} at map {_char.Map} @ ({_char.X},{_char.Y})");
+        return true;
     }
 
     // Home-city placement (HomeCityFor / PlaceNewCharacter) moved to Shared/CharacterFactory so the login

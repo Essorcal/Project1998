@@ -1011,7 +1011,13 @@ public sealed partial class Session
         }
         var target = ResolveOnlinePlayer(name, $"'{name}' isn't online.", RefuseChannel.CommandReply);
         if (target is null) return;
-        target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health.");
+        if (!target.ReviveInPlace(target.IsDead ? "You have been restored to life." : "You are restored to full health."))
+        {
+            // They logged out after the lookup above (#330's class, PR #358 review R5): nobody was revived. The
+            // lookup's own line, as @bring answers the same race.
+            Refuse($"'{name}' isn't online.");
+            return;
+        }
         Reply($"Restored {target._char.Name} to full health.");
         Log.Info($"   -> @rez '{_char.Name}' -> '{target._char.Name}'");
     }
