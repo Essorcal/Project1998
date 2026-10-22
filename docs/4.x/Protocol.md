@@ -106,9 +106,10 @@ Multiple packets are commonly concatenated in a single TCP segment; parse in a l
 bytes and `buf[0]==0xAA`, read length, consume `3+length`, repeat. Handle partial packets by
 buffering the remainder.
 
-**Two server → client frames break this layout.** Every other server send goes through `TkPacket.Build` or
-`TkPacket.BuildGame` (`Protocol.Tk495/TkPacket.cs`), and the server splits every inbound frame as above
-(`TkPacket.Parse`):
+**Two server → client frames break this layout.** Every other server frame has the standard layout: all but
+one go through `TkPacket.Build` or `TkPacket.BuildGame` (`Protocol.Tk495/TkPacket.cs`), and that one, the literal
+name-available `0x02` in `LoginSession.NameAvailable`, is a standard frame too (increment `0x01`, a body of four
+zero bytes ciphered with it). The server splits every inbound frame as above (`TkPacket.Parse`):
 
 | Opcode | On the wire | Written by |
 |---|---|---|
@@ -1234,15 +1235,21 @@ for the full investigation trail and the Frida tracer (`re/frida_nametag.py`) us
 
 *(Read statically from the 4.95 binary and its own `NexusTK.dat` and `Inter.dat`, 2026-10-21. Composites
 built from these rules alone with `re/render_player.py` (every facing standing and walking; the attack with
-sword, spear and fan, with and without a shield; the mount; the other actions; the emotes; the ghost) all draw
-as whole characters, weapon in hand and shield on the arm.)*
+sword, spear and fan, with and without a shield; the mount; the other actions; the emotes; the ghost; both
+sexes, armored and not) all draw as whole characters, weapon in hand and shield on the arm.)*
 
 **Inputs.** Peers and the self draw through one method, `0x462950` (slot `+0x70` of vtable `0x4cd098`; the
 self entity's vtable holds the same pointer at `0x4cf05c`). When `[entity+0x178] == 0` it calls `0x432320`
 (`this` = the player-sprite tables at `[0x501cf8]`) with:
 
 - the 12-byte look at `[entity+0x178]`, laid out as `0x436120` parses it: `+4` sex `[0]`, `+5` form `[1]`,
-  `+7` face `[2]`, `+8` armor `[3]`, `+9` colour `[4]`, `+0xA` weapon `[5]`, `+0xB` shield `[6]`;
+  `+7` face `[2]`, `+8` armor `[3]`, `+9` colour `[4]`, `+0xA` weapon `[5]`, `+0xB` shield `[6]`. **The parser
+  rewrites one byte: an armor `[3]` of 0 becomes 1 when sex `[0]` is not 0** (`0x436160`–`0x43616c`: `test al,al`,
+  `jne` at `0x436162`, then `setne` on the sex byte into the armor byte). Body art 0 is the male base body and
+  art 1 the female one, and the server sends armor 0 for every unarmored character (`Session.ApplyAppearance`
+  on unequip, and `ArmorWireLook` for a look with no 4.95 body), so a client that skips this rule draws every
+  unarmored female on the male body. Nothing later in the draw reads the sex byte: `0x433040` never reads
+  look `+4`;
 - the facing **`d` = `[entity+0x18d]`: 0 = N (back view), 1 = E (faces right), 2 = S (front view), 3 = W
   (faces left)**, the walk encoding of §10 and the byte the `0x11` turn stores (`0x462410`);
 - the walk phase `ph` = `[entity+0x18e]`: 0 standing, then `(ph + 1) & 3` per walk tick (`0x48eef4` for the
@@ -1258,7 +1265,7 @@ draw order; `0x432320` loads each frame (`0x430de0`) from the archive below (nam
 
 | Letter | Layer | Archive | Palette: the table record's `Palette`, through `0x467470` |
 |---|---|---|---|
-| `b` | body (armor `[3]`) | `BODY.EPF` (`0x4f1bf4`) | `Body.tbl[armor]`; the only layer the `[4]` ramp shift touches (⚠ above) |
+| `b` | body (armor `[3]` after the parser's rule: 0 with a non-zero sex is 1) | `BODY.EPF` (`0x4f1bf4`) | `Body.tbl[armor]`; the only layer the `[4]` ramp shift touches (⚠ above) |
 | `h` | head (face `[2]`) | `HEAD.EPF` (`0x4f1be0`); **`EMOTION.EPF`** (`0x4f1c08`) while `t` is 11–24 (`0x4323f4`); **`GHOST.EPF`** (`0x4f1c20`) for form 1 | `Head.tbl[face]`; the ghost takes `GHOST.PAL` by name (`0x432541`) |
 | `w` | weapon `[5]` | `SWORD.EPF` / `SPEAR.EPF` / `FAN.EPF` by the `0x432fe0` class (weapon ⚠ above); a bow loads nothing | `Sword` / `Spear` / `Fan.tbl[art]` |
 | `s` | shield `[6]` | `SHIELD.EPF` (`0x4f1bc8`) | `Shield.tbl[shield]` |
@@ -1285,7 +1292,7 @@ sub-frame `sub = {0, 1, 0, 2}[ph]` (`0x4cb508`) and the weapon class `c` from `0
 | `t` 2 throw, 3 shot | `24 + 2d + f`, `64 + 2d + f` | none |
 | `t` 4 pick up, 5 drop | `76 + d` | none |
 | `t` 6 magic | `72 + d` | none |
-| `t` 7 and 8 eat, 9 respect, 10 triumph | `92`, `96 + d`, `93` | none |
+| `t` 7 drink or smoke and 8 eat, 9 respect, 10 triumph | `92`, `96 + d`, `93` | none |
 | `t` 11–19, 21, 23 (emotes) | body `3d` with order `bhws`; head = `EMOTION.EPF` frame `20 × face + (t − 11)` (for `t` 23, `+ 15`) | none |
 | `t` 20 shrug, 22 dance, 24 kiss | `95`, `100 + f`, `96 + d`; head = `EMOTION.EPF` frame `20 × face + 9`, `+ 11 + f`, `+ 16 + d` | none |
 | `t` above 24 | all four frames `0xFFFF`: nothing is drawn | none |
@@ -1313,10 +1320,11 @@ forms 0, 4 and 5 alike (5 changes only the blit, below).
 | attack (none, sword, fan), `f` 0 / 1 | `sbhw` / `wbhs` | `sbhw` / `wsbh` | `wbhs` / `sbhw` | `wbhs` / `sbwh` |
 | spear: standing, walking, thrusting | `wbh0` | `bhw0` | `bhw0` | `wbh0` |
 
-Every other pose draws the body under the head (`bhw0`, `wbh0` or `bh00`, with no weapon or shield frame),
-except magic facing E and W (`p` 73 and 75, `whb0`), where the body frame's raised hands cover the face. **No
-spear or bow pose has an `s`, so a shield is never drawn with a spear or a bow**, and none is drawn mounted or
-during actions 2–24, whose shield frame is `0xFFFF`.
+Every other pose draws the body under the head (`bhw0`, `wbh0` or `bh00`), except magic facing E and W (`p` 73
+and 75, `whb0`), where the body frame's raised hands cover the face. In those poses the `w` and `s` draw nothing:
+mounted and actions 2–24 set both frames to `0xFFFF`, and the bow poses 52–71 have no weapon art and no `s`.
+**No spear or bow pose has an `s`, so a shield is never drawn with a spear or a bow** even though its frame is
+computed and `SHIELD.EPF` is loaded for it; nor is one drawn mounted or during actions 2–24.
 
 **What is skipped.** A layer draws only if its letter is in the order and its frame loaded (the `[obj+4]`
 tests at `0x432522`, `0x432584`, `0x4325d2` and `0x432690`):
@@ -1746,9 +1754,11 @@ fire-and-forget with no ack pending, so simply not broadcasting it is enough.
 **Corrected 2026-10-21 to what the server does** (`Server/Session.Movement.cs` `HandleWalk`; the client side
 is in [`Fast-Move.md`](Fast-Move.md)). This section used to say to read the mode from the high bit of each
 walk's step counter (`dec[1] & 0x80`) and not to track the toggle. The server does the opposite, because that
-bit is never set on the wire: the client sets `0x80` only on its local self-move command, and reading it per
-walk sent almost every step down the slow path (`HandleWalk` quotes the production logs: 32,924 of 33,219
-commits).
+bit is never set on the wire: reading it per walk sent almost every step down the slow path (`HandleWalk`
+quotes the production logs: 32,924 of 33,219 commits). In the binary the bit belongs to a client walk handler,
+`0x497290`, which requires `0x80` on its direction byte and strips it, and only when the fast-move flag
+`[state+0x451]` is 1 (`0x4972e9`–`0x4972ff`). That the client never puts it in the network walk packet rests on
+the server's logs; it is not settled from the binary (unconfirmed).
 
 - **The mode is one session flag, `Session._fastMove`, kept in lockstep with the client's runtime flag
   `[state+0x451]`:**
@@ -1784,10 +1794,10 @@ key-driven step leaves the walk gate latched until a `0x04` arrives, so with no 
    `0x15`/`0x04`/`0x33` entry trio). A warp whose entry requirement fails is refused like a block, below,
    with a minitext.
 4. **The step** (`World.TryMovePlayer`). Off the map, terrain (the ground pass flag, or the `SObj.tbl` wall for
-   this heading, §12) or an occupant (a mob or another player, under the ghost rules in `TryMovePlayer`)
-   refuses it. **A refused step is the correction, in either mode:** the server sets its position to the
-   source tile and sends `0x04` there with the normal view anchor (`SendXy`), which cancels the client's
-   prediction.
+   this heading, §12), a tile a Human Barrier has closed to this player (`BlockReason.Barrier`), or an occupant
+   (a mob or another player, under the ghost rules in `TryMovePlayer`) refuses it. **A refused step is the
+   correction, in either mode:** the server sets its position to the source tile and sends `0x04` there with
+   the normal view anchor (`SendXy`), which cancels the client's prediction.
 5. **A good step.** The server's position becomes the destination. Peers on the map get `0x0C` naming the
    **source** tile (`MoveEntity`, because the 4.95 `0x0C` walk ends one tile past the tile it names). The
    viewport sync (peers, mobs, ground items) and the terrain push (`StreamViewport`, §10.7) run. Then the
@@ -1925,14 +1935,24 @@ clients pack passability differently:
 | 5.33 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ tile(u16BE) pass(u16BE) obj(u16BE) } × w·h` |
 | 4.95 | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + `{ ground(u16BE) object(u16BE) } × w·h` |
 
-4.95's cell is the same shape the door cell-patch already sends, and its `ground` is the `.map` file's own
-ground word, sent unchanged (`MapData.GroundWord` → `TileTranslation.Ground`, which returns a 4.95 word as is;
-`MapCell.Write` packs it), so a streamed cell is byte-identical to what the client would have read from its own
-copy. **That word is a two-sheet tagged union, not a tile with flags on top** (§12; `Server/TileTranslation.cs`):
-`0` draws nothing, below `0xC000` it is `TileA[v − 1]`, from `0xC000` up it is `TileB[v − 0xC000]`, and the top
-two bits double as the passability flag, because every blocked cell is on sheet 2. Masking the word to 14 bits
-before using it as a tile was the server's own rendering bug: it turned every sheet-2 cell into an unrelated
-sheet-1 tile. No leading flag byte on either client. Receive handler `0x44fb90` writes
+4.95's cell is the same shape the door cell-patch already sends. For a cell the server has not overridden, its
+`ground` is the `.map` file's own ground word, sent unchanged (`MapData.GroundWord` → `TileTranslation.Ground`,
+which returns a 4.95 word as is; `MapCell.Write` packs it), so the streamed cell is byte-identical to what the
+client would have read from its own copy. **That word is a two-sheet tagged union, not a tile with flags on
+top** (§12; `Server/TileTranslation.cs`): `0` draws nothing, below `0xC000` it is `TileA[v − 1]`, from `0xC000`
+up it is `TileB[v − 0xC000]`, and the top two bits double as the passability flag, because every blocked cell is
+on sheet 2. Masking the word to 14 bits before using it as a tile was the server's own rendering bug: it turned
+every sheet-2 cell into an unrelated sheet-1 tile.
+
+**An overridden cell can change sheet on the wire.** The server keeps each cell as a 14-bit index and the 2-bit
+pass flag and re-packs them as `(index & 0x3FFF) | (pass << 14)` (`MapData.GroundWord`, `MapCell.Write`), so a
+cell whose pass flag the server has changed goes out on the other sheet: pass 0 on a sheet-2 cell sends a
+sheet-1 word, pass 3 on a sheet-1 cell a sheet-2 word. That happens for an authored `game-data/MapCells.csv` row
+that sets `Pass` (six cells today), a `Doors.csv` ForceOpen tile (none today), a persisted runtime cell whose
+pass changed, and, while a GM has `@clip` on, every blocked cell (`Session.SendMapRect` streams pass as 0, so
+each sheet-2 cell goes out as sheet 1 until clip is turned off and the window is re-sent).
+
+No leading flag byte on either client. Receive handler `0x44fb90` writes
 each cell into the client's **live map array** and then redraws the patched rect, so the write itself is not
 viewport-gated and `height > 1` is fine — the door path only ever sends one row because that's all a door
 needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
@@ -5065,8 +5085,9 @@ layers combine:
    words start at `0xC000`, "solid" is exactly "drawn from sheet 2": **every blocked cell is on sheet 2, and
    the server treats every sheet-2 cell as blocked.** The server splits the word into this flag and a 14-bit
    index (`MapData.Load`), collides on the flag (`MapData.Solid`) and joins the two again for the wire
-   (`MapData.GroundWord`), which gives back the file's word exactly. Water, cliffs, out-of-bounds, and *some*
-   wall footprints are baked here.
+   (`MapData.GroundWord`). That gives back the file's word exactly for every cell the server has not
+   overridden; a cell whose pass flag it has changed goes out on the other sheet (§10.7). Water, cliffs,
+   out-of-bounds, and *some* wall footprints are baked here.
 2. **`SObj.tbl` directional object flags.** The object `u16` indexes `SObj.tbl`; each object has a 1-byte
    **directional wall flag** — `UP=1 DOWN=2 RIGHT=4 LEFT=8` (RTK `map.h`). A move that *enters* a cell while
    heading a given way is blocked if the destination object has that side's bit (`clif_object_canmove`:
