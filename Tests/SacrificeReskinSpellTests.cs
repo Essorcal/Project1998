@@ -5,21 +5,24 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The six Rogue sacrifice reskins hold the shared cast/swing slot for a second, as Lethal Strike and Desperate
-/// Attack do (Caleb, 2026-09-29, "2 yes").
+/// The twelve sacrifice reskins hold the shared cast/swing slot for a second, as Lethal Strike, Desperate Attack,
+/// Berserk and Whirlwind do: the six Rogue ones on Caleb's word of 2026-09-29 ("2 yes"), the six Warrior ones on his
+/// word of 2026-10-21 (decision sheet item 1).
 ///
 /// <para>Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike under the other three
-/// alignments; The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack. RTK's scripts make
-/// each one a one-line wrapper over its original's <c>cast</c> (<c>Spells/rogue/lethal_strike.lua</c>,
-/// <c>desperate_attack.lua</c>), and <c>Content.SacrificeFamilyFor</c> already sends all eight to the same
+/// alignments; The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack; No Fear, Tiger's
+/// Pounce and Wind's Blast are Berserk; Death's Angel, Nature's Own and Bladedance are Whirlwind (the 2002 Nexus
+/// Atlas warrior page lists the last two trios as Berserk's and Whirlwind's Kwi-Sin, Ming-Ken and Ohaeng names).
+/// RTK's scripts make each one a one-line wrapper over its original's <c>cast</c>
+/// (<c>Spells/rogue/lethal_strike.lua</c>, <c>desperate_attack.lua</c>, <c>Spells/warrior/berserk.lua</c>,
+/// <c>whirlwind.lua</c>), and <c>Content.SacrificeFamilyFor</c> already sends all sixteen to the same
 /// <c>sacrifice</c> verb. The cast delay was the one place they parted: <c>Content.CastDelayMs</c> reads the
 /// archetype cell, the originals' rows say Damage and the reskins' rows say Utility
 /// (<c>game-data/spell_effects.csv</c>), so the reskins cast with no delay at all and never blocked a swing.</para>
 ///
-/// <para>The six keys are named here on purpose. The Warrior Berserk and Whirlwind reskins have Utility rows too
-/// and the same gap, but no decision covers them, so they stay as they are. The last fact pins that only as far as
-/// <c>CastDelayMs</c>'s own body goes: a change to their rows moves both sides of its comparison (see that
-/// fact).</para>
+/// <para>The twelve keys are named here on purpose, as <c>Content.SacrificeReskins</c> names them. The last fact pins
+/// that only as far as <c>CastDelayMs</c>'s own body goes: a change to their rows moves both sides of its
+/// comparison (see that fact).</para>
 /// </summary>
 [Collection("world")]
 public sealed class SacrificeReskinSpellTests
@@ -30,6 +33,8 @@ public sealed class SacrificeReskinSpellTests
     {
         "afterlifes_embrace_rogue", "mingkens_judgement_rogue", "calculating_blow_rogue",   // Lethal Strike's
         "the_voids_measure_rogue", "beastly_frenzy_rogue", "tilting_the_balance_rogue",    // Desperate Attack's
+        "no_fear_warrior", "tigers_pounce_warrior", "winds_blast_warrior",                 // Berserk's
+        "deaths_angel_warrior", "natures_own_warrior", "bladedance_warrior",               // Whirlwind's
     };
 
     private readonly SessionFixture _fx;
@@ -47,7 +52,8 @@ public sealed class SacrificeReskinSpellTests
         }
     }
 
-    /// <summary>Each reskin's cast delay is its original's: one second. Red on 9c00b98, where the reskin's is 0.</summary>
+    /// <summary>Each reskin's cast delay is its original's: one second. Red on 9c00b98 for the Rogue six and on 6de1d24
+    /// for the Warrior six, where the reskin's is 0.</summary>
     [Theory]
     [MemberData(nameof(Reskins))]
     public void EachReskinHasItsOriginalsOneSecondDelay(string key)
@@ -57,6 +63,8 @@ public sealed class SacrificeReskinSpellTests
         {
             Content.SacrificeFamily.LethalStrike    => Content.SpellByKey("lethal_strike_rogue")!,
             Content.SacrificeFamily.DesperateAttack => Content.SpellByKey("desperate_attack_rogue")!,
+            Content.SacrificeFamily.Berserk         => Content.SpellByKey("berserk_warrior")!,
+            Content.SacrificeFamily.Whirlwind       => Content.SpellByKey("whirlwind_warrior")!,
             var other => throw new InvalidOperationException($"{key} is in the {other} family"),
         };
 
@@ -65,8 +73,8 @@ public sealed class SacrificeReskinSpellTests
     }
 
     /// <summary>The slot that delay claims, through a real cast: right after the reskin goes off, the shared
-    /// cast/swing slot is held, so a swing or another delayed cast has to wait. Red on 9c00b98: nothing is
-    /// held.</summary>
+    /// cast/swing slot is held, so a swing or another delayed cast has to wait. Red on 9c00b98 for the Rogue six and
+    /// on 6de1d24 for the Warrior six: nothing is held.</summary>
     [Theory]
     [MemberData(nameof(Reskins))]
     public void ACastHoldsTheSharedCastSwingSlot(string key)
@@ -94,14 +102,14 @@ public sealed class SacrificeReskinSpellTests
     }
 
     /// <summary>No other spell's cast delay moves through <c>Content.CastDelayMs</c>'s own body: every spell in
-    /// <c>Content</c> is compared with 9c00b98's rule (<see cref="CastDelayOnMaster"/>), and only the six reskins
-    /// may differ, each from 0 to 1000. That includes the six Warrior reskins with the same Utility-row gap.
+    /// <c>Content</c> is compared with 9c00b98's rule (<see cref="CastDelayOnMaster"/>), and only the twelve reskins
+    /// may differ, each from 0 to 1000. Red on 6de1d24, where the six Warrior reskins are still 0.
     ///
     /// <para>Both sides read the same inputs: the dog fire set (<c>Content.IsDogFireSpell</c>), the stealth set
     /// (<c>Content.IsStealthSpell</c>), each spell's effects row (<c>Content.FxFor</c>) and the constant
     /// <c>Content.ZapCastDelayMs</c>, which <c>want</c> reads too. A delay moved through any of those moves both
     /// sides and stays green. What this catches is a change to <c>CastDelayMs</c>'s own body, and to
-    /// <c>RogueSacrificeReskins</c>, which only that body reads. A recorded table of every spell's delay would close
+    /// <c>SacrificeReskins</c>, which only that body reads. A recorded table of every spell's delay would close
     /// the gap.</para></summary>
     [Fact]
     public void NoOtherSpellsCastDelayMoves()

@@ -1397,18 +1397,22 @@ public static partial class Content
     /// <summary>The cast delay, live-measured at exactly one second.</summary>
     public const int ZapCastDelayMs = 1000;
 
-    // The Rogue sacrifice reskins: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
+    // The sacrifice reskins. Rogue: Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike,
     // and The Void's Measure, Beastly Frenzy and Tilting the Balance are Desperate Attack, under the other three
-    // alignments. RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
-    // desperate_attack.lua), and the sacrifice verb runs all eight alike, but the export gave the six reskins bare
-    // Utility rows where the originals have Damage rows, so the archetype test in CastDelayMs gave the reskins no
-    // delay at all. Caleb, 2026-09-29: they share the originals' 1s. Named key by key rather than by sacrifice
-    // family on purpose: the Warrior Berserk and Whirlwind reskins have Utility rows and the same gap, and no
-    // decision covers them yet.
-    private static readonly HashSet<string> RogueSacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
+    // alignments. Warrior: No Fear, Tiger's Pounce and Wind's Blast are Berserk, and Death's Angel, Nature's Own and
+    // Bladedance are Whirlwind (the 2002 Nexus Atlas warrior page lists each trio as its spell's Kwi-Sin, Ming-Ken
+    // and Ohaeng names). RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
+    // desperate_attack.lua, warrior/berserk.lua, whirlwind.lua), and the sacrifice verb runs all sixteen alike, but
+    // the export gave the twelve reskins bare Utility rows where the originals have Damage rows, so the archetype
+    // test in CastDelayMs gave the reskins no delay at all. Caleb: they share the originals' 1s (the Rogue six on
+    // 2026-09-29, the Warrior six on 2026-10-21). Named key by key rather than by sacrifice family, so a spell that
+    // joins the family later does not take a delay no decision gave it.
+    private static readonly HashSet<string> SacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
     {
         "afterlifes_embrace_rogue", "mingkens_judgement_rogue", "calculating_blow_rogue",   // Lethal Strike's
         "the_voids_measure_rogue", "beastly_frenzy_rogue", "tilting_the_balance_rogue",    // Desperate Attack's
+        "no_fear_warrior", "tigers_pounce_warrior", "winds_blast_warrior",                 // Berserk's
+        "deaths_angel_warrior", "natures_own_warrior", "bladedance_warrior",               // Whirlwind's
     };
 
     /// <summary>How long this spell occupies the shared cast/swing slot. 0 = no cast delay, so it neither
@@ -1434,8 +1438,8 @@ public static partial class Content
         // message whose "(0s)" was always a sub-second remainder being floored, i.e. this same 1s.
         if (IsStealthSpell(sp)) return ZapCastDelayMs;
 
-        // The six Rogue sacrifice reskins (RogueSacrificeReskins, above) take their originals' 1s.
-        if (RogueSacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
+        // The twelve sacrifice reskins (SacrificeReskins, above) take their originals' 1s.
+        if (SacrificeReskins.Contains(sp.Key)) return ZapCastDelayMs;
 
         var fx = FxFor(sp);
         return fx is not null && fx.Archetype == "Damage" ? ZapCastDelayMs : 0;
