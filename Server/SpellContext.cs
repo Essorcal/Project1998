@@ -61,7 +61,7 @@ public sealed class SpellContext
     /// <para>They used to resolve separately (#343's review, F1). A target that changed between two of them was
     /// replaced by what the later one found: the faced tile, a player who had stepped onto it, or the caster. Each
     /// read now passes through <c>Session.LuaStatusTargetHere</c>, so a target that has gone since (a player off the
-    /// caster's map, a dead creature) is nobody, never a substitute.</para></summary>
+    /// caster's map or logged off, a creature dead or taken off the map) is nobody, never a substitute.</para></summary>
     private Session.StatusTarget StatusTarget => _s.LuaStatusTargetHere(_statusTarget ??= _s.LuaStatusTarget(_targetId));
     private Session.StatusTarget? _statusTarget;
 

@@ -1680,21 +1680,30 @@ public sealed partial class Session
 
     /// <summary>The resolved status target as it stands now: the same target, or nobody if it has gone since. Read by
     /// every step after the resolution (<c>SpellContext</c>), so a target that leaves mid-cast is never replaced.
-    /// <para>A player who has left the caster's map is gone, by the same bare read of their map that the resolver
-    /// makes, so the cast never lands on a player on another map, which #342 and #343 made true of the resolution. A
-    /// creature that has died is gone too. A target still here is kept wherever it stands: a creature that stepped off
-    /// the faced tile still takes the curse its slot was checked for, and the player who stepped onto that tile is
-    /// never asked about. The caster is always here.</para>
+    /// <para>A player is here while the online registry still finds that same session (<c>World.Online.ById</c>) and
+    /// it stands on the caster's map. One who has left the map is gone, by the same bare read of their map that the
+    /// resolver makes, so the cast never lands on a player on another map, which #342 and #343 made true of the
+    /// resolution. One who has logged off is gone too: the logout takes them off the map's roster and leaves their map
+    /// field as it was (PR #356's review, F1).</para>
+    /// <para>A creature is here while the caster's map still holds that same object (<c>World.MobById</c>, which also
+    /// skips a dead one). So one that died is gone, and so is one taken off the map alive by <c>World.DespawnMob</c>
+    /// (an expired pet, a ridden horse, a script's <c>vanish()</c>, a freed captive), whose HP says nothing (PR #356's
+    /// review, F1).</para>
+    /// <para>A target still here is kept wherever it stands: a creature that stepped off the faced tile still takes the
+    /// curse its slot was checked for, and the player who stepped onto that tile is never asked about. The caster is
+    /// always here.</para>
     /// <para>What a cast does when its target has gone: each step asks a gone target what it asks nobody. A curse finds
     /// nothing in the slots it asks about and its write lands on no one; if its target goes after its roll, it has
     /// paid by then, so it costs what a cast whose target vanished always cost. A hold refuses, silently, before the
     /// verb's debit, so it costs nothing, and the 1.3x is armed on no one. The window is the few microseconds between
-    /// two of the verb's steps on the caster's own thread, and no lock is taken: a target that leaves between this read
-    /// and the write still takes it, as with any bare read.</para></summary>
+    /// two of the verb's steps on the caster's own thread. No new lock is taken: the two lookups hold the world lock
+    /// for one read each, as the resolver's own lookups do, and a target that leaves between this read and the write
+    /// still takes it.</para></summary>
     internal StatusTarget LuaStatusTargetHere(StatusTarget t)
     {
-        if (t.Pc is { } pc && !ReferenceEquals(pc, this) && pc.CharMap != CharMap) return default;
-        if (t.Mob is { Alive: false }) return default;
+        if (t.Pc is { } pc && !ReferenceEquals(pc, this)
+            && (pc.CharMap != CharMap || !ReferenceEquals(_world.Online.ById(pc.PlayerId), pc))) return default;
+        if (t.Mob is { } m && !ReferenceEquals(_world.MobById(CharMap, m.Id), m)) return default;
         return t;
     }
 
