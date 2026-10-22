@@ -36,9 +36,12 @@ namespace Tests;
 /// nothing.</para>
 ///
 /// <para>The controls: each verb still strikes a creature (by the slot alone, by its id, and through #343's off-map
-/// fallback), each proc still lands on one, a cast at nothing still costs what it did (Bolt and the sacrifice strikes
-/// still charge for one), the area spells still skip an NPC and strike the creatures around it, and the rogue's Ambush,
-/// which spends nothing, still leaps behind an NPC.</para>
+/// fallback), each proc still lands on one, a sacrifice strike at nothing still charges for it, the area spells still
+/// skip an NPC and strike the creatures around it, and the rogue's Ambush, which spends nothing, still leaps behind an
+/// NPC.</para>
+///
+/// <para>Bolt and Freeze at nothing off a PvP map are refused for free as well (Caleb, 2026-10-21, decision sheet item
+/// 9a). On a PvP map a cast at nothing is unchanged.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, and every swing the real 0x13 frame, by a
 /// fresh caster facing a fresh target. The NPC is built as <c>World.PlaceNpc</c> builds one: 1 HP, <c>IsNpc</c>, no Will
@@ -356,27 +359,72 @@ public sealed class NpcDamageVerbTests
         }
     }
 
-    public static TheoryData<string, ushort, string, int, int, int> NothingCases => new()
+    public static TheoryData<string, ushort, Aim, string, int, int, int> NothingCases => new()
     {
-        // key, map, the line, mana, pose, shout
-        { "bolt_mage", Town, "You cast Bolt.", 4, 1, 0 },
-        { "freeze", Town, "You cast Freeze.", 800, 1, 0 },
-        { "whirlwind_warrior", Town, "You cast Whirlwind.", 120, 1, 1 },
-        { "whirlwind_warrior", Arena, "You cast Whirlwind.", 120, 1, 1 },
+        // key, map, aim, the line, mana, pose, shout
+        { "bolt_mage", Town, Aim.Slot, "", 0, 0, 0 },
+        { "bolt_mage", Town, Aim.OffMapPlayerId, "", 0, 0, 0 },
+        { "freeze", Town, Aim.Slot, "", 0, 0, 0 },
+        { "whirlwind_warrior", Town, Aim.Slot, "You cast Whirlwind.", 120, 1, 1 },
+        { "whirlwind_warrior", Arena, Aim.Slot, "You cast Whirlwind.", 120, 1, 1 },
     };
 
-    /// <summary>The control for "only an NPC": a cast at nothing costs what it did. <c>magic_damage</c> charges for a
-    /// blow at nothing off a PvP map, and a sacrifice strike charges its mana and aether for nothing in front (RTK's
-    /// order, kept on purpose; see the verb). Neither changes here: only an NPC is refused for free.
-    /// <para>Green on 63efdd8 as well.</para></summary>
+    /// <summary>What a cast at nothing costs, off a PvP map and with the mana to pay for it. Bolt and Freeze
+    /// (<c>magic_damage</c>) cost nothing and say nothing (Caleb, 2026-10-21, decision sheet item 9a): by the slot alone
+    /// with nothing faced, and aimed at a player on another map with nothing faced, which #343 answers as nothing. A
+    /// sacrifice strike still charges its mana and aether for nothing in front (RTK's order, kept on purpose; see the
+    /// verb), on either map.
+    /// <para>Red on 6de1d24 for Bolt and Freeze: "You cast X.", 4 or 800 mana and the pose, for a blow that struck
+    /// nothing. The strikes are green there as well.</para></summary>
     [Theory]
     [MemberData(nameof(NothingCases))]
-    public void ACastAtNothingCostsWhatItDid(string key, ushort map, string line, int mana, int pose, int shout)
+    public void WhatACastAtNothingCosts(string key, ushort map, Aim aim, string line, int mana, int pose, int shout)
     {
         var sp = Spell(key);
-        var r = Cast(sp, map, Aim.Slot, npc: null);
-        Assert.True(r.Lines == line && r.Spent == mana && r.HpDelta == 0 && r.Pose == pose && r.Speech == shout,
-                    $"{sp.Name} at nothing on map {map}: {r}");
+        Assert.Equal(map == Arena, Content.IsPvpMap(map));
+        var r = Cast(sp, map, aim, npc: null);
+        Assert.True(r.Lines == line && r.Spent == mana && r.HpDelta == 0 && r.Pose == pose && r.Speech == shout
+                    && r.FarHp == Hp && r.FarLines == "",
+                    $"{sp.Name} at nothing ({aim}) on map {map}: {r}");
+    }
+
+    /// <summary>With too little mana, Bolt at nothing off a PvP map still answers what it did: "Not enough mana to cast
+    /// Bolt.", for nothing. The verb asks for its target only when the cast can be paid for, so a short caster hears
+    /// <c>spendMana</c>'s line first, as before.
+    /// <para>Green on 6de1d24 as well.</para></summary>
+    [Fact]
+    public void BoltAtNothingWithTooLittleManaSaysWhatItDid()
+    {
+        var sp = Spell("bolt_mage");
+        var r = Cast(sp, Town, Aim.Slot, npc: null, mana: 3);
+        Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0, $"{sp.Name} at nothing: {r}");
+    }
+
+    public static TheoryData<string, Aim, string, int, bool> PvpNothingCases => new()
+    {
+        // key, aim, the line, mana, the caster struck
+        { "bolt_mage", Aim.Slot, "You cast Bolt.", 4, true },
+        { "freeze", Aim.Slot, "You cast Freeze.", 800, true },
+        { "bolt_mage", Aim.OffMapPlayerId, "You cast Bolt.", 4, false },
+    };
+
+    /// <summary>On a PvP map a cast at nothing is unchanged. By the slot alone (the stock client's frame) with nothing
+    /// faced, the damage resolver gives the caster (<c>Session.ResolveDamageTarget</c>'s PvP fallback), so Bolt and
+    /// Freeze land on their caster, for their mana. Aimed at a player on another map with nothing faced, the resolver
+    /// gives nobody (#343), and the cast still costs its mana and its line and strikes nothing.
+    /// <para>RTK differs on both: its zap returns at a missing target before it asks for mana
+    /// (<c>Spells/common/global_zap.lua:8-10</c>), so it is free and silent there. A change on a PvP map is left for a
+    /// decision of its own. Green on 6de1d24 as well.</para></summary>
+    [Theory]
+    [MemberData(nameof(PvpNothingCases))]
+    public void OnAPvpMapACastAtNothingIsUnchanged(string key, Aim aim, string line, int mana, bool struck)
+    {
+        var sp = Spell(key);
+        Assert.True(Content.IsPvpMap(Arena));
+        var r = Cast(sp, Arena, aim, npc: null);
+        Assert.True(r.Lines == line && r.Spent == mana && r.Pose == 1 && (r.HpDelta < 0) == struck
+                    && r.FarHp == Hp && r.FarLines == "",
+                    $"{sp.Name} at nothing ({aim}) on map {Arena}: {r}");
     }
 
     public static TheoryData<string, ushort, int, int> AreaCases
@@ -451,13 +499,13 @@ public sealed class NpcDamageVerbTests
 
     /// <summary>A fresh caster on <paramref name="map"/> faces a fresh NPC (<paramref name="npc"/> true), a fresh
     /// creature (false) or nothing (null), with a fresh player on a content-free map, and casts <paramref name="sp"/>
-    /// from slot 0 at <paramref name="aim"/>. Returns what the caster saw, spent and kept, and what the target and the
-    /// other player kept.</summary>
-    private Outcome Cast(SpellDef sp, ushort map, Aim aim, bool? npc)
+    /// from slot 0 at <paramref name="aim"/>, holding <paramref name="mana"/>. Returns what the caster saw, spent and
+    /// kept, and what the target and the other player kept.</summary>
+    private Outcome Cast(SpellDef sp, ushort map, Aim aim, bool? npc, uint mana = Mana)
     {
         Mob? target = npc switch { true => Npc(map, CX + 1), false => CreatureAt(map, CX + 1), null => null };
         var (far, farOut, farc) = Player("NdvFar", Elsewhere);
-        var (caster, cOut, cc) = Caster(map, ch => ch.Spells.Add(sp.Id));
+        var (caster, cOut, cc) = Caster(map, ch => { ch.Spells.Add(sp.Id); ch.Mp = mana; });
         try
         {
             uint? id = aim switch

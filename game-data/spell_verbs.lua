@@ -269,11 +269,21 @@ end
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
 -- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
 -- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
--- archetype and the generic damage spells give a cast that finds nothing. Only an NPC: a cast at nothing still
--- charges here, as it always has.
+-- archetype and the generic damage spells give a cast that finds nothing.
+--
+-- A cast at nothing off a PvP map is refused the same way, once the caster can pay for it (Caleb, 2026-10-21,
+-- decision sheet item 9a). It used to cost 4 or 800 mana, the pose and "You cast X." for a blow that struck nothing;
+-- RTK's zap returns at a missing target before it spends (Spells/common/global_zap.lua:8-10). ctx:canStrike asks
+-- the blow's own question before the spend. On a PvP map it answers yes to everything it did before, a cast at
+-- nothing included (unaimed, it lands on its caster there). RTK differs there too; that is left for its own decision.
+--
+-- The target is asked only when the cast can be paid for, so a caster short of mana still hears spendMana's own
+-- line, as before.
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
-  if not ctx:spendMana(row.mana or 0) then return false end   -- declined (no mana) -> no "You cast X."
+  local mana = row.mana or 0
+  if ctx.mp >= mana and not ctx:canStrike() then return false end   -- nothing to strike here: free
+  if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
   ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
   return true
 end

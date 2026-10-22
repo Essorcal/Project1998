@@ -723,8 +723,9 @@ public sealed partial class Session
     /// <c>generic</c> damage spells 5, and Call Lightning 120, Hellfire and Dooms Fire most or all of the pool, and
     /// Assault half its caster's HP. <see cref="LuaHasDamageTarget"/> (the <c>generic</c> gate) and <see cref="LuaMagicDamage"/>
     /// (<c>arch_damage</c>) now take this victim instead of resolving their own, so each refuses an NPC as it refuses
-    /// a cast that finds nothing, silently and free. <c>magic_damage</c> charges for a cast that finds nothing, so it
-    /// reads <paramref name="npc"/> (<c>ctx.victimIsNpc</c>) and refuses an NPC alone.</para></summary>
+    /// a cast that finds nothing, silently and free. <c>magic_damage</c> spends before it strikes, so it reads
+    /// <paramref name="npc"/> (<c>ctx.victimIsNpc</c>) and refuses an NPC first, then asks <see cref="LuaCanStrike"/>
+    /// before it spends.</para></summary>
     /// <param name="npc">True when the resolver ended at an NPC, which this answers as no victim.</param>
     internal (Mob? mob, Session? pc) LuaDamageVictim(uint? targetId, out bool npc)
     {
@@ -741,6 +742,24 @@ public sealed partial class Session
     /// (<see cref="LuaDamageVictim"/>), the one the blow then strikes, so an NPC is nothing to land on: the
     /// <c>generic</c> verb's gate used to resolve again for itself and answer yes for one.</summary>
     internal bool LuaHasDamageTarget((Mob? mob, Session? pc) victim) => victim.mob is not null || victim.pc is not null;
+
+    /// <summary>May <see cref="LuaDamageTarget"/> strike this cast's victim here? <c>magic_damage</c> asks before it
+    /// spends, because its blow comes after its debit and returns nothing the verb reads.
+    /// <para><b>Off a PvP map, nothing is no target</b> (Caleb, 2026-10-21, decision sheet item 9a): refused, silently,
+    /// as <see cref="LuaDamageTarget"/> already refused it after the spend. Bolt cost 4 mana and Freeze 800, with the
+    /// pose and "You cast X.", for a blow that struck nothing. RTK's zap returns at a missing target before it spends
+    /// (<c>Spells/common/global_zap.lua:8-10</c>).</para>
+    /// <para><b>On a PvP map nothing changes</b>, and it answers yes to everything the blow took before. With the slot
+    /// alone and nothing faced, the victim is the caster (<see cref="ResolveDamageTarget"/>'s PvP fallback), and the zap
+    /// lands on them. Aimed at an id that finds nobody there, the victim is none, and the cast still pays for a blow
+    /// that strikes nothing. RTK is free and silent in both. That difference is on a PvP map, so it is left for a
+    /// decision of its own.</para></summary>
+    internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
+    {
+        if (Content.IsPvpMap(_char.Map)) return true;
+        if (victim.mob is null && victim.pc is null) { LogNoTarget(sp); return false; }   // silent, free
+        return true;
+    }
 
     internal bool LuaSpendMana(int amt, SpellDef sp)
     {

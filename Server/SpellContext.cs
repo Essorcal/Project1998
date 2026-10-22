@@ -37,8 +37,8 @@ public sealed class SpellContext
     /// as they refuse no creature, before they spend anything.</para>
     /// <para>So do the other verbs that strike it (#349's review, F1). <see cref="hasDamageTarget"/> (the
     /// <c>generic</c> verb's gate) and <see cref="magicDamage"/> (<c>arch_damage</c>) read this victim too, so each
-    /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> charges for a cast that finds
-    /// nothing, so it asks <see cref="victimIsNpc"/> before it spends.</para>
+    /// refuses an NPC as it refuses a cast that finds nothing. <c>magic_damage</c> spends before it strikes, so it asks
+    /// <see cref="victimIsNpc"/> and then <see cref="canStrike"/> before it spends.</para>
     /// <para>Per cast because a <c>SpellContext</c> is: <c>Session.ApplyCast</c> builds a new one for every cast,
     /// a queued or proc cast included.</para></summary>
     private (Mob? mob, Session? pc) Victim
@@ -109,8 +109,8 @@ public sealed class SpellContext
     /// It reads this cast's victim (<see cref="Victim"/>), the one the blow strikes, so an NPC is no target.</summary>
     public bool   hasDamageTarget => _s.LuaHasDamageTarget(Victim);
     /// <summary>Did this cast's victim (<see cref="Victim"/>) resolve to an NPC, which no blow can hurt and which the
-    /// victim therefore answers as none? For a verb that charges for a cast that finds nothing (<c>magic_damage</c>),
-    /// so it can refuse an NPC before it spends without changing what a cast at nothing costs.</summary>
+    /// victim therefore answers as none? <c>magic_damage</c> refuses one first, before it looks at its mana, as #349's
+    /// follow-up made it.</summary>
     public bool   victimIsNpc { get { _ = Victim; return _victimIsNpc; } }
     /// <summary>The player's typed answer to the spell's question prompt (empty if none).</summary>
     public string answer    { get; }
@@ -121,6 +121,12 @@ public sealed class SpellContext
     /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
     /// and the PvP gate for a player). False if there is none.</summary>
     public bool damage(double amt)      => _s.LuaDamageTarget((int)System.Math.Round(amt), _sp, Victim);
+    /// <summary>May <see cref="damage"/> strike this cast's victim (<see cref="Victim"/>) here? A verb that spends
+    /// before it strikes (<c>magic_damage</c>) asks it first, so a blow that would strike nothing costs nothing. Off a
+    /// PvP map a cast that finds nothing is refused, silently. On a PvP map it answers yes to everything
+    /// <see cref="damage"/> took there before, a cast that finds nothing included (see
+    /// <c>Session.LuaCanStrike</c>).</summary>
+    public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
