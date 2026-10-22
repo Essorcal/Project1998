@@ -1019,4 +1019,70 @@ public sealed class CommandTableTests
             "pane3|Brought Bt to (6,6).",
         }, Transcript(outbound));
     }
+
+    // ---- @mob's HP -------------------------------------------------------------------------------------
+    //
+    // Both facts stand the GM on a content-free map (no Maps.csv row, no spawn rows; unique to these two facts,
+    // since the fixture World is shared), so the map's list is empty before the command and whatever is on it
+    // after is what the command put there. Each clears the map in its finally.
+
+    private const ushort MobHpMap = 61783;
+
+    /// <summary><c>@mob</c> takes an HP of 1 or more. An HP of 0 or less is refused with the row's usage line,
+    /// on the bubble like every refusal, and puts nothing on the map. It used to spawn the creature anyway: one
+    /// with no hit points, which is not <c>Mob.Alive</c>, so no client draws it, <c>World.DespawnMob</c> refuses
+    /// it, and only <c>@kill</c> takes it off (PR #320's verdict, follow-ups).
+    ///
+    /// <para>Red on master's <c>MobOne</c> in Debug and in Release, every case, at the reply: the pane's
+    /// "spawned look 1 (hp 0, colour 0) - everyone on this map can see it" (and hp -1, hp -2147483648) where the
+    /// usage line was expected. Moving the refusal after the spawn, so the reply is right and the creature is
+    /// placed anyway, is red at the map's list.</para></summary>
+    [Theory]
+    [InlineData("@mob 1 0")]
+    [InlineData("@mob 1 -1")]
+    [InlineData("@mob 1 -2147483648")]
+    public void MobRefusesAnHpBelowOneAndSpawnsNothing(string command)
+    {
+        var (gm, outbound, _) = _fx.PlayerWith(GmRoster.Name, c => { c.MapXs = 12; c.MapYs = 12; }, MobHpMap, 6, 6);
+        try
+        {
+            Assert.Empty(_fx.World.View(gm, MobHpMap).mobs);
+            outbound.Clear();
+
+            Run(gm, command);
+
+            Assert.Equal(new[] { "bubble|usage: @mob <look> [hp] [color]" }, Transcript(outbound));
+            Assert.Empty(_fx.World.View(gm, MobHpMap).mobs);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(gm, MobHpMap);
+            _fx.World.ClearMap(MobHpMap);   // anything the command put there after all
+        }
+    }
+
+    /// <summary>The boundary: 1 HP is enough. <c>@mob 1 1</c> spawns one creature with 1 HP and says so, so
+    /// the refusal above is "below 1" and not "1 or below". Refusing 1 as well (<c>hp &lt;= 1</c>) is red here,
+    /// at the map's list, in Debug and in Release.</summary>
+    [Fact]
+    public void MobWithOneHpSpawnsOne()
+    {
+        var (gm, outbound, _) = _fx.PlayerWith(GmRoster.Name, c => { c.MapXs = 12; c.MapYs = 12; }, MobHpMap, 6, 6);
+        try
+        {
+            Assert.Empty(_fx.World.View(gm, MobHpMap).mobs);
+            outbound.Clear();
+
+            Run(gm, "@mob 1 1");
+
+            var mob = Assert.Single(_fx.World.View(gm, MobHpMap).mobs);
+            Assert.Equal(1, mob.Hp);
+            Assert.Equal(Paned("spawned look 1 (hp 1, colour 0) - everyone on this map can see it"), Transcript(outbound));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(gm, MobHpMap);
+            _fx.World.ClearMap(MobHpMap);
+        }
+    }
 }

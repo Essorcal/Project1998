@@ -314,11 +314,16 @@ public sealed partial class Session
     //
     // Stationary on purpose (wander: false): these are calibration dummies for melee / sfx / sprite work, and
     // one that wanders off mid-measurement is worthless. Use @summon for a mob with its registry AI.
+    //
+    // HP 1 or more. An HP below 1 is refused with the usage line and spawns nothing: it used to spawn a
+    // creature that is not Alive (Mob.Alive is Hp > 0), which SyncMobs never draws and World.DespawnMob
+    // refuses, so only @kill could take it off again (PR #320's verdict, follow-ups).
     private void MobOne(CommandArgs a)
     {
         int look = a.Int(0, 0);
         int hp = a.Int(1, 6);
         int color = a.Int(2, 0);
+        if (hp < 1) { Refuse(a.Usage()); return; }
         var (fx, fy) = FrontTile();
         ushort x = (ushort)Math.Clamp(fx, 0, _char.MapXs - 1);
         ushort y = (ushort)Math.Clamp(fy, 0, _char.MapYs - 1);

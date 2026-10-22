@@ -2675,9 +2675,10 @@ public sealed partial class World
     /// <para><b>No <c>Alive</c> test, unlike <see cref="DespawnMob"/>.</b> There it guards a caller holding a
     /// stale reference: a creature killed after the caller found it has already left the list and released its
     /// point. This reads the list itself, under the lock, so every entry is current. A kill takes its creature
-    /// off the list in the same locked section, and content floors a creature's HP at 1, so an entry with no
-    /// hit points is a GM's <c>@mob &lt;look&gt; 0</c>. No client draws it, nothing can damage it, and
-    /// DespawnMob refuses it, so @kill is the only way to clear it, as it always has been.</para>
+    /// off the list in the same locked section, and content floors a creature's HP at 1. The one other source
+    /// of an entry with no hit points was a GM's <c>@mob &lt;look&gt; 0</c>, and <c>@mob</c> now refuses an HP
+    /// below 1. Should one reach the list anyway, no client draws it, nothing can damage it, and DespawnMob
+    /// refuses it, so @kill is the only way to clear it, as it always has been.</para>
     ///
     /// <para>One locked section. <see cref="SpawnDirector.ReleasePoint"/> runs under the lock this already
     /// holds and takes none of its own. The despawns go out after the lock, one per creature taken and for no
