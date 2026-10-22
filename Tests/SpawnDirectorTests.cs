@@ -523,6 +523,8 @@ public class SpawnDirectorRoomTests
     private const ushort DragonsGold3 = 4254, DragonDeath3 = 4253, JeweledDragon3 = 4258;   // spirit_dragon's rooms' maps
     private const ushort BrokenRowMap = 60210;   // the entry-fault fact's synthetic point's row
     private const ushort BullsSong2 = 3175, OxPath2 = 3178;   // divine_ox's two rooms, 3175:12:21 and 3178:15:20
+    private const ushort BoarRise2 = 3189, CloveHill2 = 3187;   // divine_pig's two rooms, 3189:7:9 and 3187:20:23
+    private const ushort Unrenderable = 60211;   // the pick fact's room map: no Maps.csv row, so the client cannot render it
 
     /// <summary>A director read under the lock its seams assert, returned to the test.</summary>
     private static T Locked<T>(World world, Func<T> read)
@@ -728,8 +730,8 @@ public class SpawnDirectorRoomTests
     /// <summary>The roster <c>Spawns.csv</c> gives every <see cref="World"/>: each point on map 4 whose
     /// creature has rooms is filed under every one of its rooms' maps but a room off its map (no tile of the map
     /// within two; <see cref="ARoomWithNoTileOfItsMapWithinTwoIsLeftOutOfTheFilingAndThePick"/> pins the one
-    /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere is ignored by
-    /// <c>Materialize</c>, which then builds the boss on map 4 instead). What stays on map 4 is the three
+    /// there is), and not under map 4. Each room is on a map the client renders (a room elsewhere would be left
+    /// out of the filing and the pick, <see cref="ThePickSkipsEveryRoomTheFilingSkips"/>). What stays on map 4 is the three
     /// nine-tailed foxes, which have no rule, and <c>gimyi</c>, whose room's map already has a batch group of
     /// it (<see cref="GimYisDenKeepsItsOneGimYiAndItsPointStaysOnMapFour"/>).
     ///
@@ -777,8 +779,8 @@ public class SpawnDirectorRoomTests
     /// built sixty times for a player on 4163, and never in the off-map room: drawn uniformly over all three
     /// rooms, as before the rule, sixty builds all miss it with probability (2/3)^60, about 3e-11.</para>
     ///
-    /// <para>Falsified by filing every room's map again (<c>RoomMapsOf</c> without <c>OffItsMap</c>): red,
-    /// filed under 4164. By picking over every room again (<c>PickRoom</c> without <c>OffItsMap</c>): red,
+    /// <para>Falsified by filing every room's map again (<c>UsableRoomMaps</c> without <c>UsableRoom</c>): red,
+    /// filed under 4164. By picking over every room again (<c>PickRoom</c> without <c>UsableRoom</c>): red,
     /// a build in the off-map room. By skipping every room outside its map, not only those with no tile
     /// within two (<c>OffItsMap</c> without the reach): red, the sheep lose their rooms.</para></summary>
     [Fact]
@@ -952,6 +954,48 @@ public class SpawnDirectorRoomTests
         Assert.True(ours[1].Line.Contains("map entry: spawn rows still throwing") && ours[1].Line.Contains(repeat),
                     $"the second entry's line should name \"{repeat}\"; it reads: {ours[1].Line}");
         Assert.DoesNotContain("\n", ours[1].Line);   // named, with no stack
+    }
+
+    /// <summary>The pick draws only among the rooms the filing keeps: one test, <c>SpawnDirector.UsableRoom</c>,
+    /// for both (#357's review, F3). A borrowed rule, <c>divine_pig</c>'s two rooms on 3189 and 3187, with two
+    /// rooms added: one on a map the client cannot render (60211, no <c>Maps.csv</c> row) and one off its map
+    /// (3189 at a column ten past its edge). The filing keeps the two real rooms' maps, and sixty draws each land on
+    /// one of the two real rooms. The pick used to skip only the room off its map, so it drew the unrenderable
+    /// room one time in three, and <c>Materialize</c> then dropped it and built the boss at its row's tile on its
+    /// row's map, which the point is not filed under; sixty draws all miss it with probability (2/3)^60, about
+    /// 3e-11. A rule with no usable room at all has nothing to be filed under and no pick: its point stays on its
+    /// row's map and is built there.
+    ///
+    /// <para>No rule has a room on an unrenderable map today (<c>ContentSmokeTests</c> requires every room's map
+    /// to render), so such a rule cannot reach <c>Materialize</c> through <see cref="Content"/>. The fact hands
+    /// the rooms to the filing's and the pick's own halves instead (<c>UsableRoomMaps</c>,
+    /// <c>PickRoom</c>).</para>
+    ///
+    /// <para>Falsified by the pick's old test (<c>PickRoom</c> asking <c>!OffItsMap</c> where it asks
+    /// <c>UsableRoom</c>): red at the first draw that lands on 60211 ("draw 3 picked (60211, 3, 3)").</para></summary>
+    [Fact]
+    public void ThePickSkipsEveryRoomTheFilingSkips()
+    {
+        var rule = RoomRule("divine_pig", BoarRise2, CloveHill2);
+        Assert.False(Content.Maps.ContainsKey(Unrenderable), $"map {Unrenderable} has a Maps.csv row now; the fact needs a map the client cannot render");
+        var boarRise = Content.Maps[BoarRise2];
+        (ushort Map, ushort X, ushort Y) unrenderable = (Unrenderable, 3, 3);
+        (ushort Map, ushort X, ushort Y) offItsMap = (BoarRise2, (ushort)(boarRise.Xs + 10), 3);
+        var rooms = rule.Rooms.Append(unrenderable).Append(offItsMap).ToArray();
+
+        var filed = World.SpawnDirector.UsableRoomMaps(rooms);
+        Assert.Equal(new[] { BoarRise2, CloveHill2 }, filed);
+        for (int draw = 1; draw <= 60; draw++)
+        {
+            var pick = World.SpawnDirector.PickRoom(rooms);
+            Assert.True(pick is { } room && Array.IndexOf(rule.Rooms, room) >= 0 && Array.IndexOf(filed, room.Map) >= 0,
+                        $"draw {draw} picked {pick}, a room the filing leaves out");
+        }
+
+        var noneUsable = new[] { unrenderable, offItsMap };
+        Assert.Empty(World.SpawnDirector.UsableRoomMaps(noneUsable));
+        var none = World.SpawnDirector.PickRoom(noneUsable);
+        Assert.True(none is null, $"a rule with no usable room picked {none}");
     }
 
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
