@@ -75,7 +75,8 @@ Both channels use the **same framing and the same cipher** (see below). This is 
 
 ## 2. Wire framing
 
-Every packet, both directions, both channels:
+Every packet, both directions, both channels, except the two server frames listed at the end of this
+section:
 
 ```
 AA | length(u16, big-endian) | opcode(u8) | increment(u8) | body[...]
@@ -104,6 +105,24 @@ Length-prefixed strings are `len(u8) bytes[len]`, ASCII.
 Multiple packets are commonly concatenated in a single TCP segment; parse in a loop: while at least 5
 bytes and `buf[0]==0xAA`, read length, consume `3+length`, repeat. Handle partial packets by
 buffering the remainder.
+
+**Two server → client frames break this layout.** Every other server send goes through `TkPacket.Build` or
+`TkPacket.BuildGame` (`Protocol.Tk495/TkPacket.cs`), and the server splits every inbound frame as above
+(`TkPacket.Parse`):
+
+| Opcode | On the wire | Written by |
+|---|---|---|
+| `0x03` redirect (§4.1) | `AA len(u16BE) 03`, then one fixed-size struct: **no increment byte and no cipher**. `length` counts the opcode and the struct, `25 + nameLen` | `Protocol.Tk495/LoginRedirect.cs` `LoginRedirect.Build`; sent by `LoginServer/LoginSession.cs` `HandleLogin` (the handoff) and `Server/Session.cs` `HandleReLogin` and `HandleExitToSelect` |
+| `0x7E` welcome (§4.1) | `AA 00 13 7E 1B "CONNECTED SERVER\n"`: the layout's shape, with a constant `0x1B` where the increment goes, but the text is **not ciphered** | `Protocol.Tk495/Welcome.cs` `Welcome.Bytes`; sent on connect by `LoginServer/LoginSession.cs` `RunAsync`, and by `Server/Session.cs` `RunAsync` on login-port connections |
+
+A reader that takes an increment from every frame reads the redirect one byte late (`LoginProbe/Program.cs`
+reads the reversed address from raw byte 4, straight after the opcode). The client skips the decipher for
+`0x03` (receive paths testing the opcode at `0x477e1e` and `0x4780fd`), but none of its five decipher sites
+exempts `0x7E`, so it deciphers the welcome text with increment `0x1B`; logins work with the frame as sent.
+Fixed increments are not exceptions, since the field is "whatever the sender put there": the login channel's
+`0x02` replies always carry `0x02` (`LoginSession.SendStatus`, `SendMessage`) or `0x01` (the name-available
+frame in `LoginSession.NameAvailable`). The client's `0x10` arrival keeps the standard header; only its body is
+plaintext (§3; `Session.HandleArrival` reads the body as received).
 
 ---
 
@@ -172,7 +191,8 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    ```
    AA 00 13 7E 1B "CONNECTED SERVER\n"
    ```
-   (opcode `0x7E`, then the ASCII string.) The client expects this immediately on connecting to 2000.
+   (opcode `0x7E`, a constant `0x1B` where the increment goes, then the ASCII string, not ciphered; §2
+   lists it among the frames that break the layout.) The client expects this immediately on connecting to 2000.
 
 2. **Client → server `0x62`** — client signature, body `"baram\0"`. (The client identifies as the
    "baram" engine.) No meaningful reply required.
@@ -212,9 +232,13 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    Both processes share one logger (`Shared.Core/Log.cs`) and read that variable the same way — only the
    default differs, and the login server's is off.
 
-   **Server → client `0x03` (handoff):** tell the client where the game server is. Body layout
+   **Server → client `0x03` (handoff):** tell the client where the game server is. **The envelope is an
+   exception to §2:** `AA len(u16BE) 03` is followed directly by the struct below, with **no increment byte**
+   and **no cipher**, and the client reads it as **one fixed-size struct** (`Protocol.Tk495/LoginRedirect.cs`
+   `LoginRedirect.Build`, the only writer; the same struct also sends a game client back to login). Struct
    (as implemented and confirmed working):
    ```
+   AA  len(u16BE)  03             // envelope: len = 25 + nameLen, no increment follows
    ip[3] ip[2] ip[1] ip[0]        // 4 bytes, IP octets REVERSED (e.g. 127.0.0.1 -> 01 00 00 7F)
    port(u16, big-endian)          // game server port, e.g. 2005 -> 07 D5
    17 00 09                       // (constants observed in the working handoff)
