@@ -14,12 +14,28 @@ corroboration and are NOT load-bearing anywhere — see [Sheet staleness](#sheet
 s          = random integer in [minSDam, maxSDam] summed over all equipment
 swing      = (s / 2) * enchant  +  Dam * 2.5  +  mightTerm(Might)  +  classFactor(class, level)
 swing     *= rage * invisible * critical            (5x stealth, 3x crit — unchanged from RTK)
-damage     = max(1, floor(swing * (1 + targetAC / 100)))
+damage     = max(1, floor(swing * (1 + targetAC / 100) * reach))   reach 0.5 for backstab/flank reach tiles
 damage    *= 2                                       if attacking from behind (Combat.IsBehindTarget)
-damage     = max(1, floor(damage * reach))           reach 0.5 for backstab/flank reach tiles
 ```
 
 `targetAC` clamps at −95 for a mob target, −80 for a player target (RTK `minimumArmor`).
+
+**One floor, then the rear x2 (#78, 2026-10-21).** Every term is multiplied unrounded and the product is floored
+once and raised to 1 (`Combat.FloorOnce`); a hit from behind then doubles that whole number, as RTK's
+`swingDamage.lua` doubles its floored figure (:147-150). Caleb: "multiply everything, round down once, minimum 1",
+and "Round down once (minimum 1), then double for a hit from behind. Ordinary hits from behind stay exactly as
+today." The reach scale sits inside the floor. Against a **player**, the swing's figure is handed over unfloored
+(`Session.PlayerSwingRaw`) with the rear x2 as a flag, and the defender's intake (`Session.TakeDamage`) multiplies in
+the sleep amplifier (Doze 1.3, Sleep 1.5) and the Sanctuary/Cunning deduction before its one floor, then doubles:
+
+```
+damage     = max(1, floor(swing * (1 + targetAC / 100) * reach * amplifier * deduction))
+damage    *= 2                                       if attacking from behind
+```
+
+Before #78 each step rounded on its own (the armor floor, then `Math.Round` half to even after the amplifier and
+again after the deduction), so a weak hit on a heavily armored player under Sanctuary could land as 0. With no
+amplifier, no deduction and no reach scale the two rules agree exactly, from in front or from behind.
 
 ### mightTerm — QUANTIZED
 
@@ -503,7 +519,9 @@ same character (military fork S 90-100 gave a window of 113-123, fixing the non-
 ### Armor / deduction
 
 `damage = max(1, floor(raw * (1 + ac/100)))` — **one** floor, applied at the end. Never truncate the raw
-swing to int first; double-flooring is disproven (n=178).
+swing to int first; double-flooring is disproven (n=178). Any other term — the sleep amplifier, the
+Sanctuary/Cunning deduction, the reach scale — multiplies into the same product before that floor, and the rear x2
+doubles its result (#78; see §1).
 
 Confirmed on 11/11 spell readings spanning AC −22 to +100, and on every melee window since.
 
@@ -1098,7 +1116,9 @@ every grind session becomes classFactor data at no extra cost.
 | `PlayerSwingDamage` | `Server/Session.Items.cs` |
 | `MightTerm`, `ClassFactor`, `WarriorDamFlipLevel`, `HasWeaponEquipped` | `Server/Session.Items.cs` |
 | `WeaponTotals` (unarmed S 1-2) | `Server/Session.Items.cs` |
-| `ApplyArmor`, `IsBehindTarget`, `RollPlayerSwingRtk` | `Server/Combat.cs` |
+| `PlayerSwingRaw` (the unfloored figure and the rear flag) | `Server/Session.Items.cs` |
+| `ApplyArmor`, `ArmorFactor`, `FloorOnce`, `IsBehindTarget`, `RollPlayerSwingRtk` | `Server/Combat.cs` |
+| The player's intake: amplifier, deduction, the one floor, the rear x2 (`TakeDamage`) | `Server/DamageIntake.cs` |
 | Mob AC (`MobArmor`) | `game-data/mobs.csv` |
 | Weapon S ranges | `game-data/Items.csv` |
 | RTK reference (diverges — see below) | `RTK-Server/rtklua/Accepted/Scripts/swingDamage.lua` |
@@ -1117,7 +1137,7 @@ or moved. Treat it as a source of *shapes and constants*, and measure anything t
 Not melee, but recorded so it is not lost. `game-data/spell_effects.csv` damage rows were rewritten:
 
 ```
-Spark  =  50 + floor((level + will) / 4)      8 rows
+Spark  =  50 + level / 2                       7 rows   (was 50 + floor((level + will) / 4); see below)
 Singe  = 100 + floor((level + will) / 2)     12 rows
 Ignite = 200 + (level + will)                12 rows   <-- EXTRAPOLATED, NOT MEASURED
 ```
@@ -1132,5 +1152,12 @@ class.
 **Ignite is a guess** — it continues the doubling pattern because leaving it on the old shape made Ignite
 weaker than Singe. One cast confirms or kills it: predicts **464** on a squirrel at level 16 / will 16.
 
-The archived "Spark = 50 + level/2, 19/19 exact" is correct but is the *mage special case* — a mage's
-will equals their level, so `(L+W)/4` collapses to `L/2`.
+**Spark, since 2026-10-21 (#200):** the seven Spark-family rows (Spark, Glimpse of the Void and Nature's Ire for
+mage; all four for poet) read the live probe's `50 + level/2`, with Will out (Caleb's ruling, decision sheet item
+13). The archived "Spark = 50 + level/2, 19/19 exact" and the `(L+W)/4` shape above agree only when Will equals
+level, and the probe's "a +1 will item changed nothing" was the measurement on the table. The half is kept to the
+armor step: `Session.CastArch` no longer rounds the evaluated amount, and the spell path carries a double to
+`Combat.ApplyArmor`, so a level-15 self-cast at AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it
+was 107). Mage Bolt is not on this row: `game-data/SpellParams.csv` binds `bolt_mage` to `verbs.magic_damage`,
+2 + 1.5 × Will for 4 mana, held for a decision of its own; #78's single floor applies to it. Singe and Ignite are
+unchanged.
