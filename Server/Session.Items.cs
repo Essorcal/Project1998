@@ -157,8 +157,15 @@ public sealed partial class Session
     // item), '<'/Shift+, = 1 (grab EVERYTHING stacked on the tile). Either way, play the bend-down action
     // first — type 4, time 40; the crouch sprite carries the pickup sound — on self AND peers, even when the
     // tile is empty (matches RTK, which sends the action before it looks at the floor).
+    //
+    // A GHOST OR A RIDER PICKS NOTHING UP, AND IS TOLD NOTHING. RTK's clif_parsegetitem returns at once for
+    // state 1 (dead) or 3 (mounted), before the crouch and before the invisibility break. So this sits first:
+    // no crouch, no sound, no line, no item, and an invisible rider stays invisible. The other states still
+    // pick up as before: an invisible player on foot (the attempt breaks the stealth, below) and a transformed
+    // one, since RTK refuses only those two. Tests/EmotePickupStateTests.cs pins each case.
     private void HandlePickup(byte[] dec)
     {
+        if (IsDead || _char.Mounted) return;
         bool pickAll = dec.Length > 0 && dec[0] != 0;
         SendAction(_char.Id, ActionType.SitOrPickup, 40, 0);                                 // our crouch + sound
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.SitOrPickup, 40, 0), except: this);   // peers see it too
