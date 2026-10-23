@@ -133,7 +133,11 @@ public class TickPhaseGuardTests
             // own guard never saw it.
             var ours = lines.Where(e => e.Line.Contains(StackPrefix)).ToList();
             var stack = Assert.Single(ours);
-            Assert.Contains($"world tick phase (1) respawns: a spawn point threw — '' (creature id {broken.Id}) on map {PointMap}", stack.Line);
+            // The whole sentence, past the map: an ordinary point's line names its map alone, never the room-boss
+            // suffix of a boss filed under its rooms' maps (the tick-side twin of #367 review's F1). Printed in full
+            // on failure, because xUnit's own Contains message cuts the line off before the map.
+            string pointStack = $"world tick phase (1) respawns: a spawn point threw — '' (creature id {broken.Id}) on map {PointMap} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)";
+            Assert.True(stack.Line.Contains(pointStack), $"the beat's line should carry \"{pointStack}\"; it reads: {stack.Line.Split('\n')[0]}");
             Assert.DoesNotContain("world tick phase (1) respawns threw", stack.Line);
             Assert.Contains(nameof(ArgumentNullException), stack.Line);
             Assert.Contains("\n      ", stack.Line);   // Log.Detail's continuation: the stack is on it

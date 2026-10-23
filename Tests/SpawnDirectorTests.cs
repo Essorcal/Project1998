@@ -522,6 +522,7 @@ public class SpawnDirectorRoomTests
     private const ushort DragonRowMap = 60209;   // the Jeweled Dragon fact's synthetic point's row
     private const ushort DragonsGold3 = 4254, DragonDeath3 = 4253, JeweledDragon3 = 4258;   // spirit_dragon's rooms' maps
     private const ushort BrokenRowMap = 60210;   // the entry-fault fact's synthetic point's row
+    private const ushort TickBrokenRowMap = 60212;   // the tick-fault fact's synthetic point's row
     private const ushort BullsSong2 = 3175, OxPath2 = 3178;   // divine_ox's two rooms, 3175:12:21 and 3178:15:20
     private const ushort BoarRise2 = 3189, CloveHill2 = 3187;   // divine_pig's two rooms, 3189:7:9 and 3187:20:23
     private const ushort Unrenderable = 60211;   // the pick fact's room map: no Maps.csv row, so the client cannot render it
@@ -953,6 +954,66 @@ public class SpawnDirectorRoomTests
         string repeat = $"a spawn point 'divine_ox' (creature id {broken.Id}) on map {OxPath2} {row} {nameof(ArgumentOutOfRangeException)} x1";
         Assert.True(ours[1].Line.Contains("map entry: spawn rows still throwing") && ours[1].Line.Contains(repeat),
                     $"the second entry's line should name \"{repeat}\"; it reads: {ours[1].Line}");
+        Assert.DoesNotContain("\n", ours[1].Line);   // named, with no stack
+    }
+
+    /// <summary>The tick's side of <see cref="ARoomBossWhoseBuildThrowsOnEntryIsLoggedUnderTheMapEntered"/>: a room
+    /// boss whose respawn throws on phase (1) is logged under a room map a player is on, with its row's map beside
+    /// it. The respawn pass serves the boss for a player on any of its rooms' maps and asks <c>Materialize</c>
+    /// about its row's map, which for the sixty map-4 bosses is map 4, and the line named that map alone.
+    ///
+    /// <para>A synthetic point on a row map nobody enters, keyed <c>divine_ox</c> (rooms on 3175 and 3178), whose
+    /// creature <c>BuildMob</c> refuses (a negative move time), registered as a dead point due on the first beat.
+    /// The first entry to either map leaves it to the tick. The first beat has its one player on 3178, the SECOND
+    /// of the boss's rooms' maps, so a line that named the first (or any fixed one) of them would be wrong: the
+    /// stack line names 3178. For the second beat that player leaves and another stands on 3175; the fault is
+    /// throttled under the row's map and creature, as before, so this beat writes the count line with no stack,
+    /// and it names 3175. Both lines are written with the lock released.</para>
+    ///
+    /// <para>Falsified by naming the row's map alone again (<c>World.LogPhaseFaults</c> printing <c>f.Map</c>, the
+    /// old line): red, the stack line says "on map 60212". By naming the boss's first room map whatever the
+    /// player's map: red, the stack line says 3175. By recording the fault under the player's map (the throttle's
+    /// key): red, the second beat writes a second stack.</para></summary>
+    [Fact]
+    public void ARoomBossWhoseBuildThrowsOnTheTickIsLoggedUnderTheRoomMapAPlayerIsOn()
+    {
+        RoomRule("divine_ox", BullsSong2, OxPath2);
+        var world = new World();
+        var broken = Creature(990_211, "divine_ox", moveTime: -1);   // BuildMob throws for it
+        world.UnderWorldLockForTest(() =>
+            world.SpawnsForTest.AddPointForTest(TickBrokenRowMap, broken, 3, 3, respawnEvery: 1, dueAt: 1));
+        var east = Seat(world, "TickBrokenSecondRoom", OxPath2, (1, 1));
+        var west = Seat(world, "TickBrokenFirstRoom", BullsSong2, (1, 1));
+
+        IReadOnlyList<LogLineSink.Entry> lines;
+        using (var sink = LogLineSink.Acquire(probe: () => world.HoldsWorldLock))
+        {
+            world.EnterMap(east, OxPath2);       // not the boss's first entry to a map: its clock is set, so the tick has it
+            world.TickOnceForTest();             // beat 1: the player is on the boss's second room map
+            world.LeaveMap(east, OxPath2);
+            world.EnterMap(west, BullsSong2);
+            world.TickOnceForTest();             // beat 2: the player is on its first
+            lines = sink.Lines;
+        }
+
+        Assert.Empty(MobsOf(world, east, OxPath2, broken));
+        Assert.Empty(MobsOf(world, west, BullsSong2, broken));
+        var ours = lines.Where(e => e.Line.Contains($"(creature id {broken.Id})")).ToList();
+        Assert.Equal(2, ours.Count);   // one a beat
+        Assert.All(ours, e => Assert.Equal(LogLevel.Error, e.Level));
+        Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
+
+        // Asserted with the whole line in the message: xUnit's own Contains failure cuts the line short of the map.
+        string stack = $"world tick phase (1) respawns: a spawn point threw — 'divine_ox' (creature id {broken.Id}) on map {OxPath2} "
+                     + $"(a room boss whose row names map {TickBrokenRowMap}) is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)";
+        Assert.True(ours[0].Line.Contains(stack), $"the first beat's line should carry \"{stack}\"; it reads: {ours[0].Line.Split('\n')[0]}");
+        Assert.Contains(nameof(ArgumentOutOfRangeException), ours[0].Line);
+        Assert.Contains("\n      ", ours[0].Line);   // Log.Detail's continuation: the stack is on it
+
+        string repeat = $"(1) respawns 'divine_ox' (creature id {broken.Id}) on map {BullsSong2} "
+                      + $"(a room boss whose row names map {TickBrokenRowMap}) {nameof(ArgumentOutOfRangeException)} x1";
+        Assert.True(ours[1].Line.Contains("world tick phase spawn rows still throwing") && ours[1].Line.Contains(repeat),
+                    $"the second beat's line should name \"{repeat}\"; it reads: {ours[1].Line}");
         Assert.DoesNotContain("\n", ours[1].Line);   // named, with no stack
     }
 
