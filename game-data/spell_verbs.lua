@@ -271,6 +271,9 @@ end
 -- mage Bolt, on the Spark family's row since #200 (Caleb, 2026-10-22), 50 + level/2 for 20 mana, where its own row
 -- used to say 2 + 1.5 x Will for 4, which no source gives. Bolt keeps this verb and not the archetype's because the
 -- refusals below are Bolt's, by Caleb's decisions; the archetype answers several of them differently.
+-- A row with a mana but no base or coeff mixes the two: its own mana, and the export row's amount (ctx.spellAmount).
+-- No such row exists today. For a spell with no spell_effects.csv row, ctx.spellAmount has no amount to give and
+-- raises, before the spend, so the cast fails free with "<spell> isn't working right now." (SpellScript.Run).
 -- The amount goes to ctx:damage unrounded, to the one floor at the armour step (#78, #361).
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
 --
