@@ -45,6 +45,10 @@ namespace Tests;
 /// off a PvP map, with "You can't attack that target." (9b); and every curse, from the book or one of the five curse
 /// procs, at an NPC, silently (9c). On a PvP map a cast at a player is unchanged.</para>
 ///
+/// <para>Caleb's decision of 2026-10-22 (decision sheet item 2) moved the procs' half of 9b earlier, as RTK has it: a
+/// proc at a player the wielder may not attack is not cast at all, so it no longer reaches the spell's refusal. On a PvP
+/// map it is cast as before.</para>
+///
 /// <para>A later decision of the same day made Bolt and Freeze at nothing free and silent on a PvP map too, and silent
 /// with too little mana on any map, as RTK's zap is (it returns at a missing target first). A cast aimed at the
 /// caster's own id is not nothing and still strikes them where PvP is on.</para>
@@ -730,42 +734,103 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} at a faced player on map {Town}: {r}");
     }
 
-    /// <summary>The Poet whip's Freeze proc, through real swings at a faced player. Off a PvP map each proc is refused
-    /// for free: "You can't attack that target.", once a proc, and no mana. On a PvP map, the control, each proc costs
-    /// its 800 as before.
-    /// <para>Red on 6de1d24 off a PvP map: 800 mana a proc, with the same line. The PvP row is green there as
-    /// well.</para></summary>
+    /// <summary>Every WeaponProcs.csv spell row whose RTK <c>on_swing</c> asks <c>player:canPK(pc)</c> before it casts
+    /// at a faced player: all of them but chaos_armor, whose RTK script casts with no gate
+    /// (<c>Items/Equipment/GM/chaos_armor.lua:67-70</c>). That is the Giasomo stick, whose bird lands on its wielder
+    /// (<c>Items/Weapons/giasomo_stick.lua:13-17</c>), the six Blood and six Charm weapons, the Frost sabre, the Poet
+    /// whip, the Corrupted, Cursed, Tainted and Forsaken blades, the Forsaken staff, the Ilbon knife and Flamefang. The
+    /// Charm weapons never proc at a player in RTK, which the gate agrees with off a PvP map. The two builtin rows answer
+    /// a faced player themselves.</summary>
+    private static readonly (string Item, string Spell)[] PlayerGatedProcs =
+    {
+        ("giasomo_stick", "cotw_giasomo_bird_poet"),
+        ("blood", "venom"), ("enchanted_blood", "venom"), ("il_san_blood", "venom"), ("ee_san_blood", "venom"),
+        ("sam_san_blood", "venom"), ("sa_san_blood", "venom"),
+        ("charm", "endear"), ("enchanted_charm", "endear"), ("il_san_charm", "endear"), ("ee_san_charm", "endear"),
+        ("sam_san_charm", "endear"), ("sa_san_charm", "endear"),
+        ("frost_sabre", "chill"), ("poet_whip", "freeze"), ("corrupted_blade", "corrupt"), ("cursed_blade", "curse"),
+        ("tainted_blade", "taint"), ("forsaken_blade", "forsake"), ("forsaken_staff", "blind"),
+        ("ilbon_knife", "kamikaze"), ("flamefang", "burn"),
+    };
+
+    public static TheoryData<string, string, ushort> PlayerGatedProcCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string, ushort>();
+            foreach (var map in new[] { Town, Arena })
+                foreach (var (item, spell) in PlayerGatedProcs)
+                    data.Add(item, spell, map);
+            return data;
+        }
+    }
+
+    /// <summary>A swing's own frames: the pose (0x1A) and the weapon's swing sound (0x19). A proc that is not cast adds
+    /// nothing to them.</summary>
+    private static readonly byte[] SwingOnly = { ServerOp.Action, ServerOp.Audio };
+
+    /// <summary>A proc at a faced player the wielder may not attack is not cast (Caleb, 2026-10-22, decision sheet item
+    /// 2: "no proc there, as RTK"). RTK asks <c>player:canPK(pc)</c> after the roll and before the cast
+    /// (<c>Items/Weapons/poet_whip.lua:14</c>, and the same line in each row's script), and this server's canPK is
+    /// <c>Content.IsPvpMap</c>, the test every spell makes of a player target. Real swings at a faced player until the
+    /// proc's roll has come up three times.
+    /// <para>Off a PvP map each roll leaves one skip line and nothing else. There is no cast line and no mini-text, the
+    /// caster's mana is untouched, and the wire carries nothing but the swing's own pose and sound to either player.
+    /// No aether is armed, the Giasomo stick summons no bird, and the player keeps every point of HP. On a PvP map, the
+    /// control, every roll is cast as before, and the Giasomo stick's summons a bird.</para>
+    /// <para>Red on 2874006 off a PvP map for every row, because every roll was cast. The Poet whip, the Blood weapons,
+    /// Flamefang and the five curse blades said "You can't attack that target." once a roll, and the Forsaken staff
+    /// said "It doesn't work.". The Giasomo stick summoned a bird at 10 mana each up to the pet cap, then said "You
+    /// cannot summon any more creatures right now.". The Charm weapons and the Ilbon knife were already silent and
+    /// free there, so they are red by their cast lines alone. The PvP rows are green on 2874006 as well.</para></summary>
     [Theory]
-    [InlineData(Town)]
-    [InlineData(Arena)]
-    public void ThePoetWhipsFreezeProcAtAPlayerCostsNothingOffAPvpMap(ushort map)
+    [MemberData(nameof(PlayerGatedProcCases))]
+    public void AProcAtAPlayerTheWielderMayNotAttackIsNotCast(string item, string spell, ushort map)
     {
         var (target, tOut, tc) = Onlooker("NdvProcTarget", CX + 1, CY, map);
-        var (caster, cOut, cc) = Swinger(map, "poet_whip", "freeze");
+        var (caster, cOut, cc) = Swinger(map, item, spell);
+        uint castOn = Content.WeaponProcFor(item)!.Value.SelfCast ? caster.PlayerId : target.PlayerId;   // the bird's cast names its wielder
         try
         {
             using var log = LogLineSink.Acquire();
-            int procs = 0, swings = 0;
+            int casts = 0, skips = 0, swings = 0;
             var lines = new List<string>();
-            while (procs < 3 && swings < MaxSwings)
+            var targetLines = new List<string>();
+            var ops = new SortedSet<byte>();
+            var targetOps = new SortedSet<byte>();
+            while (casts + skips < 3 && swings < MaxSwings)
             {
-                cOut.Clear();
+                cOut.Clear(); tOut.Clear();
                 Swing(caster);
                 swings++;
-                procs = Procs(log, "poet_whip", "freeze", target.PlayerId);
+                casts = Procs(log, item, spell, castOn);
+                skips = Skips(log, item, target.PlayerId);
                 lines.AddRange(SpellCastSupport.MiniTexts(cOut));
+                targetLines.AddRange(SpellCastSupport.MiniTexts(tOut));
+                ops.UnionWith(Opcodes(cOut));
+                targetOps.UnionWith(Opcodes(tOut));
             }
-            string what = $"poet_whip on map {map}: {procs} procs in {swings} swings; spent {Mana - cc.Mp}, " +
-                          $"lines [{string.Join(" | ", lines)}], the player's lines [{string.Join(" | ", SpellCastSupport.MiniTexts(tOut))}]";
-            Assert.True(procs >= 3, what);
+            int pets = _fx.World.PetCountFor(map, caster.PlayerId);
+            long aether = SpellCastSupport.AetherLeft(caster, spell);
+            string what = $"{item} at a player on map {map}: {casts} cast and {skips} skipped in {swings} swings; " +
+                          $"spent {(long)Mana - cc.Mp}, aether {aether}, pets {pets}, lines [{string.Join(" | ", lines)}], " +
+                          $"opcodes [{string.Join(",", ops.Select(o => o.ToString("x2")))}]; the player on {tc.Hp}, " +
+                          $"told [{string.Join(" | ", targetLines)}], opcodes [{string.Join(",", targetOps.Select(o => o.ToString("x2")))}]";
             if (Content.IsPvpMap(map))
-                Assert.True(Mana - cc.Mp == 800 * procs, what);
+            {
+                Assert.True(casts >= 3 && skips == 0, what);
+                if (item == "giasomo_stick") Assert.True(pets > 0, what);
+            }
             else
-                Assert.True(cc.Mp == Mana && lines.Count == procs && lines.All(l => l == "You can't attack that target.")
-                            && tc.Hp == Creature, what);
+            {
+                Assert.True(skips >= 3 && casts == 0, what);
+                Assert.True(lines.Count == 0 && cc.Mp == Mana && aether == 0 && pets == 0 && ops.IsSubsetOf(SwingOnly), what);
+                Assert.True(tc.Hp == Creature && targetLines.Count == 0 && targetOps.IsSubsetOf(SwingOnly), what);
+            }
         }
         finally
         {
+            DespawnPets(map, caster.PlayerId);
             _fx.World.LeaveMap(caster, map);
             _fx.World.LeaveMap(target, map);
         }
@@ -911,6 +976,37 @@ public sealed class NpcDamageVerbTests
     {
         string needle = $"weapon proc: {item} (4%) casts {spell} on {targetId}";
         return log.Lines.Count(l => l.Line.TrimEnd().EndsWith(needle, StringComparison.Ordinal));
+    }
+
+    /// <summary>How many of <paramref name="item"/>'s procs <c>Session.FireWeaponProcs</c> has skipped at player
+    /// <paramref name="targetId"/>, one that the wielder may not attack. The line is written in place of the
+    /// cast.</summary>
+    private static int Skips(LogLineSink log, string item, uint targetId)
+    {
+        string needle = $"weapon proc: {item} (4%) not cast: player {targetId} can't be attacked here";
+        return log.Lines.Count(l => l.Line.Contains(needle, StringComparison.Ordinal));
+    }
+
+    /// <summary>The opcode of every frame the recorder was sent.</summary>
+    private static IEnumerable<byte> Opcodes(RecordingOutbound o)
+    {
+        foreach (var frame in o.Frames)
+        {
+            Assert.True(TkPacket.TryParse(frame, out var pkt, out _));
+            yield return pkt.Opcode;
+        }
+    }
+
+    /// <summary>The Giasomo birds a proc summoned for <paramref name="ownerId"/>, removed so that no later row finds one
+    /// beside its caster. A summon lands on a free tile beside the caster or on the caster's own tile
+    /// (<c>Session.LuaSummonPet</c>), so the tiles around the caster cover them; the world never ticks here, so none
+    /// has moved.</summary>
+    private void DespawnPets(ushort map, uint ownerId)
+    {
+        for (int x = CX - 2; x <= CX + 2; x++)
+            for (int y = CY - 2; y <= CY + 2; y++)
+                while (_fx.World.MobAt(map, x, y) is { } m && m.OwnerId == ownerId && _fx.World.DespawnMob(map, m)) { }
+        Assert.Equal(0, _fx.World.PetCountFor(map, ownerId));
     }
 
     private static uint EntityId(byte[] b) => (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
