@@ -734,13 +734,14 @@ public sealed class NpcDamageVerbTests
                     $"{sp.Name} at a faced player on map {Town}: {r}");
     }
 
-    /// <summary>Every WeaponProcs.csv spell row whose RTK <c>on_swing</c> asks <c>player:canPK(pc)</c> before it casts
-    /// at a faced player: all of them but chaos_armor, whose RTK script casts with no gate
-    /// (<c>Items/Equipment/GM/chaos_armor.lua:67-70</c>). That is the Giasomo stick, whose bird lands on its wielder
-    /// (<c>Items/Weapons/giasomo_stick.lua:13-17</c>), the six Blood and six Charm weapons, the Frost sabre, the Poet
-    /// whip, the Corrupted, Cursed, Tainted and Forsaken blades, the Forsaken staff, the Ilbon knife and Flamefang. The
-    /// Charm weapons never proc at a player in RTK, which the gate agrees with off a PvP map. The two builtin rows answer
-    /// a faced player themselves.</summary>
+    /// <summary>The 22 WeaponProcs.csv spell rows the gate covers: every spell row but chaos_armor, whose RTK script casts
+    /// with no gate (<c>Items/Equipment/GM/chaos_armor.lua:67-70</c>). Sixteen of them ask <c>player:canPK(pc)</c> in
+    /// RTK before they cast at a faced player: the Giasomo stick, whose bird lands on its wielder
+    /// (<c>Items/Weapons/giasomo_stick.lua:13-17</c>), the six Blood weapons, the Frost sabre, the Poet whip, the
+    /// Corrupted, Cursed, Tainted and Forsaken blades, the Forsaken staff, the Ilbon knife and Flamefang. The other six,
+    /// the Charm weapons, have no player branch at all in RTK (<c>Items/Weapons/charm.lua</c> looks for BL_MOB only), so
+    /// they never proc at a player, which the gate agrees with off a PvP map. The two builtin rows answer a faced player
+    /// themselves.</summary>
     private static readonly (string Item, string Spell)[] PlayerGatedProcs =
     {
         ("giasomo_stick", "cotw_giasomo_bird_poet"),
@@ -771,18 +772,21 @@ public sealed class NpcDamageVerbTests
 
     /// <summary>A proc at a faced player the wielder may not attack is not cast (Caleb, 2026-10-22, decision sheet item
     /// 2: "no proc there, as RTK"). RTK asks <c>player:canPK(pc)</c> after the roll and before the cast
-    /// (<c>Items/Weapons/poet_whip.lua:14</c>, and the same line in each row's script), and this server's canPK is
-    /// <c>Content.IsPvpMap</c>, the test every spell makes of a player target. Real swings at a faced player until the
-    /// proc's roll has come up three times.
+    /// (<c>Items/Weapons/poet_whip.lua:14</c>, and the same line in each of these rows' scripts but the Charm weapons',
+    /// which never proc at a player), and this server's canPK is <c>Content.IsPvpMap</c>, the test every spell makes of
+    /// a player target. Real swings at a faced player until the proc's roll has come up three times.
     /// <para>Off a PvP map each roll leaves one skip line and nothing else. There is no cast line and no mini-text, the
     /// caster's mana is untouched, and the wire carries nothing but the swing's own pose and sound to either player.
     /// No aether is armed, the Giasomo stick summons no bird, and the player keeps every point of HP. On a PvP map, the
-    /// control, every roll is cast as before, and the Giasomo stick's summons a bird.</para>
+    /// control, every roll is cast as before, and the Giasomo stick summons a bird.</para>
     /// <para>Red on 2874006 off a PvP map for every row, because every roll was cast. The Poet whip, the Blood weapons,
     /// Flamefang and the five curse blades said "You can't attack that target." once a roll, and the Forsaken staff
     /// said "It doesn't work.". The Giasomo stick summoned a bird at 10 mana each up to the pet cap, then said "You
-    /// cannot summon any more creatures right now.". The Charm weapons and the Ilbon knife were already silent and
-    /// free there, so they are red by their cast lines alone. The PvP rows are green on 2874006 as well.</para></summary>
+    /// cannot summon any more creatures right now.". The Charm weapons and the Ilbon knife said nothing at this fact's
+    /// 50,000 mana, so they are red by their cast lines alone. A wielder short of the spell's mana read the spell's own
+    /// mana line there instead, from every row (Freeze's "Not enough mana to cast Freeze.", Endear's "You do not have
+    /// enough mana." and "Your will is too weak.", Kamikaze's "You do not have enough mana."); that goes too, since
+    /// nothing is cast. The PvP rows are green on 2874006 as well.</para></summary>
     [Theory]
     [MemberData(nameof(PlayerGatedProcCases))]
     public void AProcAtAPlayerTheWielderMayNotAttackIsNotCast(string item, string spell, ushort map)
@@ -833,6 +837,101 @@ public sealed class NpcDamageVerbTests
             DespawnPets(map, caster.PlayerId);
             _fx.World.LeaveMap(caster, map);
             _fx.World.LeaveMap(target, map);
+        }
+    }
+
+    /// <summary>A creature sharing its tile with a player off a PvP map is still procced: the gate asks about a player
+    /// only when no creature stands on the faced tile, as RTK's separate BL_MOB branch procs the creature whatever else
+    /// is there (<c>Items/Weapons/poet_whip.lua:7-11</c>). One row per kind of refusal the gate stands in front of, and
+    /// the Giasomo stick, whose bird names its wielder. Real swings until the roll has come up three times: each is cast
+    /// at the creature, none is skipped, and the player keeps every point of HP.
+    /// <para>The PR #373 review's probe A, adopted. Red when the faced player is looked for even with a creature on the
+    /// tile (the review's mutant M3): every roll is skipped.</para></summary>
+    [Theory]
+    [InlineData("poet_whip", "freeze")]
+    [InlineData("blood", "venom")]
+    [InlineData("cursed_blade", "curse")]
+    [InlineData("forsaken_staff", "blind")]
+    [InlineData("giasomo_stick", "cotw_giasomo_bird_poet")]
+    public void ACreatureSharingATownPlayersTileIsStillProcced(string item, string spell)
+    {
+        var mob = CreatureAt(Town, CX + 1);
+        var (target, _, tc) = Onlooker("NdvSharer", CX + 1, CY, Town);
+        var (caster, _, _) = Swinger(Town, item, spell);
+        uint castOn = Content.WeaponProcFor(item)!.Value.SelfCast ? caster.PlayerId : mob.Id;
+        try
+        {
+            Assert.True(ReferenceEquals(_fx.World.MobAt(Town, CX + 1, CY), mob)
+                        && ReferenceEquals(_fx.World.PeerAt(Town, CX + 1, CY), target));
+            using var log = LogLineSink.Acquire();
+            int casts = 0, skips = 0, swings = 0;
+            while (casts + skips < 3 && swings < MaxSwings)
+            {
+                Swing(caster);
+                swings++;
+                casts = Procs(log, item, spell, castOn);
+                skips = Skips(log, item, target.PlayerId);
+            }
+            string what = $"{item} at a creature sharing a town player's tile: {casts} cast at {castOn} and {skips} " +
+                          $"skipped in {swings} swings; the player on {tc.Hp}";
+            Assert.True(casts >= 3 && skips == 0 && tc.Hp == Creature, what);
+        }
+        finally
+        {
+            DespawnPets(Town, caster.PlayerId);
+            _fx.World.LeaveMap(caster, Town);
+            _fx.World.LeaveMap(target, Town);
+            _fx.World.DespawnMob(Town, mob);
+        }
+    }
+
+    /// <summary>The Chaos armour (GM-only) stays ungated, as RTK casts it on every swing with no gate
+    /// (<c>Items/Equipment/GM/chaos_armor.lua:67-70</c>): worn beside the Poet whip and facing a player off a PvP map,
+    /// in either equipment order, its 100% proc is cast on every swing and never skipped, while the whip's rolls are all
+    /// skipped and none is cast. The two orders cover the faced-tile lookup each piece leaves for the other.
+    /// <para>The PR #373 review's probe B, adopted. Red when the exception is removed (the review's mutant M2): the
+    /// armour's proc is skipped on every swing.</para></summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheChaosArmourStaysUngatedBesideAGatedWeaponAtATownPlayer(bool armourFirst)
+    {
+        var (target, _, _) = Onlooker("NdvChaosFaced", CX + 1, CY, Town);
+        var whip = Content.ItemByKey("poet_whip");
+        var armour = Content.ItemByKey("chaos_armor");
+        Assert.NotNull(whip);
+        Assert.NotNull(armour);
+        Assert.Equal("calculating_blow_rogue", Content.WeaponProcFor("chaos_armor")?.Spell);
+        var (caster, _, _) = Caster(Town, ch =>
+        {
+            ch.MaxMp = Mana + 1_000;
+            var w = new InvItem { Slot = 1, ItemId = whip!.Id };
+            var a = new InvItem { Slot = 2, ItemId = armour!.Id };
+            if (armourFirst) { ch.Equipment.Add(a); ch.Equipment.Add(w); }
+            else { ch.Equipment.Add(w); ch.Equipment.Add(a); }
+        });
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            int chaos = 0, whipCasts = 0, whipSkips = 0, swings = 0;
+            while (whipCasts + whipSkips < 3 && swings < MaxSwings)
+            {
+                Swing(caster);
+                swings++;
+                chaos = Logged(log, $"weapon proc: chaos_armor (100%) casts calculating_blow_rogue on {target.PlayerId}");
+                whipCasts = Logged(log, "weapon proc: poet_whip (4%) casts freeze");
+                whipSkips = Skips(log, "poet_whip", target.PlayerId);
+            }
+            int chaosSkips = Logged(log, "weapon proc: chaos_armor (100%) not cast");
+            string what = $"armour first {armourFirst}: {swings} swings; chaos_armor cast {chaos} and skipped {chaosSkips}, " +
+                          $"poet_whip cast {whipCasts} and skipped {whipSkips}";
+            Assert.True(chaos == swings && chaosSkips == 0, what);
+            Assert.True(whipSkips >= 3 && whipCasts == 0, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Town);
+            _fx.World.LeaveMap(target, Town);
         }
     }
 
@@ -986,6 +1085,10 @@ public sealed class NpcDamageVerbTests
         string needle = $"weapon proc: {item} (4%) not cast: player {targetId} can't be attacked here";
         return log.Lines.Count(l => l.Line.Contains(needle, StringComparison.Ordinal));
     }
+
+    /// <summary>How many collected log lines carry <paramref name="needle"/>.</summary>
+    private static int Logged(LogLineSink log, string needle) =>
+        log.Lines.Count(l => l.Line.Contains(needle, StringComparison.Ordinal));
 
     /// <summary>The opcode of every frame the recorder was sent.</summary>
     private static IEnumerable<byte> Opcodes(RecordingOutbound o)

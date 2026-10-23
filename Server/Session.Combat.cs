@@ -305,27 +305,38 @@ public sealed partial class Session
     //
     // NO PROC AT A PLAYER YOU MAY NOT ATTACK (Caleb, 2026-10-22, decision sheet item 2: "no proc there, as RTK").
     // RTK asks canPK in the on_swing itself, after the roll and before the cast — `math.random(1, 100) <= 4 and
-    // player:canPK(pc)` (Items/Weapons/poet_whip.lua:14, and the same line in every faced-target weapon script) —
-    // so a proc that rolls at such a player is never cast: no line, no mana, no pose, no aether. Our canPK is
-    // Content.IsPvpMap(_char.Map), the very test the spell side makes of a player target (LuaCanStrike,
-    // LuaCanCurseTarget, the venom branch, HoldRefused, HitPlayerWithSpell) and the melee PC branch above makes.
-    // Asking it only inside the spell let its refusal through about one swing in 25: "You can't attack that
-    // target." from the Poet whip, the Blood weapons, Flamefang and the curse blades, and "It doesn't work." from
-    // the Forsaken staff. The roll stays first, so the chances are unchanged, and a creature in front is untouched.
+    // player:canPK(pc)` (Items/Weapons/poet_whip.lua:14; the same line in blood.lua, frost_sabre.lua,
+    // corrupted_blade.lua, cursed_blade.lua, tainted_blade.lua, forsaken_blade.lua, forsaken_staff.lua,
+    // flamefang.lua, ilbon_knife.lua and giasomo_stick.lua) — so a proc that rolls at such a player is never
+    // cast: no line, no mana, no pose, no aether. Our canPK is Content.IsPvpMap(_char.Map), the very test the
+    // spell side makes of a player target (LuaCanStrike, LuaCanCurseTarget, the venom branch, HoldRefused,
+    // HitPlayerWithSpell) and the melee PC branch above makes. Asking it only inside the spell let the spell's
+    // own answer through about one swing in 25: "You can't attack that target." from the Poet whip, the Blood
+    // weapons, Flamefang and the curse blades, "It doesn't work." from the Forsaken staff, and from every gated
+    // row the spell's mana line ("Not enough mana to cast Freeze.", "You do not have enough mana." and the like)
+    // whenever the wielder was short of the spell's mana, which each spell checks before it refuses a player.
+    // The roll stays first, so the chances are unchanged. A creature in front is procced as before, even one
+    // sharing its tile with a player: the creature is looked for first, and then no player is.
     //   * The Giasomo stick is gated the same way although its bird lands on YOU: RTK summons it for a faced
     //     player only when canPK passes (Items/Weapons/giasomo_stick.lua:13-17).
     //   * chaos_armor is the one row RTK casts with no gate at all — `calculating_blow_rogue.cast(player)` on
     //     every swing, nothing faced or asked (Items/Equipment/GM/chaos_armor.lua:67-70) — so it stays ungated.
-    //   * The Charm weapons never proc at a player in RTK (Items/Weapons/charm.lua looks for BL_MOB only); at one
-    //     here Endear refuses silently, so the gate changes nothing anyone sees for them.
+    //   * The Charm weapons have no canPK line to port: RTK never procs them at a player at all
+    //     (Items/Weapons/charm.lua looks for BL_MOB only), and the gate agrees with that off a PvP map. At a town
+    //     player their Endear used to refuse silently with enough mana, and with too little to say "You do not
+    //     have enough mana." and "Your will is too weak."; now it is not cast. On a PvP map it still reaches
+    //     Endear, as before.
     //   * The builtins answer a faced player themselves: ProcShotgun's own PvP test, and ProcParalyze never
     //     touches one.
     //
-    // RTK's blood/charm handlers branch on player.backstab/player.flank and proc on every target returned by
-    // getTargetsBackstab/getTargetsFlank instead of the faced one. Our engine resolves a swing against ONE
-    // tile — SwingTile, which flank redirects to a side rather than multiplying damage — so that branch
-    // collapses onto the same single target this loop already uses. Nothing to port, the gate included: those
-    // two getters admit a player only when canPK passes (Scripts/scripts.lua:576, :584, :655, :663).
+    // NOT PORTED: RTK's Backstab/Flank branch. blood.lua (all but sa_san_blood) and the Frost sabre, Poet whip,
+    // Corrupted, Cursed, Tainted and Forsaken blade, Forsaken staff and Flamefang scripts branch on
+    // player.backstab/player.flank, and in that branch proc on every target getTargetsBackstab/getTargetsFlank
+    // return (Scripts/scripts.lua:514-670: the front and back cells for Backstab, two flanking cells for Flank)
+    // instead of the faced one. charm.lua, ilbon_knife.lua and giasomo_stick.lua have no such branch. Our melee
+    // swing does reach the rear and side tiles (SwingTargets), but this loop only ever looks at the faced tile,
+    // so a creature behind or beside a stance-holder is never procced here. The gate agrees with that branch all
+    // the same: both getters admit a player only when canPK passes (scripts.lua:576, :584, :655, :663).
     //
     // A `spell` value of "builtin:<name>" runs an inline handler instead of casting: RTK writes a couple of
     // these procs as raw Lua in the item file with no spell behind them (shot_gun's cone, viper_stick's
