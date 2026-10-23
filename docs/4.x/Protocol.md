@@ -533,7 +533,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
 | `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
-| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. Two bytes only, **no state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below — the server MUST re-seed after every synced toggle or the boxes invert. |
+| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. Two bytes only, **no state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below: the server re-seeds after the weather, magic and advice toggles, and deliberately not after fast-move. |
 | `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
 | `0x66` | **Examine item** (right-click a bag slot) | `00 cursorY(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the click's pane-local cursor Y — echo it back as the `0x59` tooltip's Y anchor (§11c.1). |
 | `0x66` | **Town-table request** | `01 00 01 01 00 01 01 00` | **`body[0] == 1`** — the same opcode, split on the first byte. Fixed body, sent from `0x449ed0` only when the client's own town table is empty. Reply `0x59` sub-1 — §13c. |
@@ -541,12 +541,15 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 #### `0x1b` — the Options menu
 
 The bit is always `1 << (subCmd - 1)` (RTK `enum settingFLAGS`, `common/mmo.h`); the announce string is
-always `"<label>"` left-padded to **column 17** then `":ON"`/`":OFF"`, sent as a `0x02` message — confirmed
-by the live capture `02 0f 15 "Fast Move        :OFF"`.
+always `"<label>"` padded with spaces to **column 17** then `":ON"`/`":OFF"`, sent as an `0x0A` minitext of
+type 3 (`Session.SendMiniText`; corrected 2026-10-22, this line used to say a `0x02` message). The padding is
+confirmed by the live capture `02 0f 15 "Fast Move        :OFF"`, taken while the toggles were still announced
+as `0x02`: those are the bytes `Session.SendMessage` builds (`0f`, then the length `0x15` = 21). All the toggles
+moved to minitext on 2026-08-19 (§11g, the `SendMessage`→`SendMiniText` audit).
 
 | sub | bit | label / behaviour |
 |---|---|---|
-| `0x00` | — | **'r' Ride key** — but sub-`0x00` is *overloaded*: opening the Options menu (F10) also sends it. Told apart by `dec[1]` (live-captured 2026-08-16): ride = `00 01 00` (`dec[1]=0x01`), F10 options-open = bare `00 00` (`dec[1]=0x00`). Only the ride shape drives `Session.TryRideHorse` (RTK `clif_findmount`: mounts by despawning a nearby "horse" world mob, dismounts by spawning one back in front, §8); the bare `00 00` is a no-op. Routing F10 into the ride path used to dismount anyone who opened options while mounted. No flag bit. |
+| `0x00` | — | **'r' Ride key** — but sub-`0x00` is *overloaded*: opening the Options menu (F10) also sends it. Told apart by `dec[1]` (live-captured 2026-08-16): ride = `00 01 00` (`dec[1]=0x01`), F10 options-open = bare `00 00` (`dec[1]=0x00`). Only the ride shape drives `Session.TryRideHorse` (RTK `clif_findmount`: mounts by despawning a nearby "horse" world mob, dismounts by spawning one back in front, §8); the bare `00 00` does not ride: it is when the server seeds the four synced boxes with `0x23` (`Session.SendOptions`, "Edge-trigger" below). Routing F10 into the ride path used to dismount anyone who opened options while mounted. No flag bit. |
 | `0x01` | 1 | `Listen to whisper` |
 | `0x02` | 2 | `Join a group` — Shift+G. A persisted **profile** status cell (§9.5), so it lives in `Character.Grouped`, not the flag word. Switching it OFF while grouped **leaves the group** — the only leave gesture (§11k) |
 | `0x03` | 4 | `Listen to shout` |
@@ -555,7 +558,7 @@ by the live capture `02 0f 15 "Fast Move        :OFF"`.
 | `0x06` | 32 | `Weather change` — also re-sends `0x1F` immediately, and flips the mapinfo render byte (below) |
 | `0x07` | 64 | `Realm-centered` — F4 camera lock (§10.5). Session/camera state |
 | `0x08` | 128 | `Exchange` — persisted profile status cell (§9.5), `Character.Exchange` |
-| `0x09` | 256 | `Fast Move` — the movement model (§10.1) |
+| `0x09` | 256 | `Fast Move` — the movement model (§10.1). The one synced box the server does not re-seed after a toggle ("Edge-trigger" below) |
 | `0x0a` | — | `Clan whisper`. RTK keeps this one *out* of the flag word (`status.clan_chat`) |
 | `0x0d` | 4096 | `Hear sounds` |
 | `0x0e` | 8192 | `Show Helmet` |
@@ -591,17 +594,41 @@ Fast Move (`0x09`)**. These are **radio pairs (ON | OFF)**, and they are *not* s
 
 **Server contract:** seed all four with `0x23` (`Session.SendOptions`, body `[Box(0x06), Box(0x05), Box(0x04),
 Box(0x09)]`, **`Box(sub) = HasSetting(sub) ? 1 : 0`** — 1 = feature ON, because the byte tracks the OFF radio)
-**and re-seed after every synced toggle**. The seed byte must track the server bit, because the client compares
+when F10 opens the menu (sub-`0x00` with `dec[1]=0x00`, above), **and re-seed after each weather, magic and
+advice toggle**. The seed byte must track the server bit, because the client compares
 each click against that stored byte alone AND uses it to pick which radio to fill. Two things this gets you:
 (1) the box shows the right side, and (2) the server bit stays **in phase** with the on-screen radio, so the bare
 `1b <sub>` toggle — which carries no state, the server just XORs its bit — lands the way the user intended. Get the
 polarity wrong and every toggle inverts (server ends on the opposite of the clicked radio); get the re-seed wrong
 and the stored byte goes stale after the first flip (the return click matches the stale value, the client sends
 nothing, the box desyncs — and each row *looks* like it only sends one direction, because only the direction *away
-from the last seed* is ever a change). `Session.HandleSetting` re-seeds via `SendOptions()` after each of the
-four (weather/magic/advice branches + the fast-move branch). `0x1b` is **not** action-budget gated, so rapid
+from the last seed* is ever a change). `Session.HandleSetting` re-seeds via `SendOptions()` after the weather,
+magic and advice toggles only (`Server/Session.Movement.cs:840`). `0x1b` is **not** action-budget gated, so rapid
 clicks aren't dropped server-side; the residual rapid-toggle race is client-side (the async re-seed also rewrites
 the widget) and is inherent.
+
+**Fast Move is the exception: no re-seed after `0x09`** (corrected 2026-10-22 to what the server does; this
+section used to say the fast-move branch re-seeds too). `HandleSetting`'s `0x09` branch
+(`Server/Session.Movement.cs:737-761`) flips `_fastMove`, persists it as `SettingFlags` bit 9, saves, answers with
+the minitext and sends no `0x23`, so the Fast Move box is seeded only when F10 opens the menu. On 4.95 the new
+value reaches the client in byte 46 of the next `0x08` stats packet (§10.1), not in a `0x23`. Under the model
+above, the client's stored byte for that row (`+0x27b`) keeps its value from the last F10 seed; what a second
+click on that row does before the menu is reopened has not been checked.
+
+Why the server skips it, and whether a `0x23` seed touches the client's runtime fast-move flag `[state+0x451]` at
+all, has two readings. **Unconfirmed:** neither has been re-checked against the binary, and this correction read
+no binary.
+
+1. **The code comment** (`Server/Session.Movement.cs:746-750`): the Fast Move box and the runtime flag are the
+   same byte, and the `0x23` seed handler writes it with inverted polarity, so a re-seed right after toggling ON
+   was seen live to drive `[state+0x451]` back to 0 within about a second. That observation (2026-08-19) came
+   before `SendStats` set stats byte 46.
+2. **[`Fast-Move.md`](Fast-Move.md)** (written later the same day, with the stats-packet fix): the `0x23` handler
+   `0x465200` only paints the checkbox and never writes `[state+0x451]`; what reset the flag was the stats
+   packet, whose byte 46 was then always 0.
+
+A third wording, at `Server/Session.cs:1567-1568`, has the re-seed nudge the flag through the options window's
+apply path.
 
 #### `0x1F` — weather ⚠ *RTK's byte does not work here*
 
@@ -620,7 +647,6 @@ then applies `0x44d340(state, [world+0x401])` — new state plus the previous on
 weather can never render.** We map 0/1/2 → `0 / 0x32 / 0x96`. RTK also flips the mapinfo render byte
 (`clif.c:4600`) from 5 to **4** while the weather toggle is on, which arms the map for drawing — the `0x1F`
 state alone is not enough.
-| `0x0b` | (no-op in 4.95) | `0b 00` | Handler is a no-op. |
 
 ### 7.2 Server → client
 
