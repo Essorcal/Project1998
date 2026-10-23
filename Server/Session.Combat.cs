@@ -214,15 +214,18 @@ public sealed partial class Session
             // on purpose, since a whiff is exactly as alarming as a connect. No-op for every other creature.
             _world.Spook(wmob);
 
-            var (dmg, crit) = PlayerSwingDamage(SwingTarget.Of(wmob), reach);
-            if (dmg <= 0) return;   // whiff (Combat.RollPlayerSwingRtk) — swing anim already played; no damage/dura/reward, and no text
-            if (_world.TryDamage(_char.Map, wmob, dmg, out bool died, _char.Id))
+            // Armor and reach already applied, and NOT floored: TryDamage multiplies in the creature's sleep-family
+            // amplifier, floors once and then doubles a hit from behind, under the lock that consumes the
+            // amplifier (#363, RTK's order). The same shape as the PvP branch below hands the defender's intake.
+            var (hit, raw, crit, rear) = PlayerSwingRaw(SwingTarget.Of(wmob), reach);
+            if (!hit) return;   // whiff (Combat.RollPlayerSwingRtk) — swing anim already played; no damage/dura/reward, and no text
+            if (_world.TryDamage(_char.Map, wmob, raw, out bool died, _char.Id, fromBehind: rear))
             {
                 var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);   // EQ_WEAP: deductWeapon(rage) on a landed swing
                 if (weapon is not null) DeductDura(weapon);
                 ShowDamageResult(wmob.Id, wmob, died, crit ? (byte)0xFF : HitCritByte);   // 0x13: over-head HP bar + hit anim (empty bar + delayed despawn on death)
                 PlayHitSfx(wmob.Id);                                                      // 0x19: on-connect impact sfx, on top of the swing sfx above
-                Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {dmg}{(crit ? " (CRIT)" : "")} -> {wmob.Hp}/{wmob.MaxHp}");
+                Log.Info($"   -> hit world mob {wmob.Id} '{wmob.Name}' for {raw:0.###} before its floor{(rear ? " (from behind x2)" : "")}{(crit ? " (CRIT)" : "")} -> {wmob.Hp}/{wmob.MaxHp}");
                 if (died)
                 {
                     // A CONJURED creature (Mob.Summoned — a CotW pet, a Giasomo bird) pays NOTHING when it
@@ -410,7 +413,8 @@ public sealed partial class Session
                 // Armor, same as every other ranged/spell hit. Its PvP branch below gets this for free inside
                 // ReceiveSpellDamage, so without it here the same proc would net against a player and not
                 // against a mob.
-                if (_world.TryDamage(_char.Map, mob, Combat.ApplyArmor(dam, mob.Ac, floor: -95), out bool died, _char.Id))
+                // Unfloored: TryDamage floors it once with any sleep-family amplifier on the creature (#363).
+                if (_world.TryDamage(_char.Map, mob, dam * Combat.ArmorFactor(mob.Ac, floor: -95), out bool died, _char.Id))
                 {
                     ShowDamageResult(mob.Id, mob, died, HitCritByte);
                     Log.Info($"   -> weapon proc: shot gun hits mob {mob.Id} '{mob.Name}' at range {i} for {dam} raw (ac {mob.Ac})");
