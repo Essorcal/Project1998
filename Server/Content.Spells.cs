@@ -942,7 +942,7 @@ public static partial class Content
     // RTK warrior/enchant.lua, infuse.lua, ingress.lua, vipers_venom.lua, dragons_flame.lua + rogue/
     // tigers_fortitude.lua, baekhos_blade.lua: a weapon-enchant STANCE (player.enchant). Unlike rage (which
     // swingDamage.lua multiplies the WHOLE swing by), enchant only multiplies the raw weapon-swing term
-    // (s/2) — see Session.PlayerSwingDamage. All 16 identifiers share one mutual-exclusion group (RTK
+    // (s/2) — see Session.PlayerSwingRaw. All 16 identifiers share one mutual-exclusion group (RTK
     // "enchants" checkIfCast table, spellTables.lua) — casting any one while another (or itself) is already
     // active just re-prints "This spell is already active.", never stacks/upgrades (Session.CastEnchant).
     // Mana/level are hardcoded straight from each spell's own Lua (not trusted from the CSV export — same
@@ -988,7 +988,7 @@ public static partial class Content
     // the swing that follows gets a flat 5x damage multiplier (tswolf 8/2001, era-matched to 4.95:
     // "Invisible increases attack by 5 times"; RTK's Lua says 9x but that's a later, non-authoritative
     // rebalance), a sneak-attack bonus that then breaks the stealth —
-    // see Session.PlayerSwingDamage). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
+    // see Session.PlayerSwingRaw). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
     // RTK's PC_INVIS state also hides the player's sprite from other clients (clif.c), which would need
     // viewport/ShowPlayer changes this pass doesn't touch.
     private static readonly HashSet<string> StealthSpells =

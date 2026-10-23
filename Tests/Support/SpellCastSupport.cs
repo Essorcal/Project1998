@@ -48,7 +48,7 @@ internal static class SpellCastSupport
                 .Select(b => Encoding.ASCII.GetString(b, 3, Math.Min((b[1] << 8) | b[2], b.Length - 3)))
                 .ToList();
 
-    /// <summary>The armed enchant multiplier (1 = none), which <c>Session.PlayerSwingDamage</c> applies to the
+    /// <summary>The armed enchant multiplier (1 = none), which <c>Session.PlayerSwingRaw</c> applies to the
     /// raw weapon term.</summary>
     public static double Enchant(Session session)
     {
@@ -72,7 +72,7 @@ internal static class SpellCastSupport
     }
 
     /// <summary>The armed rage multiplier and the milliseconds left on it, as <c>EffRage</c> reads them: a lapsed
-    /// or unarmed fury is (1, 0), RTK's baseline. <c>Session.PlayerSwingDamage</c> multiplies the whole swing by
+    /// or unarmed fury is (1, 0), RTK's baseline. <c>Session.PlayerSwingRaw</c> multiplies the whole swing by
     /// the amount.</summary>
     public static (int Amount, long LeftMs) Rage(Session session)
     {

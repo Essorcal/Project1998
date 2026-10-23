@@ -16,7 +16,7 @@ namespace Server;
 /// (SQL <c>MobProtection</c>) is a DIFFERENT stat that only feeds <see cref="Session.RollDeflect"/>'s magic
 /// resist roll (RTK clif.c <c>tprotection</c>) — melee and magic defense do not share a stat in RTK.
 /// <see cref="MobDef.Grace"/> (SQL <c>Grace</c>, already in the CSV but previously unparsed like the rest of
-/// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingDamage"/>'s crit-chance roll
+/// this list) is read as the DEFENDER's grace in <see cref="Session.PlayerSwingRaw"/>'s crit-chance roll
 /// when a player attacks this mob.
 /// <para><see cref="MobDef.SpawnTime"/> is RTK <c>Mobs.MobSpawnTime</c>, in seconds: how long a STATIC spawn point stays
 /// empty after this creature dies before the engine revives it on its own tile (<c>mob.c</c>:

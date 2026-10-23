@@ -672,7 +672,7 @@ public sealed partial class Session
     // itemdb_minSdam/maxSdam/minLdam/maxLdam over every equip slot, same loop as Armor/Hit/Dam — it isn't
     // weapon-slot-only, though in practice only weapons carry nonzero values). Previously unparsed entirely
     // — Items.csv carries these columns but ItemDef never read them, so player melee had no real
-    // damage-range component at all (see PlayerSwingDamage).
+    // damage-range component at all (see PlayerSwingRaw).
     //
     // BARE-HANDED IS S 1-2, NOT ZERO (live-measured 2026-08-15). A zero range is DETERMINISTIC, and every
     // unarmed sample we own shows exactly two adjacent damage values in a ~50/50 split — a level-65 rogue
@@ -795,7 +795,7 @@ public sealed partial class Session
     // step, not a line, but until the boundaries are pinned to a single level the difference is under
     // half a damage point. lvl30 is the loosest reading; it sits between clean 0.50s either side.
     // NOTE: a `WarriorDamFlipLevel` constant used to live here, for a level at which a warrior's own
-    // Dam line supposedly stepped -2 -> 0. It does not exist — see the long note in PlayerSwingDamage.
+    // Dam line supposedly stepped -2 -> 0. It does not exist — see the long note in PlayerSwingRaw.
     // The bracket kept moving (11, 15, 16, 23) because it was fitting the seam between two different
     // characters, one of which was running with stale stats from a live-server bug. Do not re-add it.
 

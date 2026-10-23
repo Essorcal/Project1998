@@ -47,7 +47,7 @@ public sealed partial class Session
     // The tell that this is real (and that the two resolve in ARRIVAL ORDER rather than being merged) is
     // what the user sees on atk -> invis: the character appears to strike and vanish together, but the swing
     // gets NO 5x sneak bonus and the stealth SURVIVES the hit. That is precisely a swing resolving before
-    // the buff is applied — Session.PlayerSwingDamage reads `wasStealthed` up front and only strips stealth
+    // the buff is applied — Session.PlayerSwingRaw reads `wasStealthed` up front and only strips stealth
     // `if (wasStealthed)`. We reproduce that artifact for free by letting both through in order; it needs no
     // special case, and it must NOT be "fixed".
     //

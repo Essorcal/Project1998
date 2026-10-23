@@ -3299,7 +3299,7 @@ public sealed partial class Session
     // the swing that follows (tswolf 8/2001, era-matched to 4.95: "Invisible increases attack by 5 times";
     // RTK's Lua says 9x but that's a later rebalance and RTK isn't authoritative), meant as a one-shot
     // sneak-attack burst — landing that hit strips the stealth immediately
-    // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingDamage clears _stealthUntil
+    // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingRaw clears _stealthUntil
     // itself once it applies the multiplier. ONLY the damage multiplier is ported here — real RTK's
     // PC_INVIS also hides the player's sprite from other clients (clif.c), which isn't touched by this pass.
     private long _stealthUntil;
@@ -3326,12 +3326,12 @@ public sealed partial class Session
     }
 
     /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
-    /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingDamage) and grabbing floor loot
+    /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingRaw) and grabbing floor loot
     /// (HandlePickup). No-op if not stealthed.</summary>
     public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
 
     // Enchant tier (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua multiplies
-    // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage). Baseline
+    // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingRaw). Baseline
     // is 1 (not 0), same as EffRage.
     //
     // NOT A TIMER — IT IS BOUND TO THE WEAPON. The warrior tutor spell list is unanimous across all five

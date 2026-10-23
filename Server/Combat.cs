@@ -219,7 +219,7 @@ public static class Combat
 
     /// <summary>The armor multiplier <see cref="ApplyArmor"/> applies, <c>(100 + max(armor, floor)) / 100</c>, for a
     /// caller that has other terms to multiply in before the one floor (<c>Session.TakeDamage</c>,
-    /// <c>Session.PlayerSwingDamage</c>). Formed with the integer add first, for the reason in
+    /// <c>Session.PlayerSwingRaw</c>). Formed with the integer add first, for the reason in
     /// <see cref="ApplyArmor"/>'s note.</summary>
     public static double ArmorFactor(int armor, int floor) => (100 + Math.Max(armor, floor)) / 100.0;
 
