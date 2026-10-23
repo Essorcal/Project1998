@@ -1974,4 +1974,48 @@ public class ContentSmokeTests
                 $"Cemetery door ({x},{y}) into crypt {map} is blocked walking north — SObj-solid sprite over a warp");
         }
     }
+
+    /// <summary>The Buya Marketplace gateway (map 4601, cell 35,36) is walkable AND draws as the floor the shipped
+    /// map draws there, on both wire encodings.
+    ///
+    /// <para>The trap is the ground word's top two bits: they are the pass flag to the server and the sheet
+    /// selector to both clients. The shipped word is 0xC0CF (sheet 2, TileB[207]). A <c>MapCells.csv</c> row that
+    /// sets only Pass 0 re-packs it as 0x00CF (sheet 1, TileA[206], an unrelated grass-edge tile), and nothing
+    /// complains: the cell walks fine and merely looks wrong. So the row also sets Tile 42, the stall floor above,
+    /// whose word 0x002A is the same picture as TileB[207] on both clients (<c>Tile533Map.csv</c> sends legacy
+    /// sheet-2 frame 207 to 5.33 frame 42, which is where sheet-1 word 42 lands too).</para></summary>
+    [Fact]
+    public void BuyaMarketplaceGatewayIsWalkableAndDrawsTheShippedFloor()
+    {
+        EnsureLoaded();
+        const int X = 35, Y = 36;
+        var market = MapData.For(4601);
+        Assert.NotNull(market);
+
+        // The shipped .map's own word for the cell: the wall row's sheet-2 ground, with no object over it.
+        var file = File.ReadAllBytes(RepoPaths.GameData("maps", "TK4601.map"));
+        int at = (Y * market!.Xs + X) * 4;
+        ushort shipped = (ushort)(file[at] | (file[at + 1] << 8));
+        Assert.Equal((ushort)0xC0CF, shipped);
+
+        Assert.False(market.Solid(X, Y), "the Buya Marketplace gateway (35,36) must stay walkable");
+        Assert.Equal((ushort)0, market.Pass(X, Y));
+        Assert.Equal((ushort)42, market.Tile(X, Y));
+        Assert.Equal((ushort)0x002A, market.GroundWord(X, Y));
+
+        // What each client is sent for the cell, built the way Session.SendMapRect's real path builds it.
+        byte[] Wire(Session.ClientVersion ver)
+        {
+            var b = new List<byte>();
+            MapCell.Write(b, TileTranslation.Ground(market.GroundWord(X, Y), ver), market.Pass(X, Y),
+                          TileTranslation.Object(market.Obj(X, Y), ver), ver);
+            return b.ToArray();
+        }
+        Assert.Equal(new byte[] { 0x00, 0x2A, 0x00, 0x00 }, Wire(Session.ClientVersion.V495));             // word 42, no object
+        Assert.Equal(new byte[] { 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00 }, Wire(Session.ClientVersion.V533)); // frame 42, pass 0, no object
+
+        // The same picture the shipped word draws: on 5.33 both land on frame 42.
+        Assert.Equal(TileTranslation.Ground(shipped, Session.ClientVersion.V533),
+                     TileTranslation.Ground(market.GroundWord(X, Y), Session.ClientVersion.V533));
+    }
 }

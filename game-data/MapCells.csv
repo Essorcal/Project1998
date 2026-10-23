@@ -25,8 +25,16 @@ Map,X,Y,Tile,Pass,Obj,Sources
 # (…676 677 | 0 | 675 676…), so this is a deliberate one-tile gateway through the wall, not a missing piece.
 # What was never done is clearing the ground's pass flag underneath it, so it draws as an opening you should
 # walk through and blocks anyway. Row 35 above and row 37 below are both open ground, so it joins two areas
-# that are otherwise walled apart. Only Pass is set here; the tile art and the (empty) object stay as shipped.
-4601,35,36,,0,,shipped-map-gap
+# that are otherwise walled apart.
+# Tile AND Pass, the same trap as the Baek Shop rows at the end of this file: the ground word's top 2 bits are
+# both the pass flag and the client's sheet selector, so Pass 0 alone re-packed the shipped 0xC0CF (sheet 2,
+# TileB[207]) as 0x00CF (sheet 1, TileA[206]) and the gap drew as an unrelated grass-edge tile. Tile 42 is the
+# stall floor of row 35 above, and it is the very picture the shipped cell draws: 4.95's TileA[41] (word 42),
+# its TileB[207] and 5.33's TILE[42] are byte-identical RGB, which is why Tile533Map.csv sends legacy 207 to 42.
+# So the gap now looks exactly as the .map draws it, on both clients, and is walkable. Chosen by a look in the
+# MapEditor's Player view (Tile 64, the ground below, left a pale notch in the counter) plus that frame check.
+# The (empty) object stays as shipped.
+4601,35,36,42,0,,"shipped-map-gap; Tile 42 because Pass 0 alone flips the sheet bits (0xC0CF TileB[207] -> 0x00CF TileA[206], an unrelated grass-edge tile); 42 is the stall floor above and the same picture as TileB[207] (Tile533Map 207 -> 42), chosen in the MapEditor"
 #
 # Kwi-sin Shrine approach, Arctic Village (3811, 55-57,19) — same class of bug, confirmed in game. The row
 # reads as plain snow and blocks anyway. The object layer is NOT the cause: 2802-2809 are the shrine's tall
