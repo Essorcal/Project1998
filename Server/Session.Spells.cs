@@ -630,7 +630,7 @@ public sealed partial class Session
     private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        double amount = Formula.Eval(fx.AmountExpr, SpellVars(null));
+        double amount = RowAmount(fx);
         // Chin-Baek-Ho-Ryung (Black Potion, 10s): x1.5 on Slash / Assault / Feral Berserk, applied to the
         // evaluated amount exactly where RTK applies it — right after the damage is computed and before
         // anything is charged. Berserk and Whirlwind take the same bonus inside the sacrifice verb.
@@ -638,6 +638,13 @@ public sealed partial class Session
             amount = Math.Ceiling(amount * 1.5);
         return SpellScript.Run(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
     }
+
+    /// <summary>The amount a spell's export row gives this cast: its spell_effects.csv <c>amountExpr</c> over the
+    /// caster's stats as they stand (no target term exists in any formula), unrounded (#200). One evaluation for both
+    /// ways a row's amount reaches a verb: <see cref="CastArch"/> hands it over as <c>ctx.amount</c>, and
+    /// <see cref="LuaSpellAmount"/> answers <c>ctx.spellAmount</c> for a verb bound by a SpellParams row that carries no
+    /// amount of its own (mage Bolt's <c>magic_damage</c>, on the Spark family's row since #200).</summary>
+    private double RowAmount(SpellFx fx) => Formula.Eval(fx.AmountExpr, SpellVars(null));
 
     // Stance Lua hook (Tier-2 migration): rage / enchant / stealth / backstab / flank all just ARM a timed melee
     // modifier on the caster, so — like CastArch — try the Lua verb first; a null result (verb not loaded) fails
@@ -2690,6 +2697,13 @@ public sealed partial class Session
     // primitive resolves it from Content, not a CSV row — these spells are classified in C#, not by a params row.
     internal bool LuaWarpOut          => Content.WarpOut(_char.Map);
     internal int  LuaSpellMana(SpellDef sp) { var fx = Content.FxFor(sp); return fx is not null && fx.Mana > 0 ? fx.Mana : 5; }
+    /// <summary>The spell's export-row amount for this cast (<see cref="RowAmount"/>), unrounded. A spell with no
+    /// spell_effects.csv row has no amount to give, and that is a data fault, not a zero: it throws, so the verb that
+    /// asked errors before it spends anything and the cast says "isn't working right now" (SpellScript.Run), where a
+    /// zero would have struck for 1 and said nothing.</summary>
+    internal double LuaSpellAmount(SpellDef sp) =>
+        Content.FxFor(sp) is { } fx ? RowAmount(fx)
+            : throw new InvalidOperationException($"{sp.Key} has no spell_effects.csv row to take its amount from");
     internal int  LuaSpellAether(SpellDef sp) => Content.FxFor(sp)?.Aether ?? 0;
     internal void LuaMarkNarrated()   => _castNarrated = true;
     internal bool LuaHasLegend(string mark) => HasLegend(mark);

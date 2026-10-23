@@ -265,8 +265,15 @@ end
 -- precedence over the archetype path). Their numbers come from the row (row.coeff, row.base, ...).
 -- =========================================================================================================
 
--- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
+-- Direct magic damage to the current target. A row with numbers of its own strikes for base + Will*coeff and costs
+-- `mana` (Freeze, the Poet whip's proc: a flat 112 for 800). A row that only binds the verb takes both from the
+-- spell's spell_effects.csv row instead, ctx.spellAmount and ctx.spellMana, read as the Damage archetype reads them:
+-- mage Bolt, on the Spark family's row since #200 (Caleb, 2026-10-22), 50 + level/2 for 20 mana, where its own row
+-- used to say 2 + 1.5 x Will for 4, which no source gives. Bolt keeps this verb and not the archetype's because the
+-- refusals below are Bolt's, by Caleb's decisions; the archetype answers several of them differently.
+-- The amount goes to ctx:damage unrounded, to the one floor at the armour step (#78, #361).
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
+--
 -- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
 -- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
 -- archetype and the generic damage spells give a cast that finds nothing.
@@ -289,10 +296,12 @@ end
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
   if ctx.castAtNothing then return false end                  -- silent, free, whatever the mana: nothing to strike
-  local mana = row.mana or 0
+  local own = row.base or row.coeff                           -- numbers of its own, or only the binding (Bolt)
+  local mana = row.mana or (own and 0 or ctx.spellMana)
   if ctx.mp >= mana and not ctx:canStrike() then return false end   -- a player it may not strike here: free, with its line
+  local amount = own and (row.base or 0) + ctx.will * (row.coeff or 1.0) or ctx.spellAmount   -- read before the spend
   if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
-  ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
+  ctx:damage(amount)
   return true
 end
 

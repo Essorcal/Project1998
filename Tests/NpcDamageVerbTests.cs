@@ -503,8 +503,8 @@ public sealed class NpcDamageVerbTests
     public static TheoryData<string, ushort, uint> ShortManaNothingCases => new()
     {
         // key, map, the caster's mana (one short of the row's cost)
-        { "bolt_mage", Town, 3 },
-        { "bolt_mage", Arena, 3 },
+        { "bolt_mage", Town, 19 },
+        { "bolt_mage", Arena, 19 },
         { "freeze", Town, 799 },
         { "freeze", Arena, 799 },
     };
@@ -526,7 +526,8 @@ public sealed class NpcDamageVerbTests
 
     /// <summary>The control for the silent short cast: at a real target, with too little mana, the line stays, as RTK
     /// orders it (mana before the PvP refusal, <c>global_zap.lua:14-17</c>). A creature faced here; a player faced is
-    /// <see cref="BoltAtAPlayerWithTooLittleManaSaysWhatItDid"/>.
+    /// <see cref="BoltAtAPlayerWithTooLittleManaSaysWhatItDid"/>. One short of Bolt's 20 (its spell_effects.csv row, the
+    /// Spark row, since #200; it was 3, one short of the 4 its SpellParams row used to charge).
     /// <para>Green on e651252 as well.</para></summary>
     [Theory]
     [InlineData(Town)]
@@ -534,9 +535,25 @@ public sealed class NpcDamageVerbTests
     public void BoltAtACreatureWithTooLittleManaStillSaysSo(ushort map)
     {
         var sp = Spell("bolt_mage");
-        var r = Cast(sp, map, Aim.Slot, npc: false, mana: 3);
+        var r = Cast(sp, map, Aim.Slot, npc: false, mana: 19);
         Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature,
-                    $"{sp.Name} at a creature with 3 mana on map {map}: {r}");
+                    $"{sp.Name} at a creature with 19 mana on map {map}: {r}");
+    }
+
+    /// <summary>With too little mana, Bolt at an NPC says nothing, on either map: the verb refuses an NPC before it looks
+    /// at its mana (#349's follow-up), so a caster one short of Bolt's 20 hears no mana line for a blow that could strike
+    /// nothing. Pinned for #200, which moved Bolt onto the Spark row but not onto the Damage archetype: the archetype
+    /// checks the mana first, and says "You do not have enough mana." here.
+    /// <para>Green on 2874006 as well (at 3 mana, one short of the 4 Bolt charged then).</para></summary>
+    [Theory]
+    [InlineData(Town)]
+    [InlineData(Arena)]
+    public void BoltAtAnNpcWithTooLittleManaSaysNothing(ushort map)
+    {
+        var sp = Spell("bolt_mage");
+        var r = Cast(sp, map, Aim.Slot, npc: true, mana: 19);
+        Assert.True(r.Lines == "" && r.Spent == 0 && r.Pose == 0 && r.Fx == 0 && r.TargetHp == 1,
+                    $"{sp.Name} at an NPC with 19 mana on map {map}: {r}");
     }
 
     public static TheoryData<string, Aim> PvpNothingCases => new()
@@ -568,8 +585,9 @@ public sealed class NpcDamageVerbTests
     }
 
     /// <summary>The control: on a PvP map Bolt aimed at its caster's own id is aimed, not nothing, and still strikes
-    /// them, for its 4 mana and its line. Only the resolver's fallback for a cast aimed at nothing is refused.
-    /// <para>Green on e651252 as well.</para></summary>
+    /// them, for its mana and its line. Only the resolver's fallback for a cast aimed at nothing is refused. The mana is
+    /// the Spark row's 20 since #200 (it was the 4 of Bolt's SpellParams row).
+    /// <para>Green on e651252 as well, at 4.</para></summary>
     [Fact]
     public void OnAPvpMapBoltAimedAtItsCastersOwnIdStillStrikesThem()
     {
@@ -581,7 +599,7 @@ public sealed class NpcDamageVerbTests
             cOut.Clear();
             caster.Receive(SpellCastSupport.CastFrame(0, caster.PlayerId));
             string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
-            Assert.True(lines == "You cast Bolt." && mp0 - cc.Mp == 4 && cc.Hp < hp0
+            Assert.True(lines == "You cast Bolt." && mp0 - cc.Mp == 20 && cc.Hp < hp0
                         && cOut.BodiesOf(ServerOp.Action).Count == 1,
                         $"{sp.Name} at its caster's id on map {Arena}: [{lines}], spent {mp0 - cc.Mp}, hp {hp0} -> {cc.Hp}");
         }
@@ -675,7 +693,8 @@ public sealed class NpcDamageVerbTests
     /// sheet item 9b), with the line the blow's PvP gate has always sent, "You can't attack that target."
     /// (<c>Session.HitPlayerWithSpell</c>): no mana, no pose, no "You cast X.", and the player keeps their HP and is
     /// told nothing. On a PvP map, the control, the blow lands as it did: "You cast X.", the mana, the pose, and the
-    /// player's HP down. By the slot alone, the stock client's frame, and for Bolt by the player's id as well.
+    /// player's HP down. By the slot alone, the stock client's frame, and for Bolt by the player's id as well. Bolt's
+    /// mana is the Spark row's 20 since #200 (the 4 of its SpellParams row before); Freeze's is its row's 800.
     /// <para>Red on 6de1d24 off a PvP map: the gate ran after the spend, so the refusal cost 4 or 800 mana, the pose and
     /// "You cast X." too. The PvP rows are green there as well.</para></summary>
     [Theory]
@@ -683,7 +702,7 @@ public sealed class NpcDamageVerbTests
     public void ABoltOrFreezeAtAPlayerIsRefusedForFreeOffAPvpMap(string key, ushort map, bool byId)
     {
         var sp = Spell(key);
-        uint cost = (uint)int.Parse(Content.SpellParams[key]["mana"]);
+        uint cost = key switch { "bolt_mage" => 20u, "freeze" => 800u, _ => throw new ArgumentOutOfRangeException(nameof(key)) };
         var r = CastAtAPlayer(sp, map, byId, Mana);
         string what = $"{sp.Name} at a faced player{(byId ? ", by their id," : "")} on map {map}: {r}";
         if (Content.IsPvpMap(map))
@@ -719,13 +738,14 @@ public sealed class NpcDamageVerbTests
 
     /// <summary>With too little mana, Bolt at a player off a PvP map still answers what it did: "Not enough mana to cast
     /// Bolt.", for nothing. RTK's zap orders it the same way, mana before the PvP refusal
-    /// (<c>Spells/common/global_zap.lua:14-17</c>, <c>:26-30</c>).
+    /// (<c>Spells/common/global_zap.lua:14-17</c>, <c>:26-30</c>). One short of Bolt's 20 since #200 (3 before, one short
+    /// of 4).
     /// <para>Green on 6de1d24 as well.</para></summary>
     [Fact]
     public void BoltAtAPlayerWithTooLittleManaSaysWhatItDid()
     {
         var sp = Spell("bolt_mage");
-        var r = CastAtAPlayer(sp, Town, byId: false, mana: 3);
+        var r = CastAtAPlayer(sp, Town, byId: false, mana: 19);
         Assert.True(r.Lines == "Not enough mana to cast Bolt." && r.Spent == 0 && r.Pose == 0 && r.TargetHp == Creature,
                     $"{sp.Name} at a faced player on map {Town}: {r}");
     }
