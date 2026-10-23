@@ -999,7 +999,10 @@ function verbs.approach(ctx, row)
   if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
   if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
   if ctx.targetIsSelf then return travel_fizzle(ctx) end
-  local there = ctx.targetMap                                      -- where the caster would land
+  -- Where the caster would land: the person's map, its size and their tile, read once and together inside their
+  -- monitor, and kept for the move. Every check below is about this map, and approachTarget moves the caster to this
+  -- place, not to wherever the person stands by then (Session.LuaReadApproachPlace; #345, follow-up 2).
+  local there = ctx:readTargetPlace()
   if not ctx:mapCanSummon(there) then return travel_fizzle(ctx) end  -- the person's area (RTK target.canSummon)
   if ctx:mapIndoor(there) then return travel_fizzle(ctx) end
   if not ctx:mapAdmits(there, "caster") then return travel_fizzle(ctx) end

@@ -2449,6 +2449,7 @@ public sealed partial class Session
     private Session? _pcSpellTarget;
     internal bool LuaResolvePcTarget(SpellDef sp, uint? targetId)
     {
+        _approachPlace = null;   // Approach's place belongs to the target it was read for (Session.ApproachSummon.cs)
         _pcSpellTarget = ResolvePcCastTarget(targetId);
         if (_pcSpellTarget is null) { LogNoTarget(sp); return false; }
         return true;

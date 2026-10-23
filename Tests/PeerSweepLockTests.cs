@@ -1576,8 +1576,9 @@ public sealed class PeerSweepLockTests
     }
 
     /// <summary>The Approach spell through the real 0x0F frame with the player's name typed in, at a group member caught
-    /// mid-warp the same way. The move waits for the member's monitor, in both orders, and the caster lands beside them
-    /// on the new map, paying the spell's mana once.
+    /// mid-warp the same way. The cast's read of where the member stands waits for their monitor, in both orders (the
+    /// move made that read until #345's follow-up 2 moved it ahead of the checks, Session.LuaReadApproachPlace), and the
+    /// caster lands beside them on the new map, paying the spell's mana once.
     /// <para>Red on 3690542 in both builds: the move read the new map with the old tile and landed the caster at
     /// (19,19).</para></summary>
     [Theory]

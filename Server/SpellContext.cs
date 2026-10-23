@@ -543,8 +543,13 @@ public sealed class SpellContext
     /// <summary>The resolved player target's kingdom (<c>Character.Nations</c>: 0 Neutral, 1 Koguryo, 2 Buya, …);
     /// -1 with no target.</summary>
     public double targetNation => _s.LuaPcTarget?.CharNation ?? -1;
-    /// <summary>The map the resolved player target stands on (0 with no target).</summary>
+    /// <summary>The map the resolved player target stands on (0 with no target): a bare read of the map alone, which
+    /// Summon's checks make. Approach reads the whole place once through <see cref="readTargetPlace"/>.</summary>
     public double targetMap    => _s.LuaPcTarget?.CharMap ?? 0;
+    /// <summary>Approach's one read of where the resolved player target stands: their map, its size and their tile,
+    /// read together inside their monitor and kept for <see cref="approachTarget"/> (<c>Session.LuaReadApproachPlace</c>).
+    /// Returns the map, for the verb's checks; 0 with no target.</summary>
+    public double readTargetPlace() => _s.LuaReadApproachPlace();
     /// <summary>Is the resolved player target staff (the GM roster)?</summary>
     public bool   targetIsGm   => _s.LuaPcTarget?.LuaIsGm ?? false;
     /// <summary>The caster's kingdom, numbered as <see cref="targetNation"/>.</summary>
@@ -585,8 +590,9 @@ public sealed class SpellContext
         return vita <= band.VitaMax && mana <= band.ManaMax;
     }
 
-    /// <summary>Approach's move: the caster to the first free tile beside the resolved player target (N, E, S,
-    /// W), else onto their tile. Exactly the move <c>@approach</c> makes. False with no target.</summary>
+    /// <summary>Approach's move: the caster to the first free tile beside the place <see cref="readTargetPlace"/>
+    /// read (N, E, S, W), else onto that tile: the move <c>@approach</c> makes, to the place the checks were made on
+    /// rather than to a second read. False, and nobody moves, with no target or no place read since it resolved.</summary>
     public bool   approachTarget() => _s.LuaApproachTarget(_sp);
     /// <summary>Summon's move: the resolved player target to the first free tile beside the caster, else onto
     /// the caster's tile. Exactly the move <c>@bring</c> makes, under the target's own monitor, after ending any
