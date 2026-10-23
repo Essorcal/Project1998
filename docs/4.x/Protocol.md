@@ -1187,6 +1187,16 @@ live client and matching how an over-rate swing is dropped). The melee gate sits
 gate so a mounted attack key doesn't burn the swing interval; the shared action-budget bump for `0x13`
 still happens at dispatch, as in RTK.
 
+**Emote and pickup are blocked too (2026-10-22), both silently, as in RTK.** Neither goes through
+`BlockedByMount`, so neither says anything: no `0x1A`, no sound, no line.
+- **Emote.** A mounted player's `0x1d` is dropped at the top of `HandleEmotion`, and so is a dead, invisible or
+  transformed player's (`Server/Session.Combat.cs:467`). RTK's `clif_parseemotion` plays only in state 0
+  (`clif.c:6477-6482`).
+- **Pickup.** A mounted or dead player's `0x07` is dropped at the top of `HandlePickup`, before the crouch and
+  before the invisibility break (`Server/Session.Items.cs:168`). RTK's `clif_parsegetitem` returns for states 1 and
+  3 first (`clif.c:9923-9924`). So an invisible rider stays invisible.
+- **Budget.** As with melee, both opcodes still pay the shared action budget at dispatch.
+
 **Minimum visible self:** `appearance = [sex, 0, face, 0, 0, 0, 0]`, `renderKind = 1`. Any nonzero
 value in `[1]` (the form byte) risks blanking the whole sprite — that was the root cause of the
 "invisible character" saga (§14).
@@ -2060,7 +2070,17 @@ decoded — the fix is simply to send a real `percent`/`critical`, which is what
 **Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action:
 `type = idx + 11`, broadcast as `0x1A` to the emoter **and every peer on the map** (RTK
 `clif_parseemotion`: `sendaction(&bl, RFIFOB(5)+11, 0x4E, 0)`). So `:` `l` = `idx 0x0b → type 22 =
-dance`. The index sits at `dec[0]` — **not** `dec[1]`; 4.95 has no ordinal byte after the opcode, so
+dance`.
+
+**Only an alive, visible, unmounted and untransformed player emotes.** For a dead, invisible, mounted or
+transformed player, the server drops the `0x1d` silently (`Server/Session.Combat.cs:467`):
+- no `0x1A` to the emoter or to any peer;
+- no line;
+- invisibility is not broken.
+
+RTK plays the emote only when `status.state == 0` (`clif.c:6477-6482`).
+
+The index sits at `dec[0]` — **not** `dec[1]`; 4.95 has no ordinal byte after the opcode, so
 RTK's 6.x `RFIFOB(5)` offset is one byte later than ours (the same shift seen on every 4.95 handler).
 The dance/emote sound rides along with the client's action sprite; no separate sound packet is sent.
 
@@ -2712,10 +2732,18 @@ Every item handler broadcasts a `0x1A` action (§13, builder `Session.SendAction
 character visibly stoops and the client plays the baked-in sound. The `(type, time)` pairs are RTK's
 (`clif.c`): **pickup = `(4, 40)`** (RTK `clif_parsegetitem`), **drop = `(5, 20)`** (`clif_parsedropitem` — a
 *distinct* pose from pickup), **throw = `(2, 20)`**, **eat = `(8, 40)`**. `sound` is 0 (the action sprite
-carries its own sound; a non-zero 4th arg would be a separate sound id). Ordering matches RTK: pickup plays
-the action **unconditionally** (even on an empty tile — the crouch fires on the keypress), while drop plays it
-only **after** the `NoDrop`/valid-slot guard passes. `<` (pick-up-all) plays the action once, then loops the
-tile until empty.
+carries its own sound; a non-zero 4th arg would be a separate sound id).
+
+**Ordering matches RTK.** Pickup plays the action **before it looks at the floor**, even on an empty tile: the
+crouch fires on the keypress.
+- **Not at all for a dead or mounted player.** Their `0x07` is dropped silently, before the crouch and before the
+  invisibility break: no `0x1A`, no sound, no line, no item. The check is `Server/Session.Items.cs:168`, ahead of
+  the crouch at `:170-171`. RTK's `clif_parsegetitem` returns for states 1 and 3 first (`clif.c:9923-9924`).
+- **An invisible player on foot** still crouches and picks up, and the attempt breaks the invisibility.
+- **A transformed player** picks up as usual.
+
+Drop plays it only **after** the `NoDrop`/valid-slot guard passes. `<` (pick-up-all) plays the action once, then
+loops the tile until empty.
 
 **Throw collision — SOLVED (2026-07-25; object-wall aware 2026-07-26).** `HandleThrow` walks the item
 **tile-by-tile** from the player in the faced direction (0=N 1=E 2=S 3=W, capped at 3 tiles) and stops at the
