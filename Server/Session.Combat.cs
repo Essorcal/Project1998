@@ -455,8 +455,16 @@ public sealed partial class Session
     // was); it states the intent so that turning on CheckForOverflowUnderflow, or "hardening" this with a
     // clamp or a range check, cannot silently kill Respect and Triumph while every other emote still works.
     // Tests/ActionAndDeleteWireTests.cs pins 0xFE/0xFF to 9/10 for exactly that reason.
+    //
+    // ONLY AN ORDINARY PLAYER EMOTES. RTK plays the emote only in state 0 (clif_parseemotion: `if
+    // (sd->status.state == 0)`), and its states are PC_ALIVE, PC_DIE, PC_INVIS, PC_MOUNTED, PC_DISGUISE (map.h).
+    // Ours keeps those as separate flags, so state 0 is: not dead, not invisible, not mounted and not
+    // transformed (a morph such as Feral). Anything else is dropped in silence: no action to self or peers, no
+    // line, and invisibility is NOT broken (unlike a pickup). The action budget is still spent at dispatch, as
+    // RTK spends sd->time before it calls the handler. Tests/EmotePickupStateTests.cs pins all four.
     private void HandleEmotion(byte[] dec)
     {
+        if (IsDead || Stealthed || _char.Mounted || IsMorphed) return;
         if (dec.Length < 1) return;
         // Wheel index 0 is Laughter (11); indices 0xFE/0xFF are m/n and wrap to Respect (9) / Triumph (10).
         byte action = unchecked((byte)(dec[0] + (byte)ActionType.Laughter));
