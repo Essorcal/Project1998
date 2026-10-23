@@ -633,7 +633,7 @@ blades_charm_rogue,rogue,Utility,0,,,,,,,,,,-1,,6,
 explorers_remedy_rogue,rogue,Heal,4000,6000,0,,,,,,,,5,4,,
 focused_blow_rogue,rogue,Damage,3000,player.health * 2,spellFX,,,,,,,,7,88,1,
 power_stream_rogue,rogue,Heal,1000,1500,0,,,,,,,,5,4,,
-dooms_fire_mage,mage,Damage,0,math.ceil(player.magic * 2.5),30,,,,,,,,8,88,6,70000
+dooms_fire_mage,mage,Damage,15275,math.ceil(player.magic * 2.5),30,,,,,,,,8,88,6,65000
 energy_flow_mage,mage,Heal,2400,8000,0,,,,,,,,5,4,,
 charge_of_life_poet,poet,Heal,3000,40000,0,,,,,,,,5,4,,
 cotw_wind_master_poet,poet,Utility,10,,,,,,,,,,-1,22,6,480000
