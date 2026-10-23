@@ -738,14 +738,21 @@ public sealed partial class Session
         {
             _fastMove = !_fastMove;   // client toggled fast-move; keep our model in lockstep with the client's flag
             // Persist the CHOICE in SettingFlags bit 9 so it's remembered, but do NOT re-seed the client via
-            // SendOptions/0x23 here. Unlike the cosmetic radios (weather/magic/advice), fast-move's checkbox
-            // and the client's RUNTIME movement flag are the SAME byte ([state+0x451], live RE 2026-08-19),
-            // and the 0x23 seed handler writes it through a `sete` = INVERTED polarity: re-seeding right after
-            // the user toggles ON drove [state+0x451] back to 0 within ~1s (proven live: the flag flickered
-            // 0->1->0 on a single toggle), desyncing the client (OFF, waiting) from the server (ON, sending
-            // the fast-move ack) and breaking movement. The client already flipped its own flag on the
-            // keypress and told us via this 0x1b/09; that IS the lockstep — no seed needed (RTK doesn't send
-            // one either). See HandleWalk's clientFast branch.
+            // SendOptions/0x23 here, unlike the cosmetic radios (weather/magic/advice). The Fast Move box is
+            // seeded only on F10-open (the sub-0 branch below); on 4.95 the new value reaches the client's
+            // RUNTIME movement flag [state+0x451] in the next 0x08 stats packet (SendStats body[46]).
+            // WHY no re-seed has two readings, and neither has been re-checked against the binary since
+            // (UNCONFIRMED; docs/4.x/Protocol.md §7.1, "Fast Move is the exception"):
+            //   (1) this comment's original reason (live RE 2026-08-19): the checkbox and [state+0x451] are the
+            //       SAME byte, and the 0x23 seed handler writes it through a `sete` = INVERTED polarity, so
+            //       re-seeding right after the user toggles ON drove [state+0x451] back to 0 within ~1s (the
+            //       flag flickered 0->1->0 on a single toggle), desyncing the client (OFF, waiting) from the
+            //       server (ON, sending the fast-move ack). That was seen before SendStats set body[46].
+            //   (2) docs/4.x/Fast-Move.md (written later that day, with the stats-packet fix): the 0x23 seed
+            //       handler (0x465200) only paints the checkbox and never writes [state+0x451]; the flicker
+            //       was the stats packet, whose body[46] was then always 0.
+            // The client already flipped its own flag on the keypress and told us via this 0x1b/09; that IS
+            // the lockstep (RTK doesn't send a seed here either). See HandleWalk's clientFast branch.
             if (_fastMove) _char.SettingFlags |= Character.SettingBit(9);
             else           _char.SettingFlags &= ~Character.SettingBit(9);
             SaveChar();

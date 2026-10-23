@@ -1542,10 +1542,11 @@ public sealed partial class Session
     // ALSO persisting it server-side (SettingFlags bit 9) and restoring it at login, then flipping both only
     // together via 0x1b/09 (RTK never seeds it over the wire — clif_sendoptions is dead code). So the real
     // value is loaded from the character at world entry (see HandleArrival: `_fastMove = _char.HasSetting(9)`);
-    // this field initializer is only the pre-entry placeholder and must match a FRESH character (bit 9 clear
-    // = OFF), so a brand-new player and a fresh client agree. The old ON default was the desync bug: it
-    // assumed every client booted with fast-move enabled. P1998_V495_FASTMOVE_DEFAULT=1 forces the old
-    // assumed-ON placeholder if ever needed.
+    // this field initializer is only the pre-entry placeholder: OFF, or the old assumed-ON value with
+    // P1998_V495_FASTMOVE_DEFAULT=1 (that ON default was the desync bug: it assumed every client booted with
+    // fast-move enabled). It is NOT a fresh character's value: Character.SettingFlags' default seed SETS bit 9,
+    // so a brand-new player enters the world with fast-move ON, and on 4.95 the entry-burst stats packet
+    // carries that to the client (SendStats body[46], unless P1998_V495_FASTMOVE_TRUST_TOGGLE=0).
     private bool _fastMove = FastMoveDefault;
 
 
