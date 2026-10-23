@@ -749,13 +749,15 @@ public sealed partial class World
 
             // The bosses filed under their rooms' maps (#333): each walked once, and refilled while ANY of its
             // rooms' maps has a player, wherever its room pick then puts it. Asked about under its row's map,
-            // as on its first entry (EnsureMaterialized); the same guard, the same fault.
+            // as on its first entry (EnsureMaterialized); the same guard, the same fault, recorded and throttled
+            // under that row's map. The log names the room map a player is on beside it (PhaseFault.RoomMap), so
+            // a boss's fault is not reported against map 4, as a map-entry fault names the map entered.
             foreach (var sp in _roomPoints)
             {
                 if (sp.Live is not null || sp.RespawnTick == 0 || tick < sp.RespawnTick) continue;
                 if (!AnyPlayerOn(sp.RoomMaps!)) continue;
                 try { Materialize(sp.Map, sp); }
-                catch (Exception e) { (faults ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, sp.Map, sp.Def)); }
+                catch (Exception e) { (faults ??= new()).Add(new PhaseFault(PhRespawns, e, Row: true, sp.Map, sp.Def, FirstMapWithAPlayer(sp.RoomMaps!))); }
             }
 
             bool AnyPlayerOn(ushort[] maps)
@@ -763,6 +765,15 @@ public sealed partial class World
                 foreach (var m in maps)
                     if (world._maps.TryGetValue(m, out var pm) && pm.Players.Count > 0) return true;
                 return false;
+            }
+
+            // AnyPlayerOn's walk, naming the map it stopped at: the room map the pass is serving. Asked only
+            // when the build threw, so a beat that throws nothing does no more than it did.
+            ushort? FirstMapWithAPlayer(ushort[] maps)
+            {
+                foreach (var m in maps)
+                    if (world._maps.TryGetValue(m, out var pm) && pm.Players.Count > 0) return m;
+                return null;
             }
         }
 

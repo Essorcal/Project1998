@@ -1138,9 +1138,12 @@ public static partial class Content
     //   refuses below it for free. That 600 is a bar in RTK, not a bill, which is GateOnly's case, but the flag
     //   would change nothing here: the verb's 600 comes out of a pool of at least 600 and the drain takes the
     //   whole pre-cast reading from what is left, so the cast ends at 0 either way. They stay false. Dooms
-    //   Fire's row still says 0. Retribution and its three reskins (RTK
-    //   poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the same thing one tier
-    //   down: "deals 34% of current mana to target", and it empties you doing it.
+    //   Fire's row takes the same gate at the live Nexus Atlas mage page's "Mana Cost - 15,275" and its
+    //   "Aethers - 65 Seconds" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; Caleb,
+    //   2026-10-22, decision sheet item 5): arch_damage refuses below 15,275 for free, and from it the cast
+    //   ends at 0 for the same reason, so it stays false too. RTK has no script for it. Retribution and its
+    //   three reskins (RTK poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the
+    //   same thing one tier down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
     //   global_zap debits the 1000 it is handed (which is the only number the formula extractor could see, and
     //   so the only one in spell_effects.csv), and then the script itself subtracts a second

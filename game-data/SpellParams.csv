@@ -1,5 +1,5 @@
 key,verb,mana,base,coeff,amount,willcoeff,category,stat,duration,notes,Sources,flat,durationMax,chance,pcDps,pcDurMs
-bolt_mage,magic_damage,4,2,1.5,,,,,,Basic mage nuke: 2 + 1.5*Will,rtk-lua,,,,,
+bolt_mage,magic_damage,,,,,,,,,"binding only (#200; Caleb 2026-10-22): Bolt is the Spark family's Ming-Ken name, so its mana (20) and damage (50 + level/2) are its spell_effects.csv row, the Spark row, read by the verb as ctx.spellMana and ctx.spellAmount. The binding keeps Bolt's refusals (free and silent at nothing or an NPC, refused for free at a player off a PvP map). This row used to say 2 + 1.5*Will for 4 mana, which no source gives: the 2002-12-30 and live Nexus Atlas mage pages and RTK spark.lua (bolt_mage: global_zap at 20 mana) all put Bolt at Spark's 20",atlas-2002-12-30-spells-classes|rtk-lua,,,,,
 heal_mage,heal,6,,,20,1.0,,,,Flat 20 + 1*Will HP,rtk-lua,,,,,
 mend_wounds_mage,heal,3,,,10,0.5,,,,Weaker heal sharing the same heal verb,rtk-lua,,,,,
 baekhos_cunning,baekhos_cunning,,,,,,,,,Baekho's Cunning: stateful multi-tier stance (tier table in verb),rtk-lua,,,,,
