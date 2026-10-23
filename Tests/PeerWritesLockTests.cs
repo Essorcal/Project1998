@@ -614,13 +614,14 @@ public sealed class PeerWritesLockTests
     }
 
 #if DEBUG
-    /// <summary>The mana write's entry is the ordered one, asserted: with <c>World._lock</c> held the lock-order assert
-    /// fires and the mana is unchanged; from a lower- and a higher-ranked player's monitor it is silent and writes.
-    /// Debug-only by construction, and it names <c>ReceiveSetMana</c>, so it came with the fix.
-    /// <para>Red without the fix: with no monitor (and no guard on <c>Mp</c>) nothing fires under <c>World._lock</c>
-    /// and the mana is written; with a plain <c>lock</c> nothing fires either.</para></summary>
+    /// <summary>The steal's take is entered the ordered way, asserted: with <c>World._lock</c> held the lock-order
+    /// assert fires and the mana is unchanged; from a lower- and a higher-ranked player's monitor it is silent, sets
+    /// the mana to 0 and returns what was there. Debug-only by construction. It named <c>ReceiveSetMana</c> until
+    /// <c>ReceiveTakeAllMana</c> replaced that set (#345, follow-up 4), and the take came with that change.
+    /// <para>Red with the take's <c>EnterState</c> removed: nothing fires under <c>World._lock</c> and the mana is
+    /// taken.</para></summary>
     [Fact]
-    public void SettingAnotherPlayersManaUnderTheWorldLockAsserts()
+    public void TakingAnotherPlayersManaUnderTheWorldLockAsserts()
     {
         var (low, _, _) = Plain("ManaPinLow", ManaPinMap, 60, 60);
         var (v, _, vc) = Plain("ManaPinV", ManaPinMap, 62, 60, ch => { ch.MaxMp = 5_000; ch.Mp = 1_000; });
@@ -629,14 +630,16 @@ public sealed class PeerWritesLockTests
         {
             Assert.True(low.StateRank < v.StateRank && v.StateRank < high.StateRank);
 
-            var wrongWay = Record.Exception(() => _fx.World.UnderWorldLockForTest(() => v.ReceiveSetMana(4_000)));
+            var wrongWay = Record.Exception(() => _fx.World.UnderWorldLockForTest(() => v.ReceiveTakeAllMana()));
             AssertLockOrderFired(wrongWay);
             Assert.Equal(1_000u, vc.Mp);
 
-            Assert.Null(Record.Exception(() => low.WithState(() => v.ReceiveSetMana(4_000))));
-            Assert.Equal(4_000u, vc.Mp);
-            Assert.Null(Record.Exception(() => high.WithState(() => v.ReceiveSetMana(0))));
-            Assert.Equal(0u, vc.Mp);
+            uint taken = 0;
+            Assert.Null(Record.Exception(() => low.WithState(() => taken = v.ReceiveTakeAllMana())));
+            Assert.Equal((1_000u, 0u), (taken, vc.Mp));
+            v.WithState(() => vc.Mp = 4_000);
+            Assert.Null(Record.Exception(() => high.WithState(() => taken = v.ReceiveTakeAllMana())));
+            Assert.Equal((4_000u, 0u), (taken, vc.Mp));
         }
         finally
         {

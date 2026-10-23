@@ -29,6 +29,9 @@ namespace Tests;
 /// fiancé, and where the other player stands for <c>@approach</c> and the Approach spell.</item>
 /// <item><b>Mana Gift's lost regen beat</b>: the gift computed the target's new mana before it took their monitor,
 /// so a beat that landed in between was overwritten.</item>
+/// <item><b>Mana Steal's read and set</b> (#345, follow-up 4): the steal read the target's mana bare, credited the
+/// caster, then set the target to 0 inside their monitor, so what landed on their pool in between was wiped or
+/// credited twice.</item>
 /// </list>
 ///
 /// <para>Shapes, as in <see cref="PeerWritesLockTests"/>: the action through its real entry (the 0x0F cast, the
@@ -60,6 +63,8 @@ public sealed class PeerSweepLockTests
                          ApproachRaceFrom = 62450, ApproachRaceTo = 62451, ApproachPinMap = 62452,
                          WeddingCheckMap = 62454, WeddingCheckRaceMap = 62455;
     private const ushort GiftHeldMap = 62443, GiftRaceMap = 62444, GiftPinMap = 62445;
+    // Mana Steal's facts (#345's follow-up 4): 62493 and 62494, which no other tracked file names.
+    private const ushort StealHeldMap = 62493, StealCapMap = 62494;
 
     /// <summary>Fen, the Gale Chapel's Chapel NPC (game-data/NPCs.csv, NpcId 230, map 2511): the ceremony's real
     /// entry (Server/NpcAbility.cs, ChapelAbility's "Marriage").</summary>
@@ -1576,8 +1581,9 @@ public sealed class PeerSweepLockTests
     }
 
     /// <summary>The Approach spell through the real 0x0F frame with the player's name typed in, at a group member caught
-    /// mid-warp the same way. The move waits for the member's monitor, in both orders, and the caster lands beside them
-    /// on the new map, paying the spell's mana once.
+    /// mid-warp the same way. The cast's read of where the member stands waits for their monitor, in both orders (the
+    /// move made that read until #345's follow-up 2 moved it ahead of the checks, Session.LuaReadApproachPlace), and the
+    /// caster lands beside them on the new map, paying the spell's mana once.
     /// <para>Red on 3690542 in both builds: the move read the new map with the old tile and landed the caster at
     /// (19,19).</para></summary>
     [Theory]
@@ -1898,6 +1904,102 @@ public sealed class PeerSweepLockTests
         }
     }
 #endif
+
+    // ===== 5. Mana Steal's read and set ================================================================
+
+    /// <summary>#345's follow-up 4 as a fact, through the real 0x0F frame: a Mana Steal (Draw Energy) at a party
+    /// member waits for that member's monitor. While it waits, the third thread that holds the monitor changes their
+    /// mana by <paramref name="change"/>: +500 is what a regen beat adds under that monitor, -2,000 what a spend or a
+    /// drain there takes. The steal then takes what the member holds once it has their monitor, sets it to 0 in the
+    /// same section, and gives the caster exactly that: 1,000 + 3,500, or 1,000 + 1,000. Both read the lines of any
+    /// steal.
+    /// <para>Red on 2874006 in both builds: the steal credited the caster with the 3,000 it read before it waited, then
+    /// set the member to 0, so the caster ended on 4,000 either way. The beat's 500 was wiped, or the 2,000 the member
+    /// lost was credited to the caster as well.</para></summary>
+    [Theory]
+    [InlineData(500, true)]
+    [InlineData(500, false)]
+    [InlineData(-2_000, true)]
+    [InlineData(-2_000, false)]
+    public void AManaStealTakesWhatTheMemberHoldsOnceItHasTheirMonitor(int change, bool casterRanksFirst)
+    {
+        var steal = Content.SpellByKey("draw_energy_poet")!;
+        Action<Character> poet = ch =>
+        {
+            ch.Level = 99; ch.MaxMp = 10_000; ch.Mp = 1_000; ch.Grouped = true; ch.Spells.Add(steal.Id);
+        };
+        Action<Character> member = ch => { ch.MaxMp = 10_000; ch.Mp = 3_000; ch.Grouped = true; };
+        Session c, v;
+        HeldRecorder cOut, vOut;
+        Character cc, vc;
+        if (casterRanksFirst)
+        {
+            (c, cOut, cc) = Player("StealHeldC", StealHeldMap, 20, 20, poet);
+            (v, vOut, vc) = Player("StealHeldV", StealHeldMap, 22, 20, member);
+        }
+        else
+        {
+            (v, vOut, vc) = Player("StealHeldV", StealHeldMap, 22, 20, member);
+            (c, cOut, cc) = Player("StealHeldC", StealHeldMap, 20, 20, poet);
+        }
+        Assert.Equal(casterRanksFirst, c.StateRank < v.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            SessionFixture.FormParty(c, v);
+            Assert.Contains($"{v.CharName} is joining the group.", vOut.MiniTexts());
+            cOut.Clear(); vOut.Clear();
+
+            WhileAnotherThreadHolds(run, v, () => c.Receive(SpellCastSupport.CastFrame(0, v.PlayerId)),
+                                    untouched: () =>
+                                    {
+                                        bool same = vc.Mp == 3_000;
+                                        vc.Mp = (uint)((int)vc.Mp + change);   // the beat, or the spend
+                                        return same;
+                                    });
+            AssertWaited(run, "the steal", "the member's mana was written while another thread held their monitor");
+
+            Assert.Equal(((uint)(1_000 + 3_000 + change), 0u), (cc.Mp, vc.Mp));
+            Assert.Equal(new[] { $"You cast {steal.Name}." }, cOut.MiniTexts());
+            Assert.Contains(TargetLine(steal, c), vOut.MiniTexts());
+        }
+        finally
+        {
+            if (run.Settled) Leave(StealHeldMap, c, v);
+        }
+    }
+
+    /// <summary>A Mana Steal that would overfill the caster still stops at their maximum, and still takes all of the
+    /// member's mana: a caster on 1,500 of 2,000 takes a member's 3,000 and ends on 2,000, the member on 0, with the
+    /// lines of any steal. The verb's clamp (<c>setMana</c>) is unchanged by the take; this pins it.
+    /// <para>Not a guard: green on 2874006 and after, in both builds.</para></summary>
+    [Fact]
+    public void AManaStealThatWouldOverfillTheCasterStopsAtTheirMax()
+    {
+        var steal = Content.SpellByKey("draw_energy_poet")!;
+        var (c, cOut, cc) = Player("StealCapC", StealCapMap, 20, 20, ch =>
+        {
+            ch.Level = 99; ch.MaxMp = 2_000; ch.Mp = 1_500; ch.Grouped = true; ch.Spells.Add(steal.Id);
+        });
+        var (v, vOut, vc) = Player("StealCapV", StealCapMap, 22, 20, ch => { ch.MaxMp = 10_000; ch.Mp = 3_000; ch.Grouped = true; });
+        try
+        {
+            SessionFixture.FormParty(c, v);
+            Assert.Contains($"{v.CharName} is joining the group.", vOut.MiniTexts());
+            cOut.Clear(); vOut.Clear();
+
+            c.Receive(SpellCastSupport.CastFrame(0, v.PlayerId));
+
+            Assert.Equal((2_000u, 0u), (cc.Mp, vc.Mp));
+            Assert.Equal(new[] { $"You cast {steal.Name}." }, cOut.MiniTexts());
+            Assert.Contains(TargetLine(steal, c), vOut.MiniTexts());
+        }
+        finally
+        {
+            Leave(StealCapMap, c, v);
+        }
+    }
 
     private static void AssertLockOrderFired(Exception? wrongWay)
     {

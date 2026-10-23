@@ -724,8 +724,11 @@ function verbs.mana_steal(ctx, row)
   if ctx.targetIsSelf then ctx:say("It doesn't work."); return false end
   if ctx.targetIsDead then ctx:say("That cannot save them now."); return false end
   if not ctx.targetInGroup then ctx:say("They must be in your group."); return false end
-  ctx:setMana(ctx.mp + ctx.targetMana)     -- setMana clamps to the caster's max
-  ctx:setTargetMana(0)
+  -- One step inside the target's own monitor takes all they hold and sets them to 0 (Session.ReceiveTakeAllMana);
+  -- the caster gets what it took. A read here and a set to 0 after it wiped a regen beat that landed between the
+  -- two, and credited the caster with mana the target lost there (#345, follow-up 4).
+  local taken = ctx:takeTargetMana()
+  ctx:setMana(ctx.mp + taken)              -- setMana clamps to the caster's max
   ctx:tellTarget()
   ctx:fx(6, 22)
   return true
@@ -1011,7 +1014,10 @@ function verbs.approach(ctx, row)
   if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
   if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
   if ctx.targetIsSelf then return travel_fizzle(ctx) end
-  local there = ctx.targetMap                                      -- where the caster would land
+  -- Where the caster would land: the person's map, its size and their tile, read once and together inside their
+  -- monitor, and kept for the move. Every check below is about this map, and approachTarget moves the caster to this
+  -- place, not to wherever the person stands by then (Session.LuaReadApproachPlace; #345, follow-up 2).
+  local there = ctx:readTargetPlace()
   if not ctx:mapCanSummon(there) then return travel_fizzle(ctx) end  -- the person's area (RTK target.canSummon)
   if ctx:mapIndoor(there) then return travel_fizzle(ctx) end
   if not ctx:mapAdmits(there, "caster") then return travel_fizzle(ctx) end
