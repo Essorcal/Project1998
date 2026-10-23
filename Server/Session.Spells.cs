@@ -3933,8 +3933,17 @@ public sealed partial class Session
     /// <summary>Going away, by the Chapel's ends' rule (<see cref="EndEngagement"/>): the teardown's latch, read under
     /// the caller's section's monitor, or the connection's close, set once and read with Volatile as everywhere else.
     /// The wedding (<see cref="RunMarriageCeremony"/>) and the proposal's "yes" (<see cref="PromptProposal"/>) read it
-    /// inside their pair's section.</summary>
-    private static bool GoingAway(Session s) => s._leaving || Volatile.Read(ref s._closed) != 0;
+    /// inside their pair's section.
+    /// <para>Debug builds assert that the caller holds <paramref name="s"/>'s monitor (PR #368's review, N1). A read
+    /// moved out to just before its section still passed every test, because nothing holds a monitor between the two;
+    /// this turns that move red. A Release build compiles the assert out.</para></summary>
+    private static bool GoingAway(Session s)
+    {
+        System.Diagnostics.Debug.Assert(s.StateHeld,
+            "GoingAway read outside that session's monitor: it belongs inside the caller's pair section, so that a " +
+            "logout teardown cannot set _leaving between the read and the writes it decides.");
+        return s._leaving || Volatile.Read(ref s._closed) != 0;
+    }
 
     /// <summary>Which <c>Inns.csv</c> group this character returns to (RTK <c>Player.returnFunc</c>, which
     /// reads <c>registry["home"]</c> before falling through to <c>returnToInn</c>'s country switch).
