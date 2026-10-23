@@ -19,9 +19,11 @@ namespace Tests;
 /// <para>The amplifier is armed with <c>World.ArmDamageAmp</c>, the call <c>Session.LuaAmplify</c> makes for a creature
 /// once a hold lands (<c>arch_debuff</c>'s last step), at the data's figures: 1.5 for the Sleep family
 /// (<c>AMP_BY_SPELL</c>) and 1.3 for the Doze family (<c>HOLD.sleep.amp</c>), <c>game-data/spell_verbs.lua</c>. Swings
-/// are real 0x13 frames and casts real 0x0F frames through <c>Session.Receive</c>; the area and sacrifice sites, which
-/// a real cast reaches only through randomness or era gates, are called directly with a whole amount. Every figure
-/// below is red on 2874006, the master this branch starts from.</para>
+/// are real 0x13 frames and casts real 0x0F frames through <c>Session.Receive</c>; the Ambush strike, the area and
+/// sacrifice sites, the overflow splash and the shot gun's proc, which a real cast reaches only through randomness, era
+/// gates or a GM weapon, are called as their verbs and procs call them (the last two, private, by reflection). Every
+/// amplified figure below is red on 2874006, the master this branch starts from; the rows without an amplifier are the
+/// controls that stay green there.</para>
 ///
 /// <para>Map 62630 is content-free (no Maps.csv row: PvP off, nothing spawns) and no other class uses it.</para>
 /// </summary>
@@ -41,15 +43,37 @@ public sealed class SleptCreatureAmplifierTests
 
     private static readonly FieldInfo NextActionTick =
         typeof(Session).GetField("_nextActionTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    // The two private creature sites the area-and-sacrifice theory calls as their callers do (PR #378's review, F2).
+    private static readonly MethodInfo ApplyOverflow =
+        typeof(Session).GetMethod("ApplyOverflow", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo ProcShotgun =
+        typeof(Session).GetMethod("ProcShotgun", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ShotgunWorn =
+        typeof(Session).GetField("_shotgunWorn", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private readonly SessionFixture _fx;
     private static int _serial;
 
     public SleptCreatureAmplifierTests(SessionFixture fx) => _fx = fx;
 
+    /// <summary>The rows the swing and the Ambush strike share: amplifier, creature AC, from behind, the non-crit
+    /// figures and every figure the one rule allows.</summary>
+    public static TheoryData<double, int, bool, int[], int[]> StrikeRows => new()
+    {
+        { Slept, 75, false, new[] { 11, 13 }, new[] { 11, 13, 35, 39 } },
+        { Slept, 75, true, new[] { 22, 26 }, new[] { 22, 26, 70, 78 } },
+        { Dozed, 20, false, new[] { 7 }, new[] { 7, 21, 23 } },
+        { Dozed, 20, true, new[] { 14 }, new[] { 14, 42, 46 } },
+        { 1.0, 75, false, new[] { 7, 8 }, new[] { 7, 8, 23, 26 } },
+        { 1.0, 75, true, new[] { 14, 16 }, new[] { 14, 16, 46, 52 } },
+    };
+
     /// <summary>A Peasant's bare-hand swing (4.5 or 5.0, three times that on a crit; see <see cref="Swinger"/>) at a
     /// slept or dozed creature, from in front (the creature faces the attacker) and from behind (both face east, the
-    /// attacker to its west). Each landed hit must be one of the one rule's four figures and a non-crit one must land:
+    /// attacker to its west). All <see cref="Swings"/> swings run, with no stop at the first expected figure (PR #378's
+    /// review, F1): S is 1 or 2 at random, and a rear x2 moved ahead of the amplifier for an amplified hit alone lands a
+    /// wrong figure for one S only (23 for S = 1 slept, 15 for S = 2 dozed), which an early stop let through about one
+    /// run in three. Every landed hit must be one of the one rule's figures, and every non-crit figure must land:
     /// <list type="bullet">
     /// <item>Slept, AC +75, in front: 4.5 x 1.75 x 1.5 = 11.8 and 5.0 x 1.75 x 1.5 = 13.1, so 11 or 13 (35 or 39 on a
     /// crit). Red on 2874006: 10 or 12; the swing floored 7.875 to 7 and TryDamage rounded 7 x 1.5 = 10.5 to the even
@@ -63,12 +87,7 @@ public sealed class SleptCreatureAmplifierTests
     /// same swing lands on 2874006: an un-slept hit is unchanged.</item>
     /// </list></summary>
     [Theory]
-    [InlineData(Slept, 75, false, new[] { 11, 13 }, new[] { 11, 13, 35, 39 })]
-    [InlineData(Slept, 75, true, new[] { 22, 26 }, new[] { 22, 26, 70, 78 })]
-    [InlineData(Dozed, 20, false, new[] { 7 }, new[] { 7, 21, 23 })]
-    [InlineData(Dozed, 20, true, new[] { 14 }, new[] { 14, 42, 46 })]
-    [InlineData(1.0, 75, false, new[] { 7, 8 }, new[] { 7, 8, 23, 26 })]
-    [InlineData(1.0, 75, true, new[] { 14, 16 }, new[] { 14, 16, 46, 52 })]
+    [MemberData(nameof(StrikeRows))]
     public void ASwingTakesTheCreaturesAmplifierInsideItsOneFloorThenTheRearDouble(
         double amp, int ac, bool fromBehind, int[] nonCrit, int[] figures)
     {
@@ -77,17 +96,42 @@ public sealed class SleptCreatureAmplifierTests
         var (attacker, _, _) = Swinger();
         try
         {
-            var landed = new List<int>();
-            for (int i = 0; i < Swings && !landed.Any(nonCrit.Contains); i++)
+            var landed = StrikeEveryTime(mob, amp, () =>
             {
-                if (amp > 1.0) _fx.World.ArmDamageAmp(mob, amp, 60_000);   // a miss leaves it armed; a hit spends it
-                int was = mob.Hp;
                 attacker.WithState(() => NextActionTick.SetValue(attacker, 0L));
                 attacker.Receive(SessionFixture.Frame(ClientOp.Attack, new byte[] { 0 }));
-                if (mob.Hp != was) landed.Add(was - mob.Hp);
-            }
-            Assert.True(landed.Count > 0 && landed.All(figures.Contains) && landed.Any(nonCrit.Contains),
-                        $"amp {amp}, AC {ac}, from behind {fromBehind}; landed: {string.Join(", ", landed)}");
+            });
+            AssertOnlyTheRulesFigures(landed, nonCrit, figures, $"swing, amp {amp}, AC {ac}, from behind {fromBehind}");
+        }
+        finally
+        {
+            _fx.World.LeaveMap(attacker, Field);
+            _fx.World.DespawnMob(Field, mob);
+        }
+    }
+
+    /// <summary>The Ambush strike (<c>Session.LuaAmbushStrike</c>, the other caller that hands
+    /// <c>World.TryDamage</c> a rear flag; PR #378's review, F2), called as Ambush's verb calls it after
+    /// <c>LuaAmbushMob</c>, by the same Peasant at the same creature: it is <c>PlayerSwingRaw</c>'s swing, so it lands
+    /// the swing's figures in every row of <see cref="StrikeRows"/>.
+    /// <para>Red with the strike put back to 2874006's floored and doubled <c>PlayerSwingDamage</c> figure: slept, 10 or
+    /// 12 in front and 21 or 24 from behind; dozed, 6 in front (S = 1) and 13 or 15 from behind.</para></summary>
+    [Theory]
+    [MemberData(nameof(StrikeRows))]
+    public void AnAmbushStrikeTakesTheCreaturesAmplifierInsideItsOneFloorThenTheRearDouble(
+        double amp, int ac, bool fromBehind, int[] nonCrit, int[] figures)
+    {
+        var mob = Creature(ac, dir: fromBehind ? (byte)1 : (byte)3);
+        var (attacker, _, _) = Swinger();
+        var ambush = Spell("ambush_rogue");
+        try
+        {
+            var landed = StrikeEveryTime(mob, amp, () => attacker.WithState(() =>
+            {
+                Assert.True(attacker.LuaAmbushMob());   // the faced creature, as the verb finds it
+                attacker.LuaAmbushStrike(ambush);
+            }));
+            AssertOnlyTheRulesFigures(landed, nonCrit, figures, $"ambush, amp {amp}, AC {ac}, from behind {fromBehind}");
         }
         finally
         {
@@ -165,12 +209,16 @@ public sealed class SleptCreatureAmplifierTests
         }
     }
 
-    /// <summary>The creature sites a real cast reaches only by a range roll, a vita formula or an era gate, called as
-    /// their verbs call them, with a whole amount of 101 at AC -22 (0.78): the 4-way zap (<c>LuaAreaZap</c>, Erupt's
-    /// verb), the dog 5-way (<c>LuaTargetAreaZap</c>, Fissure's, at a creature one tile away, inside its sure range)
-    /// and the sacrifice strike (<c>LuaSacApply</c>, Berserk's). 78.78 x 1.5 = 118.2 lands 118 and 78.78 x 1.3 = 102.4
-    /// lands 102.
-    /// <para>Red on 2874006: 117 and 101 (the armour step's 78, then 78 x 1.5 and 78 x 1.3 = 101.4).</para></summary>
+    /// <summary>The creature sites a real cast reaches only by a range roll, a vita formula, an era gate or a GM
+    /// weapon's ramp, called as their verbs and procs call them, each with a whole amount of 101 at AC -22 (0.78): the
+    /// 4-way zap (<c>LuaAreaZap</c>, Erupt's verb), the dog 5-way (<c>LuaTargetAreaZap</c>, Fissure's, at a creature one
+    /// tile away, inside its sure range), the sacrifice strike (<c>LuaSacApply</c>, Berserk's), the overflow splash
+    /// (<c>ApplyOverflow</c>: an overkill of 96 is ceil(96 x 1.05) = 101, all of it to the one creature beside the struck
+    /// tile) and the shot gun's proc (<c>ProcShotgun</c>, its ramp at 101). 78.78 x 1.5 = 118.2 lands 118 and
+    /// 78.78 x 1.3 = 102.4 lands 102.
+    /// <para>Red on 2874006: 117 and 101 (the armour step's 78, then 78 x 1.5 and 78 x 1.3 = 101.4). The overflow and
+    /// shot gun rows (PR #378's review, F2) are red the same way with those two callers alone put back to
+    /// <c>Combat.ApplyArmor</c>'s floored figure.</para></summary>
     [Theory]
     [InlineData("area", Slept, 118)]
     [InlineData("area", Dozed, 102)]
@@ -178,6 +226,10 @@ public sealed class SleptCreatureAmplifierTests
     [InlineData("target-area", Dozed, 102)]
     [InlineData("sacrifice", Slept, 118)]
     [InlineData("sacrifice", Dozed, 102)]
+    [InlineData("overflow", Slept, 118)]
+    [InlineData("overflow", Dozed, 102)]
+    [InlineData("shotgun", Slept, 118)]
+    [InlineData("shotgun", Dozed, 102)]
     public void TheAreaAndSacrificeSitesTakeTheCreaturesAmplifierInsideTheirOneFloor(string site, double amp, int expected)
     {
         var mob = Creature(ac: -22, dir: 3);
@@ -191,7 +243,18 @@ public sealed class SleptCreatureAmplifierTests
                 {
                     case "area": caster.LuaAreaZap(101, Spell("erupt_mage")); break;
                     case "target-area": caster.LuaTargetAreaZap(101, Spell("fissure"), mob.Id); break;
-                    default: Assert.True(caster.LuaSacFrontMob()); caster.LuaSacApply(Spell("berserk_warrior"), 101); break;
+                    case "sacrifice": Assert.True(caster.LuaSacFrontMob()); caster.LuaSacApply(Spell("berserk_warrior"), 101); break;
+                    // The struck tile is south of the creature; its four neighbours hold the creature and nobody else
+                    // (the caster's tile is not one of them).
+                    case "overflow": ApplyOverflow.Invoke(caster, new object[] { 96, CX + 1, CY + 1, Spell("berserk_warrior") }); break;
+                    case "shotgun":
+                        // The ramp counts per worn gun: claim this instance, then set the count it climbs from.
+                        var gun = new InvItem { Slot = 1 };
+                        ShotgunWorn.SetValue(caster, gun);
+                        caster.Quest(QuestState.Registry).Set("damage_shotgun", 100);
+                        ProcShotgun.Invoke(caster, new object[] { gun });
+                        break;
+                    default: Assert.Fail($"unknown site {site}"); break;
                 }
             });
 
@@ -228,6 +291,28 @@ public sealed class SleptCreatureAmplifierTests
     }
 
     // ===== helpers =======================================================================================
+
+    /// <summary>Strike <see cref="Swings"/> times, re-arming <paramref name="amp"/> before each (a miss leaves it armed;
+    /// a hit spends it), and return every figure that landed. No early stop: see the swing theory's summary.</summary>
+    private List<int> StrikeEveryTime(Mob mob, double amp, Action strike)
+    {
+        var landed = new List<int>();
+        for (int i = 0; i < Swings; i++)
+        {
+            if (amp > 1.0) _fx.World.ArmDamageAmp(mob, amp, 60_000);
+            int was = mob.Hp;
+            strike();
+            if (mob.Hp != was) landed.Add(was - mob.Hp);
+        }
+        return landed;
+    }
+
+    /// <summary>Every landed figure is one the rule allows, and every non-crit figure landed. At the hit ceiling
+    /// (62%) and a 97% non-crit share, 400 swings land about 240 non-crit hits, each S at even odds, so a run with one S
+    /// missing has a chance below 1 in 10^50.</summary>
+    private static void AssertOnlyTheRulesFigures(List<int> landed, int[] nonCrit, int[] figures, string what) =>
+        Assert.True(landed.All(figures.Contains) && nonCrit.All(landed.Contains),
+                    $"{what}; landed: {string.Join(", ", landed)}");
 
     private static SpellDef Spell(string key)
     {
