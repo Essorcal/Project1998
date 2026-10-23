@@ -28,14 +28,16 @@ namespace Tests;
 ///
 /// <para><b>The path.</b> The mentor casts Mentor (the real <c>0x0F</c>), types the protégé's name, reads the four
 /// pages and answers "Yes" to "Are you sure"; the protégé answers on a thread of their own, because a dialog resumes
-/// inline on the thread that delivers the reply, as on the read loop. Collection "world", on content-free maps 62493
-/// and 62494, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its
+/// inline on the thread that delivers the reply, as on the read loop. Collection "world", on content-free maps 62495
+/// and 62496, which no other class uses and <c>game-data/Maps.csv</c> has no row for. Each fact has a database of its
 /// own (<see cref="IsolatedDatabase"/>).</para>
 /// </summary>
 [Collection("world")]
 public sealed class MentorshipLinesTests
 {
-    private const ushort AnswerMap = 62493, BoundMeanwhileMap = 62494;
+    // This class first stood on the two ids just below these, which PeerSweepLockTests' Mana Steal facts (#372) took
+    // meanwhile (PR #371's review, F3).
+    private const ushort AnswerMap = 62495, BoundMeanwhileMap = 62496;
 
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
