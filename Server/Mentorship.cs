@@ -161,7 +161,18 @@ public sealed partial class Session
     }
 
     /// <summary>Runs on the PROTÉGÉ's own session (cross-session, same pattern as the marriage proposal):
-    /// the accept/decline prompt, and the bind on accept.</summary>
+    /// the accept/decline prompt, and the bind on accept.
+    /// <para><b>The lines to the mentor go out inside the mentor's monitor</b> (PR #369's review, its notes). From the
+    /// answer on this is the protégé's thread: their 0x3A reply resumes it inline, under their own monitor
+    /// (<c>Handle</c>'s <c>WithState</c>; <c>HandleNpcDialog</c> completes the prompt there), with no world lock, no
+    /// viewport lock and no Lua gate. So each line to the mentor (the decline, "is already being mentored." and
+    /// "accepts your offer") is a send into another player, and goes out inside <c>mentor.WithState</c>, as #29's
+    /// rule 2 enters another player's session and as the culmination's line to the protégé does. The mentor's logout
+    /// teardown takes the same monitor, so each line is handed over before that teardown can start, or, if it has
+    /// already started, after it ends. The mentor's monitor is taken by <c>StateRank</c> from inside the protégé's,
+    /// as the proposal's decline takes the proposer's. Where the mentor ranks first, <c>EnterState</c> drops the
+    /// protégé's monitor while it waits and retakes it, and nothing of the protégé's is mid-write then: the bind's
+    /// writes are done before the accept line. The protégé's own line stays under the protégé's monitor.</para></summary>
     internal async Task PromptMentorship(Session mentor)
     {
         string who = mentor.Snapshot().Name;
@@ -172,20 +183,20 @@ public sealed partial class Session
         string me = _char.Name;
         if (accept != 1)
         {
-            mentor.SendMiniText($"{me} regretably must decline.");
+            mentor.WithState(() => mentor.SendMiniText($"{me} regretably must decline."));
             return;
         }
 
         // Re-check on landing: both parties have been free to act while the prompt was open.
         var mentorship = Quest(Mentorship.Key);
         if (HasLegend(Mentorship.MentoredByLegend) || mentorship.GetText(Mentorship.MentorSlot).Length > 0)
-        { mentor.SendMiniText($"{me} is already being mentored."); return; }
+        { mentor.WithState(() => mentor.SendMiniText($"{me} is already being mentored.")); return; }
 
         mentorship.SetText(Mentorship.MentorSlot, who);
         AddLegend($"Being mentored by {who}", Mentorship.BeingMentoredLegend,
                   Mentorship.LegendIcon, Mentorship.LegendColor);
-        mentor.SendMiniText($"{me} accepts your offer of mentorship! Please guide them until level " +
-                            $"{Mentorship.CulminateLevel}, where you will need to cast this again to end the mentorship.");
+        mentor.WithState(() => mentor.SendMiniText($"{me} accepts your offer of mentorship! Please guide them until level " +
+                                                   $"{Mentorship.CulminateLevel}, where you will need to cast this again to end the mentorship."));
         SendMiniText($"{who} is now your mentor.");
         Log.Info($"   -> MENTOR '{who}' took on '{me}'");
     }
