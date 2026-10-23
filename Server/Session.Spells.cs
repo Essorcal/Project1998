@@ -630,7 +630,7 @@ public sealed partial class Session
     private bool? CastArch(string verb, SpellDef sp, SpellFx fx, uint? targetId, int mana)
     {
         if (!SpellScript.HasVerb(verb)) return null;
-        double amount = Formula.Eval(fx.AmountExpr, SpellVars(null));
+        double amount = RowAmount(fx);
         // Chin-Baek-Ho-Ryung (Black Potion, 10s): x1.5 on Slash / Assault / Feral Berserk, applied to the
         // evaluated amount exactly where RTK applies it — right after the damage is computed and before
         // anything is charged. Berserk and Whirlwind take the same bonus inside the sacrifice verb.
@@ -638,6 +638,13 @@ public sealed partial class Session
             amount = Math.Ceiling(amount * 1.5);
         return SpellScript.Run(verb, new SpellContext(this, sp, targetId, null, amount, mana, fx));
     }
+
+    /// <summary>The amount a spell's export row gives this cast: its spell_effects.csv <c>amountExpr</c> over the
+    /// caster's stats as they stand (no target term exists in any formula), unrounded (#200). One evaluation for both
+    /// ways a row's amount reaches a verb: <see cref="CastArch"/> hands it over as <c>ctx.amount</c>, and
+    /// <see cref="LuaSpellAmount"/> answers <c>ctx.spellAmount</c> for a verb bound by a SpellParams row that carries no
+    /// amount of its own (mage Bolt's <c>magic_damage</c>, on the Spark family's row since #200).</summary>
+    private double RowAmount(SpellFx fx) => Formula.Eval(fx.AmountExpr, SpellVars(null));
 
     // Stance Lua hook (Tier-2 migration): rage / enchant / stealth / backstab / flank all just ARM a timed melee
     // modifier on the caster, so — like CastArch — try the Lua verb first; a null result (verb not loaded) fails
@@ -2449,6 +2456,7 @@ public sealed partial class Session
     private Session? _pcSpellTarget;
     internal bool LuaResolvePcTarget(SpellDef sp, uint? targetId)
     {
+        _approachPlace = null;   // Approach's place belongs to the target it was read for (Session.ApproachSummon.cs)
         _pcSpellTarget = ResolvePcCastTarget(targetId);
         if (_pcSpellTarget is null) { LogNoTarget(sp); return false; }
         return true;
@@ -2460,28 +2468,34 @@ public sealed partial class Session
     internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
     internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.PeerTotals().armor;  // effective AC (lower=better)
     internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
-    internal void LuaSetTargetMana(int n)    => _pcSpellTarget?.ReceiveSetMana(n);
+    internal uint LuaTakeTargetMana()        => _pcSpellTarget?.ReceiveTakeAllMana() ?? 0;
     internal void LuaAddTargetMana(int n)    => _pcSpellTarget?.ReceiveAddMana(n);
 
-    /// <summary>A Mana Steal sets THIS player's mana (the verb's <c>setTargetMana(0)</c>), clamped to its effective
-    /// maximum, and pushes the stats that show it; Mana Gift adds instead (<see cref="ReceiveAddMana"/>).
-    /// Cross-session: called on the target from the caster's thread, which holds the caster's monitor and the Lua
-    /// gate and never <c>World._lock</c>, so this takes the target's monitor here, by <c>StateRank</c>, the
-    /// <see cref="ReceiveFlush"/> shape. On yourself it is the monitor the cast already holds. The verb computed
-    /// <paramref name="n"/> under the caster's monitor; nothing here decides it again.
-    /// <para>Before this the caster's thread wrote the target's <c>_char.Mp</c> without the target's monitor. No guard
-    /// covers <c>Mp</c> (the write marks nothing dirty), so it was unguarded in both builds.</para></summary>
-    internal void ReceiveSetMana(int n)
+    /// <summary>A Mana Steal takes ALL of THIS player's mana (the verb's <c>takeTargetMana</c>): what they hold, read
+    /// and set to 0 in one section of their own monitor, and the stats that show it pushed. Returns the amount taken,
+    /// which the verb gives the caster. Cross-session: called on the target from the caster's thread, which holds the
+    /// caster's monitor and the Lua gate and never <c>World._lock</c>, so this takes the target's monitor here, by
+    /// <c>StateRank</c>, the <see cref="ReceiveFlush"/> shape. On yourself it would be the monitor the cast already
+    /// holds, but the verb refuses yourself first.
+    /// <para>Before this the verb read the target's mana bare (<c>ctx.targetMana</c>), credited the caster, and then
+    /// set the target to 0 here (<c>ReceiveSetMana</c>, #341). Anything that landed on the target's pool between the
+    /// read and the set, under their monitor, went wrong: a regen beat was wiped rather than taken, and mana they lost
+    /// there (a spend, a drain) had already been credited to the caster, so it was given away twice (#345, follow-up
+    /// 4). The read and the set are one step now, so the caster is given exactly what the target held when it went to
+    /// 0. No guard covers <c>Mp</c> (the write marks nothing dirty), so only the monitor orders it.</para></summary>
+    internal uint ReceiveTakeAllMana()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp);
+        uint taken = _char.Mp;
+        _char.Mp = 0;
         SendStats();
+        return taken;
     }
 
     /// <summary>A Mana Gift adds <paramref name="n"/> to THIS player's mana (the verb's <c>addTargetMana</c>), clamped
     /// to its effective maximum, and pushes the stats that show it. The new value is decided here, inside this
-    /// player's monitor, from the mana they hold now: the <see cref="ReceiveSetMana"/> shape and reasons (the caster's
-    /// thread, the caster's monitor and the Lua gate, never <c>World._lock</c>; this player's taken by
+    /// player's monitor, from the mana they hold now: the <see cref="ReceiveTakeAllMana"/> shape and reasons (the
+    /// caster's thread, the caster's monitor and the Lua gate, never <c>World._lock</c>; this player's taken by
     /// <c>StateRank</c>). The verb still decides how much to give, from its own read of this player's mana and
     /// maximum, and pays it; nothing here decides the gift again.
     /// <para>Before this the gift SET the mana it had computed from that read. A regen beat that landed after the
@@ -2690,6 +2704,13 @@ public sealed partial class Session
     // primitive resolves it from Content, not a CSV row — these spells are classified in C#, not by a params row.
     internal bool LuaWarpOut          => Content.WarpOut(_char.Map);
     internal int  LuaSpellMana(SpellDef sp) { var fx = Content.FxFor(sp); return fx is not null && fx.Mana > 0 ? fx.Mana : 5; }
+    /// <summary>The spell's export-row amount for this cast (<see cref="RowAmount"/>), unrounded. A spell with no
+    /// spell_effects.csv row has no amount to give, and that is a data fault, not a zero: it throws, so the verb that
+    /// asked errors before it spends anything and the cast says "isn't working right now" (SpellScript.Run), where a
+    /// zero would have struck for 1 and said nothing.</summary>
+    internal double LuaSpellAmount(SpellDef sp) =>
+        Content.FxFor(sp) is { } fx ? RowAmount(fx)
+            : throw new InvalidOperationException($"{sp.Key} has no spell_effects.csv row to take its amount from");
     internal int  LuaSpellAether(SpellDef sp) => Content.FxFor(sp)?.Aether ?? 0;
     internal void LuaMarkNarrated()   => _castNarrated = true;
     internal bool LuaHasLegend(string mark) => HasLegend(mark);

@@ -265,8 +265,18 @@ end
 -- precedence over the archetype path). Their numbers come from the row (row.coeff, row.base, ...).
 -- =========================================================================================================
 
--- Direct magic damage to the current target: base + Will*coeff, costing `mana`.
+-- Direct magic damage to the current target. A row with numbers of its own strikes for base + Will*coeff and costs
+-- `mana` (Freeze, the Poet whip's proc: a flat 112 for 800). A row that only binds the verb takes both from the
+-- spell's spell_effects.csv row instead, ctx.spellAmount and ctx.spellMana, read as the Damage archetype reads them:
+-- mage Bolt, on the Spark family's row since #200 (Caleb, 2026-10-22), 50 + level/2 for 20 mana, where its own row
+-- used to say 2 + 1.5 x Will for 4, which no source gives. Bolt keeps this verb and not the archetype's because the
+-- refusals below are Bolt's, by Caleb's decisions; the archetype answers several of them differently.
+-- A row with a mana but no base or coeff mixes the two: its own mana, and the export row's amount (ctx.spellAmount).
+-- No such row exists today. For a spell with no spell_effects.csv row, ctx.spellAmount has no amount to give and
+-- raises, before the spend, so the cast fails free with "<spell> isn't working right now." (SpellScript.Run).
+-- The amount goes to ctx:damage unrounded, to the one floor at the armour step (#78, #361).
 -- (Target resolution, deflect, the HP-bar packet, death + XP are all handled inside ctx:damage.)
+--
 -- An NPC is refused first, silently and free: no blow can hurt it, so ctx:damage strikes nothing there, and this
 -- verb used to charge for that (Bolt 4 mana, the Poet whip's Freeze proc 800). Silence is the answer the Damage
 -- archetype and the generic damage spells give a cast that finds nothing.
@@ -289,10 +299,12 @@ end
 function verbs.magic_damage(ctx, row)
   if ctx.victimIsNpc then return false end                    -- silent, free: an NPC is no victim
   if ctx.castAtNothing then return false end                  -- silent, free, whatever the mana: nothing to strike
-  local mana = row.mana or 0
+  local own = row.base or row.coeff                           -- numbers of its own, or only the binding (Bolt)
+  local mana = row.mana or (own and 0 or ctx.spellMana)
   if ctx.mp >= mana and not ctx:canStrike() then return false end   -- a player it may not strike here: free, with its line
+  local amount = own and (row.base or 0) + ctx.will * (row.coeff or 1.0) or ctx.spellAmount   -- read before the spend
   if not ctx:spendMana(mana) then return false end            -- declined (no mana) -> no "You cast X."
-  ctx:damage((row.base or 0) + ctx.will * (row.coeff or 1.0))
+  ctx:damage(amount)
   return true
 end
 
@@ -712,8 +724,11 @@ function verbs.mana_steal(ctx, row)
   if ctx.targetIsSelf then ctx:say("It doesn't work."); return false end
   if ctx.targetIsDead then ctx:say("That cannot save them now."); return false end
   if not ctx.targetInGroup then ctx:say("They must be in your group."); return false end
-  ctx:setMana(ctx.mp + ctx.targetMana)     -- setMana clamps to the caster's max
-  ctx:setTargetMana(0)
+  -- One step inside the target's own monitor takes all they hold and sets them to 0 (Session.ReceiveTakeAllMana);
+  -- the caster gets what it took. A read here and a set to 0 after it wiped a regen beat that landed between the
+  -- two, and credited the caster with mana the target lost there (#345, follow-up 4).
+  local taken = ctx:takeTargetMana()
+  ctx:setMana(ctx.mp + taken)              -- setMana clamps to the caster's max
   ctx:tellTarget()
   ctx:fx(6, 22)
   return true
@@ -999,7 +1014,10 @@ function verbs.approach(ctx, row)
   if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
   if not ctx:pcTargetNamed(ctx.answer) then return travel_fizzle(ctx) end
   if ctx.targetIsSelf then return travel_fizzle(ctx) end
-  local there = ctx.targetMap                                      -- where the caster would land
+  -- Where the caster would land: the person's map, its size and their tile, read once and together inside their
+  -- monitor, and kept for the move. Every check below is about this map, and approachTarget moves the caster to this
+  -- place, not to wherever the person stands by then (Session.LuaReadApproachPlace; #345, follow-up 2).
+  local there = ctx:readTargetPlace()
   if not ctx:mapCanSummon(there) then return travel_fizzle(ctx) end  -- the person's area (RTK target.canSummon)
   if ctx:mapIndoor(there) then return travel_fizzle(ctx) end
   if not ctx:mapAdmits(there, "caster") then return travel_fizzle(ctx) end

@@ -122,7 +122,10 @@ public class SpawnRowGuardTests
 
             var ours = lines.Where(e => e.Line.Contains($"creature id {broken.Id}")).ToList();
             var stack = Assert.Single(ours);
-            Assert.Contains($"world tick phase (1.1) refills: a spawn group member threw — 'test_row_broken' (creature id {broken.Id}) on map {GroupMap}", stack.Line);
+            // The whole sentence, past the map: a group member's tick line names its map alone, never the room-boss
+            // suffix of a boss filed under its rooms' maps (the tick-side twin of #367 review's F1).
+            string memberStack = $"world tick phase (1.1) refills: a spawn group member threw — 'test_row_broken' (creature id {broken.Id}) on map {GroupMap} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)";
+            Assert.True(stack.Line.Contains(memberStack), $"the beat's line should carry \"{memberStack}\"; it reads: {stack.Line.Split('\n')[0]}");
             Assert.Contains(nameof(ArgumentOutOfRangeException), stack.Line);
             Assert.Contains("\n      ", stack.Line);   // Log.Detail's continuation: the stack is on it
             Assert.Equal(LogLevel.Error, stack.Level);
@@ -177,6 +180,8 @@ public class SpawnRowGuardTests
             Assert.All(ours, e => Assert.False(e.Probe, $"written with World._lock held: {e.Line}"));
 
             var stack = Assert.Single(ours, e => e.Line.Contains("a spawn point threw"));
+            string pointStack = $"{row} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)";   // an ordinary point's line names its map alone
+            Assert.True(stack.Line.Contains(pointStack), $"the stack line should carry \"{pointStack}\"; it reads: {stack.Line.Split('\n')[0]}");
             Assert.Contains(nameof(ArgumentNullException), stack.Line);
             Assert.Contains("\n      ", stack.Line);
 

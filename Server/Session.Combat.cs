@@ -301,12 +301,42 @@ public sealed partial class Session
     // Fired on the SWING, not on a landed hit, matching RTK — on_swing runs before any damage roll, so a
     // miss can still proc. Every equipped piece is checked, not just the weapon: chaos_armor procs too.
     // The cast goes through the normal ApplyCast dispatcher so a proc behaves exactly like casting the
-    // spell by hand (mana, PK gating, cooldowns, fx) rather than a parallel code path that could drift.
+    // spell by hand (mana, cooldowns, fx) rather than a parallel code path that could drift.
     //
-    // RTK's blood/charm handlers branch on player.backstab/player.flank and proc on every target returned by
-    // getTargetsBackstab/getTargetsFlank instead of the faced one. Our engine resolves a swing against ONE
-    // tile — SwingTile, which flank redirects to a side rather than multiplying damage — so that branch
-    // collapses onto the same single target this loop already uses. Nothing to port.
+    // NO PROC AT A PLAYER YOU MAY NOT ATTACK (Caleb, 2026-10-22, decision sheet item 2: "no proc there, as RTK").
+    // RTK asks canPK in the on_swing itself, after the roll and before the cast — `math.random(1, 100) <= 4 and
+    // player:canPK(pc)` (Items/Weapons/poet_whip.lua:14; the same line in blood.lua, frost_sabre.lua,
+    // corrupted_blade.lua, cursed_blade.lua, tainted_blade.lua, forsaken_blade.lua, forsaken_staff.lua,
+    // flamefang.lua, ilbon_knife.lua and giasomo_stick.lua) — so a proc that rolls at such a player is never
+    // cast: no line, no mana, no pose, no aether. Our canPK is Content.IsPvpMap(_char.Map), the very test the
+    // spell side makes of a player target (LuaCanStrike, LuaCanCurseTarget, the venom branch, HoldRefused,
+    // HitPlayerWithSpell) and the melee PC branch above makes. Asking it only inside the spell let the spell's
+    // own answer through about one swing in 25: "You can't attack that target." from the Poet whip, the Blood
+    // weapons, Flamefang and the curse blades, "It doesn't work." from the Forsaken staff, and from every gated
+    // row the spell's mana line ("Not enough mana to cast Freeze.", "You do not have enough mana." and the like)
+    // whenever the wielder was short of the spell's mana, which each spell checks before it refuses a player.
+    // The roll stays first, so the chances are unchanged. A creature in front is procced as before, even one
+    // sharing its tile with a player: the creature is looked for first, and then no player is.
+    //   * The Giasomo stick is gated the same way although its bird lands on YOU: RTK summons it for a faced
+    //     player only when canPK passes (Items/Weapons/giasomo_stick.lua:13-17).
+    //   * chaos_armor is the one row RTK casts with no gate at all — `calculating_blow_rogue.cast(player)` on
+    //     every swing, nothing faced or asked (Items/Equipment/GM/chaos_armor.lua:67-70) — so it stays ungated.
+    //   * The Charm weapons have no canPK line to port: RTK never procs them at a player at all
+    //     (Items/Weapons/charm.lua looks for BL_MOB only), and the gate agrees with that off a PvP map. At a town
+    //     player their Endear used to refuse silently with enough mana, and with too little to say "You do not
+    //     have enough mana." and "Your will is too weak."; now it is not cast. On a PvP map it still reaches
+    //     Endear, as before.
+    //   * The builtins answer a faced player themselves: ProcShotgun's own PvP test, and ProcParalyze never
+    //     touches one.
+    //
+    // NOT PORTED: RTK's Backstab/Flank branch. blood.lua (all but sa_san_blood) and the Frost sabre, Poet whip,
+    // Corrupted, Cursed, Tainted and Forsaken blade, Forsaken staff and Flamefang scripts branch on
+    // player.backstab/player.flank, and in that branch proc on every target getTargetsBackstab/getTargetsFlank
+    // return (Scripts/scripts.lua:514-670: the front and back cells for Backstab, two flanking cells for Flank)
+    // instead of the faced one. charm.lua, ilbon_knife.lua and giasomo_stick.lua have no such branch. Our melee
+    // swing does reach the rear and side tiles (SwingTargets), but this loop only ever looks at the faced tile,
+    // so a creature behind or beside a stance-holder is never procced here. The gate agrees with that branch all
+    // the same: both getters admit a player only when canPK passes (scripts.lua:576, :584, :655, :663).
     //
     // A `spell` value of "builtin:<name>" runs an inline handler instead of casting: RTK writes a couple of
     // these procs as raw Lua in the item file with no spell behind them (shot_gun's cone, viper_stick's
@@ -316,6 +346,7 @@ public sealed partial class Session
         if (_char.Equipment.Count == 0) return;
         var (fx2, fy2) = FrontTile();
         uint? facingId = null;
+        Session? facingPc = null;   // the faced player, when no creature stands on that tile first
 
         foreach (var worn in _char.Equipment.ToArray())
         {
@@ -345,9 +376,22 @@ public sealed partial class Session
 
             if (proc.NeedsFacing)
             {
-                facingId ??= _world.MobAt(_char.Map, fx2, fy2)?.Id
-                             ?? _world.PeerAt(_char.Map, fx2, fy2)?._char.Id;
+                if (facingId is null)
+                {
+                    var facingMob = _world.MobAt(_char.Map, fx2, fy2);
+                    facingPc = facingMob is null ? _world.PeerAt(_char.Map, fx2, fy2) : null;
+                    facingId = facingMob?.Id ?? facingPc?._char.Id;
+                }
                 if (facingId is null) continue;   // nothing in front — RTK's getTargetFacing returns nil
+
+                // RTK's canPK, asked before the cast (see the header). chaos_armor is named because its RTK
+                // on_swing has no gate (chaos_armor.lua:67-70) while its table row reads like every gated one.
+                if (facingPc is not null && !Content.IsPvpMap(_char.Map)
+                    && !def.Key.Equals("chaos_armor", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log.Info($"   -> weapon proc: {def.Key} ({proc.ChancePct}%) not cast: player {facingPc._char.Id} can't be attacked here (map {_char.Map} is not PvP)");
+                    continue;
+                }
             }
             uint? target = proc.SelfCast ? _char.Id : facingId;
 
@@ -455,8 +499,16 @@ public sealed partial class Session
     // was); it states the intent so that turning on CheckForOverflowUnderflow, or "hardening" this with a
     // clamp or a range check, cannot silently kill Respect and Triumph while every other emote still works.
     // Tests/ActionAndDeleteWireTests.cs pins 0xFE/0xFF to 9/10 for exactly that reason.
+    //
+    // ONLY AN ORDINARY PLAYER EMOTES. RTK plays the emote only in state 0 (clif_parseemotion: `if
+    // (sd->status.state == 0)`), and its states are PC_ALIVE, PC_DIE, PC_INVIS, PC_MOUNTED, PC_DISGUISE (map.h).
+    // Ours keeps those as separate flags, so state 0 is: not dead, not invisible, not mounted and not
+    // transformed (a morph such as Feral). Anything else is dropped in silence: no action to self or peers, no
+    // line, and invisibility is NOT broken (unlike a pickup). The action budget is still spent at dispatch, as
+    // RTK spends sd->time before it calls the handler. Tests/EmotePickupStateTests.cs pins all four.
     private void HandleEmotion(byte[] dec)
     {
+        if (IsDead || Stealthed || _char.Mounted || IsMorphed) return;
         if (dec.Length < 1) return;
         // Wheel index 0 is Laughter (11); indices 0xFE/0xFF are m/n and wrap to Respect (9) / Triumph (10).
         byte action = unchecked((byte)(dec[0] + (byte)ActionType.Laughter));

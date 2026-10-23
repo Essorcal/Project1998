@@ -70,8 +70,14 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     // The same class through ReviveInPlace (PR #358 review, R5): @rez <name> and a direct call on a departed ghost.
     // Content-free, claimed by no other class: ReviveInPlace does not move anyone, so no real map is needed.
     private const ushort RezHere = 61359, RezThere = 61360, RezGoneMap = 61361;
+    // Approach's one read (#345's follow-up 2): content-free, claimed by no other class, + 2 for the second rank order
+    // (61364/61365 and 61368/61369). The target's door leads to a REAL map Approach refuses: IronHeart's Home (36,
+    // indoors) or Tiger's Steps (219, MapCanSummon 0), the maps ApproachSummonTests' refusals use, here on this class's
+    // own World.
+    private const ushort ApWaitHere = 61362, ApWaitThere = 61363, ApReadHere = 61366, ApReadThere = 61367;
+    private const ushort IndoorMap = 36, NoSummonMap = 219;
 
-    private const int SummonSlot = 1;
+    private const int ApproachSlot = 0, SummonSlot = 1;
     private const uint StartMp = 100;
     private const uint PoetMp = 10_000;
     private const string ResurrectKey = "resurrect_poet";
@@ -90,6 +96,8 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         typeof(Session).GetMethod("TryStartTrade", BindingFlags.NonPublic | BindingFlags.Instance)!;
     private static readonly MethodInfo EndTrade =
         typeof(Session).GetMethod("EndTrade", BindingFlags.NonPublic | BindingFlags.Static)!;
+    private static readonly MethodInfo EnterMapMethod =
+        typeof(Session).GetMethod("EnterMap", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     private readonly SessionFixture _fx;
 
@@ -557,6 +565,127 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
         Assert.True(SpellCastSupport.AetherLeft(c, ResurrectKey) > 0, "the Resurrect's cooldown was not armed");
         Assert.Contains("You cast Resurrect.", MiniTexts(co));
     }
+
+    // ---- #345's follow-up 2: Approach reads the target's place once ----------------------------------
+
+    /// <summary>
+    /// <b>An Approach waiting on a target who steps through a door onto a map Approach refuses does not take the
+    /// caster there.</b> The target's own thread is mid-packet, holding its monitor. The cast resolves them by name
+    /// and waits on that monitor to read where they stand. Meanwhile the target warps (the real <c>EnterMap</c>, on
+    /// their own thread) onto IronHeart's Home, which is indoors, and lets go. The cast reads the place once, after the
+    /// warp, and every check is about it: the indoor check refuses, "Fizzle.", nothing spent, nobody moves. Both
+    /// <c>StateRank</c> orders, so both of <c>EnterState</c>'s branches are the ones that wait.
+    /// <para>Red on 2874006 in Debug and Release: the checks read the target's map bare, before the wait, and passed
+    /// it; the move then read the place again, after the warp, and took the caster indoors for 30 mana and "You cast
+    /// Approach.", onto a map no check had looked at.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnApproachWaitingOnATargetWhoWarpsOntoARefusedMapDoesNotTakeTheCasterThere(bool casterRanksFirst)
+    {
+        Assert.True(Content.TryMap(IndoorMap, out var indoor) && Content.IsIndoor(IndoorMap) && Content.CanSummon(IndoorMap),
+                    $"map {IndoorMap} is no longer an indoor map Approach's area check allows");
+        int k = casterRanksFirst ? 0 : 2;
+        ushort here = (ushort)(ApWaitHere + k), there = (ushort)(ApWaitThere + k);
+        Session c, t;
+        RecordingOutbound co;
+        Character cc, tc;
+        if (casterRanksFirst)
+        {
+            (c, co, cc) = Make($"ApWaitC{k}", here, 5, 5, caster: true);
+            (t, _, tc) = Make($"ApWaitT{k}", there, 10, 10);
+        }
+        else
+        {
+            (t, _, tc) = Make($"ApWaitT{k}", there, 10, 10);
+            (c, co, cc) = Make($"ApWaitC{k}", here, 5, 5, caster: true);
+        }
+        Assert.Equal(casterRanksFirst, c.StateRank < t.StateRank);
+        Group(c, t);
+        co.Clear();
+
+        using var tHeld = new ManualResetEventSlim();
+        using var go = new ManualResetEventSlim();
+        var own = Run("target", () => t.WithState(() =>
+        {
+            tHeld.Set();
+            go.Wait();
+            Warp(t, indoor);   // the door, on the target's own thread, inside the monitor the cast waits for
+        }));
+        Assert.True(tHeld.Wait(5000), "the target's thread never took its monitor");
+
+        var cast = Run("caster", () => Cast(c, ApproachSlot, tc.Name));
+        Assert.True(Stable(() => Parked(cast) && Resolved(c, t) && !MonitorFree(t)),
+                    "the Approach never parked on the target's monitor");
+
+        go.Set();
+        Assert.True(cast.Join(5000) && own.Join(5000), "deadlock: the Approach or the warp never finished");
+
+        Assert.Equal(IndoorMap, tc.Map);   // the door took the target indoors
+        Assert.Equal((here, (ushort)5, (ushort)5, StartMp, "Fizzle."),
+                     (cc.Map, cc.X, cc.Y, cc.Mp, string.Join("|", MiniTexts(co))));
+    }
+
+    /// <summary>
+    /// <b>An Approach goes to the place it read, not to where the target has gone since.</b> The seam
+    /// (<see cref="Session.ApproachMoveProbeForTest"/>) runs after every check, the cost and the animation, just before
+    /// the move, and warps the target onto Tiger's Steps (<c>MapCanSummon</c> 0: Approach refuses it), standing in for
+    /// a target who steps through a door after the spell read where they stood. The caster lands beside the tile the
+    /// target stood on when read (north first, the <c>@approach</c> move), on the map the checks passed, and the cast is
+    /// an ordinary Approach: "You cast Approach.", 30 mana. Both <c>StateRank</c> orders (the seam's warp enters the
+    /// target's monitor from the caster's thread, by rank, then <c>World._lock</c>: Summon's sequence).
+    /// <para>Red on 2874006 with the seam added (Debug and Release): the move read the target's place again, after the
+    /// warp, and took the caster onto Tiger's Steps, a map no check had looked at.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AnApproachGoesToThePlaceItReadNotWhereTheTargetWentSince(bool casterRanksFirst)
+    {
+        Assert.True(Content.TryMap(NoSummonMap, out var steps) && !Content.CanSummon(NoSummonMap),
+                    $"map {NoSummonMap} is no longer a map Approach's area check refuses");
+        int k = casterRanksFirst ? 0 : 2;
+        ushort here = (ushort)(ApReadHere + k), there = (ushort)(ApReadThere + k);
+        Session c, t;
+        RecordingOutbound co;
+        Character cc, tc;
+        if (casterRanksFirst)
+        {
+            (c, co, cc) = Make($"ApReadC{k}", here, 5, 5, caster: true);
+            (t, _, tc) = Make($"ApReadT{k}", there, 10, 10);
+        }
+        else
+        {
+            (t, _, tc) = Make($"ApReadT{k}", there, 10, 10);
+            (c, co, cc) = Make($"ApReadC{k}", here, 5, 5, caster: true);
+        }
+        Assert.Equal(casterRanksFirst, c.StateRank < t.StateRank);
+        Group(c, t);
+        co.Clear();
+
+        int warped = 0;
+        Session.ApproachMoveProbeForTest = target =>
+        {
+            if (!ReferenceEquals(target, t)) return;
+            warped++;
+            Warp(t, steps);
+        };
+        try { Cast(c, ApproachSlot, tc.Name); }
+        finally { Session.ApproachMoveProbeForTest = null; }
+
+        Assert.Equal((1, NoSummonMap), (warped, tc.Map));   // the door took the target away before the move
+        Assert.Equal((there, (ushort)10, (ushort)9, StartMp - 30, "You cast Approach."),
+                     (cc.Map, cc.X, cc.Y, cc.Mp, string.Join("|", MiniTexts(co))));
+    }
+
+    /// <summary>A warp the way a door makes it: <c>Session.EnterMap</c> inside <paramref name="s"/>'s monitor, to the
+    /// middle of <paramref name="to"/>.</summary>
+    private static void Warp(Session s, MapInfo to) =>
+        s.WithState(() => EnterMapMethod.Invoke(s, new object[]
+        {
+            to.Id, to.Xs, to.Ys, (ushort)(to.Xs / 2), (ushort)(to.Ys / 2), to.Name, ArrivalPolicy.Clamp,
+        }));
 
     // ---- fixture -------------------------------------------------------------------------------------
 

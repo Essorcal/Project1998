@@ -586,39 +586,61 @@ public sealed class BarrierSpellTests
         }
     }
 
-    // ===== the 5-mana fallback =======================================================================
+    // ===== the 5-mana fallback, and Dooms Fire's gate ================================================
 
-    /// <summary>Barrier's 300 comes from its own row; the fallback that charges 5 for a row saying 0 is unchanged.
-    /// Invisible (a 0 row) still takes exactly 5. Dooms Fire (a 0 row, then the whole pool) casts on exactly 5 and
-    /// is refused on 4. (This fact used the Inferno ladder until its rows took RTK's 600-mana gate, decision sheet
-    /// item 2 of 2026-10-21; <see cref="InfernoLadderSpellTests"/> pins that gate.)</summary>
+    /// <summary>Barrier's 300 comes from its own row; the fallback that charges 5 for a row saying 0 is unchanged:
+    /// Invisible (a 0 row) still takes exactly 5. This fact's second spell was a 0 row too, the Inferno ladder and
+    /// then Dooms Fire, until each took its own gate in its row's mana: the ladder RTK's 600 (decision sheet item 2
+    /// of 2026-10-21; <see cref="InfernoLadderSpellTests"/> pins it), and Dooms Fire the live Nexus Atlas mage
+    /// page's 15,275, the same way.
+    ///
+    /// <para>Dooms Fire: "Mana Cost - 15,275", "Aethers - 65 Seconds", "Takes all mana and does 2.5x mana damage to
+    /// the target at 0 AC" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; Sources.csv
+    /// <c>atlas-mage-spells</c>; Caleb, 2026-10-22, decision sheet item 5). spell_effects.csv has no Sources column,
+    /// so this fact is where the row cites it. The row's 15,275 is the bar: <c>arch_damage</c> refuses below it with
+    /// "You do not have enough mana." before it spends or strikes anything, and <c>ApplyCast</c>'s tail arms nothing
+    /// for a refused cast. From it the cast still takes the whole pool and hits for 2.5 times the pool it was cast
+    /// from: on exactly 15,275 the creature beside the caster loses ceil(15,275 x 2.5) = 38,188 at AC 0, the pool
+    /// ends at 0 and the 65 s aether runs. Red on 2874006, whose row said 0 mana and a 70 s aether: 15,274 cleared
+    /// the 5 that 0 is read as, so it cast, emptied the pool and armed the 70 s wait.</para></summary>
     [Fact]
-    public void InvisibleAndDoomsFireStillCostFive()
+    public void InvisibleStillCostsFiveAndDoomsFireIsRefusedForFreeBelow15275Mana()
     {
+        const uint Gate = 15_275;
         var invisible = Content.SpellByKey("invisible_rogue")!;
         var (rogue, _, rc) = Poet(invisible, FallbackMap, 10, 10);
         var doomsFire = Content.SpellByKey("dooms_fire_mage")!;
-        Assert.Equal(0, Content.FxFor(doomsFire)!.Mana);
-        var (onFive, fiveOut, fc) = Poet(doomsFire, FallbackMap, 20, 10, mp: 5);
-        var (onFour, fourOut, _) = Poet(doomsFire, FallbackMap, 30, 10, mp: 4);
-        var mobFive = Creature(FallbackMap, 21, 10, hp: 10_000_000);
-        var mobFour = Creature(FallbackMap, 31, 10, hp: 10_000_000);
+        var (onGate, gateOut, gc) = Poet(doomsFire, FallbackMap, 20, 10, mp: Gate);
+        var (belowGate, belowOut, bc) = Poet(doomsFire, FallbackMap, 30, 10, mp: Gate - 1);
+        var mobGate = Creature(FallbackMap, 21, 10, hp: 10_000_000);
+        var mobBelow = Creature(FallbackMap, 31, 10, hp: 10_000_000);
         try
         {
             rogue.Receive(SpellCastSupport.CastFrame(0));
-            onFive.Receive(SpellCastSupport.CastFrame(0, mobFive.Id));
-            onFour.Receive(SpellCastSupport.CastFrame(0, mobFour.Id));
+            onGate.Receive(SpellCastSupport.CastFrame(0, mobGate.Id));
+            belowGate.Receive(SpellCastSupport.CastFrame(0, mobBelow.Id));
 
             Assert.Equal(995u, rc.Mp);
-            Assert.Contains("You cast Dooms Fire.", SpellCastSupport.MiniTexts(fiveOut));
-            Assert.Equal(0u, fc.Mp);
-            Assert.Contains("You do not have enough mana.", SpellCastSupport.MiniTexts(fourOut));
+
+            var below = SpellCastSupport.MiniTexts(belowOut);
+            Assert.Contains("You do not have enough mana.", below);
+            Assert.DoesNotContain("You cast Dooms Fire.", below);
+            Assert.Equal(mobBelow.MaxHp, mobBelow.Hp);
+            var (belowPool, belowAether) = (bc.Mp, SpellCastSupport.AetherLeft(belowGate, doomsFire.Key));
+            Assert.True(belowPool == Gate - 1 && belowAether == 0,
+                        $"pool {belowPool} (want {Gate - 1}), aether {belowAether} ms left (want 0)");
+
+            Assert.Contains("You cast Dooms Fire.", SpellCastSupport.MiniTexts(gateOut));
+            Assert.Equal(38_188, mobGate.MaxHp - mobGate.Hp);
+            var (gatePool, gateAether) = (gc.Mp, SpellCastSupport.AetherLeft(onGate, doomsFire.Key));
+            Assert.True(gatePool == 0 && gateAether is > 65_000 - SlackMs and <= 65_000,
+                        $"pool {gatePool} (want 0), aether {gateAether} ms left (want {65_000 - SlackMs} to 65000)");
         }
         finally
         {
-            _fx.World.DespawnMob(FallbackMap, mobFive);
-            _fx.World.DespawnMob(FallbackMap, mobFour);
-            foreach (var s in new[] { rogue, onFive, onFour }) _fx.World.LeaveMap(s, FallbackMap);
+            _fx.World.DespawnMob(FallbackMap, mobGate);
+            _fx.World.DespawnMob(FallbackMap, mobBelow);
+            foreach (var s in new[] { rogue, onGate, belowGate }) _fx.World.LeaveMap(s, FallbackMap);
         }
     }
 

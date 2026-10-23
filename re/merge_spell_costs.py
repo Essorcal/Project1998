@@ -2,13 +2,21 @@
 """Merge the archive-extracted spell level/cost data (re/archive_{warrior,mage,rogue,poet}_spells.md,
 NUMERIC-LEVEL base-spell tables only -- the Il/Ee/Sam/Sa-san alignment-tier and Dog-trainer spells are a
 separate, not-yet-implemented rank-progression system and are deliberately excluded here, not silently
-guessed) against Spells.csv (for key/pathId) and the Lua-extracted baseline (re/spell_requirements_lua.json,
-used as a fallback for any spell with no archive coverage). The 9 within-archive conflicts already
-identified were resolved directly with the user (2026-07-27) and are hardcoded as overrides below, and so
-are the three Lua-fallback levels the era pages correct (LUA_LEVEL_OVERRIDES, 2026-10-21).
+guessed, save the five Sam san rows in LIVE_PAGE_TIER_ROWS) against Spells.csv (for key/pathId) and the
+Lua-extracted baseline (re/spell_requirements_lua.json, used as a fallback for any spell with no archive
+coverage). The 9 within-archive conflicts already identified were resolved directly with the user
+(2026-07-27) and are hardcoded as overrides below, and so are the three Lua-fallback levels the era pages
+correct (LUA_LEVEL_OVERRIDES, 2026-10-21) and the five Sam san learn rows the live Nexus Atlas pages print
+(LIVE_PAGE_TIER_ROWS, 2026-10-22).
+
+Run: python re/merge_spell_costs.py, from any directory (re/_paths.py anchors every path to the repo).
 
 Output: re/spell_costs_final.csv -- one row per Spells.csv key that got a level+cost assignment, columns:
 key,pathId,level,gold,item1,amt1,item2,amt2,item3,amt3,item4,amt4,source
+No tool writes game-data/SpellLearnCosts.csv; it follows this output by hand. Its first 573 data rows are this
+output's first 573 in order, with `lua` written rtk-lua and `archive:<class>` written archive-spells-<class>
+(file line 109 differs: a Rogue Soothe where this output has the Poet one). The LIVE_PAGE_TIER_ROWS rows
+are byte for byte at their own keys' lines among its hand-written rows at the end.
 """
 import csv, json, re
 from pathlib import Path
@@ -140,6 +148,28 @@ LUA_LEVEL_OVERRIDES = {
     "augmentation_rogue": 30,
 }
 LUA_LEVEL_OVERRIDE_SOURCE = "tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes"
+
+# ---- Sam san learn rows the live Nexus Atlas pages print (Caleb, 2026-10-22, decision sheet item 6) ------------
+# The one exception to the tier exclusion in the docstring. Siege and Focused Blow are Sam san spells, with no
+# character level, so the ARCHIVE tables below skip them, and Lua has no requirements() for them (RTK has no script
+# for either). Their rows were hand-written at the end of game-data/SpellLearnCosts.csv, with a Sam san weapon
+# and, for Focused Blow, 300,000 coins. The live Atlas pages print otherwise: Siege "Blood, Spike, 600,000 Coins"
+# (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21) and Focused Blow "750,000 coins" with no
+# item (https://www.nexusatlas.com/spells/rogue.php, fetched 2026-10-10). The tutor-board extraction's tier tables
+# print the same (re/archive_warrior_spells.md, "Life's end/Siege"; re/archive_rogue_spells.md, "Focused blade").
+# Siege's three alignment names, which the warrior page lists in Siege's own block, cost what Siege does.
+# "Blood" and "Spike" are the plain weapons, Items.csv blood and spike: both sources give a ranked weapon its rank
+# ("Il san spike", "Ee san blood") and name the plain one bare, as in Hoche's "Spike", which hoche_warrior's row
+# reads as spike. Level 99 is the level the hand rows gave these Sam san spells. The source is written as the
+# game-data/Sources.csv ids, as LUA_LEVEL_OVERRIDE_SOURCE is, so SpellLearnCosts.csv carries these rows byte for byte.
+LIVE_PAGE_TIER_ROWS = [
+    # (key, class, level, cost text as parse_cost reads it, source)
+    ("siege_warrior",         "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
+    ("souls_freedom_warrior", "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
+    ("lifes_end_warrior",     "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
+    ("winter_chill_warrior",  "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
+    ("focused_blow_rogue",    "rogue",   99, "750000 Coins",                   "atlas-rogue-spells|archive-spells-rogue"),
+]
 
 # ---- Archive tables (numeric-level base spells only; Il/Ee/Sam/Sa-san + Dog-trainer spells excluded --
 # see script docstring) -- re-encoded from re/archive_*_spells.md's "no conflict" rows + the overrides above.
@@ -370,6 +400,26 @@ def main():
         rows.append(row)
         lua_fallback_count += 1
 
+    # The live-page Sam san rows (LIVE_PAGE_TIER_ROWS). They are copied by hand, so a key that is not that class's
+    # Spells.csv row, a key a row above already covers, or a cost part that does not resolve is an error, not a
+    # skipped row or a dropped item.
+    covered_keys = {r["key"] for r in rows}
+    for key, cls, level, cost_text, source in LIVE_PAGE_TIER_ROWS:
+        pth = CLASS_PATHID[cls]
+        if key not in spells_by_key or spells_by_key[key][1] != pth:
+            raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key} is not a {cls} spell in Spells.csv")
+        if key in covered_keys:
+            raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key} already has a row above")
+        gold, items, unresolved = parse_cost(cost_text)
+        if unresolved:
+            raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key}: unresolved cost parts {unresolved}")
+        row = {"key": key, "pathId": pth, "level": level, "gold": gold, "source": source}
+        for i in range(4):
+            row[f"item{i+1}"] = items[i][0] if i < len(items) else ""
+            row[f"amt{i+1}"] = items[i][1] if i < len(items) else ""
+        rows.append(row)
+    live_page_count = len(LIVE_PAGE_TIER_ROWS)
+
     out_path = ROOT / "re/spell_costs_final.csv"
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["key", "pathId", "level", "gold",
@@ -380,8 +430,9 @@ def main():
             w.writerow(r)
 
     print(f"{len(rows)} total rows written -> {out_path}")
-    print(f"  archive-sourced: {len(rows) - lua_fallback_count}")
+    print(f"  archive-sourced: {len(rows) - lua_fallback_count - live_page_count}")
     print(f"  lua-fallback:    {lua_fallback_count}")
+    print(f"  live-page tier:  {live_page_count}")
     print(f"  tier spells (Il/Ee/Sam-san) excluded, not implemented: {len(TIER_SPELLS_NOT_IMPLEMENTED)} names")
     if unmatched_report:
         print(f"\n{len(unmatched_report)} archive entries could NOT be matched to a Spells.csv row:")
