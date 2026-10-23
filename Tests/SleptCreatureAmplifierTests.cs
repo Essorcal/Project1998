@@ -22,8 +22,8 @@ namespace Tests;
 /// are real 0x13 frames and casts real 0x0F frames through <c>Session.Receive</c>; the Ambush strike, the area and
 /// sacrifice sites, the overflow splash and the shot gun's proc, which a real cast reaches only through randomness, era
 /// gates or a GM weapon, are called as their verbs and procs call them (the last two, private, by reflection). Every
-/// amplified figure below is red on 2874006, the master this branch starts from; the rows without an amplifier are the
-/// controls that stay green there.</para>
+/// amplified figure below is red on master's damage code (2874006, where this branch starts, and 2ac048e, which it has
+/// merged); the rows without an amplifier are the controls that stay green there.</para>
 ///
 /// <para>Map 62630 is content-free (no Maps.csv row: PvP off, nothing spawns) and no other class uses it.</para>
 /// </summary>
@@ -142,22 +142,25 @@ public sealed class SleptCreatureAmplifierTests
 
     /// <summary>A damage spell at a slept or dozed creature, one real cast. Spark (the Damage archetype,
     /// <c>ctx:magicDamage</c>, <c>Session.LuaMagicDamage</c>) at level 13 is 56.5, the live rabbit reading's 113 at
-    /// AC +100; mage Bolt (<c>verbs.magic_damage</c>, <c>ctx:damage</c>, <c>Session.LuaDamageTarget</c>) at Will 31 is
-    /// 48.5. The one rule floors the whole product; 2874006 floored the armour step and then rounded the amplified
-    /// whole number half to even:
+    /// AC +100; mage Bolt (<c>verbs.magic_damage</c>, <c>ctx:damage</c>, <c>Session.LuaDamageTarget</c>) takes the same
+    /// row since #370, 50 + level/2 for 20 mana, so at level 13 it is 56.5 too, through the other spell site. The one
+    /// rule floors the whole product; master floored the armour step and then rounded the amplified whole number half to
+    /// even:
     /// <list type="bullet">
     /// <item>Spark, AC +100: 113 x 1.5 = 169.5 lands 169 (red 170); 113 x 1.3 = 146.9 lands 146 (red 147).</item>
-    /// <item>Spark, AC +75: 98.875 x 1.5 = 148.3 lands 148 (red 98 x 1.5 = 147); x 1.3 = 128.5 lands 128 (red 98 x 1.3
-    /// = 127.4, 127).</item>
-    /// <item>Bolt, AC +75: 84.875 x 1.5 = 127.3 lands 127 (red 84 x 1.5 = 126); x 1.3 = 110.3 lands 110 (red 109).</item>
-    /// </list></summary>
+    /// <item>Spark and Bolt, AC +75: 98.875 x 1.5 = 148.3 lands 148 (red 98 x 1.5 = 147); x 1.3 = 128.5 lands 128 (red
+    /// 98 x 1.3 = 127.4, 127).</item>
+    /// </list>
+    /// <para>The Bolt rows were at level 50 and Will 31 for 4 mana, Bolt's old 2 + 1.5 x Will (PR #378's review, F3). At
+    /// level 50 #370's Bolt is 75 x 1.75 = 131.25, which the one rule and master's rounding both land as 196 and 170, so
+    /// that level would no longer tell them apart.</para></summary>
     [Theory]
     [InlineData("spark_mage", 13, 3, 100, Slept, 20, 169)]
     [InlineData("spark_mage", 13, 3, 100, Dozed, 20, 146)]
     [InlineData("spark_mage", 13, 3, 75, Slept, 20, 148)]
     [InlineData("spark_mage", 13, 3, 75, Dozed, 20, 128)]
-    [InlineData("bolt_mage", 50, 31, 75, Slept, 4, 127)]
-    [InlineData("bolt_mage", 50, 31, 75, Dozed, 4, 110)]
+    [InlineData("bolt_mage", 13, 3, 75, Slept, 20, 148)]
+    [InlineData("bolt_mage", 13, 3, 75, Dozed, 20, 128)]
     public void ADamageSpellTakesTheCreaturesAmplifierInsideItsOneFloor(
         string key, int level, int will, int ac, double amp, int mana, int expected)
     {
