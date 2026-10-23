@@ -168,11 +168,15 @@ public sealed partial class Session
     /// viewport lock and no Lua gate. So each line to the mentor (the decline, "is already being mentored." and
     /// "accepts your offer") is a send into another player, and goes out inside <c>mentor.WithState</c>, as #29's
     /// rule 2 enters another player's session and as the culmination's line to the protégé does. The mentor's logout
-    /// teardown takes the same monitor, so each line is handed over before that teardown can start, or, if it has
-    /// already started, after it ends. The mentor's monitor is taken by <c>StateRank</c> from inside the protégé's,
-    /// as the proposal's decline takes the proposer's. Where the mentor ranks first, <c>EnterState</c> drops the
-    /// protégé's monitor while it waits and retakes it, and nothing of the protégé's is mid-write then: the bind's
-    /// writes are done before the accept line. The protégé's own line stays under the protégé's monitor.</para></summary>
+    /// teardown runs under the same monitor, so no line is sent while teardown code that holds it runs. The teardown
+    /// does let that monitor go partway, where ending a trade or leaving a party enters a lower-ranked player's
+    /// monitor, and a line can land in such a gap, after the teardown has started (PR #371's review, F1). A line sent
+    /// before the teardown ends reaches the mentor's connection before the close that follows the teardown; one that
+    /// waits for the teardown's end can still be dropped by that close. The mentor's monitor is taken by
+    /// <c>StateRank</c> from inside the protégé's, as the proposal's decline takes the proposer's. Where the mentor
+    /// ranks first, <c>EnterState</c> drops the protégé's monitor while it waits and retakes it, and nothing of the
+    /// protégé's is mid-write then: the bind's writes are done before the accept line. The protégé's own line stays
+    /// under the protégé's monitor.</para></summary>
     internal async Task PromptMentorship(Session mentor)
     {
         string who = mentor.Snapshot().Name;

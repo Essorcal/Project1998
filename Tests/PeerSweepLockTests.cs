@@ -24,11 +24,12 @@ namespace Tests;
 /// item 5c); before, the cast took it.</item>
 /// <item><b>Sends into another player</b> on those paths. #341's sweep left them as they were, with no fact here: a
 /// send writes nothing a monitor guards (the report says why). They have since moved inside the receiver's monitor, as
-/// #29's rule 2 enters another player's session, and because the receiver's logout teardown takes that same monitor: a
-/// line sent inside it is handed over before that teardown can start, or, if it has already started, after it ends.
-/// The facts that pin them are elsewhere: the wedding's and the proposal's lines to the other player in
-/// <see cref="VowHalvesTests"/> (#365, #369), and the mentorship's lines to the mentor in
-/// <see cref="MentorshipLinesTests"/>.</item>
+/// #29's rule 2 enters another player's session, and because the receiver's logout teardown runs under that same
+/// monitor: a line sent inside it is never sent while teardown code that holds the monitor runs. The teardown lets the
+/// monitor go partway, for its trade end and party broadcast, so a line that nothing refuses can land inside the
+/// teardown, still before the close that follows it (PR #371's review, F1). The facts that pin them are elsewhere: the
+/// wedding's and the proposal's lines to the other player in <see cref="VowHalvesTests"/> (#365, #369), and the
+/// mentorship's lines to the mentor in <see cref="MentorshipLinesTests"/>.</item>
 /// <item><b>Reads of another player</b> without their monitor: the slot checks over the target's buff list, the click
 /// profile's legends and gear, the mentor's and the proposer's checks on the other player, the wedding's check of the
 /// fiancé, and where the other player stands for <c>@approach</c> and the Approach spell.</item>

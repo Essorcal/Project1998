@@ -93,9 +93,11 @@ public sealed class Party
     /// <para><b>This ENTERS each member's state monitor</b> — <c>Session.NotifyGroup</c> is wrapped at its own
     /// definition (#29 rule 2), because this runs on the thread of whichever member invited, left, kicked or
     /// disconnected, and rule 2 enters another player's session under that player's monitor. That member's logout
-    /// teardown takes the same monitor, so the line is handed over before that teardown can start, or, if it has
-    /// already started, after it ends. (The <c>_gameInc</c> the send writes is not what the monitor is for: see
-    /// <c>NotifyGroup</c>.) One member at a time, released before
+    /// teardown runs under the same monitor, so the line is never sent while teardown code that holds it runs. The
+    /// teardown lets that monitor go partway (its trade end and party broadcast), and a line can land there; one sent
+    /// before the teardown ends reaches the connection before the close that follows it (PR #371's review, F1). (The
+    /// <c>_gameInc</c> the send writes is not what the monitor is for: see <c>NotifyGroup</c>.) One member at a time,
+    /// released before
     /// the next, so it is a single nested acquisition per member and rule 2 resolves the ascending and the
     /// descending case exactly as it does for <c>WithStatePair</c> and <c>Session.RemoveFromParty</c>. It
     /// takes <see cref="_gate"/> at no point, and must not start: see the leaf-lock paragraph on the

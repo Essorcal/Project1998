@@ -169,7 +169,8 @@ public sealed class PeerMiniTextMonitorTests
         var (mentor, mentorProbe, _) = ProbePlayer("MentorshipMentor");
         var (protege, protegeProbe, _) = ProbePlayer("MentorshipProtege", c => c.Level = Mentorship.CulminateLevel);
         // Already this mentor's protégé. Under their own monitor, because a text slot's write saves the character
-        // and the Debug guard on that chokepoint (Session.State.cs:308-314) rightly refuses a bare write.
+        // and the Debug guard on that chokepoint (AssertStateHeld, Session.State.cs:314-320) rightly refuses a bare
+        // write.
         protege.WithState(() => protege.Quest(Mentorship.Key).SetText(Mentorship.MentorSlot, "MentorshipMentor"));
         mentorProbe.Clear(); protegeProbe.Clear();
 
