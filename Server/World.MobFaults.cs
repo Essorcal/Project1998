@@ -141,8 +141,16 @@ public sealed partial class World
     /// with a newcomer), where no tick phase is running and <paramref name="Phase"/> only names the kind of row:
     /// <see cref="PhRespawns"/> for a point, <see cref="PhRefills"/> for a group member. Those records are
     /// carried in an <see cref="EntryFault"/> and written by <see cref="LogEntryFaults"/>, never by
-    /// <see cref="LogPhaseFaults"/>.</para></summary>
-    internal readonly record struct PhaseFault(int Phase, Exception Error, bool Row = false, ushort Map = 0, MobDef? Def = null);
+    /// <see cref="LogPhaseFaults"/>.</para>
+    ///
+    /// <para><paramref name="RoomMap"/> is set only by the tick's respawn pass, for a boss filed under its rooms'
+    /// maps (#333): the room map a player is on when the pass serves it, the first of the boss's rooms' maps that
+    /// has one. The boss is asked about under its row's map (map 4 for the sixty map-4 bosses), which nobody
+    /// enters, so the log names this map beside it, as a map-entry fault names the map entered
+    /// (<see cref="EntryFault.Entered"/>). It names the fault and nothing else: the fault is still recorded and
+    /// throttled under <paramref name="Map"/>, so a boss whose rooms span three maps writes one stack, not one
+    /// per map a player happens to stand on. Null for every other fault, which is named under <paramref name="Map"/>.</para></summary>
+    internal readonly record struct PhaseFault(int Phase, Exception Error, bool Row = false, ushort Map = 0, MobDef? Def = null, ushort? RoomMap = null);
 
     /// <summary>What the throttle counts as "the same phase fault": the phase and the exception's type, so a
     /// second, unrelated bug in the same phase gets its own stack instead of hiding in the first one's
@@ -184,7 +192,8 @@ public sealed partial class World
     /// <item>one for spawn row faults, with a count per (phase, map, creature, exception type). Several
     /// points of one bad creature can throw in one beat, so these are counted the way
     /// <see cref="LogMobFaults"/> counts creatures: a throw whose stack was written this beat is not in the
-    /// count.</item>
+    /// count. A boss filed under its rooms' maps is counted under its row's map and named under the room map a
+    /// player is on as well (<see cref="PhaseFault.RoomMap"/>).</item>
     /// </list>
     /// </summary>
     private void LogPhaseFaults(List<PhaseFault> faults, long beat)
@@ -202,7 +211,7 @@ public sealed partial class World
             if (_phaseFaultThrottle.Admit(key, beat))
             {
                 Log.Error(f.Row
-                    ? $"world tick phase {phase}: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {key.DefId}) on map {f.Map} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)"
+                    ? $"world tick phase {phase}: {RowKind(f.Phase)} threw — '{f.Def?.Key}' (creature id {key.DefId}) on map {PhaseMapOf(f)} is skipped this beat, the rest of the phase continues (repeats are counted, not re-logged)"
                     : $"world tick phase {phase} threw — the rest of that phase is skipped this beat, the later phases, the mob sweep and the flush continue (repeats are named, not re-logged)",
                     f.Error);
                 continue;
@@ -233,7 +242,7 @@ public sealed partial class World
             var (f, k, n) = rowRepeats[i];
             if (i > 0) sb.Append(", ");
             sb.Append(PhaseNames[k.Phase]).Append(" '").Append(f.Def?.Key).Append("' (creature id ").Append(k.DefId)
-              .Append(") on map ").Append(k.Map).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
+              .Append(") on map ").Append(PhaseMapOf(f)).Append(' ').Append(k.ErrorType.Name).Append(" x").Append(n);
         }
         Log.Error(sb.ToString());
     }
@@ -314,6 +323,16 @@ public sealed partial class World
     /// differ, which is only a boss filed under its rooms' maps (#333, <see cref="EntryFault.Entered"/>). Its row
     /// is on map 4 for the sixty map-4 bosses, a map nobody enters, so naming that alone would send whoever reads
     /// the line to the wrong map.</summary>
-    private static string EntryMapOf(EntryFault e) =>
-        e.Row.Map == e.Entered ? e.Entered.ToString() : $"{e.Entered} (a room boss whose row names map {e.Row.Map})";
+    private static string EntryMapOf(EntryFault e) => MapNamed(e.Row.Map, e.Entered);
+
+    /// <summary>The map a tick row fault is named under: its room map when it has one
+    /// (<see cref="PhaseFault.RoomMap"/>, a room boss), with the row's map beside it; otherwise the row's map, as
+    /// every row fault was named before.</summary>
+    private static string PhaseMapOf(PhaseFault f) => MapNamed(f.Map, f.RoomMap);
+
+    /// <summary>One wording for a boss filed under its rooms' maps, on the entry path and the tick's: the room map
+    /// the log is about, and the row's map as well when the two differ. No room map, or the row's own, is the row's
+    /// map alone: the digits <c>{Map}</c> printed before.</summary>
+    private static string MapNamed(ushort row, ushort? room) =>
+        room is not { } m || m == row ? row.ToString() : $"{m} (a room boss whose row names map {row})";
 }
