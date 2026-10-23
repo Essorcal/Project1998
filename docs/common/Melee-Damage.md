@@ -14,20 +14,22 @@ corroboration and are NOT load-bearing anywhere — see [Sheet staleness](#sheet
 s          = random integer in [minSDam, maxSDam] summed over all equipment
 swing      = (s / 2) * enchant  +  Dam * 2.5  +  mightTerm(Might)  +  classFactor(class, level)
 swing     *= rage * invisible * critical            (5x stealth, 3x crit — unchanged from RTK)
-damage     = max(1, floor(swing * (1 + targetAC / 100) * reach))   reach 0.5 for backstab/flank reach tiles
+damage     = max(1, floor(swing * (1 + targetAC / 100) * reach * amplifier))   reach 0.5 for backstab/flank reach tiles
+                                                     amplifier 1.3 dozed / 1.5 slept target, else 1
 damage    *= 2                                       if attacking from behind (Combat.IsBehindTarget)
 ```
 
 `targetAC` clamps at −95 for a mob target, −80 for a player target (RTK `minimumArmor`).
 
-**One floor, then the rear x2 (#78, 2026-10-21).** Every term is multiplied unrounded and the product is floored
+**One floor, then the rear x2 (#78, 2026-10-21; #363).** Every term is multiplied unrounded and the product is floored
 once and raised to 1 (`Combat.FloorOnce`); a hit from behind then doubles that whole number, as RTK's
-`swingDamage.lua` doubles its floored figure (:147-150). One exception, against a **slept creature**: its sleep
-amplifier is not in that product. `World.TryDamage` applies it afterwards, after the floor and the x2, rounded half to
-even (`Server/World.cs:2473`), so that hit is rounded twice (issue #363). Caleb: "multiply everything, round down once,
-minimum 1",
+`swingDamage.lua` doubles its floored figure (:147-150). Against a **slept or dozed creature** its sleep amplifier (Doze
+1.3, Sleep 1.5) is one more term of that product: the swing hands its figure to `World.TryDamage` unfloored, and
+`TryDamage` multiplies the amplifier in, floors once and then doubles, as RTK multiplies by `target.sleep` (:92) before
+its one floor (:108). Until #363 it was applied after the floor and the x2, rounded half to even, so that hit was
+rounded twice. Caleb: "multiply everything, round down once, minimum 1",
 and "Round down once (minimum 1), then double for a hit from behind. Ordinary hits from behind stay exactly as
-today." The reach scale sits inside the floor. Against a **player**, the swing's figure is handed over unfloored
+today." The reach scale sits inside the floor, and #363 left it there. Against a **player**, the swing's figure is handed over unfloored
 (`Session.PlayerSwingRaw`) with the rear x2 as a flag, and the defender's intake (`Session.TakeDamage`) multiplies in
 the sleep amplifier (Doze 1.3, Sleep 1.5) and the Sanctuary/Cunning deduction before its one floor, then doubles:
 
@@ -524,8 +526,8 @@ same character (military fork S 90-100 gave a window of 113-123, fixing the non-
 `damage = max(1, floor(raw * (1 + ac/100)))` — **one** floor, applied at the end. Never truncate the raw
 swing to int first; double-flooring is disproven (n=178). Any other term — the sleep amplifier, the
 Sanctuary/Cunning deduction, the reach scale — multiplies into the same product before that floor, and the rear x2
-doubles its result (#78; see §1). The exception is a slept creature's amplifier, which `World.TryDamage` applies after
-the floor, rounded half to even (`Server/World.cs:2473`; issue #363).
+doubles its result (#78; see §1). A slept or dozed creature's amplifier is in the same product: `World.TryDamage`
+multiplies it into the caller's unfloored figure before the floor (#363).
 
 Confirmed on 11/11 spell readings spanning AC −22 to +100, and on every melee window since.
 

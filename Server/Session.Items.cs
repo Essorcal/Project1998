@@ -679,7 +679,7 @@ public sealed partial class Session
     // itemdb_minSdam/maxSdam/minLdam/maxLdam over every equip slot, same loop as Armor/Hit/Dam — it isn't
     // weapon-slot-only, though in practice only weapons carry nonzero values). Previously unparsed entirely
     // — Items.csv carries these columns but ItemDef never read them, so player melee had no real
-    // damage-range component at all (see PlayerSwingDamage).
+    // damage-range component at all (see PlayerSwingRaw).
     //
     // BARE-HANDED IS S 1-2, NOT ZERO (live-measured 2026-08-15). A zero range is DETERMINISTIC, and every
     // unarmed sample we own shows exactly two adjacent damage values in a ~50/50 split — a level-65 rogue
@@ -802,7 +802,7 @@ public sealed partial class Session
     // step, not a line, but until the boundaries are pinned to a single level the difference is under
     // half a damage point. lvl30 is the loosest reading; it sits between clean 0.50s either side.
     // NOTE: a `WarriorDamFlipLevel` constant used to live here, for a level at which a warrior's own
-    // Dam line supposedly stepped -2 -> 0. It does not exist — see the long note in PlayerSwingDamage.
+    // Dam line supposedly stepped -2 -> 0. It does not exist — see the long note in PlayerSwingRaw.
     // The bracket kept moving (11, 15, 16, 23) because it was fitting the seam between two different
     // characters, one of which was running with stale stats from a live-server bug. Do not re-add it.
 
@@ -987,7 +987,8 @@ public sealed partial class Session
     //           reaches a side one. A fraction of the whole result, because the source states it as one of
     //           "the front attack damage". Spell-driven attacks (lethal strike etc.) always pass the default 1.0.
     // Armor and reach are ONE product, floored once and raised to 1, and the positional x2 doubles that (#78, in
-    // RTK's order): see PlayerSwingRaw, whose unfloored figure a PvP swing hands to the defender's intake.
+    // RTK's order): see PlayerSwingRaw, whose unfloored figure a PvP swing hands to the defender's intake and a
+    // creature swing to World.TryDamage, which multiplies in the creature's sleep-family amplifier first (#363).
     // The defender stats a player swing needs, abstracted so a MOB and a PLAYER both feed the ONE live-validated
     // formula below (no parallel PvP copy to drift). grace/level feed the hit+crit roll; Ac + ArmorFloor the
     // armor mitigation (mob floor -95 = RTK minimumArmor for a mob; player floor -80 = RTK's human floor, same
@@ -1014,7 +1015,10 @@ public sealed partial class Session
     /// <summary><see cref="PlayerSwingDamage"/>'s figure before its one floor, for the PvP swing: the defender's
     /// intake multiplies its own amplifier and deduction in before it floors (#78; Caleb, 2026-10-21: "multiply
     /// everything, round down once, minimum 1"). It used to receive this already floored, at least 1, and rounded
-    /// it again after each of its own terms. <c>hit</c> is false on a miss, which deals nothing; a
+    /// it again after each of its own terms. A swing at a world creature (<c>ResolveSwing</c>,
+    /// <c>LuaAmbushStrike</c>) hands it to <see cref="World.TryDamage"/> the same way, which multiplies in the
+    /// creature's sleep-family amplifier before its one floor (#363); only a session-local debug dummy still goes
+    /// through <see cref="PlayerSwingDamage"/>. <c>hit</c> is false on a miss, which deals nothing; a
     /// landed hit may net below 1 here and is raised to 1 at the end. <c>rear</c> is the positional x2, which is
     /// NOT in <c>raw</c>: it doubles the floored figure, in RTK's order (Caleb, 2026-10-21: "Round down once
     /// (minimum 1), then double for a hit from behind").</summary>
@@ -1087,8 +1091,9 @@ public sealed partial class Session
         double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? 5 : 1) * (crit ? 3 : 1);
         // Keep the RAW DOUBLE through armor — do NOT truncate here. Flooring twice (once to int, once in the
         // armor step) is disproven live; see the ApplyArmor doc comment for the n=178 evidence. The reach scale
-        // below multiplies into the same figure, and it is floored ONCE, by PlayerSwingDamage or, for a PvP
-        // swing, by the defender's intake (#78); the rear x2 then doubles the floored figure, as RTK's
+        // below multiplies into the same figure, and it is floored ONCE: by World.TryDamage for a world creature,
+        // with its amplifier (#363), by the defender's intake for a PvP swing (#78), or by PlayerSwingDamage for a
+        // session-local dummy; the rear x2 then doubles the floored figure, as RTK's
         // swingDamage.lua does (:147-150). With no reach this is exactly ApplyArmor's product.
         double dmg = swing * Combat.ArmorFactor(target.Ac, target.ArmorFloor);   // -95 mob / -80 player (see SwingTarget)
         // POSITIONAL BONUS — AT MOST x2, EVER. This is deliberately ONE decision feeding ONE multiply
@@ -1112,7 +1117,9 @@ public sealed partial class Session
 
         // Reach penalty — the sources state it as a fraction of "the front attack damage", i.e. of the
         // finished number. Inside the one floor with the rest (#78), which still raises a connected hit to 1: a
-        // connected hit never deals 0 (that is what a MISS is, and it returned above).
+        // connected hit never deals 0 (that is what a MISS is, and it returned above). It stays there, before the
+        // rear x2, as today: #363 put a slept creature's amplifier into the same floor and ruled the reach unchanged
+        // (RTK has no reach multiplier to order it against).
         if (reach != 1.0) dmg *= reach;
 
         if (wasStealthed) { _stealthUntil = 0; RevertStealth(); }   // RTK: landing a hit strips stealth (removeDuras(invis)) — drop the faded look now

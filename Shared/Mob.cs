@@ -335,7 +335,7 @@ public sealed class Mob
     public bool IsBoss;
 
     // Copied from MobDef.Grace at spawn — read as the DEFENDER's grace in a player's crit-chance roll
-    // (Session.PlayerSwingDamage -> Combat.RollCritChance) when they attack this mob. Present in the source
+    // (Session.PlayerSwingRaw -> Combat.RollPlayerSwingRtk) when they attack this mob. Present in the source
     // CSV all along but, like MinDam/MaxDam, never actually parsed until this pass.
     public int Grace;
 

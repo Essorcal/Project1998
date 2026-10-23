@@ -2475,8 +2475,13 @@ public sealed partial class World
     /// removes it from the map, schedules its spawn point to respawn, and rolls floor loot (which this
     /// method drops + broadcasts). The caller still broadcasts the damage number / corpse despawn.
     /// <paramref name="attackerId"/> (0 = none, e.g. a session-local debug hit) marks the mob as targeting
-    /// that player — <see cref="Tick"/> then has it chase and fight back instead of just wandering.</summary>
-    public bool TryDamage(ushort mapId, Mob mob, int dmg, out bool died, uint attackerId = 0)
+    /// that player — <see cref="Tick"/> then has it chase and fight back instead of just wandering.
+    /// <para><paramref name="raw"/> is the hit's figure UNFLOORED: the product of every term the caller owns (the
+    /// creature's armor, a Backstab/Flank reach), not yet rounded. This method multiplies in the creature's own
+    /// sleep-family amplifier, floors the product once (at least 1) and then doubles it when
+    /// <paramref name="fromBehind"/> (#363). A whole-number figure (a trap, a poison tick, a pet's swing, a harvest
+    /// swing) passes as it is.</para></summary>
+    public bool TryDamage(ushort mapId, Mob mob, double raw, out bool died, uint attackerId = 0, bool fromBehind = false)
     {
         died = false;
         List<GroundItem>? drops = null;
@@ -2484,10 +2489,22 @@ public sealed partial class World
         {
             if (!mob.Alive || mob.IsNpc) return false;   // NPCs are indestructible (a click talks to them, not fights)
             // Sleep-family amplifier: "the NEXT attack upon the target" lands harder (Doze 1.3x, Sleep 1.5x).
-            // Consumed here so it applies to exactly one hit, and applied before the HP subtraction so the
-            // over-head bar and any kill it causes both reflect the amplified number.
+            // Consumed here, atomically with the HP change below, so it applies to exactly one hit, and applied
+            // before the HP subtraction so the over-head bar and any kill it causes both reflect the amplified number.
+            //
+            // ONE PRODUCT, ONE FLOOR, THEN THE REAR x2 (#78, #363). The amplifier multiplies the caller's unfloored
+            // figure, the product is floored once and raised to 1 (Combat.FloorOnce), and a hit from behind doubles
+            // the whole number, as RTK's swingDamage.lua orders it: target.sleep at :92, the one floor at :108, the
+            // x2 at :147-150. It used to arrive already floored and doubled, and was multiplied and rounded half to
+            // even here, a second rounding that left the first hit on a slept or dozed creature a point or two off the
+            // one rule (more from behind, where the x2 came before it). With no amplifier armed this is the caller's
+            // own floor and double, so every other hit lands exactly what it did. A Backstab/Flank reach (0.5) stays inside the
+            // floor, before the x2, as today: it is in the caller's figure (Session.PlayerSwingRaw), and #363's
+            // ruling kept it there. Arithmetic only under the lock: no allocation, no I/O, no other lock.
             double amp = mob.TakeDamageAmp(Environment.TickCount64);
-            if (amp > 1.0) dmg = (int)Math.Round(dmg * amp);
+            if (amp > 1.0) raw *= amp;
+            int dmg = Combat.FloorOnce(raw);
+            if (fromBehind) dmg *= 2;
             // A mythic boss does not simply die (RTK mob_ai_mythic.on_attacked). Its lethal-blow ladder, in
             // RTK's order, because the order is the mechanic:
             //

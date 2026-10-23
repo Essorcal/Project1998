@@ -3638,9 +3638,11 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   AC 40–100 *and* 10 self-casts with the caster's own AC varied by swapping gear. So the same armor term
   governs magic and melee alike, and the old `ReceiveSpellDamage` comment claiming *"physical AC does not
   apply to magic (the caster's deflect roll already gates a spell)"* was simply wrong.
-  - Mob side: `Session.SpellNet` at each damage site — `LuaDamageTarget`, `LuaMagicDamage` (the `Damage`
+  - Mob side: the armor term at each damage site — `LuaDamageTarget`, `LuaMagicDamage` (the `Damage`
     archetype), `LuaAreaZap` (4-way) and `LuaTargetAreaZap` (the dog 5-way). It lives at the call sites
-    because `World.TryDamage` deliberately knows nothing about armor.
+    because `World.TryDamage` deliberately knows nothing about armor. Each site hands `TryDamage` the product
+    unfloored (`Session.SpellRaw`), and `TryDamage` floors it once with a slept or dozed creature's amplifier
+    in it (#363); with none armed that is `Session.SpellNet`'s figure, the same floor as before.
   - Player side: centralised **inside `ReceiveSpellDamage`**, so every PvP spell path nets exactly once and
     none can forget. Callers pass RAW; `LuaSacApply` and `ApplyOverflow` used to pre-net and no longer do.
   - Scale of the change: positive AC amplifies, so a rabbit (+100) now takes **double** from a nuke, while a

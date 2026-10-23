@@ -834,12 +834,18 @@ public sealed partial class Session
     // armor; the PLAYER side is centralised one layer down in ReceiveSpellDamage. Exactly once either way.
     //
     // DELIBERATELY NOT APPLIED to: the sacrifice strikes and overflow (they net their own, see LuaSacApply);
-    // ambush and melee (PlayerSwingDamage nets attacker-side); traps and pet mob-on-mob hits (no measurement
+    // ambush and melee (PlayerSwingRaw nets attacker-side); traps and pet mob-on-mob hits (no measurement
     // exists for either, and guessing would move balance with nothing behind it).
     //
     // Takes the amount as a DOUBLE, like Combat.ApplyArmor itself (#200): the Spark family's base is 50 + level/2,
     // and its half is read at this floor. Every caller up to here carries it unrounded.
     private static int SpellNet(double amt, Mob mob) => Combat.ApplyArmor(amt, mob.Ac, floor: -95);
+
+    /// <summary><see cref="SpellNet"/>'s product before its floor: what a mob-side site hands
+    /// <see cref="World.TryDamage"/>, which multiplies in the creature's sleep-family amplifier and floors once
+    /// (#363). With no amplifier armed it lands exactly <see cref="SpellNet"/>, which the sites still use for their
+    /// log line and the archetype's overkill.</summary>
+    private static double SpellRaw(double amt, Mob mob) => amt * Combat.ArmorFactor(mob.Ac, floor: -95);
 
     internal bool LuaDamageTarget(double amt, SpellDef sp, (Mob? mob, Session? pc) victim)
     {
@@ -850,7 +856,7 @@ public sealed partial class Session
         if (amt < 1) amt = 1;
         var fx = Content.FxFor(sp);
         int net = SpellNet(amt, mob!);
-        if (_world.TryDamage(_char.Map, mob!, net, out bool died, _char.Id))
+        if (_world.TryDamage(_char.Map, mob!, SpellRaw(amt, mob!), out bool died, _char.Id))
         {
             if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
             ShowDamageResult(mob!.Id, mob, died);
@@ -859,7 +865,7 @@ public sealed partial class Session
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} (raw {amt}, ac {mob.Ac}, died={died})");
+            Log.Info($"      (lua) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} before any amplifier (raw {amt}, ac {mob.Ac}, died={died})");
         }
         return true;
     }
@@ -900,7 +906,7 @@ public sealed partial class Session
         int preMobHp = (int)mob!.Hp;
         int mx = mob.X, my = mob.Y;
         int net = SpellNet(amt, mob!);
-        if (_world.TryDamage(_char.Map, mob!, net, out bool died, _char.Id))
+        if (_world.TryDamage(_char.Map, mob!, SpellRaw(amt, mob!), out bool died, _char.Id))
         {
             if (fx is not null) BroadcastFx(mob!.Id, Content.EffectAnim(fx, sp.PathId), Content.EffectSound(fx, sp.PathId));
             ShowDamageResult(mob!.Id, mob, died);
@@ -909,7 +915,7 @@ public sealed partial class Session
                 uint reward = (uint)(mob!.Exp > 0 ? mob.Exp : mob.MaxHp);
                 AwardKillExp(reward, _char.Map, mob!.X, mob.Y, mob.Key);   // AwardExp shows "+N experience"; no separate caster flavor
             }
-            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} (raw {amt}, ac {mob.Ac}, died={died})");
+            Log.Info($"      (lua-arch) {sp.Name} -> mob {mob!.Id} '{mob.Name}' for {net} before any amplifier (raw {amt}, ac {mob.Ac}, died={died})");
             // Overkill off the NET figure, which is what the FAQ's own worked example uses.
             TryArchetypeOverflow(sp, net - preMobHp, mx, my);
         }
@@ -977,9 +983,9 @@ public sealed partial class Session
             {
                 if (mob.IsNpc) continue;                       // NPCs are indestructible — don't waste the beat on them
                 if (sp.CanFail && RollDeflect(mob)) continue;  // resisted this one; the others still land
-                // Per-victim armor (SpellNet) — each cell's occupant nets the same raw amount against its OWN
-                // AC, so a 4-way can land four different numbers.
-                if (_world.TryDamage(_char.Map, mob, SpellNet(amt, mob), out bool died, _char.Id))
+                // Per-victim armor (SpellRaw, floored once in TryDamage) — each cell's occupant nets the same raw
+                // amount against its OWN AC, so a 4-way can land four different numbers.
+                if (_world.TryDamage(_char.Map, mob, SpellRaw(amt, mob), out bool died, _char.Id))
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);
@@ -1060,7 +1066,7 @@ public sealed partial class Session
                 if (mob.IsNpc) continue;                       // NPCs are indestructible
                 // Per-victim armor, same as the 4-way — "full damage" on the neighbours means the same RAW
                 // amount, which each still nets against its own AC.
-                if (_world.TryDamage(_char.Map, mob, SpellNet(amt, mob), out bool died, _char.Id))
+                if (_world.TryDamage(_char.Map, mob, SpellRaw(amt, mob), out bool died, _char.Id))
                 {
                     BroadcastFx(mob.Id, anim, snd);
                     ShowDamageResult(mob.Id, mob, died);
@@ -3003,7 +3009,9 @@ public sealed partial class Session
         if (_frontStrikeMob is not { } mob) return 0;
         int netDamage = Combat.ApplyArmor(damage, mob.Ac, floor: -95);
         int overkill = netDamage - (int)mob.Hp;   // overkill uses the mob's PRE-hit HP (RTK), read before TryDamage
-        _world.TryDamage(_char.Map, mob, netDamage, out bool died, _char.Id);
+        // Handed over unfloored: TryDamage floors it once with any sleep-family amplifier on the creature (#363).
+        // netDamage is the same figure with none armed, and stays the overkill's base, as it was.
+        _world.TryDamage(_char.Map, mob, damage * Combat.ArmorFactor(mob.Ac, floor: -95), out bool died, _char.Id);
         BroadcastFx(mob.Id, SacrificeAnim(fam), SacrificeSound(fam));
         ShowDamageResult(mob.Id, mob, died);
         if (died) { uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp); AwardKillExp(reward, _char.Map, mob.X, mob.Y, mob.Key); }
@@ -3059,15 +3067,17 @@ public sealed partial class Session
     internal void LuaAmbushStrike(SpellDef sp)
     {
         if (_frontStrikeMob is not { } mob) return;
-        var (dmg, crit) = PlayerSwingDamage(SwingTarget.Of(mob));
-        if (dmg <= 0) return;   // whiff (Combat.RollPlayerSwingRtk) — silent, no text
-        if (_world.TryDamage(_char.Map, mob, dmg, out bool died, _char.Id))
+        // The swing's figure unfloored, as Session.ResolveSwing hands it over: TryDamage multiplies in the creature's
+        // sleep-family amplifier, floors once and then doubles a hit from behind (#363).
+        var (hit, raw, crit, rear) = PlayerSwingRaw(SwingTarget.Of(mob));
+        if (!hit) return;   // whiff (Combat.RollPlayerSwingRtk) — silent, no text
+        if (_world.TryDamage(_char.Map, mob, raw, out bool died, _char.Id, fromBehind: rear))
         {
             var weapon = _char.Equipment.FirstOrDefault(e => e.Slot == 1);
             if (weapon is not null) DeductDura(weapon);
             ShowDamageResult(mob.Id, mob, died, crit ? (byte)0xFF : HitCritByte);
             PlayHitSfx(mob.Id);   // physical strike — same on-connect impact sfx as a plain swing
-            Log.Info($"      {sp.Name}(lua) -> leapt behind '{mob.Name}' and struck for {dmg}{(crit ? " (CRIT)" : "")}");
+            Log.Info($"      {sp.Name}(lua) -> leapt behind '{mob.Name}' and struck for {raw:0.###} before its floor{(rear ? " (from behind x2)" : "")}{(crit ? " (CRIT)" : "")}");
             if (died)
             {
                 uint reward = (uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp);
@@ -3310,7 +3320,7 @@ public sealed partial class Session
     // the swing that follows (tswolf 8/2001, era-matched to 4.95: "Invisible increases attack by 5 times";
     // RTK's Lua says 9x but that's a later rebalance and RTK isn't authoritative), meant as a one-shot
     // sneak-attack burst — landing that hit strips the stealth immediately
-    // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingDamage clears _stealthUntil
+    // (RTK `block:removeDuras(invis)` after a nonzero hit), so Session.PlayerSwingRaw clears _stealthUntil
     // itself once it applies the multiplier. ONLY the damage multiplier is ported here — real RTK's
     // PC_INVIS also hides the player's sprite from other clients (clif.c), which isn't touched by this pass.
     private long _stealthUntil;
@@ -3337,12 +3347,12 @@ public sealed partial class Session
     }
 
     /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
-    /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingDamage) and grabbing floor loot
+    /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingRaw) and grabbing floor loot
     /// (HandlePickup). No-op if not stealthed.</summary>
     public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
 
     // Enchant tier (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua multiplies
-    // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingDamage). Baseline
+    // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingRaw). Baseline
     // is 1 (not 0), same as EffRage.
     //
     // NOT A TIMER — IT IS BOUND TO THE WEAPON. The warrior tutor spell list is unanimous across all five
@@ -3530,8 +3540,8 @@ public sealed partial class Session
         int share = (int)Math.Ceiling((double)total / count);
         foreach (var mob in mobs)
         {
-            int net = Combat.ApplyArmor(share, mob.Ac, floor: -95);
-            _world.TryDamage(_char.Map, mob, net, out bool died, _char.Id);
+            // Unfloored: TryDamage floors it once with any sleep-family amplifier on the creature (#363).
+            _world.TryDamage(_char.Map, mob, share * Combat.ArmorFactor(mob.Ac, floor: -95), out bool died, _char.Id);
             BroadcastFx(mob.Id, ovAnim, ovSnd);
             ShowDamageResult(mob.Id, mob, died);
             // "Do enemies killed by overflow damage yield experience? Yes, they do, even when not previously
