@@ -3894,10 +3894,12 @@ public sealed partial class Session
         // free meanwhile: she could break it off at the Chapel, paying for it and ending both halves, and his
         // "I do" then married them anyway. Now both halves must still name each other and neither may hold a
         // marriage. Otherwise nothing is written, and each reads the Chapel's "has already ended." line naming
-        // the other, sent here inside both monitors (a send numbers the packet with that player's own counter,
-        // which their monitor guards), and the Chapel says nothing more. The read must be inside the section:
-        // made before it, it could pass while a break that holds the bride's monitor has not yet ended her
-        // half, and this thread would then wait for that monitor and marry what the break had ended.
+        // the other, sent here inside both monitors, and the Chapel says nothing more. Inside both, because #29's
+        // rule 2 enters another player's session under that player's monitor, and each player's logout teardown
+        // takes their monitor: each line is handed over before that teardown can start (a teardown that started
+        // first is caught by the going-away check below, which runs before this one). The read must be inside the
+        // section: made before it, it could pass while a break that holds the bride's monitor has not yet ended
+        // her half, and this thread would then wait for that monitor and marry what the break had ended.
         //
         // Before that, the section refuses a wedding if either of the two is going away (Caleb, 2026-10-22,
         // decision 17; PR #365's review, O1). The bride can log out while the question waits, and log back in.
@@ -3954,8 +3956,17 @@ public sealed partial class Session
     /// <summary>Going away, by the Chapel's ends' rule (<see cref="EndEngagement"/>): the teardown's latch, read under
     /// the caller's section's monitor, or the connection's close, set once and read with Volatile as everywhere else.
     /// The wedding (<see cref="RunMarriageCeremony"/>) and the proposal's "yes" (<see cref="PromptProposal"/>) read it
-    /// inside their pair's section.</summary>
-    private static bool GoingAway(Session s) => s._leaving || Volatile.Read(ref s._closed) != 0;
+    /// inside their pair's section.
+    /// <para>Debug builds assert that the caller holds <paramref name="s"/>'s monitor (PR #368's review, N1). A read
+    /// moved out to just before its section still passed every test, because nothing holds a monitor between the two;
+    /// this turns that move red. A Release build compiles the assert out.</para></summary>
+    private static bool GoingAway(Session s)
+    {
+        System.Diagnostics.Debug.Assert(s.StateHeld,
+            "GoingAway read outside that session's monitor: it belongs inside the caller's pair section, so that a " +
+            "logout teardown cannot set _leaving between the read and the writes it decides.");
+        return s._leaving || Volatile.Read(ref s._closed) != 0;
+    }
 
     /// <summary>Which <c>Inns.csv</c> group this character returns to (RTK <c>Player.returnFunc</c>, which
     /// reads <c>registry["home"]</c> before falling through to <c>returnToInn</c>'s country switch).

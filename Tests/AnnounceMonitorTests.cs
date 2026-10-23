@@ -21,7 +21,8 @@ namespace Tests;
 /// <para><b>What the monitor is for here.</b> #29 rule 2 (<c>Server/Session.State.cs:25-33</c>) is a blanket
 /// rule: entering another session's state happens under that session's monitor. It is not a torn-byte repair —
 /// the <c>_gameInc</c> these sends write is read once and passed BY VALUE into both the encrypted body and the
-/// frame header, so a lost update can only repeat a nonce (harmless, <c>Server/Session.WorldApi.cs:314-315</c>).
+/// frame header, so a lost update can only repeat a nonce (harmless: the note above <c>Session.Send</c> in
+/// <c>Server/Session.WorldApi.cs</c>).
 /// The accesses that were genuinely unguarded are the foreign READS on the same path: for the whisper, the
 /// target's name (twice) and their ignore list; for the ban's kick, the target's name inside <c>Disconnect</c>'s
 /// log line and the character graph <c>FlushNow</c> serialises. The two announcements carry no foreign read

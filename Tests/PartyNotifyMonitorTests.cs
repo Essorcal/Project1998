@@ -22,7 +22,8 @@ namespace Tests;
 /// It is NOT a torn-byte repair: <c>NotifyGroup</c> is <c>SendMiniText</c>, which writes that member's
 /// <c>_gameInc</c> (<c>Session.cs</c>), but the increment is a byte read once and passed BY VALUE both into
 /// the encrypted body and into the frame header, so each frame decrypts with the increment it declares and a
-/// lost update can only repeat a nonce — recorded as harmless at <c>Session.WorldApi.cs:314-315</c>, and
+/// lost update can only repeat a nonce — recorded as harmless in the note above <c>Session.Send</c>
+/// (<c>Session.WorldApi.cs</c>), and
 /// visible in <see cref="MonitorProbe"/> below, which decrypts with <c>pkt.Increment</c>. The accesses that
 /// were genuinely unguarded are the foreign READS this slice closes with the sends: <c>p._char.Name</c> and
 /// <c>p.IsIgnoring(...)</c> in <c>DoGroupChat</c>, and the invite's <c>target.IsDead</c> below.</para>

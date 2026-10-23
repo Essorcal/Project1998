@@ -22,8 +22,8 @@ namespace Tests;
 /// entering another session's state happens under that session's monitor. It is NOT a torn-byte repair.
 /// <c>SendMiniText</c>/<c>SendMessage</c> write the recipient's <c>_gameInc</c>, but that byte is read once
 /// and passed BY VALUE both into the encrypted body and into the frame header, so every frame decrypts with
-/// the increment it declares and a lost update can only repeat a nonce — recorded as harmless at
-/// <c>Server/Session.WorldApi.cs:314-315</c>, and visible in <see cref="MonitorProbe"/> below, which decrypts
+/// the increment it declares and a lost update can only repeat a nonce — recorded as harmless in the note above
+/// <c>Session.Send</c> (<c>Server/Session.WorldApi.cs</c>), and visible in <see cref="MonitorProbe"/> below, which decrypts
 /// with <c>pkt.Increment</c>. The accesses that were genuinely unguarded are the foreign READS these sites
 /// carry on the same path: the recipient's clan/subpath toggles, class and clan names, ignore list, carnage
 /// counter and character name.</para>
@@ -169,7 +169,8 @@ public sealed class PeerMiniTextMonitorTests
         var (mentor, mentorProbe, _) = ProbePlayer("MentorshipMentor");
         var (protege, protegeProbe, _) = ProbePlayer("MentorshipProtege", c => c.Level = Mentorship.CulminateLevel);
         // Already this mentor's protégé. Under their own monitor, because a text slot's write saves the character
-        // and the Debug guard on that chokepoint (Session.State.cs:308-314) rightly refuses a bare write.
+        // and the Debug guard on that chokepoint (AssertStateHeld, Session.State.cs:314-320) rightly refuses a bare
+        // write.
         protege.WithState(() => protege.Quest(Mentorship.Key).SetText(Mentorship.MentorSlot, "MentorshipMentor"));
         mentorProbe.Clear(); protegeProbe.Clear();
 

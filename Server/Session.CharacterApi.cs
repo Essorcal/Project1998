@@ -1151,9 +1151,11 @@ public sealed partial class Session : QuestState.ISessionStore
     /// else, or nobody, is not touched. The clicker's own half takes the same check against the name it read a moment
     /// before under its own monitor, so it ends unless it is already empty.</para>
     /// <para>With <paramref name="tell"/>, a half this ends is followed by one status line to this player, "Your
-    /// engagement to X has ended.", sent here, inside the section: a send numbers the packet with this session's own
-    /// counter, which this monitor guards, and it goes out in order with the clear. Told: the partner's half at the
-    /// Chapel, and the arrival's settle (<see cref="SettleVowHalves"/>). A half that is not ended sends nothing.</para>
+    /// engagement to X has ended.", sent here, inside the section, in order with the clear. From the Chapel this is
+    /// another player's session, which #29's rule 2 enters under that player's monitor; and this player's logout
+    /// teardown takes the same monitor, so the line is handed over before that teardown can start (one that started
+    /// first makes this wait, and the end then ends nothing: below). Told: the partner's half at the Chapel, and the
+    /// arrival's settle (<see cref="SettleVowHalves"/>). A half that is not ended sends nothing.</para>
     /// <para><b>A told end ends nothing on a player who is going away</b> (PR #350 review, F1, and its re-check,
     /// Finding 1). The Chapel finds the partner by name and only then, after the clicker's own half, enters the
     /// partner's monitor. An end that ran on a partner who is going away would write their row without the half and
