@@ -1162,6 +1162,7 @@ mage; all four for poet) read the live probe's `50 + level/2`, with Will out (Ca
 level, and the probe's "a +1 will item changed nothing" was the measurement on the table. The half is kept to the
 armor step: `Session.CastArch` no longer rounds the evaluated amount, and the spell path carries a double to
 `Combat.ApplyArmor`, so a level-15 self-cast at AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it
-was 107). Mage Bolt is not on this row: `game-data/SpellParams.csv` binds `bolt_mage` to `verbs.magic_damage`,
-2 + 1.5 × Will for 4 mana, held for a decision of its own; #78's single floor applies to it. Singe and Ignite are
-unchanged.
+was 107). Mage Bolt, Spark's Ming-Ken name, has been on this row since 2026-10-22 (Caleb, decision sheet item 3;
+#200): 50 + level/2 for 20 mana, read from its spell_effects.csv row by `verbs.magic_damage`, the verb its
+`game-data/SpellParams.csv` row still binds for Bolt's refusals, with #78's single floor. It used to be
+2 + 1.5 × Will for 4 mana, which no source gives. Singe and Ignite are unchanged.

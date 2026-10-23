@@ -3606,9 +3606,12 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     `LuaMagicDamage`, `LuaDamageTarget`, `SpellNet`, `HitPlayerWithSpell`, `ReceiveSpellDamage` and
     `DamageIntake.Raw` carry a double to the armor step: `SpellNet`'s `Combat.ApplyArmor` against a creature, and
     `Combat.ArmorFactor` and `Combat.FloorOnce` in `Session.TakeDamage` against a player. So a level-15 self-cast at
-    AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). Mage Bolt is not on that row:
-    `game-data/SpellParams.csv` binds `bolt_mage` to `verbs.magic_damage`, 2 + 1.5 × Will for 4 mana, held for a
-    decision of its own. `Tests/SparkFamilyBaseTests.cs` casts each row through the real frame.
+    AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). **Mage Bolt joined that row on
+    2026-10-22** (Caleb, decision sheet item 3; #200): `bolt_mage` reads `50 + level/2` for 20 mana from its own
+    spell_effects.csv row, as the other seven do. `game-data/SpellParams.csv` still binds it to `verbs.magic_damage`,
+    which keeps Bolt's refusals and now takes the row's amount and mana (`ctx.spellAmount`, `ctx.spellMana`, the
+    same evaluation `CastArch` hands the archetype); its old 2 + 1.5 × Will for 4 mana had no source.
+    `Tests/SparkFamilyBaseTests.cs` casts each row through the real frame.
 
 - **`ApplyArmor` forms its deduction as `(100 + armor)/100.0`, not `1.0 + armor/100.0`** — equal in real
   arithmetic, not in IEEE754. The latter evaluates to 0.19999999999999996 at the human floor, so a maximally

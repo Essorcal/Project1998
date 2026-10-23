@@ -133,7 +133,8 @@ public sealed class SpellContext
     public bool spendMana(double amt)   => _s.LuaSpendMana((int)amt, _sp);
     /// <summary>Damage this cast's victim (<see cref="Victim"/>), a mob or a player (handles deflect/HP-bar/death/XP,
     /// and the PvP gate for a player). False if there is none. The amount goes over unrounded, to the one floor
-    /// at the armour step (#78): Bolt's 2 + 1.5 x Will keeps its half at an odd Will.</summary>
+    /// at the armour step (#78): mage Bolt's 50 + level/2 (<see cref="spellAmount"/>) keeps its half at an odd level,
+    /// as the rest of the Spark family's does through <see cref="magicDamage"/>.</summary>
     public bool damage(double amt)      => _s.LuaDamageTarget(amt, _sp, Victim);
     /// <summary>May <see cref="damage"/> strike this cast's victim (<see cref="Victim"/>) here? A verb that spends
     /// before it strikes (<c>magic_damage</c>) asks it first, so a blow that would strike nothing costs nothing. Off a
@@ -480,6 +481,11 @@ public sealed class SpellContext
     public bool   canWarpOut    => _s.LuaWarpOut;
     /// <summary>The spell's real per-spell mana cost from its export row (or 5 if the export had none).</summary>
     public double spellMana     => _s.LuaSpellMana(_sp);
+    /// <summary>The spell's amount from its export row (spell_effects.csv <c>amountExpr</c>) at this cast, unrounded:
+    /// the figure the archetype path hands its verb as <see cref="amount"/>, for a verb bound by a SpellParams row that
+    /// carries no amount of its own. Mage Bolt's <c>magic_damage</c> reads it, and so lands the Spark family's
+    /// 50 + level/2 (#200). Throws for a spell with no export row (<c>Session.LuaSpellAmount</c>).</summary>
+    public double spellAmount   => _s.LuaSpellAmount(_sp);
     /// <summary>The spell's cooldown (RTK aether) in ms from its export row (0 if none).</summary>
     public double spellAether    => _s.LuaSpellAether(_sp);
     /// <summary>The resolved target player's level (after <see cref="pcTarget"/>). For Divination's level gate.</summary>

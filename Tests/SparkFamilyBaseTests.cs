@@ -11,12 +11,15 @@ namespace Tests;
 /// <c>floor((50 + level/2) x (1 + ac/100))</c> across 19 live readings with zero residual: 9 creatures at AC 40-100
 /// and 10 self-casts with the caster's own AC moved by gear. "A +1 will item changed nothing."
 ///
-/// <para>Seven of the eight rows the decision sheet names cast through the Damage archetype (<c>arch_damage</c>,
-/// <c>ctx:magicDamage</c>) and take this base: Spark, Glimpse of the Void and Nature's Ire for mage, and all four for
-/// poet. Mage Bolt does not: <c>game-data/SpellParams.csv</c> binds <c>bolt_mage</c> to <c>verbs.magic_damage</c>
-/// (2 + 1.5 x Will, 4 mana), which is not the Spark row at all, so moving it is a different decision, held for Caleb.
-/// The Bolt facts at the end pin that its formula and cost were left as they are, and that its odd-Will half now
-/// reaches the armour step like every other path's (#78).</para>
+/// <para>All eight rows the decision sheet names take this base. Seven cast through the Damage archetype
+/// (<c>arch_damage</c>, <c>ctx:magicDamage</c>): Spark, Glimpse of the Void and Nature's Ire for mage, and all four for
+/// poet. Mage Bolt, the family's Ming-Ken name, casts through <c>verbs.magic_damage</c>, the verb that carries its
+/// refusals (<see cref="NpcDamageVerbTests"/>), but takes its numbers from the same row as the seven: its
+/// <c>game-data/SpellParams.csv</c> row binds the verb and nothing else, and the verb reads the spell_effects.csv row's
+/// amount and mana (<c>ctx.spellAmount</c>, <c>ctx.spellMana</c>), 50 + level/2 for 20 mana (Caleb, 2026-10-22,
+/// decision sheet item 3; #200). The SpellParams row used to give it 2 + 1.5 x Will for 4 mana, which no source has:
+/// the 2002-12-30 and live Atlas mage pages and RTK's <c>spark.lua</c> all give Bolt as Spark's Ming-Ken name at 20
+/// mana. The Bolt facts pin the row, the base, the Will it no longer reads, and its half at the one floor (#78).</para>
 ///
 /// <para>Before this, the rows read <c>50 + floor((level + will)/4)</c>, a whole number, so an odd level could never
 /// show its half: the level-11 rabbit reading (111) came out 110. Removing the floor in the data alone would not have
@@ -25,9 +28,10 @@ namespace Tests;
 /// self-cast at AC 85 landed 107 where the probe read 106.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh caster at a fresh creature (or, on
-/// the arena, at nobody, which lands a Damage spell on its caster there). The creature has no Will and no Protection,
-/// so the deflect roll is 0%. Maps: a content-free town for the creature casts and Village Arena (MapPvP 1) for the
-/// self-casts; no other class uses either.</para>
+/// the arena, at nobody, which lands a Damage spell on its caster there; Bolt at nobody is free and silent there, so
+/// its self-cast is aimed at its caster's own id). The creature has no Will and no Protection, so the deflect roll is
+/// 0%. Maps: a content-free town for the creature casts and Village Arena (MapPvP 1) for the self-casts; no other class
+/// uses either.</para>
 /// </summary>
 [Collection("world")]
 public sealed class SparkFamilyBaseTests
@@ -48,6 +52,9 @@ public sealed class SparkFamilyBaseTests
         "spark_poet", "glimpse_of_the_void_poet", "bolt_poet", "natures_ire_poet",
     };
 
+    /// <summary>The whole family: the seven, and mage Bolt, which casts the same row through its own verb.</summary>
+    public static readonly string[] SparkFamily = SparkRows.Append("bolt_mage").ToArray();
+
     private readonly SessionFixture _fx;
     private static int _serial;
 
@@ -56,13 +63,14 @@ public sealed class SparkFamilyBaseTests
     /// <summary>The live readings against creatures, with Will set well away from level so the old
     /// <c>(level + will)/4</c> cannot pass by accident. Level 11 and 13 give a base of 55.5 and 56.5, and only the
     /// carried half reaches 111, 101 and 113.
-    /// <para>Red on 6de1d24: 106, 97, 108 and 70 (the floored row at Will 3, and at Will 30 for level 50).</para></summary>
+    /// <para>Red on 6de1d24: 106, 97, 108 and 70 (the floored row at Will 3, and at Will 30 for level 50). For mage Bolt,
+    /// red on 2874006: 4 mana, not 20 (its SpellParams row's 2 + 1.5 x Will).</para></summary>
     public static TheoryData<string, int, int, int, int> CreatureReadings
     {
         get
         {
             var data = new TheoryData<string, int, int, int, int>();
-            foreach (var key in SparkRows)
+            foreach (var key in SparkFamily)
             {
                 data.Add(key, 11, 3, 100, 111);   // live: level 11 vs a rabbit (+100)
                 data.Add(key, 13, 3, 80, 101);    // live: level 13 vs a deer, doe or cat (+80)
@@ -84,7 +92,7 @@ public sealed class SparkFamilyBaseTests
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
 
-            Assert.Equal(Mana - 20, cc.Mp);   // the row's 20 mana: the cast went through the archetype
+            Assert.Equal(Mana - 20, cc.Mp);   // the row's 20 mana
             Assert.Equal(expected, CreatureHp - mob.Hp);
         }
         finally
@@ -120,18 +128,46 @@ public sealed class SparkFamilyBaseTests
         }
     }
 
-    /// <summary>Will does not move the base: two level-30 casters 40 Will apart land the same figure. The
-    /// probe: "a +1 will item changed nothing"; the decision (Caleb, 2026-10-21, decision sheet item 13) takes
-    /// level/2 alone.
-    /// <para>Red on 6de1d24: 60 and 70 (the old row moved by a quarter of the Will).</para></summary>
-    [Fact]
-    public void WillDoesNotMoveTheBase()
+    /// <summary>Mage Bolt's self-cast nets the same carried half against its caster's own armour, through
+    /// <c>ctx:damage</c> and the player intake. On a PvP map an unaimed Bolt at nobody is free and silent (Caleb,
+    /// 2026-10-21), so this one is aimed at the caster's own id, which is aimed and still strikes them.
+    /// <para>Red on 2874006: 4 mana, not 20.</para></summary>
+    [Theory]
+    [InlineData(15, 106)]
+    [InlineData(16, 107)]
+    public void AMageBoltAimedAtItsCasterNetsTheCarriedHalfAgainstTheirOwnArmour(int level, int expected)
+    {
+        var sp = Spell("bolt_mage");
+        var (caster, _, cc) = Caster(Arena, level, will: 3, ownAc: 85, sp);
+        try
+        {
+            Assert.True(Content.IsPvpMap(Arena));
+            caster.Receive(SpellCastSupport.CastFrame(0, caster.PlayerId));
+
+            Assert.Equal(Mana - 20, cc.Mp);
+            Assert.Equal(expected, (int)(CasterHp - cc.Hp));
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, Arena);
+        }
+    }
+
+    /// <summary>Will does not move the base: two level-30 casters 40 Will apart land the same figure, for Spark through
+    /// the archetype and for mage Bolt through its own verb. The probe: "a +1 will item changed nothing"; the decision
+    /// (Caleb, 2026-10-21, decision sheet item 13) takes level/2 alone, and Bolt is on that row (2026-10-22, item 3).
+    /// <para>Red on 6de1d24 for Spark: 60 and 70 (the old row moved by a quarter of the Will). Red on 2874006 for Bolt:
+    /// 17 and 77 (2 + 1.5 x Will).</para></summary>
+    [Theory]
+    [InlineData("spark_mage")]
+    [InlineData("bolt_mage")]
+    public void WillDoesNotMoveTheBase(string key)
     {
         int[] landed = new int[2];
         int i = 0;
         foreach (int will in new[] { 10, 50 })
         {
-            var sp = Spell("spark_mage");
+            var sp = Spell(key);
             var mob = Creature(Town, ac: 0);
             var (caster, _, _) = Caster(Town, level: 30, will, ownAc: 0, sp);
             try
@@ -148,22 +184,37 @@ public sealed class SparkFamilyBaseTests
         Assert.Equal(new[] { 65, 65 }, landed);
     }
 
-    /// <summary>Mage Bolt is not on the Spark row and this change leaves it there: <c>game-data/SpellParams.csv</c>
-    /// binds <c>bolt_mage</c> to <c>verbs.magic_damage</c>, 2 + 1.5 x Will for 4 mana. At level 50, Will 30 and AC 0
-    /// that is 47 (the Spark row would give 75 for 20 mana). Moving Bolt onto the Spark row is held for Caleb.</summary>
+    /// <summary>Mage Bolt is on the Spark row (Caleb, 2026-10-22, decision sheet item 3; #200). Its
+    /// <c>game-data/SpellParams.csv</c> row still binds <c>verbs.magic_damage</c>, the verb whose refusals
+    /// <see cref="NpcDamageVerbTests"/> pins, and carries no number of its own: the verb reads its spell_effects.csv
+    /// row, which is Spark's in archetype, mana, formula and aether. At level 50, Will 30 and AC 0 that is 75 for 20
+    /// mana. The row has no aether, and must not get one without the verb: <c>magic_damage</c> neither checks nor arms
+    /// one (the archetype tail that arms Spark's never runs for a bound verb).
+    /// <para>Red on 2874006: the SpellParams row's own mana 4 (with base 2 and coeff 1.5); Bolt's spell_effects row,
+    /// never reached, read 50 + floor((level + will)/4); the cast cost 4 and landed 47.</para></summary>
     [Fact]
-    public void MageBoltStillCastsItsOwnVerb()
+    public void MageBoltCastsTheSparkRowThroughItsOwnVerb()
     {
         var sp = Spell("bolt_mage");
+        var row = Content.SpellParams["bolt_mage"];
+        Assert.Equal("magic_damage", row["verb"]);
+        foreach (var cell in new[] { "mana", "base", "coeff" })
+            Assert.True(row.GetValueOrDefault(cell, "") == "",
+                        $"bolt_mage's SpellParams row has a {cell} of its own: {row.GetValueOrDefault(cell, "")}");
+        var bolt = Content.FxFor(sp)!;
+        var spark = Content.FxFor(Spell("spark_mage"))!;
+        Assert.Equal((spark.Archetype, spark.Mana, spark.AmountExpr, spark.Aether),
+                     (bolt.Archetype, bolt.Mana, bolt.AmountExpr, bolt.Aether));
+        Assert.Equal(0, bolt.Aether);
+
         var mob = Creature(Town, ac: 0);
         var (caster, _, cc) = Caster(Town, level: 50, will: 30, ownAc: 0, sp);
         try
         {
-            Assert.Equal("magic_damage", Content.SpellParams["bolt_mage"]["verb"]);
             caster.Receive(SpellCastSupport.CastFrame(0));
 
-            Assert.Equal(Mana - 4, cc.Mp);
-            Assert.Equal(47, CreatureHp - mob.Hp);
+            Assert.Equal(Mana - 20, cc.Mp);
+            Assert.Equal(75, CreatureHp - mob.Hp);
         }
         finally
         {
@@ -172,23 +223,24 @@ public sealed class SparkFamilyBaseTests
         }
     }
 
-    /// <summary>Bolt keeps its own formula, but its half now reaches the armour step like every other path's (#78:
-    /// one floor). At an odd Will, 2 + 1.5 x Will ends in .5: Will 31 is 48.5, which lands 97 against AC +100, and
-    /// Will 33 is 51.5, which lands 51 against AC 0. <c>ctx:damage</c> used to round it first, half to even, to 48
-    /// and 52, so it landed 96 and 52: up one at one Will, down one at the other.</summary>
+    /// <summary>Bolt's half reaches the armour step whole, as the Spark row's does through the archetype (#78, #361: one
+    /// floor). At an odd level, 50 + level/2 ends in .5: level 11 is 55.5, which lands 111 against AC +100, and level 15
+    /// is 57.5, which lands 57 against AC 0. Rounded first, half to even, they would be 56 and 58, landing 112 and 58.
+    /// <para>Red on 2874006: 4 mana, not 20. Until #200 this fact pinned the same rule on the old formula's odd-Will
+    /// half (Will 31 and 33, 2 + 1.5 x Will).</para></summary>
     [Theory]
-    [InlineData(31, 100, 97)]
-    [InlineData(33, 0, 51)]
-    public void MageBoltsOddWillHalfReachesTheArmourStep(int will, int ac, int expected)
+    [InlineData(11, 100, 111)]
+    [InlineData(15, 0, 57)]
+    public void MageBoltsOddLevelHalfReachesTheArmourStep(int level, int ac, int expected)
     {
         var sp = Spell("bolt_mage");
         var mob = Creature(Town, ac);
-        var (caster, _, cc) = Caster(Town, level: 50, will, ownAc: 0, sp);
+        var (caster, _, cc) = Caster(Town, level, will: 30, ownAc: 0, sp);
         try
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
 
-            Assert.Equal(Mana - 4, cc.Mp);
+            Assert.Equal(Mana - 20, cc.Mp);
             Assert.Equal(expected, CreatureHp - mob.Hp);
         }
         finally
