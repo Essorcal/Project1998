@@ -454,8 +454,10 @@ public sealed class SpellContext
     public double targetArmor     => _s.LuaTargetArmor;
     /// <summary>Resolved target's effective Will.</summary>
     public double targetWill      => _s.LuaTargetWill;
-    /// <summary>Set the resolved target's mana (clamped to their [0, maxMp]).</summary>
-    public void   setTargetMana(double n) => _s.LuaSetTargetMana((int)System.Math.Round(n));
+    /// <summary>Take ALL of the resolved target's mana and return how much that was: what they hold, read and set to 0
+    /// in one section of their own monitor (<c>Session.ReceiveTakeAllMana</c>), so nothing that lands on their pool
+    /// meanwhile is wiped or credited twice. 0 with no target.</summary>
+    public double takeTargetMana() => _s.LuaTakeTargetMana();
     /// <summary>Add to the resolved target's mana (clamped to their [0, maxMp]), decided inside the target's own
     /// monitor from the mana they hold then (<c>Session.ReceiveAddMana</c>), so what lands there after the verb's
     /// read of <see cref="targetMana"/> is kept.</summary>

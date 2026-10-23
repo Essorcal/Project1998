@@ -712,8 +712,11 @@ function verbs.mana_steal(ctx, row)
   if ctx.targetIsSelf then ctx:say("It doesn't work."); return false end
   if ctx.targetIsDead then ctx:say("That cannot save them now."); return false end
   if not ctx.targetInGroup then ctx:say("They must be in your group."); return false end
-  ctx:setMana(ctx.mp + ctx.targetMana)     -- setMana clamps to the caster's max
-  ctx:setTargetMana(0)
+  -- One step inside the target's own monitor takes all they hold and sets them to 0 (Session.ReceiveTakeAllMana);
+  -- the caster gets what it took. A read here and a set to 0 after it wiped a regen beat that landed between the
+  -- two, and credited the caster with mana the target lost there (#345, follow-up 4).
+  local taken = ctx:takeTargetMana()
+  ctx:setMana(ctx.mp + taken)              -- setMana clamps to the caster's max
   ctx:tellTarget()
   ctx:fx(6, 22)
   return true

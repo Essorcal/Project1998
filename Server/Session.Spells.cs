@@ -2461,28 +2461,34 @@ public sealed partial class Session
     internal bool LuaTargetInGroup => _pcSpellTarget is not null && _party is not null && ReferenceEquals(_pcSpellTarget._party, _party);
     internal int  LuaTargetArmor   => _pcSpellTarget is null ? 0 : _pcSpellTarget._char.Ac + _pcSpellTarget.PeerTotals().armor;  // effective AC (lower=better)
     internal int  LuaTargetWill    => _pcSpellTarget?.LuaWill ?? 0;
-    internal void LuaSetTargetMana(int n)    => _pcSpellTarget?.ReceiveSetMana(n);
+    internal uint LuaTakeTargetMana()        => _pcSpellTarget?.ReceiveTakeAllMana() ?? 0;
     internal void LuaAddTargetMana(int n)    => _pcSpellTarget?.ReceiveAddMana(n);
 
-    /// <summary>A Mana Steal sets THIS player's mana (the verb's <c>setTargetMana(0)</c>), clamped to its effective
-    /// maximum, and pushes the stats that show it; Mana Gift adds instead (<see cref="ReceiveAddMana"/>).
-    /// Cross-session: called on the target from the caster's thread, which holds the caster's monitor and the Lua
-    /// gate and never <c>World._lock</c>, so this takes the target's monitor here, by <c>StateRank</c>, the
-    /// <see cref="ReceiveFlush"/> shape. On yourself it is the monitor the cast already holds. The verb computed
-    /// <paramref name="n"/> under the caster's monitor; nothing here decides it again.
-    /// <para>Before this the caster's thread wrote the target's <c>_char.Mp</c> without the target's monitor. No guard
-    /// covers <c>Mp</c> (the write marks nothing dirty), so it was unguarded in both builds.</para></summary>
-    internal void ReceiveSetMana(int n)
+    /// <summary>A Mana Steal takes ALL of THIS player's mana (the verb's <c>takeTargetMana</c>): what they hold, read
+    /// and set to 0 in one section of their own monitor, and the stats that show it pushed. Returns the amount taken,
+    /// which the verb gives the caster. Cross-session: called on the target from the caster's thread, which holds the
+    /// caster's monitor and the Lua gate and never <c>World._lock</c>, so this takes the target's monitor here, by
+    /// <c>StateRank</c>, the <see cref="ReceiveFlush"/> shape. On yourself it would be the monitor the cast already
+    /// holds, but the verb refuses yourself first.
+    /// <para>Before this the verb read the target's mana bare (<c>ctx.targetMana</c>), credited the caster, and then
+    /// set the target to 0 here (<c>ReceiveSetMana</c>, #341). Anything that landed on the target's pool between the
+    /// read and the set, under their monitor, went wrong: a regen beat was wiped rather than taken, and mana they lost
+    /// there (a spend, a drain) had already been credited to the caster, so it was given away twice (#345, follow-up
+    /// 4). The read and the set are one step now, so the caster is given exactly what the target held when it went to
+    /// 0. No guard covers <c>Mp</c> (the write marks nothing dirty), so only the monitor orders it.</para></summary>
+    internal uint ReceiveTakeAllMana()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        _char.Mp = (uint)Math.Clamp(n, 0, (int)EffMaxMp);
+        uint taken = _char.Mp;
+        _char.Mp = 0;
         SendStats();
+        return taken;
     }
 
     /// <summary>A Mana Gift adds <paramref name="n"/> to THIS player's mana (the verb's <c>addTargetMana</c>), clamped
     /// to its effective maximum, and pushes the stats that show it. The new value is decided here, inside this
-    /// player's monitor, from the mana they hold now: the <see cref="ReceiveSetMana"/> shape and reasons (the caster's
-    /// thread, the caster's monitor and the Lua gate, never <c>World._lock</c>; this player's taken by
+    /// player's monitor, from the mana they hold now: the <see cref="ReceiveTakeAllMana"/> shape and reasons (the
+    /// caster's thread, the caster's monitor and the Lua gate, never <c>World._lock</c>; this player's taken by
     /// <c>StateRank</c>). The verb still decides how much to give, from its own read of this player's mana and
     /// maximum, and pays it; nothing here decides the gift again.
     /// <para>Before this the gift SET the mana it had computed from that read. A regen beat that landed after the
