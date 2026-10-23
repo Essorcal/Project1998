@@ -1187,11 +1187,11 @@ answers with the minitext "You can't do that while riding a mount." (`:119`). Th
 | Action | Handler |
 |---|---|
 | drop | `HandleDropItem` (`Server/Session.Items.cs:210`) |
-| throw | `HandleThrow` (`:262`) |
-| use and eat | `HandleUseItem` (`:331`) |
-| equip | `EquipFromSlot` (`:1336`) |
-| unequip | `HandleUnequip` (`:1420`) |
-| drop gold | `HandleDropGold` (`:1677`) |
+| throw | `HandleThrow` (`Server/Session.Items.cs:262`) |
+| use and eat | `HandleUseItem` (`Server/Session.Items.cs:331`) |
+| equip | `EquipFromSlot` (`Server/Session.Items.cs:1336`) |
+| unequip | `HandleUnequip` (`Server/Session.Items.cs:1420`) |
+| drop gold | `HandleDropGold` (`Server/Session.Items.cs:1677`) |
 | hand an item | `HandleHandItem` (`Server/Session.Social.cs:440`) |
 | hand gold | `HandleHandGold` (`Server/Session.Social.cs:471`) |
 | **casting** | `HandleCast` (`Server/Session.Spells.cs:266`) |
@@ -2086,10 +2086,11 @@ decoded — the fix is simply to send a real `percent`/`critical`, which is what
 **Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action,
 `type = idx + 11`, sent as `0x1A` (RTK `clif_parseemotion`: `sendaction(&bl, RFIFOB(5)+11, 0x4E, 0)`).
 - **To the emoter** (`Server/Session.Combat.cs:472`).
-- **To every peer in RTK's SAMEAREA box around the emoter, not the whole map** (`:473`). The box is ±9 tiles across
+- **To every peer in RTK's SAMEAREA box around the emoter, not the whole map** (`Server/Session.Combat.cs:473`). The box is ±9 tiles across
   and ±8 down, and it is edge-shifted: against a map edge it slides inward rather than being clipped. It is sent
-  with `World.BroadcastSameArea` (`Server/World.cs:1648-1649`). So `:` `l` = `idx 0x0b → type 22 =
-dance`.
+  with `World.BroadcastSameArea` (`Server/World.cs:1648-1649`).
+
+So `:` `l` = `idx 0x0b → type 22 = dance`.
 
 **Only an alive, visible, unmounted and untransformed player emotes.** For a dead, invisible, mounted or
 transformed player, the server drops the `0x1d` silently (`Server/Session.Combat.cs:467`):
