@@ -572,3 +572,8 @@ mingken_avatar_poet,4,99,250000,,,,,,,,,lua
 ohaeng_avatar_poet,4,99,250000,,,,,,,,,lua
 cotw_wind_dancer_poet,4,99,150000,splendid_tiger_pelt,10,well_crafted_white_amber,1,yellow_amber,10,,,lua
 cotw_wind_warrior_poet,4,99,250000,,,,,,,,,lua
+siege_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
+souls_freedom_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
+lifes_end_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
+winter_chill_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
+focused_blow_rogue,2,99,750000,,,,,,,,,atlas-rogue-spells|archive-spells-rogue
