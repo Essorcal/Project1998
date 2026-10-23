@@ -3873,10 +3873,12 @@ public sealed partial class Session
         // free meanwhile: she could break it off at the Chapel, paying for it and ending both halves, and his
         // "I do" then married them anyway. Now both halves must still name each other and neither may hold a
         // marriage. Otherwise nothing is written, and each reads the Chapel's "has already ended." line naming
-        // the other, sent here inside both monitors (a send numbers the packet with that player's own counter,
-        // which their monitor guards), and the Chapel says nothing more. The read must be inside the section:
-        // made before it, it could pass while a break that holds the bride's monitor has not yet ended her
-        // half, and this thread would then wait for that monitor and marry what the break had ended.
+        // the other, sent here inside both monitors, and the Chapel says nothing more. Inside both, because #29's
+        // rule 2 enters another player's session under that player's monitor, and each player's logout teardown
+        // takes their monitor: each line is handed over before that teardown can start (a teardown that started
+        // first is caught by the going-away check below, which runs before this one). The read must be inside the
+        // section: made before it, it could pass while a break that holds the bride's monitor has not yet ended
+        // her half, and this thread would then wait for that monitor and marry what the break had ended.
         //
         // Before that, the section refuses a wedding if either of the two is going away (Caleb, 2026-10-22,
         // decision 17; PR #365's review, O1). The bride can log out while the question waits, and log back in.

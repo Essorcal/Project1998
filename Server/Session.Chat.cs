@@ -124,9 +124,9 @@ public sealed partial class Session
         // and `target.IsIgnoring(...)`, another session's character and ignore list read bare from OUR thread;
         // `ReceiveWhisper` -> SendBlueMessage -> SendMiniText also writes their `_gameInc`, which rule 2 covers
         // for the same blanket reason NotifyGroup is wrapped, not because the byte tears (a lost increment is a
-        // duplicate nonce, benign per Session.WorldApi.cs:314-315).
+        // duplicate nonce, benign per the note above Session.Send in Session.WorldApi.cs).
         //
-        // Wrapped HERE rather than at ReceiveWhisper's definition (Session.Chat.cs:251): the reads that decide
+        // Wrapped HERE rather than at ReceiveWhisper's definition, further down this file: the reads that decide
         // whether the line goes out at all have to be in the SAME section as the send, and this is
         // ReceiveWhisper's only caller, so the definition wrap would buy nothing and would leave the gate
         // outside.
@@ -170,7 +170,8 @@ public sealed partial class Session
         // `p._char.Name` and `p.IsIgnoring(...)` are another session's state read bare from our thread —
         // those reads are the genuinely unguarded accesses here — and `p.SendMiniText` writes their
         // `_gameInc`, which rule 2 covers for the same blanket reason NotifyGroup is wrapped, not because
-        // the byte tears (a lost increment is a duplicate nonce, benign per Session.WorldApi.cs:314-315).
+        // the byte tears (a lost increment is a duplicate nonce, benign per the note above Session.Send in
+        // Session.WorldApi.cs).
         // ONE peer monitor at a time (the guard is released before the next member), so this is the same
         // single nested acquisition Party.Broadcast makes and rule 2 resolves it the same way, ascending or
         // descending; nothing here ever holds two peers at once. Our OWN list and name are read inside the
@@ -205,8 +206,8 @@ public sealed partial class Session
         // read of the recipient's state — their clan-chat toggle, their clan name, their name, their ignore
         // list — and the send that follows are ONE critical section on THEM. Those four reads are the
         // genuinely unguarded accesses here; the `_gameInc` the send writes is covered by the same blanket
-        // rule, not because the byte tears (a lost increment is a duplicate nonce, benign per
-        // Session.WorldApi.cs:314-315). Rule 1 holds: Online.All() snapshots under World._lock and returns
+        // rule, not because the byte tears (a lost increment is a duplicate nonce, benign per the note above
+        // Session.Send in Session.WorldApi.cs). Rule 1 holds: Online.All() snapshots under World._lock and returns
         // with it released (World.OnlineRegistry.cs:77-81), so no world lock is held when we enter a peer.
         // ONE peer monitor at a time — the guard is released before the next player — so rule 2 resolves each
         // acquisition on its own, ascending or descending, and two peers are never held at once. Our own name
@@ -253,11 +254,11 @@ public sealed partial class Session
     /// this ends up writing (<c>SendMiniText</c> → <c>SendMap</c>, Session.cs) is NOT a torn-byte hazard —
     /// it is a byte, read once by <c>_gameInc++</c> and passed BY VALUE both into the body's encryption and
     /// into the frame header, so every frame decrypts with the increment it declares and the worst a lost
-    /// update can do is emit the same nonce twice. Session.WorldApi.cs:314-315 already records that as
-    /// benign ("a rare duplicate is harmless since each packet carries its own inc in the header"), and
-    /// nothing here contradicts it. The accesses on this path that were genuinely unguarded are the foreign
-    /// READS the same slice closes: <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c> in <c>DoGroupChat</c>,
-    /// and <c>target.IsDead</c> in the invite (Session.Social.cs).
+    /// update can do is emit the same nonce twice. The note above <c>Session.Send</c> in Session.WorldApi.cs
+    /// already records that as benign ("a rare duplicate is harmless since each packet carries its own inc in
+    /// the header"), and nothing here contradicts it. The accesses on this path that were genuinely unguarded
+    /// are the foreign READS the same slice closes: <c>p._char.Name</c> and <c>p.IsIgnoring(...)</c> in
+    /// <c>DoGroupChat</c>, and <c>target.IsDead</c> in the invite (Session.Social.cs).
     /// Wrapping here rather than at the call sites is what rule 3 is for: the two calls already inside
     /// <c>member.WithState</c> (<c>RemoveFromParty</c>) see a re-entrant no-op and pay nothing.</para></summary>
     internal void NotifyGroup(string text)

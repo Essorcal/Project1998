@@ -1406,8 +1406,9 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// online on another map and naming A, reads the line. B's outbound records, for every frame, whether the thread
     /// that handed it over held B's monitor at that moment (<c>Session.StateHeld</c>; a send reaches the outbound
     /// synchronously, on the sending thread). B's line, and every other frame the end sends B (for a marriage the
-    /// keepsake's <c>0x10</c>), must be sent with B's monitor held: the send numbers the packet with B's own counter,
-    /// which that monitor guards. Both <c>StateRank</c> orders.
+    /// keepsake's <c>0x10</c>), must be sent with B's monitor held: #29's rule 2 enters another player's session under
+    /// that player's monitor, and B's logout teardown takes the same monitor, so B's line is handed over before that
+    /// teardown can start. Both <c>StateRank</c> orders.
     /// <para>Green on 453e459. Red, Debug and Release, with the send moved to just after the section that ends B's half
     /// (PR #350 review A, probe P1; the blind check's MOUT): A's thread sends B's line after it has let go of B's
     /// monitor. No other fact in this class sees that move.</para>

@@ -2307,8 +2307,8 @@ public sealed partial class Session
     /// either loop — so there is no gate read that has to be pulled into the section with it, which is what makes
     /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
     /// torn-byte hazard (read once, passed by value into both the body's encryption and the frame header, so the
-    /// worst a lost update does is repeat a nonce — <c>Session.WorldApi.cs:314-315</c>); rule 2 is a blanket rule
-    /// on entering a peer's state, not a repair for a specific corruption.</para>
+    /// worst a lost update does is repeat a nonce — the note above <c>Session.Send</c> in <c>Session.WorldApi.cs</c>);
+    /// rule 2 is a blanket rule on entering a peer's state, not a repair for a specific corruption.</para>
     ///
     /// <para>ONE peer monitor at a time: both callers dispose this guard before the next player. An operator
     /// announcing to a roster that includes themselves is rule 3's re-entrant case, a no-op, so their own copy
