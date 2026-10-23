@@ -1179,13 +1179,29 @@ this, dismount just `Math.Clamp`ed the faced tile to the map bounds and spawned 
 inside walls, in water, and on top of whatever already stood in front of you.
 
 **What being mounted BLOCKS (2026-08-06).** `Character.Mounted` is a state gate, the same way RTK's
-`pc_equipitem` gates on it. Already gated: equip / unequip / use / eat (`Session.Items.cs`, minitext
-"You cannot do that while riding a mount."). Added: **casting** (`HandleCast`, minitext "You can't do
-that while riding a mount." — checked before the spell slot is even resolved, so no spell is exempt,
-not even Hyun Moo Revival) and **melee** (`HandleAttack` — **silent**, no message at all, matching the
-live client and matching how an over-rate swing is dropped). The melee gate sits before the swing-rate
-gate so a mounted attack key doesn't burn the swing interval; the shared action-budget bump for `0x13`
-still happens at dispatch, as in RTK.
+`pc_equipitem` gates on it.
+
+**The refusals that answer.** One shared refusal, `BlockedByMount` (`Server/Session.CharacterApi.cs:116-121`),
+answers with the minitext "You can't do that while riding a mount." (`:119`). These handlers call it:
+
+| Action | Handler |
+|---|---|
+| drop | `HandleDropItem` (`Server/Session.Items.cs:210`) |
+| throw | `HandleThrow` (`:262`) |
+| use and eat | `HandleUseItem` (`:331`) |
+| equip | `EquipFromSlot` (`:1336`) |
+| unequip | `HandleUnequip` (`:1420`) |
+| drop gold | `HandleDropGold` (`:1677`) |
+| hand an item | `HandleHandItem` (`Server/Session.Social.cs:440`) |
+| hand gold | `HandleHandGold` (`Server/Session.Social.cs:471`) |
+| **casting** | `HandleCast` (`Server/Session.Spells.cs:266`) |
+
+Casting is checked before the spell slot is even resolved, so no spell is exempt, not even Hyun Moo Revival.
+
+**Melee is silent.** `HandleAttack` refuses a mounted swing with no message at all (`Server/Session.Combat.cs:146`),
+matching the live client and matching how an over-rate swing is dropped. The melee gate sits before the swing-rate
+gate, so a mounted attack key doesn't burn the swing interval. The shared action-budget bump for `0x13` still happens
+at dispatch, as in RTK.
 
 **Emote and pickup are blocked too (2026-10-22), both silently, as in RTK.** Neither goes through
 `BlockedByMount`, so neither says anything: no `0x1A`, no sound, no line.
@@ -2067,9 +2083,12 @@ hit resolution, not as the swing. (Historical trap: a *bare/zero* `0x13` gives `
 `0x8f − 0 = 0x8f`, a "death flash"; that scared us off replying `0x13` at all until the handler was fully
 decoded — the fix is simply to send a real `percent`/`critical`, which is what combat now does.)
 
-**Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action:
-`type = idx + 11`, broadcast as `0x1A` to the emoter **and every peer on the map** (RTK
-`clif_parseemotion`: `sendaction(&bl, RFIFOB(5)+11, 0x4E, 0)`). So `:` `l` = `idx 0x0b → type 22 =
+**Emotes (`:` wheel).** Client sends `0x1d` = `idx(u8) 00`. The emote plays as an action,
+`type = idx + 11`, sent as `0x1A` (RTK `clif_parseemotion`: `sendaction(&bl, RFIFOB(5)+11, 0x4E, 0)`).
+- **To the emoter** (`Server/Session.Combat.cs:472`).
+- **To every peer in RTK's SAMEAREA box around the emoter, not the whole map** (`:473`). The box is ±9 tiles across
+  and ±8 down, and it is edge-shifted: against a map edge it slides inward rather than being clipped. It is sent
+  with `World.BroadcastSameArea` (`Server/World.cs:1648-1649`). So `:` `l` = `idx 0x0b → type 22 =
 dance`.
 
 **Only an alive, visible, unmounted and untransformed player emotes.** For a dead, invisible, mounted or

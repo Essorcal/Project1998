@@ -20,8 +20,8 @@ namespace Tests;
 /// <para>This is a silent-failure guard in the AGENTS Rule 3 sense. A refusal that leaks shows a ghost dancing,
 /// a hidden rogue giving themselves away with a laugh, or a rider bending to the floor, and nothing complains.</para>
 ///
-/// <para>Each class of fact has a content-free map of its own (62760-62771, no Maps.csv row, used by no other
-/// class), so an item left behind by a failed fact cannot be picked up by the next one.</para>
+/// <para>Each fact has a content-free map of its own (62760-62770, no Maps.csv row, used by no other class), so an
+/// item left behind by a failed fact cannot be picked up by the next one.</para>
 /// </summary>
 [Collection("world")]
 public sealed class EmotePickupStateTests
@@ -54,7 +54,8 @@ public sealed class EmotePickupStateTests
     }
 
     /// <summary>A rider's emote does nothing: no action to self or to the peer, no line. Red on 2874006, where the
-    /// emote played and the client drew the rider off the horse while it did (docs/4.x/Protocol.md:1307-1311).</summary>
+    /// emote played and the client drew the rider off the horse while it did (docs/4.x/Protocol.md:1333-1337,
+    /// "Which case wins").</summary>
     [Fact]
     public void AMountedEmoteSendsNothing()
     {
