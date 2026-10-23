@@ -827,7 +827,7 @@ public sealed partial class Session
     // armor; the PLAYER side is centralised one layer down in ReceiveSpellDamage. Exactly once either way.
     //
     // DELIBERATELY NOT APPLIED to: the sacrifice strikes and overflow (they net their own, see LuaSacApply);
-    // ambush and melee (PlayerSwingDamage nets attacker-side); traps and pet mob-on-mob hits (no measurement
+    // ambush and melee (PlayerSwingRaw nets attacker-side); traps and pet mob-on-mob hits (no measurement
     // exists for either, and guessing would move balance with nothing behind it).
     //
     // Takes the amount as a DOUBLE, like Combat.ApplyArmor itself (#200): the Spark family's base is 50 + level/2,

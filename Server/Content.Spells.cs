@@ -1520,7 +1520,7 @@ public static partial class Content
     // WE ADD NO COOLDOWN OF OUR OWN, and must not: per the user, Ambush runs on the ordinary 3-casts-per-
     // second action budget — three fire essentially instantaneously, a fourth in the same second does not.
     // That falls out for free, from two things worth not breaking: these rows are archetype Utility, so
-    // Content.CastDelayMs gives them no cast delay; and Session.LuaAmbushStrike calls PlayerSwingDamage
+    // Content.CastDelayMs gives them no cast delay; and Session.LuaAmbushStrike calls PlayerSwingRaw
     // directly rather than going through HandleAttack, so the leap-strike never claims the shared cast/swing
     // slot the way a real swing would (which would space them 333ms apart instead of letting all three land
     // together). An earlier comment here claimed a "short fixed cooldown" — there isn't one.
