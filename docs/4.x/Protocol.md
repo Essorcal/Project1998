@@ -234,7 +234,9 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    Failed attempts are budgeted per source IP (default 10 / 5 min, `P1998_LOGIN_FAILS`), refused before the
    BCrypt verify runs; a short password does not survive an unmetered guessing loop, and `ConnGuard`
    only limits how often an address may *connect*, not what it sends once connected. The same gate is on
-   the game channel's re-login path — otherwise the brute-force target just moves to port 2005.
+   the game channel's re-login path — otherwise the brute-force target just moves to port 2005. Both
+   channels charge the budget to, and check address bans against, the same address: the player's, which is
+   the PROXY header's behind a trusted proxy (`P1998_TRUST_PROXY`) and the socket's peer otherwise.
 
    **Logging:** the login channel's wire dump is OFF by default (`P1998_LOG_WIRE=1` to enable; `0` is off,
    and any other value takes the default and warns at startup). These packets carry the password in the
