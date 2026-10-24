@@ -148,8 +148,20 @@ public sealed class NpcContext
     public int  Level => _s.CharLevel;
     /// <summary>The "power" number quests gate on (RTK baseMagic*2 + baseHealth analog).</summary>
     public int  Stat  => _s.CharStat;
-    /// <summary>Subpath mark count (0 for now).</summary>
+    /// <summary>The subpath mark (RTK <c>player.mark</c>): 0 none · 1 Il san · 2 Ee san · 3 Sam san.</summary>
     public int  Mark  => _s.CharMark;
+    /// <summary>Set the subpath mark and keep the path: RTK <c>player:updatePath(player.class, n)</c>, which
+    /// Bon-Hwa's promotion calls. Persists and resends the status, and changes nothing else — no stat, no spell.
+    /// Refuses (false, nothing changed) a mark below 0 or above <see cref="Content.MaxMark"/>, the same ceiling
+    /// <c>@mark</c> and <c>@class</c> keep.</summary>
+    public bool SetMark(int mark) => _s.SetCharMark(mark);
+    /// <summary>The player's character name (RTK <c>player.name</c>), for a line that names them to others.</summary>
+    public string PlayerName => _s.CharName;
+    /// <summary>Play an effect over the player for everyone in view of them (RTK <c>player:sendAnimation</c>);
+    /// a negative id plays nothing.</summary>
+    public void PlayEffect(int effect) => _s.PlayEffectOverSelf(effect);
+    /// <summary>A system line to every player online (RTK <c>broadcast(-1, text)</c>).</summary>
+    public void AnnounceToWorld(string text) => _s.AnnounceToWorld(text);
     /// <summary>The base class as RTK's <c>player.baseClass</c>: 1 Warrior · 2 Rogue · 3 Mage · 4 Poet (0 for
     /// Peasant/unknown). Subpaths collapse onto their base — a Chung Ryong reads 1, same as a Warrior. Used by
     /// <see cref="BonHwaAbility"/> to pick the class weapon ladder and the per-class stat caps.</summary>
