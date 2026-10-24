@@ -10,8 +10,9 @@ namespace Server;
 /// view rectangle and the server replies with an opcode-0x06 cell block. (Confirmed by reversing
 /// NexusTK.exe handler 0x469060, by the Mithia 7.x reference `clif_sendmapdata`, and — for 4.95 — by a
 /// live capture of 2161 such requests.) 4.95 also keeps a local <c>Maps\TK&lt;id&gt;.map</c> copy, but that
-/// is a CACHE it verifies with the checksum its requests carry, not its only source; 4.x distributions
-/// that ship no <c>Maps</c> directory rely entirely on this. See docs §10.7.
+/// is a CACHE it fills from this stream, not its only source; 4.x distributions that ship no <c>Maps</c>
+/// directory rely entirely on this. (The 4 trailing bytes its requests carry are uninitialized stack, not a
+/// checksum: there is no cache validation.) See docs §10.7.
 ///
 /// <para><b>THREE LAYERS.</b> The <c>.map</c> file is never written — not by this class, not by anything
 /// in the server. Every change is an overlay, and there are two distinct kinds that must not be
@@ -165,11 +166,13 @@ public sealed class MapData
                 .ToList();
     }
 
-    /// <summary>Is (x,y) impassable? Only the ground-passability flag blocks (water/cliff/out-of-bounds and
-    /// the ground baked under walls) — the object layer is VISUAL, not collision (matches the RTK reference's
-    /// map_canmove, which collides on pass only and leaves its object check commented out). This is the same
-    /// test the player's walk uses (see Session.Blocked), so mob AI and player collision agree. Out-of-range
-    /// coords count as solid.</summary>
+    /// <summary>Is (x,y)'s GROUND impassable? Only the ground-passability flag is read (water/cliff/out-of-bounds
+    /// and the ground baked under walls), with no heading, so the object layer's directional walls are not
+    /// applied here; RTK's map_canmove stops at this test (pass only, its object check commented out). A MOVE
+    /// applies those walls too: the player's walk ORs Session.Blocked (this same ground test) with
+    /// <see cref="ObjectFlags.Blocks"/>, and mob movement uses <see cref="BlockedMove"/>, which is this plus the
+    /// walls, so both collide on the same two layers. Placement (spawn tiles, spawned floor items) uses this
+    /// ground test alone. Out-of-range coords count as solid.</summary>
     public bool Solid(int x, int y) =>
         x < 0 || y < 0 || x >= Xs || y >= Ys || _pass[y * Xs + x] != 0;
 

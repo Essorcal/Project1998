@@ -42,8 +42,10 @@ namespace Server;
 ///
 /// <para><b>Audit trail — a global <c>+1</c> was shipped twice and was wrong both times.</b> It was inferred
 /// from rendered tile colours produced by a tool that read the wrong EPF TOC field: the 16-byte entry is
-/// <c>[L,T,R,B (4x i16)][pixelOffset u32][pixelEnd u32]</c>, and the tool used <c>pixelEnd</c>, which for a
-/// 24x24 frame is <c>pixelOffset + 576</c> — i.e. it rendered 576 bytes into a 624-byte stride and returned
+/// <c>[top,left,bottom,right (4x i16)][pixelOffset u32][stencilOffset u32]</c> (4.95 install: in every
+/// non-empty entry of every sheet the per-row stencil starts at <c>pixelOffset + w*h</c> and has
+/// <c>bottom - top</c> rows), and the tool took <c>stencilOffset</c> for the pixels, which for a 24x24 frame is
+/// <c>pixelOffset + 576</c> — i.e. it rendered 576 bytes into a 624-byte stride and returned
 /// mostly the NEXT frame. Every colour identification built on it was off by one, including the
 /// <c>solid:67</c> "water vs flowers" test that the <c>+1</c> rested on. Two lessons: a screenshot cannot
 /// settle a tile-index question (an off-by-one lands on a neighbouring variant of the same material), and
@@ -257,7 +259,9 @@ public static class TileTranslation
     /// had different walkable geometry — which is why no server-side scope was an acceptable answer. Note
     /// also that <c>TILEC</c> was NOT re-packed (this comment used to claim it was): it is 4.x's
     /// <c>TileC.epf</c> with a null frame prepended and frames appended, TOC entry <c>i</c> == 5.33's
-    /// <c>i+1</c> for all 16,408 frames, so object ARTWORK never needed translating — only the flags.</para>
+    /// <c>i+1</c> for 16,408 of its 16,409 frames (docs/5.x/Reverse-Engineering.md; the 4.95 install's
+    /// TileC.epf and TileC.tbl both count 16,409), so object ARTWORK never needed translating — only the
+    /// flags.</para>
     ///
     /// <para><b>Walkability stays correct regardless</b> — the server enforces the 4.x flags itself
     /// (<c>ObjectFlags</c> in <c>HandleWalk</c>), so a blanked object still blocks exactly as 4.x intended,

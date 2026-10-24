@@ -57,8 +57,9 @@ def dat_read(name):
 
 def load_palettes(blob):
     """DLPalette blocks with a VARIABLE header: color data starts at +32 + 2*count, where the
-    u32 at +24 is a count of u16 'animated color' slots (0 for every Effect.pal block, which is
-    why render_effects.py's flat +32 worked there — and why a flat offset shears these)."""
+    u32 at +24 is a count of u16 'animated color' slots (0 for 12 of Effect.pal's 13 blocks and 1
+    for the other, which is why render_effects.py's flat +32 works there for all but that one block —
+    and why a flat offset shears these)."""
     offs, i = [], 0
     while (j := blob.find(b"DLPalette", i)) >= 0:
         offs.append(j)

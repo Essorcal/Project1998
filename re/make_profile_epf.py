@@ -14,21 +14,27 @@ Install the output as:
 
 The client's validation, reversed from NexusTK_local.exe 0x44edc0 (each check is a hard bail):
     * file size EXACTLY 0xb1c = 2844 bytes
-    * dword at +8 == 0xaf0 = 2800  -- the EPF TOC offset: 12-byte header + 2800 bytes of pixel area
+    * dword at +8 == 0xaf0 = 2800  -- the EPF table offset, relative to the 12-byte header: the canonical
+      table sits at 12 + 2800 = 2812, after 2800 bytes of frame data, and holds two 16-byte entries
     * toc[1].top  - toc[0].bottom == 0x38 (56)   -> frame height
     * toc[1].left - toc[0].right  == 0x30 (48)   -> frame width
+      (toc taken at +2800, 12 bytes before the canonical table: the i16s at 2816 - 2812 and 2818 - 2814,
+      which are canonical frame 0's own bottom - top and right - left)
 so the picture is one 48x56 8bpp frame. Every one of those numbers is fixed, which is why this script
 takes no size options: any other geometry is rejected by the client, not merely drawn wrong.
 
-EPF layout (same as Item.epf, see render_items.py):
+EPF layout (same as Item.epf; see render_items.py for the early reading):
     +0  u16 frameCount
     +2  u16 width      +4 u16 height   +6 u16 unknown
-    +8  u32 tocOffset
+    +8  u32 tocOffset  (relative to +12: the table is at 12 + tocOffset)
     +12 pixel data (8bpp palette indices)
-    toc entries, 16B each: top(i16) left(i16) pixOff(u32) stencilOff(u32) bottom(i16) right(i16)
-    NOTE the frame box is split across two entries -- frame i's size is
-    (left[i] - right[i-1]) x (top[i] - bottom[i-1]) -- so frame 0 is a pure origin marker and the real
-    picture is frame 1. That is exactly the pair of subtractions the client checks.
+    canonical table entries, 16B each: top(i16) left(i16) bottom(i16) right(i16) pixOff(u32) stencilOff(u32)
+    (docs/4.x/Protocol.md §11c).
+    THIS SCRIPT writes its two entries at +2800, the client check's early base, so here and in build() the
+    entries carry that early reading's names -- top(i16) left(i16) pixOff(u32) stencilOff(u32) bottom(i16)
+    right(i16), the box split across two entries, "frame 0" an origin marker and "frame 1" the picture.
+    Read canonically at 2812 the same bytes are frame 0: box top 0, left 0, bottom 56, right 48 (48x56),
+    pixOff 0, stencilOff 2688 (= 48*56); canonical frame 1 is all zero.
 
 Usage:
     python make_profile_epf.py <image> <out.epf> [palette.pal] [paletteIndex]

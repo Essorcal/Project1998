@@ -154,13 +154,13 @@ ignored with one startup warning.
 | Variable | Type | Default | What it does |
 |---|---|---|---|
 | `P1998_V495_WALK_MS` | integer | `200` | Delay before the 0x04 that completes a 4.95 self-walk. The client caps local prediction at ~180ms and then freezes, so 0x04 must land just after that window. 0 is the old same-frame slide. |
-| `P1998_V495_SELF_MOVE` | integer | `7` | Self-walk drive mode with fast-move ON. 0 = 0x04 only (no legs); 1 = legacy 0x0C(dest)+0x04; 2 = 0x0C(source)+0x04; 3 = send nothing; 5 = delay then 0x04; 7 = nothing on a good walk, 0x04 only as a correction (default, RTK-faithful). |
+| `P1998_V495_SELF_MOVE` | integer | `7` | 4.95 self-walk drive mode; only mode 7 reads the fast-move flag. 0 = 0x04 only (no legs); 1 = legacy 0x0C(dest)+0x04; 2 = 0x0C(source)+0x04; 3 = send nothing; 5 = delay then 0x04; 7 = fast-move aware (default, RTK-faithful): with fast-move ON every good step gets a no-scroll 0x04, with it OFF P1998_V495_SLOW_MOVE drives the step. A refused step gets the 0x04 snap-back in every mode. |
 | `P1998_V495_ACK_MS` | integer | `360` | Delay before the mode-5 unblock 0x04. Must be at least the client's local walk animation (~360ms) or the legs are cut short. |
 | `P1998_V495_SLOW_MOVE` | integer | `5` | Self-walk drive mode with fast-move OFF. 0 = 0x04 only; 1 = 0x0C(dest); 2 = 0x0C(source)+delayed 0x04; 3 = 0x0C(dest)+delayed 0x04; 4 = 0x0C(source) only; 5 = the 0x26 self-walk primitive (default). |
 | `P1998_V495_REALM` | `0` / `1` | `0` (off) | Set the 0x15 realm-center flag, which locks the client camera dead-centre on the character. |
 | `P1998_V495_FASTMOVE_DEFAULT` | `0` / `1` | `0` (off) | Pre-world-entry placeholder for a session's fast-move flag. The real value is restored from the character (SettingFlags bit 9); 1 forces the old assumed-ON placeholder, which was the desync bug. |
 | `P1998_V495_FASTMOVE_TRUST_TOGGLE` | `0` / `1` | `1` (on) | Drive the walk reply off the session's fast-move flag (toggled in lockstep via 0x1b/09). 0 forces the old always-0x26 behaviour. |
-| `P1998_V495_PUSHMAP` | `0` / `1` | `1` (on) | Push a margin strip of terrain ahead of a walking 5.33 client instead of waiting for it to ask. 0 disables the push entirely and restores the visible black cells. |
+| `P1998_V495_PUSHMAP` | `0` / `1` | `1` (on) | Push terrain to the client instead of waiting for it to ask, 4.95 and 5.33 alike: the whole window on login, warp and refresh, then a margin strip ahead of each step. 0 disables the push entirely and restores the visible black cells. |
 | `P1998_V495_PUSHGRACE` | integer ≥ 0 | `0` | Steps to defer that push for. 0 pushes on every step; a higher value restores the old deferral to the client's own requests. |
 
 ### Rendering and tile diagnostics

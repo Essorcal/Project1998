@@ -80,7 +80,7 @@ def read_dat(path):
 def load_palettes(raw):
     """DLPalette collection -> list of (256,3) uint8 RGB (color table = block's LAST 1024 bytes).
 
-    Each block is: 32-byte header ("DLPalette" + fields incl. an animation-entry count C at byte 23),
+    Each block is: 32-byte header ("DLPalette" + fields incl. the animation-entry count C, the u32 at +24),
     then 2*C animation bytes, then the 256 RGBA color entries -- so the colors sit at the END of the
     block (size == 1056 + 2*C) and end-anchoring is correct for all C. Reading a fixed +32 works only
     for C==0 blocks and lands in the header/animation region for the ~24% that animate (that turns the

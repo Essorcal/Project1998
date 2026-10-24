@@ -302,8 +302,10 @@ public sealed partial class Session
 
         byte Box(int sub) => (byte)(_char.HasSetting(sub) ? 1 : 0);   // 1 = feature ON (OFF-radio unchecked → ON shown)
         // Fast-move (bit 9) is now persisted in SettingFlags like the other three (set by the sub-9 toggle), so
-        // it reads uniformly here and survives relog. Fast-move behaviour stays client-authoritative per walk;
-        // this bit is just the remembered preference the checkbox reflects.
+        // it reads uniformly here and survives relog. Fast-move itself is a SESSION flag (_fastMove,
+        // docs/4.x/Protocol.md §10.1): restored from this bit at world entry, flipped in lockstep by 0x1b/09,
+        // carried to a 4.95 client in stats byte 46 and read by HandleWalk — not a per-walk bit. Here the same
+        // bit just seeds the checkbox.
         var body = new byte[] { Box(0x06), Box(0x05), Box(0x04), Box(0x09) };
         SendMap(ServerOp.Options, _gameInc++, body, "options(0x23) weather/magic/advice/fastmove");
     }

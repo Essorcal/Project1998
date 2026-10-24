@@ -120,10 +120,12 @@ public sealed partial class Session
     private long _writtenSeq;   // the newest snapshot actually written, under _writeGate
 
     // --- client version, tagged by the port the connection arrived on (unified dual-client server) ---
-    // 4.95 speaks the original protocol (local map files; incoming 0x06 = walk-sync). 5.33 streams
-    // terrain from the server (incoming 0x05/0x06 = map-data requests -> reply 0x06). Rather than sniff
-    // the wire we give 5.33 its own listener ports and stamp the version here; the proven 4.95 path is
-    // never entered by a 5.33 session. Login 2000 / game 2005 = V495; login 2001 / game 2006 = V533.
+    // Both clients stream terrain from the server (incoming 0x05 = map-data request -> reply 0x06; 4.95's
+    // local .map files are only a cache of that stream) and both send 0x06 as a walk (see the 0x05/0x06
+    // split in the dispatcher). Much of what we send back still differs, e.g. the 0x06 cell (2 shorts on
+    // 4.95, 3 on 5.33). Rather than sniff the wire we give 5.33 its own listener ports and stamp the version
+    // here; the proven 4.95 path is never entered by a 5.33 session. Login 2000 / game 2005 = V495; login
+    // 2001 / game 2006 = V533.
     public enum ClientVersion { V495, V533 }
     private readonly ClientVersion _ver;
     private bool IsLoginPort => ChannelPorts.IsLogin(_port);
@@ -187,13 +189,15 @@ public sealed partial class Session
     //                              still cancelled by 0x04's move-commit, so no visible legs.
     //   3 = send nothing         -> pure local walk; 1 PERFECT animated step, then the client blocks
     //                              awaiting a server ack (proven live: local controller does move+legs+camera).
-    //   5 = delay + 0x04         -> DEFAULT: send nothing immediately so the LOCAL controller animates the
+    //   5 = delay + 0x04         -> send nothing immediately so the LOCAL controller animates the
     //                              full step (legs + slide + camera), then after the anim completes send 0x04
     //                              to unblock the next step. By then move-commit's unregister is a no-op, so
     //                              the legs are NOT cancelled. P1998_V495_ACK_MS tunes the delay.
-    //   7 = nothing on a good walk (RTK-faithful) -> DEFAULT: client moves/animates/scrolls locally; 0x04
-    //       is sent ONLY as a correction (desync/block). Stops our per-step 0x04 from re-scrolling the
-    //       camera the client already moved (the residual "wonkiness" + fighting realm-center).
+    //   7 = fast-move aware (RTK-faithful) -> DEFAULT. Fast-move ON: the client moves/animates/scrolls locally
+    //       and every good step gets a NO-SCROLL 0x04 (view anchors 0xFFFF), which releases its walk gate
+    //       without re-scrolling the camera it already moved (no residual "wonkiness", no fight with
+    //       realm-center). Fast-move OFF: P1998_V495_SLOW_MOVE drives the step (default 5, the 0x26
+    //       self-walk). A refused step gets the normal 0x04 snap-back, as in every mode.
     private static readonly int V495SelfMove = ServerConfig.Current.SelfMove;
 
     // Delay (ms) before the mode-5 unblock 0x04. Must be >= the client's local walk animation (~4 frames,
@@ -704,7 +708,9 @@ public sealed partial class Session
                 HandleTurn(dec);
                 break;
             // 0x1b = client setting toggle. body[0] = which setting (RTK settings-parse cases):
-            //   0x07 = Realm center (F4)   0x09 = Fast move   ... others not yet handled.
+            //   0x00 = Ride ('r') or Options open (F10), 0x02 group, 0x07 realm center (F4), 0x08 exchange,
+            //   0x09 fast move, 0x0A clan whisper, and the flag-only toggles 0x01/03/04/05/06/0D/0E/0F; any
+            //   other id is logged as not handled. See HandleSetting.
             case ClientOp.Setting:
                 HandleSetting(dec);
                 break;
@@ -714,13 +720,15 @@ public sealed partial class Session
             // This block used to read "4.95 differs: 0x05 unused" and dropped every 4.95 0x05 with a
             // "no V495 handler" log line. That was wrong: 4.95 sends the IDENTICAL request, 2161 of them
             // in one session log, body =
-            //     x0(u16BE) y0(u16BE) w(u8) h(u8) 00 checksum(u16BE) 00
+            //     x0(u16BE) y0(u16BE) w(u8) h(u8) + 4 trailing bytes (uninitialized stack, not a checksum)
             //     00 00 00 00 0c 0c 00 63 c2 00   -> (0,0)     12x12
             //     00 6d 00 7e 13 11 00 d1 1c 00   -> (109,126) 19x17   (the 17x15 viewport + pad)
             // — which is exactly what HandleMapRequest already parses. The 4.95 client streams its terrain
-            // from the server like every later client; the local .map files are a CACHE it verifies (hence
-            // the checksum, which the walk 0x06 also carries), not the only source. That's why some 4.x
-            // client distributions ship no Maps directory at all.
+            // from the server like every later client; the local .map files are a CACHE it fills from that
+            // stream, not the only source. That's why some 4.x client distributions ship no Maps directory at
+            // all. The 4 trailing bytes (the walk 0x06 carries them too) were once read as a cache checksum; a
+            // Frida capture showed they are uninitialized stack, and the server ignores them (docs/4.x/
+            // Protocol.md §7.1's 0x06 row, §10.7).
             case ClientOp.MapRequest:
                 HandleMapRequest(dec);
                 break;
@@ -781,10 +789,12 @@ public sealed partial class Session
                 if (ActionAllowed(ClientOp.Cast)) HandleCast(dec);
                 else if (CastQueueEnabled) QueueCast(dec);
                 break;
-            // 0x66 = right-click "examine item" on a bag slot. Answered with a 0x66 reply that the client's
-            // handler 0x4511b0 renders as the item-detail popup (stats + wear requirements). Both directions
-            // are RE'd from the 4.95 binary — see HandleItemInfoRequest / SendItemInfo for the wire formats
-            // and the builder/handler addresses. Leaving it unanswered is what made the client retry ~6×.
+            // 0x66 = right-click "examine item" on a bag slot. Answered with the 0x59 tooltip (sub-kind 0, the
+            // inventory pane's own text box, anchored on the click's Y from body[1]) — the default and only
+            // reachable reply mode. Both directions are RE'd from the 4.95 binary — see HandleItemInfoRequest /
+            // SendItemTooltip / SendItemInfo for the wire formats and the builder/handler addresses (a 0x66
+            // reply, handler 0x4511b0, is a "go to this URL" packet, not an item popup). Leaving it unanswered
+            // is what made the client retry ~6×.
             // body[0] splits the two: 0 = examine (`00 cursorY 00 01 01 SLOT 01 00 00 00`), 1 = "send me
             // the town/nation table" (the fixed `01 00 01 01 00 01 01 00` the client emits from 0x449ed0
             // when its own table is empty, right before the 0x18 user-list request). See Session.UserList.
@@ -1280,7 +1290,8 @@ public sealed partial class Session
     // The client asks for the tiles in its viewport with a view-rect request (0x05), and we reply with an
     // 0x06 cell block. Request layout is identical on 4.95 and 5.33 (confirmed from the 5.33 binary handler
     // sub_469060, the Mithia 7.x reference clif_parsemap/clif_sendmapdata, AND a live 4.95 capture):
-    //   request body : x0(BE u16) y0(BE u16) w(u8) h(u8) [00 checksum(BE u16) 00 on 4.95]
+    //   request body : x0(BE u16) y0(BE u16) w(u8) h(u8) [+ 4 trailing bytes on 4.95: uninitialized stack,
+    //                  not a checksum — ignored]
     // The REPLY differs in cell width, because the two clients pack passability differently:
     //   5.33 : x0 y0 w h | { tile(BE) pass(BE) obj(BE) } * w*h        -- 3 shorts, pass in its own short
     //   4.95 : x0 y0 w h | { ground(BE) object(BE) }    * w*h        -- 2 shorts, pass in ground's top 2 bits
@@ -1399,11 +1410,12 @@ public sealed partial class Session
     }
 
     // ---- walk-driven viewport streaming ----------------------------------------------------------------
-    // The client only sends its 0x05 map-data request on MAP ENTRY, not per step. Walk far enough from where
-    // you arrived and you run off the end of what was streamed and hit unwritten cells — a black wall. (It
-    // shows as a hard edge rather than a gradual fade because the client's map array is the memory-mapped
-    // cache file, freshly zero-filled for a map it has never cached.) So the SERVER has to push terrain as
-    // the player moves; that is what the walk 0x06's view checksum is for.
+    // The client's own 0x05 map-data requests do not keep up with a walk: it re-requests about every five
+    // steps, only 18x16 around itself, and not always (measured; see the note above PushMap below). Walk past
+    // what was streamed and you hit unwritten cells — a black wall. (It shows as a hard edge rather than a
+    // gradual fade because the client's map array is the memory-mapped cache file, freshly zero-filled for a
+    // map it has never cached.) So the SERVER pushes terrain as the player moves. (The walk 0x06's 4 trailing
+    // bytes are no view checksum to drive this from: they are uninitialized stack, docs/4.x/Protocol.md §10.7.)
     //
     // We track the rectangle already sent for the current map and, after each step, extend it. Only the
     // newly-exposed strip goes out (a step exposes one row or one column, ~21 cells / ~84 bytes) rather than
@@ -1533,15 +1545,18 @@ public sealed partial class Session
     private byte _realm = RealmCenter;   // realm-center camera lock; toggled live by F4 (0x1b sub-cmd 0x07)
     private int _lockOx, _lockOy;        // camera origin frozen when realm-center turned ON (map top-left tile)
     // Fast-move = the client's movement model (RTK clif_parsewalk gates on FLAG_FASTMOVE):
-    //   ON  = client-authoritative: the client moves/animates freely and is only corrected on desync.
-    //         The server must send the walker NOTHING on a good step (0x26 self-walk is skipped).
+    //   ON  = client-authoritative: the client moves/animates the step itself and is corrected (0x04 snap-back)
+    //         only when a step is refused. Its walk gate still waits for an ack, so each good step gets a
+    //         NO-SCROLL 0x04 instead of the 0x26 self-walk (the engagement note below; HandleWalk, mode 7).
     //   OFF = server-authoritative: the client will NOT move until the server assigns the tile, so every
     //         step must be answered with a position/move packet.
     // The client toggles it locally and notifies us via 0x1b sub-cmd 0x09 (it does NOT report its state on
-    // connect). The client PERSISTS fast-move across launches; RTK keeps server and client in lockstep by
-    // ALSO persisting it server-side (SettingFlags bit 9) and restoring it at login, then flipping both only
-    // together via 0x1b/09 (RTK never seeds it over the wire — clif_sendoptions is dead code). So the real
-    // value is loaded from the character at world entry (see HandleArrival: `_fastMove = _char.HasSetting(9)`);
+    // connect). Whether the client itself keeps fast-move across launches is UNVERIFIED — nobody has checked
+    // the binary; docs/4.x/Protocol.md §10.1 says only that it boots its runtime flag OFF. RTK keeps server and
+    // client in lockstep by persisting it server-side (SettingFlags bit 9) and restoring it at login, then
+    // flipping both only together via 0x1b/09 (RTK never seeds it over the wire — clif_sendoptions is dead
+    // code). So the real value is loaded from the character at world entry (see HandleArrival: `_fastMove =
+    // _char.HasSetting(9)`);
     // this field initializer is only the pre-entry placeholder: OFF, or the old assumed-ON value with
     // P1998_V495_FASTMOVE_DEFAULT=1 (that ON default was the desync bug: it assumed every client booted with
     // fast-move enabled). It is NOT a fresh character's value: Character.SettingFlags' default seed SETS bit 9,

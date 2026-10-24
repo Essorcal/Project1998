@@ -288,7 +288,8 @@ public sealed class LoginSession
 
         // Online-guessing defense: refuse BEFORE verifying, so a burned-out address can't keep us doing
         // BCrypt work either. ConnGuard only limits how often an address may CONNECT — one connection can
-        // send unlimited 0x03s, and a 3-8 char password doesn't survive that.
+        // send unlimited 0x03s, and a short password (the rule asks only 4-16 characters with a digit,
+        // PasswordProblem) doesn't survive that.
         if (LoginThrottle.IsBlocked(_ip))
         {
             Log.Info($"   -> LOGIN BLOCKED (failed-attempt budget exhausted) from {_remote} for user='{_user}'");

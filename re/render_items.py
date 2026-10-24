@@ -1,10 +1,13 @@
 """Render frames from the client's Item.epf into a labeled contact sheet, so item icons can be
 identified by eye and mapped RTK-item -> client-frame. Item.epf has exactly 1310 frames == Item.tbl's
 1310 items, so FRAME INDEX == client item id; the 0x0F/0x37 icon field is that id (NOT the RTK ItmIcon).
+That is the CANONICAL frame index (table at 12 + u32@8, docs/4.x/Protocol.md §11c). THIS SCRIPT numbers
+frames one higher: it reads the table 12 bytes early (see epf_frame), so its frame N+1 is item id N.
 
-EPF frame TOC entry (16B, from verify_color_frames.py): top(i16) left(i16) pixOff(u32) stencilOff(u32)
-bottom(i16) right(i16). Raw 8bpp indices at 12+pixOff. Width from the box, height derived from the byte
-count so the whole span is used. Palette per item from Item.tbl -> Item.pal (15 "DLPalette" blocks).
+EPF frame TOC entry (16B), canonically: top(i16) left(i16) bottom(i16) right(i16) pixOff(u32)
+stencilOff(u32); epf_frame unpacks the early-read bytes under other names (see there). Raw 8bpp indices at
+12+pixOff. Both dimensions come from the box, and epf_frame refuses a frame unless w*h == stencilOff-pixOff.
+Palette per item from Item.tbl -> Item.pal (15 "DLPalette" blocks).
 
 Usage: python render_items.py <lo> <hi> [outPng] [scale] [cols]
 """
@@ -37,13 +40,16 @@ def load_tbl_palettes(path="Item.tbl"):
                 if k.strip() == "Palette": pal[idn] = int(v)
     return pal
 
-# CORRECTED 2026-08-07. The 16-byte TOC entry read at toc+i*16 is
-#   top(i16) left(i16) pixOff(u32) stencilOff(u32) bottom(i16) right(i16)
-# but the trailing bottom/right pair belongs to the NEXT frame's origin, not this one. The size of frame i
-# is therefore (left[i] - right[i-1]) x (top[i] - bottom[i-1]) -- that reproduces stencilOff-pixOff for
-# 1309/1309 Item.epf frames exactly, where the old same-entry box matched almost none of them and the
-# n//w fallback sheared every sprite whose box was wrong. Frame 0 has no predecessor and is unusable, so
-# Item.epf frame N+1 == client item id N (id 265 = the green helm drawn from frame 266).
+# CORRECTED 2026-08-07; RE-READ 2026-10-24 against the 4.95 install. This script reads the table at u32@8,
+# 12 bytes before the canonical table at 12 + u32@8 (docs/4.x/Protocol.md §11c), whose entries are
+#   top(i16) left(i16) bottom(i16) right(i16) pixOff(u32) stencilOff(u32).
+# Read that early, the 16 bytes at toc+i*16 are canonical entry i-1's bottom, right, pixOff, stencilOff and
+# then entry i's top, left -- unpacked below as top, left, pix, sten, bottom, right. So the box taken across
+# two entries, (left[i] - right[i-1]) x (top[i] - bottom[i-1]), is canonical frame i-1's own box, with its
+# own pixOff and stencilOff: it reproduces stencilOff-pixOff for 1309/1309 Item.epf frames, where the old
+# same-entry box matched almost none of them and the n//w fallback sheared every sprite whose box was wrong.
+# This script's frame i IS canonical frame i-1 (canonical frame 0 is a real 24x24 frame it cannot reach),
+# hence its frame N+1 == client item id N (id 265, the green helm, is canonical frame 265 and frame 266 here).
 def epf_frame(epf, fi):
     fc, = struct.unpack_from("<H", epf, 0)
     toc, = struct.unpack_from("<I", epf, 8)
