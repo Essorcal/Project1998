@@ -314,10 +314,10 @@ public sealed class NpcContext
 
     /// <summary>The Dog's cleanse leaving an NPC subpath (RTK dog_linguist.lua <c>cleanse</c>,
     /// <c>player:updatePath(player.baseClass, player.mark)</c>): a Chung ryong, Baekho, Ju jak or Hyun moo goes back
-    /// to its base class, rank kept. Anyone else is left as they are. RTK's call is unconditional; today the two
-    /// agree, because the only paths a player can hold besides the base classes and Peasant are the NPC subpaths
-    /// (<see cref="Content.PlayablePaths"/>). Whether the cleanse should also take a PC subpath is for the work that
-    /// makes PC subpaths holdable. True if the path changed.</summary>
+    /// to its base class, rank kept. Any other path is left as it is. RTK's call is unconditional, so it would also
+    /// return a PC subpath to its base; this one does not, because leaving a PC subpath belongs to the PC-subpath
+    /// rules (<c>@subpath leave</c>, wherever PC subpaths can be held), not to the Dog. True if the path
+    /// changed.</summary>
     public bool LeaveNpcSubpath()
     {
         int cls = _s.CharClassId;

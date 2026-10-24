@@ -115,6 +115,77 @@ public sealed class NpcSubpathQuestTests
         }
     }
 
+    /// <summary>Steps at most a walker takes on the field before the fact gives up: the chance that the server's
+    /// own one-in-fifty roll misses every one of them is (49/50)^3000, about 4e-27.</summary>
+    private const int FieldSteps = 3000;
+
+    /// <summary>
+    /// <b>Walking the field reaches the Watcher.</b> The fact above calls <c>WatcherStep</c> with a chosen roll, so
+    /// it pins the rabbit's rules and not that walking ever asks it: with the call in
+    /// <c>Session.OnScriptedTileStep</c> deleted, all of them stay green and no player can ever be blessed (PR #394's
+    /// review, F1). Here an Ox-karma player stands in the box on Buya and sends real <c>0x06</c> walk packets through
+    /// <c>Session.Receive</c>, the read loop's entry, so each accepted step runs <c>HandleWalk</c> to its end and the
+    /// after-step hooks with it. The roll is the server's own (<c>QuestRandom</c>, not seamed); the walker goes back and
+    /// forth between two walkable tiles of the box until the rabbit has smiled, at most <see cref="FieldSteps"/>
+    /// steps. It finds the pair by walking east from each tile of the box in turn, reporting that tile as the one it
+    /// stands on, which the handler honours (its client-authoritative resync); a refused step leaves it there.
+    /// <para>Red with <c>TryWatcherBlessing();</c> removed from <c>OnScriptedTileStep</c>, Debug and Release: no flag
+    /// and no box after all the steps.</para>
+    /// </summary>
+    [Fact]
+    public void WalkingTheFieldReachesTheWatcher()
+    {
+        var info = Content.Maps[NpcSubpathQuest.WatcherMap];
+        var (s, o, c) = _fx.PlayerWith(Name("FieldWalker"), ch =>
+        {
+            ch.Level = 99;
+            ch.Karma = OxKarma;
+            ch.MapXs = info.Xs;                       // HandleWalk bounds the step by the character's own copy
+            ch.MapYs = info.Ys;
+        }, NpcSubpathQuest.WatcherMap, 12, 8);
+        try
+        {
+            bool Blessed() => QuestState.Over(c, QuestState.Registry).Get(NpcSubpathQuest.BlessedReg) == 1;
+            int steps = 0, accepted = 0;
+            bool StepTo(byte dir, ushort fromX, ushort fromY, int toX, int toY)
+            {
+                s.Receive(Walk(dir, fromX, fromY));
+                steps++;
+                bool ok = s.PlayerX == toX && s.PlayerY == toY;
+                if (ok) accepted++;
+                return ok;
+            }
+
+            // Two tiles of the box a player can walk between both ways: from each tile, east and back west.
+            (ushort X, ushort Y)? west = null;
+            for (int y = NpcSubpathQuest.FieldY0; y <= NpcSubpathQuest.FieldY1 && west is null && !Blessed(); y++)
+                for (int x = NpcSubpathQuest.FieldX0; x < NpcSubpathQuest.FieldX1 && west is null && !Blessed(); x++)
+                    if (StepTo(1, (ushort)x, (ushort)y, x + 1, y) && StepTo(3, (ushort)(x + 1), (ushort)y, x, y))
+                        west = ((ushort)x, (ushort)y);
+            Assert.True(west is not null || Blessed(), "no two tiles of the Watcher's box can be walked between");
+
+            // Back and forth between them, each step reporting the tile the server has us on (a normal step).
+            while (!Blessed() && steps < FieldSteps)
+            {
+                var (wx, wy) = west!.Value;
+                bool atWest = s.PlayerX == wx;
+                Assert.True(atWest ? StepTo(1, wx, wy, wx + 1, wy) : StepTo(3, (ushort)(wx + 1), wy, wx, wy),
+                            $"step {steps} between ({wx},{wy}) and ({wx + 1},{wy}) was refused");
+            }
+
+            Assert.True(Blessed(), $"{steps} steps ({accepted} accepted) on the field and the Watcher never looked");
+            var boxes = Boxes(o);
+            Assert.Equal(new[] { NpcSubpathQuest.WatcherSmiles }, boxes.Select(b => b.Text));
+            Assert.Equal((1, 0x8000 | NpcSubpathQuest.WatcherLook, NpcSubpathQuest.WatcherColor),
+                         (boxes[0].Head, boxes[0].Gfx, boxes[0].Color));
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
+    /// <summary>A real <c>0x06</c> walk packet: the direction, the step counter, and the tile the client says it is on.</summary>
+    private static byte[] Walk(byte dir, ushort x, ushort y) =>
+        SessionFixture.Frame(ClientOp.Walk, new byte[] { dir, 0, (byte)(x >> 8), (byte)x, (byte)(y >> 8), (byte)y });
+
     // ---- Baek ---------------------------------------------------------------------------------------------------
 
     /// <summary>Baek is still a shop (Buy / Sell, in that order, the stock untouched), and the subpath words are
