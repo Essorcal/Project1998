@@ -3219,7 +3219,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   san taught it.
   > **The rank ladder stops at Sam san** (`Content.MaxMark` = 3), and `@mark`/`@class` refuse anything above
   > it rather than clamping. Paths.csv names five ranks and Items.csv carries 34 Sa san (mark 4) items, but
-  > **Spells.csv has 46 / 57 / 18 / 0 / 0 rows for marks 1-5** — that exact asymmetry is what proved Sam san
+  > **Spells.csv has 46 / 57 / 48 / 0 / 0 rows for marks 1-5** — that exact asymmetry is what proved Sam san
   > was an RTK implementation gap rather than an out-of-era feature (`nexustk-495-subpath-spells`), and Sa
   > san is the same gap one tier up. A rank 4 would be a title and one level of stat growth over nothing.
   > *Known consequence:* those 34 Sa san items stay unwearable, since `ItmMark` reads the same field. That is

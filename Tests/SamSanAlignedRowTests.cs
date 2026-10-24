@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using Server;
 using Shared;
@@ -18,8 +19,9 @@ namespace Tests;
 /// twin), and nothing said so.</para>
 ///
 /// <para>The names are the live Nexus Atlas class pages', each listed in its family's own block under the family's one
-/// price (<c>C:\Repo\Project1998\briefs\sources\era-pages\atlas_live_*</c>, read 2026-10-10 and 2026-10-21; the line
-/// of each name is in <see cref="Families"/>). Each new row copies its base's Spells.csv row (type, prompt, path, mark
+/// price: https://www.nexusatlas.com/spells/warrior.php (fetched 2026-10-21) and rogue.php, mage.php and poet.php
+/// (fetched 2026-10-10); <c>game-data/Sources.csv</c> <c>atlas-warrior-spells</c>, <c>atlas-rogue-spells</c>,
+/// <c>atlas-mage-spells</c>, <c>atlas-poet-spells</c>. Each new row copies its base's Spells.csv row (type, prompt, path, mark
 /// 3) with alignment 1, 2 or 3, its base's spell_effects.csv row and SpellParams.csv row, and joins whatever its base
 /// is keyed into in code: Focused Blow's <c>SacrificeAliases</c> entry, Dooms Fire's pool drain, Mend equipment's
 /// verb. Wind master's three stay not castable, as Wind master is, until a source names its creature.</para>
@@ -49,48 +51,47 @@ public sealed class SamSanAlignedRowTests
     /// "Life's end" and "Winter chill"; the spelling is the page's.</summary>
     public sealed record Family(string Base, (string Key, string Name)[] Rows, int Gold, (string Item, int Amount)[] Items);
 
-    /// <summary>The ten families. Page lines are in <c>C:\Repo\Project1998\briefs\sources\era-pages\</c>:
-    /// warrior <c>atlas_live_warrior_20261021.html</c>, rogue <c>atlas_live_rogue_20261010.html</c>, mage
-    /// <c>atlas_live_mage_20261010.html</c>, poet <c>atlas_live_poet_20261010.html</c>.</summary>
+    /// <summary>The ten families, each with the page it is listed on (https://www.nexusatlas.com/spells/&lt;class&gt;.php)
+    /// and the price that page prints in the family's block.</summary>
     public static readonly Family[] Families =
     {
-        // warrior 3076 / 3079 / 3085; price 3059 "5 Mountain ginseng 50,000 Coins"
+        // warrior.php, price "5 Mountain ginseng 50,000 Coins"
         new("healths_return_warrior", new[] { ("mending_of_the_soul_warrior", "Mending of the Soul"),
             ("spirits_salvation_warrior", "Spirit's Salvation"), ("gift_of_life_warrior", "Gift of Life") },
             50_000, new[] { ("mountain_ginseng", 5) }),
-        // warrior 3170 / 3173 / 3179; price 3153 "10 Fine cloth 10 Fine metal 150,000 Coins"
+        // warrior.php, price "10 Fine cloth 10 Fine metal 150,000 Coins"
         new("mend_equipment_warrior", new[] { ("restore_equipment_warrior", "Restore Equipment"),
             ("luster_return_warrior", "Luster Return"), ("reforge_warrior", "Reforge") },
             150_000, new[] { ("fine_metal", 10), ("fine_cloth", 10) }),
-        // rogue 5614 / 5617 / 5623; price 5597 "4 Mountain Ginseng 100,000 Coins"
+        // rogue.php, price "4 Mountain Ginseng 100,000 Coins"
         new("explorers_remedy_rogue", new[] { ("kwisin_explorers_remedy_rogue", "Kwi-Sin Explorers Remedy"),
             ("mingken_explorers_remedy_rogue", "Ming Ken Explorers Remedy"), ("ohaeng_explorers_remedy_rogue", "Ohaeng Explorers Remedy") },
             100_000, new[] { ("mountain_ginseng", 4) }),
-        // rogue 5708 / 5711 / 5717; price 5691 "750,000 coins"
+        // rogue.php, price "750,000 coins"
         new("focused_blow_rogue", new[] { ("burial_dance_rogue", "Burial Dance"),
             ("flowing_energy_rogue", "Flowing Energy"), ("freeform_rogue", "Freeform") },
             750_000, Array.Empty<(string, int)>()),
-        // rogue 5802 / 5805 / 5811; price 5785 "2 Mountain ginseng 100,000 coins"
+        // rogue.php, price "2 Mountain ginseng 100,000 coins"
         new("power_stream_rogue", new[] { ("phantoms_kiss_rogue", "Phantoms Kiss"),
             ("life_herbs_rogue", "Life Herbs"), ("meditation_rogue", "Meditation") },
             100_000, new[] { ("mountain_ginseng", 2) }),
-        // mage 5050 / 5053 / 5059; price 5033 "750,000 Coins"
+        // mage.php, price "750,000 Coins"
         new("dooms_fire_mage", new[] { ("deaths_awakening_mage", "Deaths Awakening"),
             ("soul_rip_mage", "Soul Rip"), ("final_blow_mage", "Final Blow") },
             750_000, Array.Empty<(string, int)>()),
-        // mage 5144 / 5147 / 5153; price 5127 "10 Mountain ginseng 50,000 coins"
+        // mage.php, price "10 Mountain ginseng 50,000 coins"
         new("energy_flow_mage", new[] { ("spirit_heal_mage", "Spirit Heal"),
             ("natures_milk_mage", "Natures Milk"), ("peaceful_bliss_mage", "Peaceful Bliss") },
             50_000, new[] { ("mountain_ginseng", 10) }),
-        // poet 5520 / 5523 / 5529; price 5503 "10 Mountain ginseng 100,000 coins"
+        // poet.php, price "10 Mountain ginseng 100,000 coins"
         new("charge_of_life_poet", new[] { ("vital_charge_poet", "Vital Charge"),
             ("blessing_of_life_poet", "Blessing of Life"), ("sacred_soil_poet", "Sacred Soil") },
             100_000, new[] { ("mountain_ginseng", 10) }),
-        // poet 5708 / 5711 / 5717; price 5691 "10 Purple ring 100,000 Coins"
+        // poet.php, price "10 Purple ring 100,000 Coins"
         new("ensure_poet", new[] { ("spirit_shield_poet", "Spirit Shield"),
             ("soul_guard_poet", "Soul Guard"), ("rock_blessing_poet", "Rock Blessing") },
             100_000, new[] { ("purple_ring", 10) }),
-        // poet 5802 / 5805 / 5811; price 5785 "350,000 Coins"
+        // poet.php, price "350,000 Coins"
         new("cotw_wind_master_poet", new[] { ("kwisin_master_poet", "Kwi-Sin Master"),
             ("mingken_master_poet", "Ming-Ken Master"), ("ohaeng_master_poet", "Ohaeng Master") },
             350_000, Array.Empty<(string, int)>()),
@@ -150,6 +151,45 @@ public sealed class SamSanAlignedRowTests
                 if (want != got) problems.Add($"{key}: {got} (want {want})");
             }
         }
+        Assert.True(problems.Count == 0, string.Join("\n", problems));
+    }
+
+    private static readonly MethodInfo BuildAlignFamiliesMi =
+        typeof(Content).GetMethod("BuildAlignFamilies", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    /// <summary>The family map the ability ladders are built from (<c>Content.BuildAlignFamilies</c>, the server's own
+    /// method): spell key to the key of the row leading its run.</summary>
+    private static Dictionary<string, string> AlignFamilies(IReadOnlyList<SpellDef> spells) =>
+        (Dictionary<string, string>)BuildAlignFamiliesMi.Invoke(null, new object[] { spells })!;
+
+    /// <summary>No set of three joins another family. <c>Content.BuildAlignFamilies</c> links a spell to its base only by
+    /// adjacency: within one (path, type) block, ordered by id, a run of ascending alignments after an alignment-0 row is
+    /// that row's family, and <c>Content.BuildSpellLadders</c> spreads each ladder rung to its whole family. So each set's
+    /// three must file under their own base (when their ids follow it) or under their own Kwi-Sin row (a run of their
+    /// own), all three alike, and never under another key; and every row that was there before keeps the leader it has
+    /// without the thirty. The bases' ids are consecutive, so only a set whose base ends its block's run can follow it:
+    /// Focused Blow's, Power stream's, Ensure's and Wind master's do; the other six lead their own run. Red with the ids
+    /// of 9e49491, where Explorer's remedy's three filed under Focused Blow and Charge of life's under Ensure. No base is
+    /// a rung today, so the misfiling changed no book; this keeps a later rung from carrying the wrong set.</summary>
+    [Fact]
+    public void NoRowsIdRunFilesItUnderAnotherFamily()
+    {
+        var newKeys = Families.SelectMany(f => f.Rows.Select(r => r.Key)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var leaderOf = AlignFamilies(Content.Spells);
+        var before = AlignFamilies(Content.Spells.Where(s => !newKeys.Contains(s.Key)).ToList());
+        var problems = new List<string>();
+        foreach (var f in Families)
+        {
+            var leaders = f.Rows.Select(r => leaderOf.GetValueOrDefault(r.Key, "(none)")).Distinct().ToList();
+            if (leaders.Count != 1 || (leaders[0] != f.Base && leaders[0] != f.Rows[0].Key))
+                problems.Add($"{f.Base}'s rows file under [{string.Join(", ", leaders)}] (want {f.Base} or {f.Rows[0].Key})");
+            else
+                _out.WriteLine($"{f.Base}: its three file under {leaders[0]}");
+        }
+        foreach (var (key, leader) in before)
+            if (leaderOf.GetValueOrDefault(key) != leader)
+                problems.Add($"{key} filed under {leader} without the thirty rows, now under {leaderOf.GetValueOrDefault(key)}");
+        Assert.True(before.Count > 800, $"the family map holds only {before.Count} keys");
         Assert.True(problems.Count == 0, string.Join("\n", problems));
     }
 
@@ -276,8 +316,9 @@ public sealed class SamSanAlignedRowTests
 
     /// <summary>Each row is learned from its class's trainer at level 99 for its family's price on the live page, which
     /// is the price of its base's row for the seven families #387 leaves alone; the three it moves (Explorer's remedy,
-    /// Power stream, Energy flow) are at #387's price, the page's (decision sheet item 8). Red on 473789e: no row has a
-    /// learn row, so no trainer would list one.</summary>
+    /// Power stream, Energy flow) are at #387's price, the page's (decision sheet item 8). Red on 473789e: the rows do not
+    /// exist. Without their learn rows a trainer would still list them (<c>SpellsForClass</c> falls back to the own-path
+    /// rule) and teach them free, showing "FREE"; this is the fact that catches that.</summary>
     [Fact]
     public void EachRowIsLearnedAtItsFamilysPrice()
     {

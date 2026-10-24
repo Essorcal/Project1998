@@ -542,7 +542,7 @@ public static partial class Content
 
     /// <summary>The highest subpath rank a character may hold: <b>3, Sam san</b> — the last one that exists
     /// as content. Paths.csv names five ranks per path and Items.csv carries 34 Sa san (mark 4) items, but
-    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 18 mark-3, and zero for 4 or 5.
+    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 48 mark-3, and zero for 4 or 5.
     /// (That asymmetry is exactly what proved Sam san was an RTK implementation gap rather than an
     /// out-of-era feature — see the nexustk-495-subpath-spells note; Sa san is the same gap, one tier up and
     /// not yet closed.) Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is one
