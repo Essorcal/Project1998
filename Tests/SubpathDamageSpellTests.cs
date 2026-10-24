@@ -1,3 +1,4 @@
+using System.Reflection;
 using Server;
 using Shared;
 using Tests.Support;
@@ -18,7 +19,9 @@ namespace Tests;
 /// <list type="bullet">
 /// <item>the numbers at a creature: damage, mana and wait (Assassinate 4,000 and 50 s on its caster's vita and mana; Ki
 /// strike 250 and 7 s; Hailstorm and Ice bombardment 190; Phoenix flames 880 and 1 s; Earth strike and Nature's smite 600
-/// within 10 tiles; Lightning storm 1,200 and 87 s, 3,600 to each creature within 10 tiles on a coin flip);</item>
+/// within 10 tiles; Lightning storm 1,200 and 87 s, 3,600 to each creature within 10 tiles on a coin flip, the 10-tile
+/// edge included);</item>
+/// <item>Assassinate and Phoenix flames never deflected, as RTK's engine never deflects a self-cast spell;</item>
 /// <item>the free refusal at a player the caster may not attack (the #351/#356 rule), and the spell landing on one on a
 /// PvP map;</item>
 /// <item>RTK's slips fixed: Phoenix flames' wait under its own key (the script arms <c>phoenix_flame</c>) and its
@@ -26,8 +29,9 @@ namespace Tests;
 /// <item>the learn levels as RTK's <c>requirements</c> give them, and Nature's smite without the mark our row carried.</item>
 /// </list>
 ///
-/// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 caster with Will 140 (so
-/// the floor in RTK's <c>floor((will + 1) / 2 * n)</c> shows), at creatures with 0 AC unless a fact says otherwise. The
+/// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c> (but the two edge facts, which call the sweep
+/// directly at a certain roll, or <c>Session.ApplyCast</c> many times over), by a fresh level-99 caster with Will 140
+/// (so the floor in RTK's <c>floor((will + 1) / 2 * n)</c> shows), at creatures with 0 AC unless a fact says otherwise. The
 /// content-free maps have no Maps.csv row, so PvP is off on them, as in every town; the two arenas are real PvP maps
 /// with no spawns and no NPCs. No other class uses any of them.</para>
 /// </summary>
@@ -48,6 +52,11 @@ public sealed class SubpathDamageSpellTests
 
     private readonly SessionFixture _fx;
     private static int _serial;
+
+    /// <summary><c>Session.ApplyCast</c>, the dispatch a 0x0F cast reaches after the action budget, as
+    /// <c>SpellDispatchRouteTests</c> drives it: for a fact that casts the same spell many times in a row.</summary>
+    private static readonly MethodInfo ApplyCastMi =
+        typeof(Session).GetMethod("ApplyCast", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     public SubpathDamageSpellTests(SessionFixture fx) => _fx = fx;
 
@@ -246,10 +255,68 @@ public sealed class SubpathDamageSpellTests
         finally { _fx.World.LeaveMap(caster, map); }
     }
 
+    // ===== never deflected (review F1) ======================================================================
+    // RTK rolls a spell's deflect in its engine only for a cast that has a target: the canfail test sits inside
+    // `if (sd->target)` (clif_parsemagic), and a type-5 spell never sets one. Assassinate and Phoenix flames are type 5,
+    // so RTK never deflects either, though its table carries canfail 1 for both. Their rows carry SplCanFail 0 here,
+    // which every deflect roll reads first. A creature with Protection 255 deflects every SplCanFail cast
+    // (100 - 0.9^255 × 100 rounds to 100).
+
+    /// <summary>Assassinate at a creature that deflects everything still strikes it, and only then takes the caster's
+    /// third of vita: the creature lost 27,252 (or the critical's 136,258) and the caster kept 6,001 of 9,001, with no
+    /// deflect line. Red on 87d0031: "Your magic has been deflected.", the creature untouched, and the caster's vita
+    /// already down to 6,001.</summary>
+    [Fact]
+    public void AssassinateIsNeverDeflected()
+    {
+        var sp = Spell("assassinate");
+        var mob = AddCreature(NumbersMap, CX + 1, CY, protection: 255);
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string what = $"lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], lost {Lost(mob)} (want " +
+                          $"27252 or 136258), vita {c.Hp} (want 6001), spent {Mana - c.Mp} (want 4000)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "You cast Assassinate." })
+                        && Lost(mob) is 27_252 or 136_258 && c.Hp == 6_001 && c.Mp == Mana - 4_000, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            _fx.World.DespawnMob(NumbersMap, mob);
+        }
+    }
+
+    /// <summary>Phoenix flames at four creatures that deflect everything strikes all four for RTK's amount. Red on
+    /// 87d0031: all four lost 0, and the 880 mana was spent.</summary>
+    [Fact]
+    public void PhoenixFlamesIsNeverDeflected()
+    {
+        var sp = Spell("phoenix_flames");
+        var sides = new[] { AddCreature(NumbersMap, CX + 1, CY, protection: 255), AddCreature(NumbersMap, CX - 1, CY, protection: 255),
+                            AddCreature(NumbersMap, CX, CY - 1, protection: 255), AddCreature(NumbersMap, CX, CY + 1, protection: 255) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string what = $"lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], sides lost " +
+                          $"{string.Join("/", sides.Select(Lost))} (want {PhoenixFlames} each), spent {Mana - c.Mp} (want 880)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "You cast Phoenix flames." })
+                        && sides.All(s => Lost(s) == PhoenixFlames) && c.Mp == Mana - 880, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
     /// <summary>Lightning storm takes 1,200 mana and an 87 s wait, and gives each creature within 10 tiles (on the
-    /// larger axis, the edge included) a coin flip for 3,600; creatures 11 tiles off are untouched. Thirty creatures in
-    /// range: each lost 3,600 or nothing, and both happened (the chance all thirty land the same way is 2 in 2^30). Red
-    /// on 821914e: with nothing faced the generic cast was refused, so nothing was struck or spent.</summary>
+    /// larger axis) a coin flip for 3,600; creatures 11 tiles off are untouched. Thirty creatures in range: each lost
+    /// 3,600 or nothing, and both happened (the chance all thirty land the same way is 2 in 2^30). The 10-tile edge
+    /// itself is pinned by the two edge facts below, which this one cannot do: a creature on the edge that got no flip
+    /// looks like one that lost it. Red on 821914e: with nothing faced the generic cast was refused, so nothing was
+    /// struck or spent.</summary>
     [Fact]
     public void LightningStormFlipsACoinForEveryCreatureWithinTenTiles()
     {
@@ -319,6 +386,79 @@ public sealed class SubpathDamageSpellTests
             _fx.World.LeaveMap(caster, PvpArena);
             _fx.World.LeaveMap(farP, PvpArena);
             foreach (var p in inRange) _fx.World.LeaveMap(p.s, PvpArena);
+        }
+    }
+
+    // ===== the 10-tile edge (review F2) =====================================================================
+    // RTK's distanceSquare(player, target, 10) passes |dx| <= 10 and |dy| <= 10 (Scripts/scripts.lua), so a creature
+    // or an attackable player exactly 10 tiles off on either axis is in reach and one 11 off is not. The two facts
+    // above cannot tell an edge target that got no flip from one that lost it.
+
+    /// <summary>The sweep itself at a certain roll: <c>Session.LuaRangeZap</c> at 100%, on a PvP map, strikes the
+    /// creatures exactly 10 tiles off (east, north, and a corner) and the player 10 off on both axes, and leaves the
+    /// creature and the player 11 off untouched. Goes red if the sweep's edge test stops at 9 tiles.</summary>
+    [Fact]
+    public void TheStormSweepReachesTenTilesAndNotEleven()
+    {
+        var sp = Spell("lightning_storm");
+        var edge = new[] { AddCreature(PvpArena, CX + 10, CY), AddCreature(PvpArena, CX, CY - 10),
+                           AddCreature(PvpArena, CX - 10, CY + 10) };
+        var beyond = AddCreature(PvpArena, CX + 11, CY - 3);
+        var (edgeP, _, edgeC) = Player(PvpArena, CX + 10, CY - 10);
+        var (farP, _, farC) = Player(PvpArena, CX - 11, CY);
+        var (caster, _, _) = Caster(sp, PvpArena);
+        try
+        {
+            int hit = caster.WithState(() => caster.LuaRangeZap(3_600, 10, 100, sp));
+            string what = $"struck {hit}; edge creatures lost {string.Join("/", edge.Select(Lost))}, 11 off lost " +
+                          $"{Lost(beyond)}; edge player lost {TargetHp - edgeC.Hp}, 11-off player lost {TargetHp - farC.Hp}";
+            Assert.True(edge.All(m => Lost(m) == 3_600) && Lost(beyond) == 0 && edgeC.Hp < TargetHp && farC.Hp == TargetHp
+                        && hit == 4, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(edgeP, PvpArena);
+            _fx.World.LeaveMap(farP, PvpArena);
+            foreach (var m in edge.Append(beyond)) _fx.World.DespawnMob(PvpArena, m);
+        }
+    }
+
+    /// <summary>The same edge through the spell itself, its SpellParams row and verb included (so through the verb's own
+    /// 10-tile reach): Lightning storm is cast until a creature and a player standing exactly 10 tiles off have each been
+    /// struck, at most 40 times (its wait cleared between casts), and a creature and a player 11 off are never struck.
+    /// The chance that an edge target in reach goes 40 coin flips without one is 2 in 2^40. Goes red if either the verb's
+    /// reach or the sweep's edge test stops at 9 tiles.</summary>
+    [Fact]
+    public void LightningStormReachesItsTenTileEdgeWhenCast()
+    {
+        var sp = Spell("lightning_storm");
+        var edge = AddCreature(PvpArena, CX + 10, CY - 10);
+        var beyond = AddCreature(PvpArena, CX - 11, CY);
+        var (edgeP, _, edgeC) = Player(PvpArena, CX - 10, CY + 10);
+        var (farP, _, farC) = Player(PvpArena, CX, CY + 11);
+        var (caster, _, _) = Caster(sp, PvpArena, mana: 100_000);
+        try
+        {
+            int casts = 0;
+            while (casts < 40 && (Lost(edge) == 0 || edgeC.Hp == TargetHp))
+            {
+                SpellCastSupport.ClearAether(caster, sp.Key);
+                caster.WithState(() => ApplyCastMi.Invoke(caster, new object?[] { sp, null, null }));
+                casts++;
+            }
+            string what = $"{casts} cast(s): edge creature lost {Lost(edge)}, edge player lost {TargetHp - edgeC.Hp}; " +
+                          $"11-off creature lost {Lost(beyond)}, 11-off player lost {TargetHp - farC.Hp}";
+            Assert.True(Lost(edge) > 0 && Lost(edge) % 3_600 == 0 && edgeC.Hp < TargetHp
+                        && Lost(beyond) == 0 && farC.Hp == TargetHp, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(edgeP, PvpArena);
+            _fx.World.LeaveMap(farP, PvpArena);
+            _fx.World.DespawnMob(PvpArena, edge);
+            _fx.World.DespawnMob(PvpArena, beyond);
         }
     }
 
@@ -518,10 +658,13 @@ public sealed class SubpathDamageSpellTests
         return sp!;
     }
 
-    private Mob AddCreature(ushort map, int x, int y)
+    /// <summary>A 10,000,000-vita creature with 0 AC on (<paramref name="x"/>, <paramref name="y"/>); Protection 255
+    /// deflects every SplCanFail cast.</summary>
+    private Mob AddCreature(ushort map, int x, int y, int protection = 0)
     {
         var mob = new Mob(_fx.World.AllocateMobId(), 1, (ushort)x, (ushort)y, $"Subpath target {Interlocked.Increment(ref _serial)}",
                           Creature);
+        mob.Protection = protection;
         _fx.World.AddMob(map, mob);
         return mob;
     }
@@ -529,15 +672,16 @@ public sealed class SubpathDamageSpellTests
     private static int Lost(Mob mob) => Creature - mob.Hp;
 
     /// <summary>A level-99 caster at (CX, CY) with <paramref name="sp"/> in slot 0, Will <paramref name="will"/>,
-    /// 9,001 vita and 20,001 mana, facing <paramref name="dir"/> (0 north, 1 east, 2 south).</summary>
+    /// 9,001 vita and <paramref name="mana"/> mana (20,001 unless a fact asks more), facing <paramref name="dir"/>
+    /// (0 north, 1 east, 2 south).</summary>
     private (Session session, RecordingOutbound outbound, Character c) Caster(SpellDef sp, ushort map, uint will = Will,
-                                                                            byte dir = 1) =>
+                                                                            byte dir = 1, uint mana = Mana) =>
         _fx.PlayerWith($"SubpathCaster{Interlocked.Increment(ref _serial)}", ch =>
         {
             ch.Level = 99;
             ch.Will = (byte)will;
             ch.MaxHp = Hp; ch.Hp = Hp;
-            ch.MaxMp = Mana; ch.Mp = Mana;
+            ch.MaxMp = mana; ch.Mp = mana;
             ch.Dir = dir;
             Wide(ch, map);
             ch.Spells.Add(sp.Id);

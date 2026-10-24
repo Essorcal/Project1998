@@ -1479,6 +1479,12 @@ end
 --   * A player struck reads the engine's one line for every spell, "<caster> hits you with <spell>.", where the
 --     scripts word it each their own way. Phoenix flames' says "casts Hailstorm on you", a copy slip.
 --   * RTK waives Assassinate's mana and wait for a GM; no verb here waives anything for staff.
+--   * Deflect. RTK's engine rolls it only for a cast with a target, free, before the script (clif_parsemagic), and
+--     never for a self-cast (type 5) spell, though its table gives canfail 1 to most of these. So Assassinate's and
+--     Phoenix flames' Spells.csv rows carry SplCanFail 0, which every deflect roll here reads first. The aimed spells
+--     take their primitive's rule: Earth strike and Nature's smite deflect inside ctx:damage after the 600 is spent
+--     (the server's rule for every blow), and Ki strike and Ice bombardment are never deflected, as targetAreaZap
+--     rolls none. Lightning storm's sweep rolls none either.
 -- Control flames (Druid) is not here: its acorn-drop hook needs C# in the item-drop path (Session.HandleDropItem),
 -- so it stays on `generic` until that hook exists.
 -- =========================================================================================================

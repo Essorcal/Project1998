@@ -773,7 +773,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 30803,hear_footstep_spy,Hear footstep,5,19,-1,0,0,,0,0,0,1,1,1
 30804,spy_kit,Spy kit,5,19,-1,0,0,,0,0,0,1,1,1
 30805,mimic_spy,Mimic,5,19,-1,0,0,,0,0,0,1,1,1
-30806,assassinate,Assassinate,5,19,-1,0,99,,0,0,0,1,1,1
+30806,assassinate,Assassinate,5,19,-1,0,99,,0,0,0,1,0,1
 30807,apply_stealth,Apply stealth,5,19,-1,0,0,,0,0,0,1,1,1
 30808,assess_opponent_spy,Assess opponent,2,19,-1,0,0,Which target? >,0,0,0,1,1,1
 30809,dagger_to_throat,Dagger to throat,5,19,-1,0,0,,0,0,0,1,1,1
@@ -817,7 +817,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 31117,,,5,5,-1,0,0,,0,0,0,1,1,1
 31200,====Shaman====,====Shaman====,5,20,0,0,0,,0,0,0,0,1,1
 31201,shamans_solace,Shaman\'s solace,2,20,-1,1,0,,0,0,0,1,0,1
-31202,phoenix_flames,Phoenix flames,5,20,-1,0,64,,0,0,0,1,1,1
+31202,phoenix_flames,Phoenix flames,5,20,-1,0,64,,0,0,0,1,0,1
 31203,reincarnate,Reincarnate,5,20,-1,0,0,,0,0,0,1,0,1
 31204,,,5,5,-1,0,0,,0,0,0,1,1,1
 31205,,,5,5,-1,0,0,,0,0,0,1,1,1
