@@ -211,7 +211,7 @@ public sealed partial class Session
         // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains),
         // and with `kill` the only way to exercise its GROUP half without a mob to kill (#155).
         T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = as a kill would: split across your group in range, group totem rule; no quest credit)"),
-        T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
+        T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank at level 99 (Il san…Sam san): its spells; a rank adds no stats"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior | Rogue | Mage | Poet | Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
         // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild

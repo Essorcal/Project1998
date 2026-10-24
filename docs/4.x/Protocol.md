@@ -3422,18 +3422,18 @@ Surge is a genuine tier pair, but collapsing it would erase half of the only thi
 level-1 baseline, re-apply real `LevelUp`s on the current path, then **replace** the book with exactly
 `RespecSpellSet(class, level, alignment, mark, dogFlag)`. It is a rebuild, not a top-up — the book can shrink,
 and nothing from a previous class, level or rank survives.
-- `@mark n` forces level 99 first, then runs `n` further `LevelUp`s with the counter reading 100, 101, … so a
-  rank keeps growing on the same curve and its AC keeps falling past 1 (`100 − effective level`). The *stored*
-  level goes back to 99, which is what the character sheet and the exp table understand. Nothing in the live
-  game's data says what a rank is worth in stats, so "one more level per rank" is our model, not a ported
-  number.
+- `@mark n` rebuilds at level 99 and sets the mark; **a rank adds no stats**. Vita and mana are rolled on the
+  level-99 curve and Might/Grace/Will and AC (1) are level 99's, exactly what `@lvl 99` gives, whatever `n` is.
+  The rank shows in the mark and in what reads it (title, the rank's spells in the rebuilt book, gear, maps).
+  This matches RTK's promotion (`updatePath` writes the path and mark and nothing else) and Bon-Hwa's Il San
+  promotion here (`Server/BonHwa.cs`). It used to run one extra `LevelUp` per rank, our own model, which gave
+  testers growth no player could earn.
 - `@lvl` **clears the mark** — a rank can't survive a move to level 40, and at 99 it would make `@lvl 99` and
   `@mark 0` mean different things for no reason.
 - `@class` takes a class name (keeps the current rank) **or a rank title** (`@class Inferno` = Ju jak at
   mark 2). An NPC subpath forces level 99, for the same reason `@mark` does.
-- **The stored level is always ≤ 99.** Ranks are levels past the cap only for the purpose of rolling growth;
-  `_char.Level` goes back to 99 immediately afterwards, so the HUD, the character sheet, the exp table and
-  every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
+- **The stored level is always ≤ 99.** A rank is not a level, so the HUD, the character sheet, the exp table
+  and every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
 - `@stats` still overrides the curve outright, and by design a later rebuild discards it.
 - `@dog [0|1]` is **not** a rebuild — it only sets or clears the Dog Linguist flag (`Content.DogFlagReg`) and
   its legend. But the flag is an input to the rebuild, so the next `@lvl`/`@class`/`@mark`/`@align` is what
