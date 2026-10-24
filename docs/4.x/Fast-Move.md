@@ -72,8 +72,11 @@ always the stats packet.
 `Server/Session.Entity.cs` `SendStats`:
 
 ```csharp
-d[46] = (byte)(FastMoveTrustToggle && _fastMove ? 1 : 0);
+d[46] = (byte)(_ver != ClientVersion.V533 && FastMoveTrustToggle && _fastMove ? 1 : 0);
 ```
+
+(The `_ver` guard sends 0 to a 5.33 client, whose stats parser treats a non-zero byte 46 differently; on 4.95
+the line is the same as without it. `docs/5.x/Wire-Divergences.md` §6.5 has the 5.33 side.)
 
 `Server/Session.cs` `HandleArrival` (before the entry burst's `SendStats`):
 
