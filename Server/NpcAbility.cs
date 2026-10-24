@@ -150,6 +150,11 @@ public sealed class NpcContext
     public int  Stat  => _s.CharStat;
     /// <summary>Subpath mark count (0 for now).</summary>
     public int  Mark  => _s.CharMark;
+    /// <summary>The player's character name (RTK <c>player.name</c>), for a line that names them to others.</summary>
+    public string PlayerName => _s.CharName;
+    /// <summary>A system line to every player online (RTK <c>broadcast(-1, text)</c>): Baek's "[SUBPATH]" line.
+    /// See <see cref="Session.AnnounceToWorld"/>.</summary>
+    public void AnnounceToWorld(string text) => _s.AnnounceToWorld(text);
     /// <summary>The base class as RTK's <c>player.baseClass</c>: 1 Warrior · 2 Rogue · 3 Mage · 4 Poet (0 for
     /// Peasant/unknown). Subpaths collapse onto their base — a Chung Ryong reads 1, same as a Warrior. Used by
     /// <see cref="BonHwaAbility"/> to pick the class weapon ladder and the per-class stat caps.</summary>
@@ -306,8 +311,6 @@ public sealed class NpcContext
     public void SetClass(int pathId) => _s.SetCharClass(pathId);
     /// <summary>What the player is called now, class plus rank (RTK <c>player.classNameMark</c>): Session.ClassTitle.</summary>
     public string ClassTitle => _s.ClassTitle;
-    /// <summary>The player's character name (RTK <c>player.name</c>).</summary>
-    public string PlayerName => _s.CharName;
 
     /// <summary>The Dog's cleanse leaving an NPC subpath (RTK dog_linguist.lua <c>cleanse</c>,
     /// <c>player:updatePath(player.baseClass, player.mark)</c>): a Chung ryong, Baekho, Ju jak or Hyun moo goes back
@@ -322,10 +325,6 @@ public sealed class NpcContext
         _s.SetCharClass(Content.PathBaseOf(cls));
         return true;
     }
-
-    /// <summary>One system line to every player online (RTK <c>broadcast(-1, text)</c>): Baek's "[SUBPATH]" line.
-    /// See <see cref="Session.AnnounceToAll"/>.</summary>
-    public void AnnounceToAll(string text) => _s.AnnounceToAll(text);
 
     // ---- sub-alignment (AlignmentAbility / SummitAbility; RTK swapAlignment.lua) ------------------
     /// <summary>The player's sub-alignment (0 Unaligned · 1 Kwi-Sin · 2 Ming-Ken · 3 Ohaeng).</summary>

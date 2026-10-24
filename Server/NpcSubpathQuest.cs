@@ -186,7 +186,7 @@ public sealed class NpcSubpathAbility : INpcAbility, INpcSayHandler
             ctx.AddLegend(NpcSubpathQuest.LegendText(), NpcSubpathQuest.Legend, NpcSubpathQuest.LegendIcon, NpcSubpathQuest.LegendColor);
         ctx.SetClass(subpath);                                                       // RTK updatePath(subpath, player.mark): the mark is untouched
         Log.Info($"   -> NPC SUBPATH: {ctx.PlayerName} joined {Content.PathName(subpath)} at {ctx.Def.Name} (favor {favor})");
-        ctx.AnnounceToAll(NpcSubpathQuest.Broadcast(ctx.ClassTitle, ctx.PlayerName));
+        ctx.AnnounceToWorld(NpcSubpathQuest.Broadcast(ctx.ClassTitle, ctx.PlayerName));
 
         await ctx.SayItem(NpcSubpathQuest.StudyItem, NpcSubpathQuest.Studied);
         await ctx.Say(NpcSubpathQuest.Ready);

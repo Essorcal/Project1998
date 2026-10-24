@@ -1043,6 +1043,25 @@ public sealed partial class Session : QuestState.ISessionStore
     /// <summary>Subpath mark/rank (RTK <c>status.mark</c>) — see <see cref="Character.Mark"/>. 0 until a GM
     /// sets it, since no subpath-promotion NPC is ported yet.</summary>
     internal int  CharMark  => _char.Mark;
+
+    /// <summary>A system line to every player online: RTK <c>broadcast(-1, text)</c> (<c>clif_broadcast</c>,
+    /// 0x0A type 5), from a player's own action — Baek's "[SUBPATH]" line when someone joins an NPC subpath. The
+    /// loop is <c>@announce</c>'s (<c>AnnounceCmd</c>): each recipient goes through <see cref="SystemAnnounce"/>,
+    /// which takes that recipient's monitor at its own definition and lets it go before the next (#29 rule 2; our
+    /// own copy is rule 3's re-entrant case), and one dead socket does not stop the rest. Rule 1 holds:
+    /// <c>Online.All()</c> snapshots under <c>World._lock</c> and returns with it released. RTK skips a recipient
+    /// whose shout setting is off; nothing on this server reads that setting (not <c>@announce</c>, not the
+    /// restart lines), so this reaches everyone, as they do.</summary>
+    internal void AnnounceToWorld(string text)
+    {
+        foreach (var s in _world.Online.All())
+        {
+            try { s.SystemAnnounce(text); }
+            catch (Exception e) { Log.Error($"world line to {s.Remote} threw — the others still hear it", e); }
+        }
+        Log.Info($"   -> world line for '{_char.Name}': \"{text}\"");
+    }
+
     internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
     internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     internal int  CharSex    => _char.Sex;

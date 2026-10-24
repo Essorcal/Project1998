@@ -2305,7 +2305,7 @@ public sealed partial class Session
     /// on a thread that owns none of the sessions it is writing to: <c>@announce</c>
     /// (<c>Session.GmCommands.cs</c>, the operator's handler thread) and <c>RestartSchedule.Announce</c>
     /// (<c>Server/RestartSchedule.cs</c>, the restart ladder's <c>PeriodicTimer</c> task, the trigger-file poll,
-    /// or a GM's <c>@restart</c> handler). <see cref="AnnounceToAll"/> is <c>@announce</c>'s loop on a player's
+    /// or a GM's <c>@restart</c> handler). <see cref="AnnounceToWorld"/> is <c>@announce</c>'s loop on a player's
     /// own handler thread, the same shape. Because every caller is cross-session, one acquisition here covers
     /// them all at once and cannot be forgotten by another; the caller-side wrap would be the same section
     /// written again. Nothing on this path reads foreign state beyond the send itself — the text is composed before
@@ -2324,26 +2324,6 @@ public sealed partial class Session
     {
         using var _ = EnterState();
         SendMiniText(text, type: 5);
-    }
-
-    /// <summary>RTK <c>broadcast(-1, text)</c> from a player's own action: the same line <c>@announce</c> sends
-    /// (0x0A type 5, RTK's broadcast type), to every player online. Baek's "[SUBPATH]" line on joining an NPC
-    /// subpath is the caller (<see cref="NpcSubpathAbility"/>).
-    ///
-    /// <para>The loop is <c>AnnounceCmd</c>'s (<c>Session.GmCommands.cs</c>): a thread that holds this player's own
-    /// monitor, as the GM's handler thread holds the GM's, enters each recipient's through
-    /// <see cref="SystemAnnounce"/>, one at a time, and rule 2 resolves each acquisition as it does there; our own
-    /// copy is rule 3's re-entrant case. Rule 1 holds: <c>Online.All()</c> snapshots under <c>World._lock</c> and
-    /// returns with it released (<c>World.OnlineRegistry.cs:77-81</c>). One player's failure must not stop the
-    /// line reaching the others.</para></summary>
-    internal void AnnounceToAll(string text)
-    {
-        foreach (var s in _world.Online.All())
-        {
-            try { s.SystemAnnounce(text); }
-            catch (Exception e) { Log.Error($"announcement to {s.Remote} threw — the others still hear it", e); }
-        }
-        Log.Info($"   -> announce by {_char.Name}: \"{text}\"");
     }
 
     // ---- helpers ----
