@@ -839,8 +839,15 @@ public sealed partial class Session
             SendMap(ServerOp.Despawn, _gameInc++, body, $"despawn(0x0E) {body.Length}B");
     }
 
-    /// <summary>The 0x0E bodies to send for these ids — one list-shaped body on 4.95, one 4-byte body per
-    /// id on 5.33. Pure and static so both framings are pinned by test (Tests/DespawnFramingTests).</summary>
+    /// <summary>The 0x0E bodies to send for these ids — list-shaped bodies of at most 255 ids each on 4.95,
+    /// one 4-byte body per id on 5.33. Pure and static so both framings are pinned by test
+    /// (Tests/ClientVersionWireTests, the despawn facts).
+    ///
+    /// <para>The 4.95 count is ONE byte, so more than 255 ids go out as several bodies, each count matching
+    /// the ids that follow it. One body used to carry them all under a count of 255, and the client's loop
+    /// stops at its count, so every id past the 255th stayed drawn until a map reload. Only a GM reaches that
+    /// today: <c>@crecol</c> takes its range unclamped, and <c>@kill</c> then clears every local dummy in one
+    /// call. Up to 255 ids it is the same single body as before, byte for byte. 5.33 has no count to wrap.</para></summary>
     public static List<byte[]> DespawnBodies(ClientVersion ver, params uint[] ids)
     {
         var live = ids.Where(i => i != 0).ToArray();   // id 0 stops the 4.95 loop and no-ops on 5.33
@@ -851,9 +858,12 @@ public sealed partial class Session
             foreach (var id in live) outp.Add(PacketWriter.U32BEBytes(id));
             return outp;
         }
-        var d = new List<byte> { (byte)Math.Min(live.Length, 255) };
-        foreach (var id in live) d.AddRange(PacketWriter.U32BEBytes(id));
-        outp.Add(d.ToArray());
+        foreach (var chunk in live.Chunk(255))
+        {
+            var d = new List<byte> { (byte)chunk.Length };   // 1..255: the count of exactly these ids
+            foreach (var id in chunk) d.AddRange(PacketWriter.U32BEBytes(id));
+            outp.Add(d.ToArray());
+        }
         return outp;
     }
 

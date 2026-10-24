@@ -172,6 +172,58 @@ public class ClientVersionWireTests
         Assert.Empty(Session.DespawnBodies(Session.ClientVersion.V533, 0, 0));
     }
 
+    /// <summary>n distinct nonzero ids, in order.</summary>
+    private static uint[] DespawnIds(int n) => Enumerable.Range(1, n).Select(i => 0x00018000u + (uint)i).ToArray();
+
+    /// <summary>The 4.95 count is one byte. Past 255 ids the old single body still said 255 and carried
+    /// them all, so the client destroyed the first 255 and left the rest drawn; a GM's <c>@kill</c> after a
+    /// wide <c>@crecol</c> sweep is how. Now each body's count is the number of ids in that body, at most 255,
+    /// and together the bodies carry every id once, in order.
+    ///
+    /// <para>FALSIFIED by restoring the single body (<c>Server/Session.Entity.cs</c> from 0627024): one body
+    /// comes back where two or three were expected.</para></summary>
+    [Theory]
+    [InlineData(256, new[] { 255, 1 })]
+    [InlineData(300, new[] { 255, 45 })]
+    [InlineData(510, new[] { 255, 255 })]
+    [InlineData(511, new[] { 255, 255, 1 })]
+    public void V495DespawnPast255IdsIsSplitSoEveryCountMatchesItsIds(int n, int[] counts)
+    {
+        var ids = DespawnIds(n);
+        var bodies = Session.DespawnBodies(Session.ClientVersion.V495, ids);
+        Assert.Equal(counts, bodies.Select(b => (int)b[0]));
+        Assert.All(bodies, b => Assert.Equal(1 + 4 * b[0], b.Length));   // the count describes the whole body
+        var sent = bodies.SelectMany(b => Enumerable.Range(0, b[0])
+                             .Select(i => (uint)((b[1 + 4 * i] << 24) | (b[2 + 4 * i] << 16) | (b[3 + 4 * i] << 8) | b[4 + 4 * i])));
+        Assert.Equal(ids, sent);
+    }
+
+    /// <summary>Up to 255 ids nothing moves: the same single body, byte for byte, as the builder at 0627024
+    /// produced (its two lines are copied below as the oracle), for every count from 1 to 255.</summary>
+    [Fact]
+    public void V495DespawnOfUpTo255IdsIsTheSingleBodyItAlwaysWas()
+    {
+        for (int n = 1; n <= 255; n++)
+        {
+            var ids = DespawnIds(n);
+            var old = new List<byte> { (byte)Math.Min(ids.Length, 255) };
+            foreach (var id in ids) old.AddRange(new[] { (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id });
+            Assert.Equal(old.ToArray(), Assert.Single(Session.DespawnBodies(Session.ClientVersion.V495, ids)));
+        }
+    }
+
+    /// <summary>The 5.33 branch checked the same way: it has no count byte to wrap, so 300 ids are 300 bare
+    /// bodies. A control, green before this change too.</summary>
+    [Fact]
+    public void V533DespawnPast255IdsIsStillOneBareBodyPerId()
+    {
+        var ids = DespawnIds(300);
+        var bodies = Session.DespawnBodies(Session.ClientVersion.V533, ids);
+        Assert.Equal(300, bodies.Count);
+        Assert.All(bodies, b => Assert.Equal(4, b.Length));
+        Assert.Equal(new byte[] { 0x00, 0x01, 0x81, 0x2C }, bodies[^1]);   // 0x00018000 + 300
+    }
+
     // ---- 0x2e world map ----
     // Two dots, deliberately distinct in every field so a one-byte shift cannot hide behind a repeat.
     private static readonly Session.WorldMapEntry[] Dots =
