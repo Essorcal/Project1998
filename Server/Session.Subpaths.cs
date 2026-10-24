@@ -27,7 +27,8 @@ namespace Server;
 /// <para><b>Elders.</b> Kept in the flat quest registry under <see cref="SubpathElderReg"/>, which the character
 /// already saves (no new column), holding the PATH id the character is an elder of. It counts only while that is
 /// still the character's path, so a stale value can never make someone an elder of a subpath they are not in;
-/// joining and leaving both clear it.</para>
+/// joining and leaving both clear it, and so does a GM's <c>@class</c> to another path (a rank title on the same
+/// path keeps it).</para>
 ///
 /// <para><b>Locks.</b> Nothing new. Every write to ANOTHER player — the admission, the expulsion, the elder
 /// mark — happens inside that player's own monitor (<see cref="WithState(Action)"/>, #29 rule 2), the shape
@@ -36,7 +37,8 @@ namespace Server;
 public sealed partial class Session
 {
     /// <summary>Registry key: the path id of the PC subpath this character is an elder of; 0 (or absent) for
-    /// none. Written only by <c>@subpath elder</c>, and cleared by joining and leaving.</summary>
+    /// none. Written only by <c>@subpath elder</c>, and cleared by joining, by leaving and by <c>@class</c> to
+    /// another path.</summary>
     internal const string SubpathElderReg = "subpath_elder";
 
     /// <summary>Is this character an elder of the PC subpath they are in now?</summary>
