@@ -925,7 +925,7 @@ has no frames.
 | --- | --- |
 | `Effect.tbl` | text; per effect an `ID n, NumFrontFrames a, …, NumBackFrames b` line then `a+b` `Frame# N, Delay ms, …` lines. **`Frame#` is the absolute `Effect.epf` frame index** — no cumulative sum. The first `a` draw over the sprite, the last `b` behind it. |
 | `Effect.frm` | `u32` count (1611 = epf frame count) then one `u32` **per frame** = its palette index (0–10) |
-| `Effect.pal` | `u32` count (13) then 13 `DLPalette` blocks. A block is not a fixed 1056 bytes: its header is `32 + 2·C` bytes, where `C`, the animation-entry count, is the **u32 at +24** (byte 23 equals it only when it is 0), and the 256 RGBA entries follow the header. Twelve of Effect.pal's blocks have `C = 0` (entries at +32); one has `C = 1` (a 34-byte header, entries at +34). |
+| `Effect.pal` | `u32` count (13) then 13 `DLPalette` blocks. A block is not a fixed 1056 bytes: its header is `32 + 2·C` bytes, where `C`, the animation-entry count, is the **u32 at +24**, and the 256 RGBA entries follow the header. Twelve of Effect.pal's blocks have `C = 0` (entries at +32); one has `C = 1` (a 34-byte header, entries at +34). |
 | `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1611 frames satisfy `stencilOff-pixOff == w*h` (1,611 re-counted from the install 2026-10-24; this table used to say 1432). Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
 
 **`.pal` files come in two forms.** Twelve of the install's 36 `.pal` files (Effect.pal among them) are a u32
