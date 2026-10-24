@@ -3210,7 +3210,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   `PathId == yourClass` with `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway
   are level 1, so `@lvl ≥ 1`).
 - **`Mark`** (`SplMark`) = the **subpath RANK** required: **0** the base 1-99 list · **1** Il san · **2** Ee
-  san · **3** Sam san. 151 of the 957 rows carry one, and **every one of them has `SplLevel` 0** — so until
+  san · **3** Sam san. 150 of the 957 rows carry one, and **every one of them has `SplLevel` 0** — so until
   2026-08-08 the column was read by nothing and those rows looked like level-1 spells. Every level-99
   character was handed the Il san *and* Ee san secrets of ranks it had never earned, which is also what
   overflowed the 52-slot book (a level-99 Ee san mage wanted 57 entries). `LoadSpells` now floors a mark
@@ -3219,7 +3219,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   san taught it.
   > **The rank ladder stops at Sam san** (`Content.MaxMark` = 3), and `@mark`/`@class` refuse anything above
   > it rather than clamping. Paths.csv names five ranks and Items.csv carries 34 Sa san (mark 4) items, but
-  > **Spells.csv has 46 / 57 / 48 / 0 / 0 rows for marks 1-5** — that exact asymmetry is what proved Sam san
+  > **Spells.csv has 46 / 56 / 48 / 0 / 0 rows for marks 1-5** — that exact asymmetry is what proved Sam san
   > was an RTK implementation gap rather than an out-of-era feature (`nexustk-495-subpath-spells`), and Sa
   > san is the same gap one tier up. A rank 4 would be a title over nothing (a rank adds no stats).
   > *Known consequence:* those 34 Sa san items stay unwearable, since `ItmMark` reads the same field. That is

@@ -21,7 +21,7 @@ namespace Server;
 /// sends a target entity id), <b>5</b> = self / no-target. The client renders type 1/2 in the Spell book and
 /// type 5 in the Skill book (both populate through the same 0x17 packet, keyed on this type).
 /// <c>Mark</c> is the SUBPATH RANK required (SplMark: 0 = the base 1-99 class list, 1 = Il san, 2 = Ee san,
-/// 3 = Sam san) — 151 of the 957 rows carry one and they all have <c>SplLevel</c> 0, which used to make them
+/// 3 = Sam san) — 150 of the 957 rows carry one and they all have <c>SplLevel</c> 0, which used to make them
 /// look like level-1 spells and land in every level-99 character's book alongside the base list. See
 /// <see cref="Content.MarkSpellLevel"/>.
 /// </summary>
@@ -536,13 +536,13 @@ public static partial class Content
 
     /// <summary>The level a mark (subpath-rank) spell is pinned to. Marks sit ON TOP of the level cap — an
     /// Il san is, in the user's words, "level 100" — so every rank spell needs level 99 first and then the
-    /// rank. The CSV can't say that (SplLevel is 0 on all 151 of them), so <see cref="LoadSpells"/> floors
+    /// rank. The CSV can't say that (SplLevel is 0 on all 150 of them), so <see cref="LoadSpells"/> floors
     /// them here and <see cref="SpellsForClass"/>'s ordinary <c>Level &lt;= maxLevel</c> test does the rest.</summary>
     public const int MarkSpellLevel = 99;
 
     /// <summary>The highest subpath rank a character may hold: <b>3, Sam san</b> — the last one that exists
     /// as content. Paths.csv names five ranks per path and Items.csv carries 34 Sa san (mark 4) items, but
-    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 48 mark-3, and zero for 4 or 5.
+    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 56 mark-2, 48 mark-3, and zero for 4 or 5.
     /// (That asymmetry is exactly what proved Sam san was an RTK implementation gap rather than an
     /// out-of-era feature — see the nexustk-495-subpath-spells note; Sa san is the same gap, one tier up and
     /// not yet closed.) Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is one
