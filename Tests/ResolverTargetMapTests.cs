@@ -44,12 +44,15 @@ public sealed class ResolverTargetMapTests
 
     public ResolverTargetMapTests(SessionFixture fx) => _fx = fx;
 
-    /// <summary>A damage spell for each damage-resolver caller, a venom, a curse and a Doze: cast from a PvP map.</summary>
+    /// <summary>A damage spell for each damage-resolver caller, a venom, a curse and a Doze: cast from a PvP map.
+    /// Hailstorm stood for the generic verb until the subpath-spells slice bound it to its own; Call lightning, still
+    /// generic, joined the list then to keep that caller covered.</summary>
     private static readonly string[] Hostile =
     {
         "ignite_mage",   // arch_damage -> ctx:magicDamage -> LuaMagicDamage
         "bolt_mage",     // magic_damage -> ctx:damage -> LuaDamageTarget
-        "hailstorm",     // generic (no export row, a damage word) -> ctx.hasDamageTarget + ctx:damage
+        "call_lightning", // generic (no export row, a damage word) -> ctx.hasDamageTarget + ctx:damage
+        "hailstorm",     // splash_strike (its SpellParams row) -> ctx.castAtNothing + ctx:canStrike + ctx:targetAreaZap
         "venom_mage",    // venom -> LuaApplyVenom
         "vex_mage",      // curse -> canCurse, hasStatus, alreadyCast, applyCurse
         "doze_mage",     // arch_debuff (sleep) -> targetKind, hasStatus, holdTarget, amplify
@@ -650,7 +653,7 @@ public sealed class ResolverTargetMapTests
     /// nothing running?</summary>
     private static bool Landed(SpellDef sp, Session target, Character c) => sp.Key switch
     {
-        "ignite_mage" or "bolt_mage" or "hailstorm" => c.Hp < Hp,
+        "ignite_mage" or "bolt_mage" or "call_lightning" or "hailstorm" => c.Hp < Hp,
         "heal_mage" => c.Hp > Hp,
         "venom_mage" => target.Poisoned,
         "doze_mage" => target.Asleep,
