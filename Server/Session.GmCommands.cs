@@ -961,16 +961,17 @@ public sealed partial class Session
     // The predicates did not change; where they run did.
 
     // "@mark <0-3>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san · 2 Ee san · 3 Sam san) and
-    // rebuild the character at it. A rank is levels PAST 99, not an alternative to them, so this FORCES level
-    // 99 first: "@lvl 99" is the base class, "@mark 1" is Il san on top of it, and so on. Each rank brings its
-    // own stat growth and its own secrets; the base 1-99 book is unchanged underneath.
+    // rebuild the character at it. A rank is earned at level 99, so this FORCES level 99 first: "@lvl 99" is
+    // the base class, "@mark 1" is Il san at the same level, and so on. A rank adds NO stats — the rebuild
+    // gives exactly @lvl 99's vita, mana, Might/Grace/Will and AC (see RespecTo), as Bon-Hwa's promotion
+    // gives none — and brings its own secrets; the base 1-99 book is unchanged underneath.
     //
     // Stops at Sam san — see Content.MaxMark: Spells.csv has no mark-4 or mark-5 rows, so Sa san and Oh san
-    // would be a title and a stat bump over nothing.
+    // would be a title over nothing.
     //
-    // No NPC advances the rank yet, so this is also still the only way to satisfy the other gates that read
-    // it: mark-restricted gear (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest
-    // eligibility.
+    // Bon-Hwa's Il San trials (Server/BonHwa.cs) now earn mark 1 in play; nothing earns Ee or Sam san yet, so
+    // for those this is still the only way to satisfy the other gates that read the mark: mark-restricted gear
+    // (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest eligibility.
     private void SetMark(CommandArgs a)
     {
         // Name the ranks of the character's OWN path, not the generic Il san ladder — a Ju jak's ranks are
@@ -982,7 +983,7 @@ public sealed partial class Session
         // than rebuilding the character at rank 0.
         if (!a.Int(0, out var want))
         {
-            Reply($"mark is {_char.Mark} ({ClassTitle}). {a.Usage()} — {ladder}, each on top of level 99.");
+            Reply($"mark is {_char.Mark} ({ClassTitle}). {a.Usage()} — {ladder}, each at level 99 with no added stats.");
             return;
         }
         // Refuse rather than clamp: silently turning "@mark 5" into Sam san would read as a working Oh san.

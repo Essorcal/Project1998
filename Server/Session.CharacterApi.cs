@@ -805,9 +805,9 @@ public sealed partial class Session : QuestState.ISessionStore
     // "@lvl <n>" — rebuild as a clean level-n character of the current class. Anything a level-n character of
     // that class would have, this character now has; anything it wouldn't, this character now doesn't.
     //
-    // MARK IS CLEARED. A subpath rank sits ON TOP of the cap — Il san is "level 100" — so it can't survive a
-    // move to level 40, and leaving it on at 99 would make "@lvl 99" and "@mark 0" mean different things for
-    // no reason. @mark is how you put it back, and it re-runs this at 99 first.
+    // MARK IS CLEARED. A subpath rank is earned at level 99 (Bon-Hwa will not even speak to anyone below it), so
+    // it can't survive a move to level 40, and leaving it on at 99 would make "@lvl 99" and "@mark 0" mean
+    // different things for no reason. @mark is how you put it back, and it re-runs this at 99 first.
     internal void RespecLevel(int target) => RespecTo(Math.Clamp(target, 1, 99), mark: 0);
 
     /// <summary>The one character rebuild: @lvl, @class, @mark and @align all end up here. Resets to the RTK
@@ -819,12 +819,14 @@ public sealed partial class Session : QuestState.ISessionStore
     /// <see cref="SyncSpellbook"/> rebuilds the book to match, which is what makes this a clean slate rather
     /// than a stat edit: no ability from a previous class, level or rank can survive it.
     ///
-    /// <para><paramref name="mark"/> (the subpath rank, 0-<see cref="Content.MaxMark"/>) is levels PAST the cap: each rank runs one more
-    /// LevelUp with the level counter reading 100, 101, … so an Il san keeps growing on the same curve and
-    /// its AC keeps falling past 1 (100 − effective level). The stored level then goes back to 99, because
-    /// that is what the character sheet and the exp table understand; only the accumulated stats and the
-    /// rank's spells reveal the difference. Nothing in the live game's data says what a rank is worth in
-    /// stats, so "one more level per rank" is our own model, not a ported number.</para></summary>
+    /// <para><paramref name="mark"/> (the subpath rank, 0-<see cref="Content.MaxMark"/>) is stored and adds
+    /// NOTHING to the stats: a rank changes the mark and nothing else, as RTK's promotion does
+    /// (<c>updatePath</c> writes the path and mark only; the 2001 and 2002 rank pages list a rank's gains and
+    /// name no stat), and as Bon-Hwa's Il San promotion (Server/BonHwa.cs) does in play. So <c>@mark n</c>
+    /// gives vita and mana on the level-99 curve and level 99's Might/Grace/Will and AC, whatever n is; the
+    /// rank shows only in the mark itself and in what reads it — the title, the rank's spells in the rebuilt
+    /// book, gear, maps. (This used to run one extra LevelUp per rank, our own model, which handed testers
+    /// growth no player can get.)</para></summary>
     internal void RespecTo(int level, int mark)
     {
         level = Math.Clamp(level, 1, 99);
@@ -839,10 +841,10 @@ public sealed partial class Session : QuestState.ISessionStore
         _char.MaxHp = (uint)Random.Shared.Next(45, 56);   // RTK Player.reset baseline
         _char.MaxMp = (uint)Random.Shared.Next(32, 37);
         _char.Ac = (sbyte)(100 - 1);
-        for (int lvl = 1; lvl < level + mark; lvl++) LevelUp(path, announce: false);
+        for (int lvl = 1; lvl < level; lvl++) LevelUp(path, announce: false);   // the mark adds no LevelUp
 
         _char.Mark  = (byte)mark;
-        _char.Level = (byte)level;                                      // the ranks' levels are not real levels
+        _char.Level = (byte)level;
         _char.Hp = EffMaxHp; _char.Mp = EffMaxMp;                       // full vitals for the new level
         _char.Exp = level > 1 ? Content.ExpToNext(path, level - 1) : 0;  // exp at the start of this level
         uint tnlNext = Content.ExpToNext(path, level);
@@ -1040,9 +1042,45 @@ public sealed partial class Session : QuestState.ISessionStore
     internal int  CharLevel => _char.Level;
     /// <summary>A single "power" number quests gate on (RTK's baseMagic*2 + baseHealth analog).</summary>
     internal int  CharStat  => (int)(_char.MaxMp * 2 + _char.MaxHp);
-    /// <summary>Subpath mark/rank (RTK <c>status.mark</c>) — see <see cref="Character.Mark"/>. 0 until a GM
-    /// sets it, since no subpath-promotion NPC is ported yet.</summary>
+    /// <summary>Subpath mark/rank (RTK <c>status.mark</c>) — see <see cref="Character.Mark"/>. Set by
+    /// Bon-Hwa's Il San promotion (<see cref="SetCharMark"/>) or by a GM's <c>@mark</c>/<c>@class</c>.</summary>
     internal int  CharMark  => _char.Mark;
+
+    /// <summary>Set the mark and keep the path: RTK <c>pcl_updatePath</c> (sl.c), which writes the path and
+    /// the mark and resends the status (<c>clif_mystaytus</c>, our <see cref="SendStats"/>), and touches no stat
+    /// and no spell. False, and nothing changed, for a mark outside 0..<see cref="Content.MaxMark"/>.</summary>
+    internal bool SetCharMark(int mark)
+    {
+        if (mark < 0 || mark > Content.MaxMark) return false;
+        _char.Mark = (byte)mark;
+        SendStats();
+        SaveChar();
+        Log.Info($"   -> mark set to {mark} for {_char.Name} ({ClassTitle})");
+        return true;
+    }
+
+    /// <summary>Play <paramref name="effect"/> over this player for everyone in view (RTK
+    /// <c>player:sendAnimation</c>), through the same <see cref="BroadcastFx"/> every cast uses, with no
+    /// sound. The 4.95 0x29 has no count field, so RTK's second argument (times) is not carried, as for every
+    /// other sendAnimation port.</summary>
+    internal void PlayEffectOverSelf(int effect) => BroadcastFx(_char.Id, effect, 0);
+
+    /// <summary>A system line to every player online: RTK <c>broadcast(-1, text)</c> (<c>clif_broadcast</c>,
+    /// 0x0A type 5 on every loaded map). The loop is <c>@announce</c>'s (<c>AnnounceCmd</c>): each recipient
+    /// goes through <see cref="SystemAnnounce"/>, which takes that recipient's monitor at its own definition and
+    /// lets it go before the next, and one dead socket does not stop the rest. RTK skips a recipient whose
+    /// shout setting is off; nothing on this server reads that setting (not shouts, not <c>@announce</c>, not
+    /// the restart lines), so this reaches everyone, as they do.</summary>
+    internal void AnnounceToWorld(string text)
+    {
+        foreach (var s in _world.Online.All())
+        {
+            try { s.SystemAnnounce(text); }
+            catch (Exception e) { Log.Error($"world line to {s.Remote} threw — the others still hear it", e); }
+        }
+        Log.Info($"   -> world line for '{_char.Name}': \"{text}\"");
+    }
+
     internal int  QuestRandom(int maxInclusive) => Random.Shared.Next(1, Math.Max(1, maxInclusive) + 1);
     internal long NowUnix   => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
     internal int  CharSex    => _char.Sex;
