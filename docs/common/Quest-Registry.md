@@ -150,7 +150,7 @@ Kinds: **stage** = a stage machine (0 = untouched), **flag** = 0/1, **counter** 
 
 | Key | Kind | Values | Notes |
 |---|---|---|---|
-| `subpath_elder` | enum | the path id (10-21) of the PC subpath this character is an elder of; 0 or absent = none. Counts only while it is still the character's path | Written by `@subpath elder` (GM); cleared by joining and by leaving (`@subpath admit` / `leave` / `expel`). See `Server/Session.Subpaths.cs` |
+| `subpath_elder` | enum | the path id (10-21) of the PC subpath this character is an elder of; 0 or absent = none. Counts only while it is still the character's path | Written by `@subpath elder` (GM); cleared by joining and by leaving (`@subpath admit` / `leave` / `expel`), and by `@class` to another path. See `Server/Session.Subpaths.cs` |
 
 ### One-off oddities
 

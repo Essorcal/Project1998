@@ -1316,6 +1316,10 @@ public sealed partial class Session
         int mark  = pick.Mark > 0 ? pick.Mark : Math.Min((int)_char.Mark, Content.MaxMark);   // a rank name sets the rank; a base name keeps it
         int level = subpath || mark > 0 ? 99 : _char.Level;               // subpaths and ranks live at the cap
 
+        // A new path is nobody's elder, as joining and leaving a PC subpath already make it: otherwise "@class"
+        // back into the subpath would revive an old elder mark with no appointment (PR #393's review, F2). A rank
+        // title on the same path keeps it.
+        if (pick.PathId != CharClassId) ClearSubpathElder();
         _char.ClassName = Content.PathName(pick.PathId);
         RespecTo(level, mark);
         SendSelfProfile();

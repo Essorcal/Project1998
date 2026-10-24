@@ -382,6 +382,63 @@ public sealed class PcSubpathTests
         Assert.DoesNotContain(gmChar.Spells, id => Content.IsPcSubpathSpell(Content.SpellById(id)!));
     }
 
+    /// <summary>A GM's <c>@class</c> that changes the path clears the elder mark, as joining and leaving do, so
+    /// <c>@class</c> back into the subpath does not bring an old elder status back without an appointment. A
+    /// rank title on the same path keeps it (PR #393's review, F2).</summary>
+    [Fact]
+    public void AtClassToAnotherPathClearsTheElderMark()
+    {
+        // An elder of Barbarian who is also a GM. The mark is set on the character directly rather than by
+        // "@subpath elder cmdgm": every fact's GM shares the roster's one name, so a lookup by name could find
+        // another fact's GM, while @class acts on its caller alone.
+        var (gm, _, gmChar) = Player("Barbarian", 99, name: GmRoster.Name);
+        gm.WithState(() => gm.Quest(QuestState.Registry).Set(Session.SubpathElderReg, 10));
+        Assert.True(gm.IsPcSubpathElder);
+
+        Run(gm, "@class Berserker");   // Barbarian at mark 1: the same path
+        Assert.True(gm.IsPcSubpathElder);
+
+        Run(gm, "@class Warrior");
+        Assert.Equal(0, gm.Quest(QuestState.Registry).Get(Session.SubpathElderReg));
+        Run(gm, "@class Barbarian");
+        Assert.Equal("Barbarian", gmChar.ClassName);
+        Assert.False(gm.IsPcSubpathElder);
+    }
+
+    // ---- melee: a subpath swings as its base class ------------------------------------------------------
+
+    /// <summary>A subpath member's melee swing is their base class's, as RTK's swingDamage.lua keys its class
+    /// factor (<c>_classFactors[player.baseClass + 1]</c>): a Barbarian and a Chung ryong swing as a Warrior of the
+    /// same level in the same gear (the class factor and the Warrior's +2 Dam with a weapon), a Spy as a Rogue, a
+    /// Diviner as a Mage (the mage weapon penalty), a Muse as a Poet. Compared over every non-crit figure a
+    /// novice sword (S 10-12) can land on an AC-0 target (PR #393's review, F1).</summary>
+    [Theory]
+    [InlineData("Barbarian",   "Warrior", 99)]
+    [InlineData("Chung ryong", "Warrior", 99)]
+    [InlineData("Spy",         "Rogue",   65)]
+    [InlineData("Diviner",     "Mage",    60)]
+    [InlineData("Muse",        "Poet",    99)]
+    public void ASubpathMemberSwingsAsTheirBaseClass(string subpath, string baseClass, int level)
+    {
+        var (member, _, _) = Swinger(subpath, level);
+        var (based, _, _) = Swinger(baseClass, level);
+        Assert.Equal(NonCritSwings(based), NonCritSwings(member));
+    }
+
+    /// <summary>The base classes' own swings do not move: the figures below are what each landed before this
+    /// change (b0414b7) with the same character and sword, and still lands.</summary>
+    [Theory]
+    [InlineData("Warrior", 99, new double[] { 24, 24.5, 25 })]
+    [InlineData("Rogue",   65, new double[] { 16, 16.5, 17 })]
+    [InlineData("Mage",    60, new double[] { 8.537037, 9.037037 })]
+    [InlineData("Poet",    99, new double[] { 10, 10.5, 11 })]
+    [InlineData("Peasant", 99, new double[] { 10, 10.5, 11 })]
+    public void ABaseClassSwingDoesNotMove(string baseClass, int level, double[] expected)
+    {
+        var (based, _, _) = Swinger(baseClass, level);
+        Assert.Equal(expected, NonCritSwings(based).ToArray());
+    }
+
     // ===== plumbing =====================================================================================
 
     /// <summary>The same roster, written the same way and with the same content, that
@@ -440,6 +497,38 @@ public sealed class PcSubpathTests
     /// <summary>The click menu an NPC shows this conversation's player, as labels.</summary>
     private static List<string> Menu(NpcContext ctx) =>
         NpcScripts.For(ctx.Def).SelectMany(a => a.Entries(ctx)).Select(e => e.label).ToList();
+
+    /// <summary>A melee attacker: might 50, grace 50, wielding a novice sword (any class, S 10-12, no Dam).</summary>
+    private (Session session, RecordingOutbound outbound, Character character) Swinger(string className, int level) =>
+        Player(className, level, configure: c =>
+        {
+            var sword = Content.ItemByKey("novice_sword")!;
+            c.Might = 50;
+            c.Grace = 50;
+            c.Equipment.Add(new InvItem { Slot = sword.EquipSlot, ItemId = sword.Id, Dura = sword.Durability });
+        });
+
+    private static readonly Type SwingTargetType =
+        typeof(Session).GetNestedType("SwingTarget", System.Reflection.BindingFlags.NonPublic)!;
+    private static readonly System.Reflection.MethodInfo SwingRaw =
+        typeof(Session).GetMethod("PlayerSwingRaw", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    /// <summary>Every distinct non-crit raw figure (<c>Session.PlayerSwingRaw</c>, before the floor) that 600
+    /// swings at an AC-0 target (armor factor 1, grace 0, level 1) land, rounded to 6 places. With S 10-12 that is
+    /// three figures (two for a Mage's penalised 3-4), each reached hundreds of times. By reflection, inside the
+    /// attacker's monitor: the swing's terms are the point, not the 0x13 exchange around them.</summary>
+    private static SortedSet<double> NonCritSwings(Session attacker)
+    {
+        object target = Activator.CreateInstance(SwingTargetType, 0, -95, 0, 1, 11, 10, (byte)3)!;
+        var seen = new SortedSet<double>();
+        for (int i = 0; i < 600; i++)
+            attacker.WithState(() =>
+            {
+                var (hit, raw, crit, _) = ((bool, double, bool, bool))SwingRaw.Invoke(attacker, new[] { target, 1.0 })!;
+                if (hit && !crit) seen.Add(Math.Round(raw, 6));
+            });
+        return seen;
+    }
 
     private static readonly System.Reflection.MethodInfo PathHallWarp =
         typeof(Session).GetMethod("TryPathHallWarp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
