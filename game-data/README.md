@@ -67,7 +67,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `Spells.csv` | 927 | 862 | from file |
 | `spell_effects.csv` | 643 | 643 | from file |
 | `SpellText.csv` | 4 | 4 | from file |
-| `SpellLearnCosts.csv` | 591 | 591 | from file |
+| `SpellLearnCosts.csv` | 599 | 599 | from file |
 | `Mob5xPalettes.csv` | 16 | 16 | from file |
 | `ArmorDyeRamps.csv` | 11 | 11 | from file |
 | `Maps.csv` | 9,850 | 9,850 | from file |
