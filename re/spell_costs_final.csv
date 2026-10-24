@@ -577,3 +577,17 @@ souls_freedom_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archi
 lifes_end_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
 winter_chill_warrior,1,99,600000,blood,1,spike,1,,,,,atlas-warrior-spells|archive-spells-warrior
 focused_blow_rogue,2,99,750000,,,,,,,,,atlas-rogue-spells|archive-spells-rogue
+dragons_harness_warrior,1,99,80000,,,,,,,,,atlas-warrior-spells
+blades_charm_rogue,2,99,500000,,,,,,,,,atlas-rogue-spells|archive-spells-rogue
+explorers_remedy_rogue,2,99,100000,mountain_ginseng,4,,,,,,,atlas-rogue-spells|archive-spells-rogue
+power_stream_rogue,2,99,100000,mountain_ginseng,2,,,,,,,atlas-rogue-spells|archive-spells-rogue
+energy_flow_mage,3,99,50000,mountain_ginseng,10,,,,,,,atlas-mage-spells|archive-spells-mage
+suppress_mage,3,99,120000,sam_san_surge,1,star_staff,6,scribes_book,6,,,atlas-mage-spells|archive-spells-mage
+race_rogue,2,99,25000,blood,1,splendid_tiger_pelt,1,,,,,atlas-rogue-spells|archive-spells-rogue
+spiritual_jump_rogue,2,99,25000,blood,1,splendid_tiger_pelt,1,,,,,atlas-rogue-spells|archive-spells-rogue
+leap_of_faith_rogue,2,99,25000,blood,1,splendid_tiger_pelt,1,,,,,atlas-rogue-spells|archive-spells-rogue
+transport_rogue,2,99,25000,blood,1,splendid_tiger_pelt,1,,,,,atlas-rogue-spells|archive-spells-rogue
+daggers_remedy_rogue,2,99,75000,mountain_ginseng,3,,,,,,,atlas-rogue-spells|archive-spells-rogue
+kwisin_daggers_remedy_rogue,2,99,75000,mountain_ginseng,3,,,,,,,atlas-rogue-spells|archive-spells-rogue
+mingken_daggers_remedy_rogue,2,99,75000,mountain_ginseng,3,,,,,,,atlas-rogue-spells|archive-spells-rogue
+ohaeng_daggers_remedy_rogue,2,99,75000,mountain_ginseng,3,,,,,,,atlas-rogue-spells|archive-spells-rogue
