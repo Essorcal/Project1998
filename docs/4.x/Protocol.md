@@ -2075,6 +2075,15 @@ viewport-gated and `height > 1` is fine — the door path only ever sends one ro
 needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
 enter-map (the client fires two `(0,0) 12×12` at connect) are ignored; it re-asks once in-world.
 
+**A reply is never more than one frame.** The frame's u16 length counts op + inc + body (§2), and the body is
+6 + 4·w·h bytes on 4.95 or 6 + 6·w·h on 5.33, so past 16,381 cells (4.95) or 10,921 (5.33) the length would
+wrap. `Session.SendMapRect` clamps such a reply by rows: `x0`, `y0` and `w` stay as asked, `h` becomes the most
+rows that fit (at least 64 on 4.95 and 42 on 5.33, since `w` is a byte), the header names exactly the cells
+sent, the stream's coverage tracker records what was sent, and the log line says `CLAMPED to one frame`. A rect
+that fits goes out unchanged. Only a hand-built request is that big (the client asks about 18×16, the server's
+own window is 27×25), and only six maps are big enough to answer one (seven on 5.33, where Islets' 80×200 is
+too); it gets fewer rows than it asked for.
+
 **The client re-requests as it scrolls — roughly every 5 steps.** Measured over one 61 MB server log:
 2162 requests / 10598 walks (0.204) in sessions where the server never replied, and 139 / 810 (0.172) after
 it started replying — the same rate either way, so this is scroll-driven, not retry-on-silence. Each request
@@ -3174,11 +3183,15 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
 - **`PathId`** = the class that learns it: **0 Peasant · 1 Warrior · 2 Rogue · 3 Mage · 4 Poet**, 5+ subpaths,
   99 = system/common. From the RTK `Paths` table (`Content.Paths`, `PthMark0` = class name; `PthMark1..5` are
   the per-rank titles). `Character.ClassName` (set with `@class`) resolves to a path id via `PathIdForClass`.
-  > **Playable paths** (`Content.PlayablePaths`) are the five base rows plus the four **NPC subpaths** —
-  > 6 Chung ryong (Warrior) · 7 Baekho (Rogue) · 8 Ju jak (Mage) · 9 Hyun moo (Poet). Paths.csv's other rows
-  > are RTK's GM branch (5 Dreamweaver, 22 Archon) and twelve **PC subpaths** (10-21 Barbarian … Muse); none
-  > is modelled here, and `@class` refuses them rather than minting a character with a rank ladder and no
-  > spells behind it.
+  > **Playable paths** (`Content.PlayablePaths`) are the five base rows, the four **NPC subpaths** —
+  > 6 Chung ryong (Warrior) · 7 Baekho (Rogue) · 8 Ju jak (Mage) · 9 Hyun moo (Poet) — and the twelve **PC
+  > subpaths** (10-21 Barbarian … Muse). Only RTK's GM branch (5 Dreamweaver, 22 Archon) is refused by
+  > `@class`. A PC subpath is joined by a grant (`@subpath admit`, from level 50, by a GM or one of the
+  > subpath's elders; `Server/Session.Subpaths.cs`) and left back to the base path with the subpath's own
+  > spells taken. Those spells are not taught yet: `SpellsForClass` drops every row whose `SplPthId` is a PC
+  > subpath (`Content.IsPcSubpathSpell`), so no trainer offers them and no rebuild grants them. A member's
+  > base-class trainer teaches them the base class's list and their base class's guild-hall door lets them in,
+  > as RTK does both off `baseClass`; an NPC subpath still needs the full path to match for either.
   >
   > An NPC subpath **is its base class plus a little**. `SpellsForClass` resolves `PathBaseOf` (RTK
   > `classdb_path`, the same PthType the gear gate already uses) and runs the whole base-class list through
@@ -3204,7 +3217,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   `PathId == yourClass` with `PathId == 0`, so a Warrior/Rogue/Mage/Poet still gets those (Soothe & Gateway
   are level 1, so `@lvl ≥ 1`).
 - **`Mark`** (`SplMark`) = the **subpath RANK** required: **0** the base 1-99 list · **1** Il san · **2** Ee
-  san · **3** Sam san. 121 of the 906 rows carry one, and **every one of them has `SplLevel` 0** — so until
+  san · **3** Sam san. 150 of the 957 rows carry one, and **every one of them has `SplLevel` 0** — so until
   2026-08-08 the column was read by nothing and those rows looked like level-1 spells. Every level-99
   character was handed the Il san *and* Ee san secrets of ranks it had never earned, which is also what
   overflowed the 52-slot book (a level-99 Ee san mage wanted 57 entries). `LoadSpells` now floors a mark
@@ -3213,8 +3226,8 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   san taught it.
   > **The rank ladder stops at Sam san** (`Content.MaxMark` = 3), and `@mark`/`@class` refuse anything above
   > it rather than clamping. Paths.csv names five ranks and Items.csv carries 34 Sa san (mark 4) items, but
-  > **Spells.csv has 46 / 57 / 18 / 0 / 0 rows for marks 1-5**. A rank 4 would be a title and one level of
-  > stat growth over nothing.
+  > **Spells.csv has 46 / 56 / 48 / 0 / 0 rows for marks 1-5**. A rank 4 would be a title over nothing (a
+  > rank adds no stats).
   > *Era:* the mark-3 rows do not date Sam san, and the dated pages put it after our 2001-07-09. tswolf's San
   > quests page lists only the marks "Il San, Ee San" (tswolf.com/quests/sanquests/, Wayback 2001-01-29 and
   > 2001-06-27), its spell pages link Il San and Ee San and no Sam San through 2001-08-21, and Wayback holds
@@ -3373,8 +3386,11 @@ resolves the book icon internally, so no icon-id mapping pass is needed on the s
 caps at 52 (env `P1998_SPELLBOOK_CAP`) so an over-long teach can't overrun the client array — raise once a live
 test confirms the real limit. The cap no longer bites: the mark gate and the ladder collapse below put every
 playable path between **1 and 51** entries at every reachable rank and alignment (1 is Peasant, which owns
-only Soothe). Worst case is an unaligned Hyun moo at Sam san — "Guardian" — at **51 of 52**, one slot of
-headroom. Anything added to the Poet list, or a `Content.MaxMark` raised to Sa san, needs this re-measured.
+only Soothe). Worst case is a Hyun moo at Sam san — "Guardian" — at **51 of 52**, one slot of headroom, with
+the Dog spells and every Sage rung. Since the aligned Sam san rows (2026-10-24) that is every alignment, not only
+the unaligned one (an aligned Guardian held 48 before them, lacking three Poet families); re-measured by
+`Tests/SamSanAlignedRowTests.cs`'s book-size guard, which fails above the cap and writes the worst case to the
+test output. Anything added to the Poet list, or a `Content.MaxMark` raised to Sa san, needs this re-measured.
 
 **Ability ladders (`Content.LadderRungs` → `RespecSpellSet`).** Mage learns nine single-target zaps that differ
 only in magnitude (Thunder Bolt → Spark → Singe → Ignite → Ion → Impact → Call Lightning → Stormstrike →
@@ -3397,8 +3413,9 @@ than the guild master — "the guildmaster is not involved in these spells": you
 hand over items. Warrior **Greater Blessing 70 / Spirit Fury 99**, Rogue **Spot Traps 70 / Serpent's Fury
 99**, Mage **Fissure 70 / Lava Surge 99**, Poet **Survive 70 / Fascinate 99**. Source: the archived nexusatlas
 *Dog Spells* page (`re/fx/atlas_html/class_dog.html`, capture **2002-12-30**, after our 2001-07-09;
-the eight spells are in era by tswolf's dog page, Wayback 2001-02-24). They sit in Spells.csv under the `===DOG SPELLS===` divider with `SplPthId 99` and `SplLevel 0`, so no
-class filter could ever match them — **dead data until 2026-08-08**. Eligible paths are the **four base
+the eight spells are in era by tswolf's dog page, Wayback 2001-02-24). They sit in Spells.csv under the
+`===DOG SPELLS===` divider with `SplPthId 99` and `SplLevel 0`, so no class filter could ever match them —
+**dead data until 2026-08-08**. Eligible paths are the **four base
 classes and the four NPC subpaths**, never a PC subpath (`Content.CanLearnDogSpells`), which is the page's own
 rule: "people in PC subpaths cannot learn these spells". Where the fan tutor-board posts disagree on the level (Greater Blessing
 60-vs-70, Spirit Fury 91-vs-99, `re/archive_warrior_spells.md`), **the official listing wins** — the same
@@ -3422,18 +3439,18 @@ Surge is a genuine tier pair, but collapsing it would erase half of the only thi
 level-1 baseline, re-apply real `LevelUp`s on the current path, then **replace** the book with exactly
 `RespecSpellSet(class, level, alignment, mark, dogFlag)`. It is a rebuild, not a top-up — the book can shrink,
 and nothing from a previous class, level or rank survives.
-- `@mark n` forces level 99 first, then runs `n` further `LevelUp`s with the counter reading 100, 101, … so a
-  rank keeps growing on the same curve and its AC keeps falling past 1 (`100 − effective level`). The *stored*
-  level goes back to 99, which is what the character sheet and the exp table understand. Nothing in the live
-  game's data says what a rank is worth in stats, so "one more level per rank" is our model, not a ported
-  number.
+- `@mark n` rebuilds at level 99 and sets the mark; **a rank adds no stats**. Vita and mana are rolled on the
+  level-99 curve and Might/Grace/Will and AC (1) are level 99's, exactly what `@lvl 99` gives, whatever `n` is.
+  The rank shows in the mark and in what reads it (title, the rank's spells in the rebuilt book, gear, maps).
+  This matches RTK's promotion (`updatePath` writes the path and mark and nothing else) and Bon-Hwa's Il San
+  promotion here (`Server/BonHwa.cs`). It used to run one extra `LevelUp` per rank, our own model, which gave
+  testers growth no player could earn.
 - `@lvl` **clears the mark** — a rank can't survive a move to level 40, and at 99 it would make `@lvl 99` and
   `@mark 0` mean different things for no reason.
 - `@class` takes a class name (keeps the current rank) **or a rank title** (`@class Inferno` = Ju jak at
   mark 2). An NPC subpath forces level 99, for the same reason `@mark` does.
-- **The stored level is always ≤ 99.** Ranks are levels past the cap only for the purpose of rolling growth;
-  `_char.Level` goes back to 99 immediately afterwards, so the HUD, the character sheet, the exp table and
-  every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
+- **The stored level is always ≤ 99.** A rank is not a level, so the HUD, the character sheet, the exp table
+  and every level gate see 99 and nothing else. Levels 100+ never exist as a value anything can read.
 - `@stats` still overrides the curve outright, and by design a later rebuild discards it.
 - `@dog [0|1]` is **not** a rebuild — it only sets or clears the Dog Linguist flag (`Content.DogFlagReg`) and
   its legend. But the flag is an input to the rebuild, so the next `@lvl`/`@class`/`@mark`/`@align` is what
@@ -3718,7 +3735,8 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   governs magic and melee alike, and the old `ReceiveSpellDamage` comment claiming *"physical AC does not
   apply to magic (the caster's deflect roll already gates a spell)"* was simply wrong.
   - Mob side: the armor term at each damage site — `LuaDamageTarget`, `LuaMagicDamage` (the `Damage`
-    archetype), `LuaAreaZap` (4-way) and `LuaTargetAreaZap` (the dog 5-way). It lives at the call sites
+    archetype), `LuaAreaZap` (4-way), `LuaTargetAreaZap` (the dog 5-way) and `LuaRangeZap` (Lightning storm's
+    10-tile sweep, 2026-10-24). It lives at the call sites
     because `World.TryDamage` deliberately knows nothing about armor. Each site hands `TryDamage` the product
     unfloored (`Session.SpellRaw`), and `TryDamage` floors it once with a slept or dozed creature's amplifier
     in it (#363); with none armed that is `Session.SpellNet`'s figure, the same floor as before.
@@ -4260,9 +4278,9 @@ handler, not in `pc_warp` itself), reproduces RTK's denial-message cascade verba
 branches: because almost every gated map sets `ReqLvl`, the level-difference messages already cover every
 diff value, so the mark/path-specific text is only reachable when `ReqLvl` equals the player's level
 exactly and a mark/path check also fails. `CharMark` reads the character's mark (`_char.Mark`,
-`Session.CharacterApi.cs`), so a `ReqMark > 0` map's mark check passes for anyone whose mark meets it. No NPC
-sets the mark yet; only `@mark` (or a rank title given to `@class`) does, so in play only a character marked
-that way passes it.
+`Session.CharacterApi.cs`), so a `ReqMark > 0` map's mark check passes for anyone whose mark meets it. In play
+the mark is set by Bon-Hwa's Il San promotion (mark 1, `Server/BonHwa.cs`); a GM's `@mark` (or a rank title
+given to `@class`) sets any mark up to 3.
 
 **Reject = snap-back + status text, fixed 2026-07-27.** When the gate denies entry, RTK does two things
 in order (clif.c:5188-5204): **(1)** `clif_pushback(sd)` (clif.c:15617) — a `pc_warp` that shoves the
@@ -4378,11 +4396,23 @@ deflected." — RTK sends nothing to the target on a resist.
 
 **Request: LIVE-confirmed.** Pressing **b** sends op `0x3B` — matches RTK's dispatch exactly
 (`clif.c:11613`, `case 0x3B: clif_handle_boards(sd);`). Body `dec[0]` is a sub-command, then u16-BE
-board/post ids: `1`=show board list, `2 board`=show a board's posts, `3 board post`=read one post,
-`4 board topicLen topic bodyLen body`=make a post, `5 board post`=delete a post,
-`6 toLen to topicLen topic msgLen(u16BE) msg sendCopy`=**send nmail from the native compose window**
-(RTK `nmail_write`, level-10 gated), `9`=open the mailbox (== sub-2 with board 0). `Session.HandleBoard`
-decodes 1–6 + 9; 7/8 (GM postcolor, scripted special-write) aren't modelled.
+board/post ids: `1`=show board list, `2 board start(u16BE) F0 00`=show one page of a board's posts
+(below), `3 board post`=read one post, `4 board topicLen topic bodyLen body`=make a post,
+`5 board post`=delete a post, `6 toLen to topicLen topic msgLen(u16BE) msg sendCopy`=**send nmail from
+the native compose window** (RTK `nmail_write`, level-10 gated), `9`=open the mailbox (== sub-2 with
+board 0). `Session.HandleBoard` decodes 1–6 + 9; 7/8 (GM postcolor, scripted special-write) aren't
+modelled.
+
+**Sub-2's start: a static read of the 4.95 client, not a live capture** (2026-10-24). The window sends
+`02 board 7F FF F0 00` when a board or the Mailbox is picked (builder `0x407ec0`) and when it refreshes from
+the top after an acknowledgement pop-up (`0x408f90`, `0x40c520`). When the list is scrolled to its bottom or
+the keyboard selects its last row, it sends `02 board start F0 00` with start = (the oldest id it holds) − 1
+(`0x408fb0` → `0x409350`; mailbox `0x40c540` → `0x40c910`; `7F FF` while the list is empty), and sends
+nothing once that is 0. `F0` is constant and the trailing `00` is appended by the send routine (`0x475ab0`).
+Each reply that repeats the page's board id and mode byte is merged into the open list by id. RTK reads
+only byte 8, the start's high byte (`7F` restarts its per-session cursor, `clif.c:11165`).
+`SendBoardPosts` serves up to 20 entries whose id is at most start, newest first; `7F FF`, or a body too
+short to carry a start, is the top.
 
 **Board 0 == the player's nmail mailbox** (RTK `boards_showposts`: "Board(0) == NMail"). The client's
 board window is MODE-SWITCHED by the reply's first byte (`flags2`, below): mode 4 turns it into the
@@ -4417,7 +4447,9 @@ codebase, rather than copying RTK's literal (and inconsistent) byte-4 values.
   reachable way into the mailbox, since the 'm' hotkey is dead (below).
 - **Show a board's posts** (`SendBoardPosts`): `flags2(u8) flags1(u8) board(u16BE) boardNameLen boardName[...]
   postCount` then per post, newest first, `color(=0) postId(u16BE) authorLen author[...] month day topicLen
-  topic[...]`. **`flags2` is the window-mode byte: 2 = normal board, 4 = NMAIL MAILBOX** (RTK
+  topic[...]`. One page: at most 20 posts, the request's start and below (RTK `mapif_parse_showposts`,
+  `LIMIT bcount*20,20`), so `postCount` is the posts on this page and never passes 20. The 4.95 client
+  reads it as a signed byte. **`flags2` is the window-mode byte: 2 = normal board, 4 = NMAIL MAILBOX** (RTK
   char/mapif.c `mapif_parse_showposts`: `if (a.board == 0) flags2 = 4; else 2`) — mode 4 is what makes
   Write compose WITH a recipient field (sub-6). `flags1` = rights: 1=read-only, 3=write+del, special
   6="write sends a packet" for scripted boards (not modelled).
@@ -4540,6 +4572,17 @@ gate whisper uses), it iterates `World.Online.All()` (new — a server-wide rost
 `class`/mark). Rendered via `SendMiniText` at the default `type=3` (proven-live mini/status pane) rather
 than RTK's literal `type=11` (its "group" channel, reused for subpath) — **unconfirmed** whether 4.95
 renders `type=11` distinctly from `type=3`; if it turns out to matter, this is a one-line change.
+
+**Who may use it — the twelve PC subpaths only, as RTK.** RTK's way onto the channel is a whisper to the name
+`@` (`clif_parsewisp`), which calls `clif_sendsubpathmessage` only when `classdb_chat(class)` is set and
+otherwise answers `clif_sendbluemessage(sd, "You cannot do that.")`. `classdb_chat` is Paths.csv `PthChat`:
+non-zero on the twelve PC subpaths (10-21) and the GM row Archon, zero on the base classes and the four NPC
+subpaths. Ours now loads `PthChat` (`Content.HasSubpathChat`) and applies it the same way: `/sp`, `/subpathchat`
+and a whisper to `@` (routed beside `!!` and `!` in `Session.DoWhisper`) all go through `DoSubpathChat`, which
+refuses anyone else with RTK's line on the blue channel (`0x0A` type 0) before its own other checks (the `@`
+route meets the whisper's mute and `cantalk` gates first, as in RTK's `clif_parsewisp`). F2 still toggles for
+every class, as RTK's does: the gate is on sending, and since the audience is the speaker's own path, a Warrior
+with the toggle on never receives a line. Before this, any class could use the channel, base classes included.
 
 ---
 

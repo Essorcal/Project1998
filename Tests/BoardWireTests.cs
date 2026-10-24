@@ -59,8 +59,10 @@ public sealed class BoardWireTests
             "00090442756773" + "0000074D61696C626F78"), Assert.Single(record.BodiesOf(0x31)));
     }
 
+    // A stored topic over 255 bytes (a kept copy's "[To <name>] <subject>" can be one) is cut to its first 255
+    // in the letter view, under a length byte of 255. This fact used to pin the wrapped cast (256 -> 00).
     [Fact]
-    public void OverlongStoredTopicRetainsItsExistingLengthCast()
+    public void OverlongStoredTopicIsCutTo255InTheLetterView()
     {
         string user = $"wire_long_{Guid.NewGuid():N}";
         var record = new RecordingOutbound();
@@ -69,8 +71,8 @@ public sealed class BoardWireTests
         Mail.Send(user, "A", new string('T', 256), "B", 1, 2, -1, 0, 0);
         session.Receive(SessionFixture.Frame(0x3B, new byte[] { 3, 0, 0, 0, 1 }));
         byte[] body = Assert.Single(record.BodiesOf(0x31));
-        Assert.Equal(Convert.FromHexString("05030100010141010200"), body[..10]);
-        Assert.Equal(Enumerable.Repeat((byte)'T', 256), body[10..266]);
-        Assert.Equal(Convert.FromHexString("000142"), body[266..]);
+        Assert.Equal(Convert.FromHexString("050301000101410102FF"), body[..10]);
+        Assert.Equal(Enumerable.Repeat((byte)'T', 255), body[10..265]);
+        Assert.Equal(Convert.FromHexString("000142"), body[265..]);
     }
 }

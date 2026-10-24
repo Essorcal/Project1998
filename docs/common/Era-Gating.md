@@ -132,9 +132,9 @@ Not every late arrival gets a gate. **Ranger** (PthId 15, the rogue's second PC 
 - So Ranger took Shadow's slot between 2001-08-05 and 2002-12-25. The 4.95 client draws no user-list badge for
   that slot (the badge table in `docs/4.x/Protocol.md`), which fits either name.
 
-Why no gate: it would disable a subpath the PC-subpath work will use and leave rogues two PC subpaths, and Shadow
-exists nowhere in our data (no `Paths.csv` row, no client badge), so nothing could stand in its place. No one can
-hold a PC subpath today anyway (`Content.PlayablePaths`).
+Why no gate: it would disable a subpath players can now be admitted to (`@subpath`, by a GM or an elder) and
+leave rogues two PC subpaths, and Shadow exists nowhere in our data (no `Paths.csv` row, no client badge), so
+nothing could stand in its place.
 
 **What would settle the date:** a dated page between 2001-08-05 and 2002-12-25 that names the Ranger subpath or
 the end of Shadow: the official site's news from September 2001 on, tswolf's own late-2001 news, or a capture

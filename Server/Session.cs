@@ -1332,6 +1332,17 @@ public sealed partial class Session
         int h = Math.Clamp(reqH, 0, Math.Max(0, map.Ys - y0));
         if (w <= 0 || h <= 0) return;
 
+        // ...and to ONE FRAME. The frame's u16 length counts op + inc + this body (6 header bytes, then w*h
+        // cells), and TkPacket.Build writes it unchecked, so a longer body wraps it and the client, which
+        // frames its stream by that field, loses its place in the stream. Past 16,381 cells on 4.95 (4 bytes a
+        // cell) or 10,921 on 5.33 (6) it would. Only a hand-built 0x05 asks for that much (the client asks
+        // ~18x16, the stream window is 27x25), and only six maps (seven on 5.33) are big enough to answer one.
+        // Drop ROWS, keeping x0, y0 and w, so the header still names exactly the cells sent. Every caller's w
+        // fits the header's u8, so a row is at most 255 * 6 = 1,530 bytes and at least 42 rows always fit; a
+        // rect that already fits is untouched.
+        int rows = h;
+        h = Math.Min(h, (ushort.MaxValue - 2 - 6) / (w * MapCell.BytesPerCell(_ver)));
+
         // NO leading flag byte: the 5.33 client (handler sub_469060) reads x0 immediately after op+inc
         // — calibrated via the 0x15 handler and confirmed by the client-side Frida probe (a spurious
         // leading 0x00 shifted every field by one byte, making w read as 0 -> zero cells -> black void).
@@ -1407,7 +1418,8 @@ public sealed partial class Session
         }
 
         string mode = MapDiag.Length == 0 ? $"real {TileTranslation.Describe(_ver)}" : $"DIAG={MapDiag}";
-        Log.Info($"   -> map-data(0x06) [{why}] rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total} " +
+        string clamped = h < rows ? $" CLAMPED to one frame ({h} of {rows} rows)" : "";
+        Log.Info($"   -> map-data(0x06) [{why}] rect ({x0},{y0}) req {reqW}x{reqH} -> {w}x{h} cells={total}{clamped} " +
                  $"[{mode}] {(_ver == ClientVersion.V533 ? "3-short" : "2-short")} cells");
         Send(TkPacket.BuildGame(ServerOp.MapCells, _gameInc++, b.ToArray()));
         NoteStreamed(x0, y0, w, h);

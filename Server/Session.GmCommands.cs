@@ -961,16 +961,17 @@ public sealed partial class Session
     // The predicates did not change; where they run did.
 
     // "@mark <0-3>" — set the subpath rank (RTK status.mark: 0 base · 1 Il san · 2 Ee san · 3 Sam san) and
-    // rebuild the character at it. A rank is levels PAST 99, not an alternative to them, so this FORCES level
-    // 99 first: "@lvl 99" is the base class, "@mark 1" is Il san on top of it, and so on. Each rank brings its
-    // own stat growth and its own secrets; the base 1-99 book is unchanged underneath.
+    // rebuild the character at it. A rank is earned at level 99, so this FORCES level 99 first: "@lvl 99" is
+    // the base class, "@mark 1" is Il san at the same level, and so on. A rank adds NO stats — the rebuild
+    // gives exactly @lvl 99's vita, mana, Might/Grace/Will and AC (see RespecTo), as Bon-Hwa's promotion
+    // gives none — and brings its own secrets; the base 1-99 book is unchanged underneath.
     //
     // Stops at Sam san — see Content.MaxMark: Spells.csv has no mark-4 or mark-5 rows, so Sa san and Oh san
-    // would be a title and a stat bump over nothing.
+    // would be a title over nothing.
     //
-    // No NPC advances the rank yet, so this is also still the only way to satisfy the other gates that read
-    // it: mark-restricted gear (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest
-    // eligibility.
+    // Bon-Hwa's Il San trials (Server/BonHwa.cs) now earn mark 1 in play; nothing earns Ee or Sam san yet, so
+    // for those this is still the only way to satisfy the other gates that read the mark: mark-restricted gear
+    // (ItmMark), map entry (MapReqMark), unmarked-only doors, and minor-quest eligibility.
     private void SetMark(CommandArgs a)
     {
         // Name the ranks of the character's OWN path, not the generic Il san ladder — a Ju jak's ranks are
@@ -982,7 +983,7 @@ public sealed partial class Session
         // than rebuilding the character at rank 0.
         if (!a.Int(0, out var want))
         {
-            Reply($"mark is {_char.Mark} ({ClassTitle}). {a.Usage()} — {ladder}, each on top of level 99.");
+            Reply($"mark is {_char.Mark} ({ClassTitle}). {a.Usage()} — {ladder}, each at level 99 with no added stats.");
             return;
         }
         // Refuse rather than clamp: silently turning "@mark 5" into Sam san would read as a working Oh san.
@@ -1274,11 +1275,12 @@ public sealed partial class Session
     // the rank titles are what a character is actually called, so refusing them would mean the name shown in
     // the profile is one you can't type back. A base name leaves the current rank alone.
     //
-    // RESTRICTED to Content.PlayablePaths: the four base classes, Peasant, and the four NPC subpaths (Chung
-    // ryong / Baekho / Ju jak / Hyun moo). RTK's Paths.csv also lists a GM branch and twelve PC subpaths, none
-    // of which this server models — accepting one would produce a character with a rank ladder and no spells
-    // behind it. NPC SUBPATHS FORCE LEVEL 99, for the same reason @mark does: you subpath at the cap, and the
-    // subpath's own spell is pinned there.
+    // RESTRICTED to Content.PlayablePaths: the four base classes, Peasant, the four NPC subpaths (Chung ryong /
+    // Baekho / Ju jak / Hyun moo) and the twelve PC subpaths (Barbarian … Muse). Only RTK's GM branch
+    // (Dreamweaver, Archon) is refused. ANY SUBPATH FORCES LEVEL 99, for the same reason @mark does: an NPC
+    // subpath is joined at the cap and its own spell is pinned there; a PC subpath is joined from 50 (by
+    // @subpath admit, which keeps the level), and "@lvl 50" after this gives a tester that member. A PC
+    // subpath's own spells do not come with it (Content.IsPcSubpathSpell) — @spell teaches them one at a time.
     //
     // The rebuild keeps the current level and rank and re-derives everything else from the new class: stats
     // follow the new path's growth curve (a Warrior turned Mage loses the warrior HP roll and gains the mage
@@ -1298,8 +1300,8 @@ public sealed partial class Session
         { Refuse($"'{name}' isn't a known class or rank. Try: {string.Join(" · ", Content.PlayablePathNames())}"); return; }
         if (!Content.IsPlayablePath(pick.PathId))
         {
-            Refuse($"'{Content.PathName(pick.PathId)}' isn't playable here — this server models the base classes and the " +
-                    $"NPC subpaths only. Try: {string.Join(" · ", Content.PlayablePathNames())}");
+            Refuse($"'{Content.PathName(pick.PathId)}' isn't playable here — it is RTK's GM branch, not a class. " +
+                    $"Try: {string.Join(" · ", Content.PlayablePathNames())}");
             return;
         }
 
@@ -1311,10 +1313,14 @@ public sealed partial class Session
             return;
         }
 
-        bool npcSubpath = Content.PathBaseOf(pick.PathId) != pick.PathId;
+        bool subpath = Content.PathBaseOf(pick.PathId) != pick.PathId;   // NPC or PC
         int mark  = pick.Mark > 0 ? pick.Mark : Math.Min((int)_char.Mark, Content.MaxMark);   // a rank name sets the rank; a base name keeps it
-        int level = npcSubpath || mark > 0 ? 99 : _char.Level;            // subpaths and ranks live at the cap
+        int level = subpath || mark > 0 ? 99 : _char.Level;               // subpaths and ranks live at the cap
 
+        // A new path is nobody's elder, as joining and leaving a PC subpath already make it: otherwise "@class"
+        // back into the subpath would revive an old elder mark with no appointment (PR #393's review, F2). A rank
+        // title on the same path keeps it.
+        if (pick.PathId != CharClassId) ClearSubpathElder();
         _char.ClassName = Content.PathName(pick.PathId);
         RespecTo(level, mark);
         SendSelfProfile();

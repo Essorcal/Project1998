@@ -211,7 +211,7 @@ public sealed partial class Session
         // exercise the real leveling path (the curve, multi-level carries, the Peasant wall, LevelUp gains),
         // and with `kill` the only way to exercise its GROUP half without a mob to kill (#155).
         T("exp",     (s, a) => s.ExpCmd(a),        "<n> [kill]",          "gain experience through the real leveling path (kill = as a kill would: split across your group in range, group totem rule; no quest credit)"),
-        T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank on top of 99 (Il san…Sam san): its stats + spells"),
+        T("mark",    (s, a) => s.SetMark(a),       "<0-3>",               "subpath rank at level 99 (Il san…Sam san): its spells; a rank adds no stats"),
         T("class",   (s, a) => s.SetClass(a),      "<Warrior | Rogue | Mage | Poet | Peasant>", "set the class/path and rebuild for it"),
         T("dog",     (s, a) => s.SetDogFlag(a),    "[0|1]",               "the Dog-quest flag: unlocks Dog spells for a base class or NPC subpath"),
         // The Sage ladder has no other staff route: its five spells are locked to one NPC, so no rebuild
@@ -241,6 +241,13 @@ public sealed partial class Session
         T("killtrack", (s, a) => s.KillTrackCmd(a), "[clear]",         "the 8-slot kill track the mythic alliances count (clear = what accepting one does)"),
         T("coins|gold", (s, a) => s.GiveCoinsCmd(a), "[n]",               "add coins to the purse (bare = +10,000; a negative n removes, floored at 0)"),
         T("ride|mount", (s, a) => s.ToggleMount(a), "[0|1]",              "get on/off the horse"),
+
+        // ---- PC subpaths ----------------------------------------------------------------------------
+        // PLAYER-tier, because two of its users are ordinary players: an elder admitting a member, and a member
+        // leaving. The GM-only parts (naming any subpath, appointing elders) are checked inside, in
+        // Server/Session.Subpaths.cs, which also says why membership is a grant rather than an NPC.
+        P("subpath", (s, a) => s.SubpathCmd(a),    "admit <name> [subpath] | leave | expel <name> | elder <name> [0|1]",
+                                                   "PC subpaths (bare = your standing): a GM or one of the subpath's elders admits a level-50 character or expels a member; leave your own; a GM appoints an elder (0 removes one)"),
 
         // ---- items ----------------------------------------------------------------------------------
         T("items",    (s, a) => s.ListItems(a),     "[filter]",           "list/fuzzy-search the item registry"),

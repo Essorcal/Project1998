@@ -148,8 +148,20 @@ public sealed class NpcContext
     public int  Level => _s.CharLevel;
     /// <summary>The "power" number quests gate on (RTK baseMagic*2 + baseHealth analog).</summary>
     public int  Stat  => _s.CharStat;
-    /// <summary>Subpath mark count (0 for now).</summary>
+    /// <summary>The subpath mark (RTK <c>player.mark</c>): 0 none · 1 Il san · 2 Ee san · 3 Sam san.</summary>
     public int  Mark  => _s.CharMark;
+    /// <summary>Set the subpath mark and keep the path: RTK <c>player:updatePath(player.class, n)</c>, which
+    /// Bon-Hwa's promotion calls. Persists and resends the status, and changes nothing else — no stat, no spell.
+    /// Refuses (false, nothing changed) a mark below 0 or above <see cref="Content.MaxMark"/>, the same ceiling
+    /// <c>@mark</c> and <c>@class</c> keep.</summary>
+    public bool SetMark(int mark) => _s.SetCharMark(mark);
+    /// <summary>The player's character name (RTK <c>player.name</c>), for a line that names them to others.</summary>
+    public string PlayerName => _s.CharName;
+    /// <summary>Play an effect over the player for everyone in view of them (RTK <c>player:sendAnimation</c>);
+    /// a negative id plays nothing.</summary>
+    public void PlayEffect(int effect) => _s.PlayEffectOverSelf(effect);
+    /// <summary>A system line to every player online (RTK <c>broadcast(-1, text)</c>).</summary>
+    public void AnnounceToWorld(string text) => _s.AnnounceToWorld(text);
     /// <summary>The base class as RTK's <c>player.baseClass</c>: 1 Warrior · 2 Rogue · 3 Mage · 4 Poet (0 for
     /// Peasant/unknown). Subpaths collapse onto their base — a Chung Ryong reads 1, same as a Warrior. Used by
     /// <see cref="BonHwaAbility"/> to pick the class weapon ladder and the per-class stat caps.</summary>
@@ -304,6 +316,22 @@ public sealed class NpcContext
     public int BasePathId => _s.CharBasePathId;
     /// <summary>Set the player's path (RTK updatePath) — changes the profile class line, persists.</summary>
     public void SetClass(int pathId) => _s.SetCharClass(pathId);
+    /// <summary>What the player is called now, class plus rank (RTK <c>player.classNameMark</c>): Session.ClassTitle.</summary>
+    public string ClassTitle => _s.ClassTitle;
+
+    /// <summary>The Dog's cleanse leaving an NPC subpath (RTK dog_linguist.lua <c>cleanse</c>,
+    /// <c>player:updatePath(player.baseClass, player.mark)</c>): a Chung ryong, Baekho, Ju jak or Hyun moo goes back
+    /// to its base class, rank kept. Any other path is left as it is. RTK's call is unconditional, so it would also
+    /// return a PC subpath to its base; this one does not, because leaving a PC subpath belongs to the PC-subpath
+    /// rules (<c>@subpath leave</c>, wherever PC subpaths can be held), not to the Dog. True if the path
+    /// changed.</summary>
+    public bool LeaveNpcSubpath()
+    {
+        int cls = _s.CharClassId;
+        if (!Content.IsNpcSubpath(cls)) return false;
+        _s.SetCharClass(Content.PathBaseOf(cls));
+        return true;
+    }
 
     // ---- sub-alignment (AlignmentAbility / SummitAbility; RTK swapAlignment.lua) ------------------
     /// <summary>The player's sub-alignment (0 Unaligned · 1 Kwi-Sin · 2 Ming-Ken · 3 Ohaeng).</summary>
@@ -745,7 +773,12 @@ public sealed class ClassTrainerAbility : INpcAbility
         int cls = ctx.ClassId;
         if (cls <= 0)                    // Peasant (0) or unknown -> can choose this path
             yield return ($"Become a {_class}", Become);
-        else if (cls == _path)           // your own class's trainer -> teach/foresee its secrets
+        // Your own class's trainer -> teach/foresee its secrets. A PC-subpath member's own class here is its
+        // BASE class: RTK's learnSpell gives "regular path and pc subpaths" getUnknownSpells(player.baseClass)
+        // (rtklua/Accepted/Scripts/Spells.lua), so a member admitted at 50 can still learn 51-99. Their
+        // subpath's own spells are not in that list (Content.IsPcSubpathSpell) until the hall teachers exist.
+        // An NPC subpath is left as it was.
+        else if (cls == _path || (Content.IsPcSubpath(cls) && ctx.BasePathId == _path))
         {
             yield return ("Learn Secret", LearnSecret);
             yield return ("Divine Secret", DivineSecret);

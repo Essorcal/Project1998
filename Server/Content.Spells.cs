@@ -21,7 +21,7 @@ namespace Server;
 /// sends a target entity id), <b>5</b> = self / no-target. The client renders type 1/2 in the Spell book and
 /// type 5 in the Skill book (both populate through the same 0x17 packet, keyed on this type).
 /// <c>Mark</c> is the SUBPATH RANK required (SplMark: 0 = the base 1-99 class list, 1 = Il san, 2 = Ee san,
-/// 3 = Sam san) — 121 of the 906 rows carry one and they all have <c>SplLevel</c> 0, which used to make them
+/// 3 = Sam san) — 150 of the 957 rows carry one and they all have <c>SplLevel</c> 0, which used to make them
 /// look like level-1 spells and land in every level-99 character's book alongside the base list. See
 /// <see cref="Content.MarkSpellLevel"/>.
 /// </summary>
@@ -429,7 +429,14 @@ public static partial class Content
     /// <para>Dog spells are NOT here and must not be added: "The guildmaster is not involved in these spells"
     /// (nexusatlas Dog Spells listing) — the class's Dog teaches them itself, in exchange for kills and goods.
     /// They carry <c>SplPthId</c> 99, which no class filter matches, so they drop out of this list naturally;
-    /// see <see cref="CanLearnDogSpells"/> and the <c>DogLinguistNpc</c> handler in npc_dialog.lua.</para></summary>
+    /// see <see cref="CanLearnDogSpells"/> and the <c>DogLinguistNpc</c> handler in npc_dialog.lua.</para>
+    /// <para>An NPC subpath's own spell (Chung ryong's rage, Baekho's cunning, Ju jak evocation, Hyun moo revival;
+    /// <c>SplPthId</c> 6-9) is offered to that subpath and to no other path. Its learn row is keyed to the BASE
+    /// class, because the trainer reads the fee with the base path (<see cref="NpcContext.BasePathId"/>), and
+    /// without this guard that row would also offer the spell to every player of the base class. RTK draws the same
+    /// line: an NPC subpath learns its base class's list plus its own spells, everyone else the base list
+    /// (<c>Scripts/Spells.lua</c>, <c>Player.learnSpell</c>). PC-subpath spells (<c>SplPthId</c> 10-21) are not
+    /// this guard's: none has a learn row, and who teaches them is a separate rule.</para></summary>
     public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment, int mark = 0)
     {
         // An NPC subpath IS its base class plus a little: a Chung ryong learns the whole Warrior list (the
@@ -443,11 +450,15 @@ public static partial class Content
         return Spells.Where(s => (s.Alignment < 0 || s.Alignment == alignment) && s.Mark <= mark)
               .Select(s =>
                     isSubpath && s.PathId == pathId ? s with { Level = MarkSpellLevel }   // the subpath's own signature spell; you only get there at the cap
+                  : IsNpcSubpath(s.PathId) ? null                  // ANOTHER path's NPC-subpath spell: never offered (see the summary)
                   : IsUniversalBaseSpell(s) ? s                    // taught to EVERY class at its base level; SpellCosts rows are relearn-cost only
                   : SpellCosts.TryGetValue(s.Key, out var perClass)
                       ? (perClass.TryGetValue(basePath, out var cost) ? s with { Level = cost.Level } : null)
                       : (s.PathId == basePath || s.PathId == 0 ? s : null))
-              .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s) && !IsNpcGrantedOnly(s))
+              // A PC subpath's own spells are nobody's to teach yet (IsPcSubpathSpell): without this a level-99
+              // member would be offered all of them, free, and every rebuild would hand them over.
+              .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s) && !IsNpcGrantedOnly(s)
+                          && !IsPcSubpathSpell(s))
               .Select(s => s!)
               .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
@@ -536,15 +547,15 @@ public static partial class Content
 
     /// <summary>The level a mark (subpath-rank) spell is pinned to. Marks sit ON TOP of the level cap — an
     /// Il san is, in the user's words, "level 100" — so every rank spell needs level 99 first and then the
-    /// rank. The CSV can't say that (SplLevel is 0 on all 121 of them), so <see cref="LoadSpells"/> floors
+    /// rank. The CSV can't say that (SplLevel is 0 on all 150 of them), so <see cref="LoadSpells"/> floors
     /// them here and <see cref="SpellsForClass"/>'s ordinary <c>Level &lt;= maxLevel</c> test does the rest.</summary>
     public const int MarkSpellLevel = 99;
 
     /// <summary>The highest subpath rank a character may hold: <b>3, Sam san</b> — the last one that exists
     /// as content. Paths.csv names five ranks per path and Items.csv carries 34 Sa san (mark 4) items, but
-    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 18 mark-3, and zero for 4 or 5.
-    /// Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is one
-    /// more level of stat growth and a title, so the ladder stops here until those spells are written.
+    /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 56 mark-2, 48 mark-3, and zero for 4 or 5.
+    /// Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is a title (a rank adds no
+    /// stats), so the ladder stops here until those spells are written.
     /// <para>ERA: the mark-3 rows show the spells are in our data, not when Sam san arrived, and the dated
     /// pages put it after our 2001-07-09. tswolf.com/quests/sanquests/ lists only the marks "Il San, Ee San"
     /// (Wayback 2001-01-29 and 2001-06-27), its spell pages link Il San and Ee San and no Sam San through
@@ -876,18 +887,21 @@ public static partial class Content
         set => Builder.PathRankByName = value;
     }
 
-    /// <summary>The paths a character may actually BE: the four base classes and Peasant, plus the four NPC
-    /// subpaths (Chung ryong / Baekho / Ju jak / Hyun moo). Everything else in Paths.csv is either RTK's GM
-    /// branch (5 Dreamweaver, 22 Archon) or a PC subpath (10-21 Barbarian … Muse) that this server does not
-    /// model — no spell behaviour (in Tests/Fixtures/spell-dispatch-routes.txt every PC-subpath row but Spirit
-    /// blade routes to the generic verb), no joining or promotion NPC, and <see cref="SpellsForClass"/> would
-    /// teach a holder its base class's whole list, rank rows included, plus its own rows at level 99, free
-    /// where no learn row exists. The titles such a holder would show are not wrong: they are Paths.csv's own
-    /// PthMark1-4, which the live Nexus Atlas subpath pages pair with the Il/Ee/Sam/Sa san icons. Of the ten
-    /// of those pages read on 2026-10-24 (Do and Muse did not answer), eight match (Shaman's "Mog-Ur" only in
-    /// letter case); Chongun spells mark 2 "Kysh'itra" (ours "Kyshitra") and Merchant has marks 3 and 4 the
-    /// other way round.</summary>
-    public static readonly IReadOnlySet<int> PlayablePaths = new HashSet<int> { 0, 1, 2, 3, 4, 6, 7, 8, 9 };
+    /// <summary>The paths a character may actually BE: the four base classes and Peasant, the four NPC subpaths
+    /// (6-9 Chung ryong / Baekho / Ju jak / Hyun moo) and the twelve PC subpaths (10-21 Barbarian … Muse). The
+    /// only rows left out are RTK's GM branch, 5 Dreamweaver and 22 Archon.
+    /// <para>The PC subpaths joined this set with their foundation: a GM or one of the subpath's elders admits a
+    /// member (<c>@subpath</c>, Session.Subpaths.cs). In 2001 these were "Player Run Subpaths"
+    /// (tswolf.com/spells/pc.shtml, Wayback capture 2001-07-24) and RTK's NPC trial quests exist for only one
+    /// of the twelve, so membership is a grant, as the 2026-10-24 decision sheet settled (item 12). What a
+    /// member does NOT get yet is their subpath's own spells: no trainer teaches them and no rebuild hands them
+    /// over (<see cref="IsPcSubpathSpell"/>) until each subpath's hall teacher exists.</para>
+    /// <para>A member's rank titles are Paths.csv's own PthMark1-4, which the live Nexus Atlas subpath pages pair
+    /// with the Il/Ee/Sam/Sa san icons. Of the ten of those pages read on 2026-10-24 (Do and Muse did not
+    /// answer), eight match (Shaman's "Mog-Ur" only in letter case); Chongun spells mark 2 "Kysh'itra" (ours
+    /// "Kyshitra") and Merchant has marks 3 and 4 the other way round.</para></summary>
+    public static readonly IReadOnlySet<int> PlayablePaths =
+        new HashSet<int> { 0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21 };
 
     public static bool IsPlayablePath(int pathId) => PlayablePaths.Contains(pathId);
 
@@ -911,6 +925,38 @@ public static partial class Content
 
     /// <summary>Subpath badge index for a path id (Paths.csv PthIcon) — see <see cref="PathIcon"/>.</summary>
     public static int PathIconOf(int pathId) => PathIcon.GetValueOrDefault(pathId, 0);
+
+    /// <summary>A PC subpath (10-21: Barbarian, Merchant, Diviner, Druid, Chongun, Ranger, Geomancer, Monk, Do,
+    /// Spy, Shaman, Muse) as against a base class, an NPC subpath or the GM rows. Paths.csv's own split, the
+    /// same one <see cref="IsNpcSubpath"/> reads: <c>PthIcon</c> 1-3 is a PC subpath's badge, 4 an NPC
+    /// subpath's, 0 everything else.</summary>
+    public static bool IsPcSubpath(int pathId) => PathIconOf(pathId) is >= 1 and < NpcSubpathIcon;
+
+    /// <summary>Is this spell one of a PC subpath's own (its <c>SplPthId</c> is one of the twelve)? Nobody
+    /// teaches these yet — the subpath halls are a later slice — so <see cref="SpellsForClass"/> drops them,
+    /// which keeps them out of every trainer's Learn Secret and Divine Secret lists and out of the character
+    /// rebuild. Testers use <c>@spell</c>.</summary>
+    public static bool IsPcSubpathSpell(SpellDef sp) => IsPcSubpath(sp.PathId);
+
+    /// <summary>The level a character must have reached before a GM or an elder may admit them to a PC
+    /// subpath. No 2001 page gives it; this is RTK's, which asks 50 for its one complete joining
+    /// (rtklua/Accepted/NPCs/subpaths/barbarian/ghengis_khan.lua, "You are too young to join at this time."
+    /// below 50), chosen over the NPC subpaths' 99 on the 2026-10-24 decision sheet (item 12).</summary>
+    public const int PcSubpathJoinLevel = 50;
+
+    // PthId -> PthChat, RTK class_db's `chat` column. Non-zero on the twelve PC subpaths (10-21) and the GM row
+    // Archon (22) only — the base classes and the four NPC subpaths all carry 0.
+    private static Dictionary<int, int> PathChat
+    {
+        get => _snapshotBuilder?.PathChat ?? Snapshot.PathChat;
+        set => Builder.PathChat = value;
+    }
+
+    /// <summary>May a character of this path use the subpath channel at all? RTK gates the "@" whisper route
+    /// on <c>classdb_chat(class)</c>, which is Paths.csv <c>PthChat</c>, and answers anyone else "You cannot
+    /// do that." (clif.c clif_parsewisp). Only the twelve PC subpaths and Archon pass; a base class or an NPC
+    /// subpath does not.</summary>
+    public static bool HasSubpathChat(int pathId) => PathChat.GetValueOrDefault(pathId) != 0;
 
     // PthId -> PthType, the BASE path a (sub)class descends from (RTK class_db.c classdb_path): every subpath
     // collapses onto 1 Warrior / 2 Rogue / 3 Mage / 4 Poet, e.g. Chung ryong (6) and Barbarian (10) are both
@@ -1024,11 +1070,18 @@ public static partial class Content
     // caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC".
     // The sacrifice verb's FocusedBlow and Siege branches carry those numbers, with the Atlas pages' mana and
     // aethers (#328). Siege's three alignment names are below; the live Atlas warrior page lists them
-    // (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21). Focused Blow's are not in Spells.csv.
+    // (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21). So are Focused Blow's, which the live
+    // Atlas rogue page lists in Focused Blow's own block (https://www.nexusatlas.com/spells/rogue.php, fetched
+    // 2026-10-10; Caleb, 2026-10-24, decision sheet item 7).
     public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind, FocusedBlow, Siege }
     private static readonly Dictionary<string, SacrificeFamily> SacrificeAliases = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["focused_blow_rogue"] = SacrificeFamily.FocusedBlow,
+        // Focused Blow + its three alignment aliases: Kwi-Sin "Burial Dance", Ming-Ken "Flowing Energy", Ohaeng
+        // "Freeform". Same mechanic, as Siege's below.
+        ["focused_blow_rogue"]   = SacrificeFamily.FocusedBlow,
+        ["burial_dance_rogue"]   = SacrificeFamily.FocusedBlow,
+        ["flowing_energy_rogue"] = SacrificeFamily.FocusedBlow,
+        ["freeform_rogue"]       = SacrificeFamily.FocusedBlow,
 
         // Siege + its three alignment aliases (user-confirmed): Kwi-Sin "Soul's Freedom", Ming-Ken
         // "Life's End", Ohaeng "Winter Chill". Same mechanic; as for every family here, a cast shows the name
@@ -1123,9 +1176,15 @@ public static partial class Content
     public static string? RandomAdvice() => AdviceHints.Length == 0 ? null : AdviceHints[Random.Shared.Next(AdviceHints.Length)];
 
     // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
-    // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases whose other
-    // identifiers we do not know - only the unaligned key is wired).
-    public static bool IsMendEquipment(SpellDef sp) => sp.Key == "mend_equipment_warrior";
+    // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases). The live
+    // Nexus Atlas warrior page names all three of Mend Equipment's: Kwi-Sin "Restore equipment", Ming-Ken "Luster
+    // return", Ohaeng "Reforge" (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21; Caleb,
+    // 2026-10-24, decision sheet item 7). They repair as Mend Equipment does, so all four keys take its verb.
+    private static readonly HashSet<string> MendEquipmentSpells = new(StringComparer.Ordinal)
+    {
+        "mend_equipment_warrior", "restore_equipment_warrior", "luster_return_warrior", "reforge_warrior",
+    };
+    public static bool IsMendEquipment(SpellDef sp) => MendEquipmentSpells.Contains(sp.Key);
 
     // NPC-subpath guardian spells (their own SplPthId: 8 Ju Jak, 9 Hyun Moo). Both had Spells.csv rows but no
     // archetype, so they spent mana and did nothing. Hyun Moo Revival is the one spell MEANT to be cast while
@@ -1156,7 +1215,9 @@ public static partial class Content
     //   Fire's row takes the same gate at the live Nexus Atlas mage page's "Mana Cost - 15,275" and its
     //   "Aethers - 65 Seconds" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; Caleb,
     //   2026-10-22, decision sheet item 5): arch_damage refuses below 15,275 for free, and from it the cast
-    //   ends at 0 for the same reason, so it stays false too. RTK has no script for it. Retribution and its
+    //   ends at 0 for the same reason, so it stays false too. RTK has no script for it. Its three alignment
+    //   names on that page, Deaths awakening, Soul rip and Final blow (Caleb, 2026-10-24, decision sheet item 7),
+    //   carry its row and take the same entry, as Inferno's reskins take Inferno's. Retribution and its
     //   three reskins (RTK poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the
     //   same thing one tier down: "deals 34% of current mana to target", and it empties you doing it.
     // 0.7 - Hellfire and its three alignment reskins. RTK Spells/mage/hellfire.lua takes its cost TWICE:
@@ -1175,6 +1236,8 @@ public static partial class Content
         ["inferno_mage"] = new(1.0, false), ["dooms_fire_mage"] = new(1.0, false),
         ["deaths_door_mage"] = new(1.0, false), ["natures_denial_mage"] = new(1.0, false),
         ["steel_storm_mage"] = new(1.0, false),
+        ["deaths_awakening_mage"] = new(1.0, false), ["soul_rip_mage"] = new(1.0, false),
+        ["final_blow_mage"] = new(1.0, false),
 
         ["hellfire_mage"] = new(0.7, false),     ["consume_soul_mage"] = new(0.7, false),
         ["flesh_eaters_mage"] = new(0.7, false), ["hurricane_mage"] = new(0.7, false),
