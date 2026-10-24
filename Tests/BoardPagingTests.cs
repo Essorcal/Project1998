@@ -22,8 +22,9 @@ namespace Tests;
 /// entries drew an empty list and 300 drew 44 rows; a page that skipped or repeated an entry, or a header that
 /// stopped repeating the board id, would only show as a list that never grows.</para>
 ///
-/// <para>Board ids 0x7E10-0x7E12 are unknown boards (empty name) that no other fact writes to, so their post
-/// ids are 1, 2, 3, ...; each mailbox belongs to a fresh name. The board-sign fact uses the one live
+/// <para>Board ids 0x7E10-0x7E13 are unknown boards (empty name) that no other fact writes to, so their post
+/// ids are 1, 2, 3, ...; each mailbox belongs to a fresh name. Two facts then delete posts and letters, so the
+/// ids have gaps: with dense ids a cut by position and the cut by id give the same pages. The board-sign fact uses the one live
 /// board-sign row in <c>game-data/BoardLocations.csv</c> (Buya 330, board 5) and reads its expectation back
 /// from the database, so it holds whatever else board 5 carries.</para>
 /// </summary>
@@ -142,6 +143,68 @@ public sealed class BoardPagingTests
             AssertMailboxHeader(mailLast);
             Assert.Equal(new[] { 1 }, mailLast.Ids);
             AssertMailRows(mailLast);
+        }
+        finally { _fx.World.LeaveMap(s, SessionFixture.HomeMap); }
+    }
+
+    /// <summary>A board whose posts have gaps: 150 posted, then <see cref="DeletedInTheGapFacts"/> removed, which
+    /// leaves 105 with ids 4-149. Walked the way the window walks it, every remaining post comes exactly once,
+    /// newest first, as the post its id names; every page is full while anything older is left, including the
+    /// pages that span the 28-id gap; and the request for start 3 (the oldest left is 4) gets an empty page with
+    /// the board's header. With ids 1..N and no gaps, as in the facts above, a page cut by POSITION (skip
+    /// "newest id - start" entries, the shape a <c>LIMIT</c> offset would take) gives the same pages as the cut
+    /// by id; here it skips posts. Red with that positional cut.</summary>
+    [Fact]
+    public void ABoardWithDeletedPostsReachesEveryRemainingPostOnce()
+    {
+        const int board = 0x7E13;
+        var (s, rec) = _fx.Player("BpGapB" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            for (int i = 1; i <= 150; i++)
+                Assert.Equal(i, Boards.Post(board, $"A{i}", $"T{i}", "B", 1, 2).Id);
+            for (int i = 1; i <= 150; i++)
+                if (DeletedInTheGapFacts(i)) Assert.True(Boards.Delete(board, i, $"A{i}"));
+            var remaining = Boards.PostsFor(board).Select(p => p.Id).ToList();
+            Assert.Equal(Enumerable.Range(1, 150).Where(i => !DeletedInTheGapFacts(i)).Reverse(), remaining);
+            Assert.Equal((105, 149, 4), (remaining.Count, remaining[0], remaining[^1]));
+
+            var open = Parse(Ask(s, rec, Sub2(board, Top)));
+            var pages = ScrollToTheEnd(s, rec, board, open, p =>
+            {
+                AssertBoardHeader(p, board, rights: 3, name: "");
+                AssertBoardRows(p);
+            });
+            AssertWalkReachesEachOnce(pages, remaining);
+            Assert.Equal(new[] { 20, 20, 20, 20, 20, 5, 0 }, pages.Select(p => p.Ids.Count));
+        }
+        finally { _fx.World.LeaveMap(s, SessionFixture.HomeMap); }
+    }
+
+    /// <summary>The mailbox the same: 150 letters, the same ones deleted, 105 left with ids 4-149. Every remaining
+    /// letter comes exactly once, newest first; no page is short while older letters are left; start 3 gets an
+    /// empty mailbox page. Red with the positional cut.</summary>
+    [Fact]
+    public void AMailboxWithDeletedLettersReachesEveryRemainingLetterOnce()
+    {
+        var (s, rec, c) = _fx.PlayerWith("BpGapM" + Guid.NewGuid().ToString("N")[..8], _ => { });
+        try
+        {
+            for (int i = 1; i <= 150; i++)
+                Assert.Equal(i, Mail.Send(c.Name, $"S{i}", $"T{i}", "B", 3, 4).Position);
+            for (int i = 1; i <= 150; i++)
+                if (DeletedInTheGapFacts(i)) Assert.True(Mail.Delete(c.Name, i));
+            var remaining = Mail.InboxFor(c.Name).Select(m => m.Position).ToList();
+            Assert.Equal(Enumerable.Range(1, 150).Where(i => !DeletedInTheGapFacts(i)).Reverse(), remaining);
+
+            var open = Parse(Ask(s, rec, Sub2(0, Top)));
+            var pages = ScrollToTheEnd(s, rec, 0, open, p =>
+            {
+                AssertMailboxHeader(p);
+                AssertMailRows(p);
+            });
+            AssertWalkReachesEachOnce(pages, remaining);
+            Assert.Equal(new[] { 20, 20, 20, 20, 20, 5, 0 }, pages.Select(p => p.Ids.Count));
         }
         finally { _fx.World.LeaveMap(s, SessionFixture.HomeMap); }
     }
@@ -274,25 +337,48 @@ public sealed class BoardPagingTests
         Ask(s, rec, new[] { (byte)sub, (byte)a, (byte)b });
 
     /// <summary>What the 4.95 window does as the player keeps scrolling to the bottom: from the opener's page,
-    /// ask for (oldest id held - 1) until the oldest id is 1. Returns every page, the opener's first. Each page
-    /// must hold 1-20 entries, all older than the page before it, so a server that ignored the start fails here
-    /// instead of looping; and a board needs at most 32767 / 20 requests, so this stops after 1,700.</summary>
+    /// ask for (oldest id held - 1) until that is 0. Returns every page, the opener's first. An empty page ends
+    /// the walk: it is the answer when nothing older is left (the oldest left is above 1 once low ids are
+    /// deleted), and the window gets nothing new by asking again. Every other page must hold 1-20 entries, all at
+    /// or below the start, newest first, so a server that ignored the start fails here instead of looping; and a
+    /// board needs at most 32767 / 20 requests, so this stops after 1,700.</summary>
     private static List<Page> ScrollToTheEnd(Session s, RecordingOutbound rec, int board, Page open,
         Action<Page> check)
     {
         var pages = new List<Page> { open };
-        while (pages[^1].Ids[^1] > 1)
+        while (pages[^1].Ids.Count > 0 && pages[^1].Ids[^1] > 1)
         {
-            Assert.True(pages.Count < 1700, "the pages never reached id 1");
+            Assert.True(pages.Count < 1700, "the pages never reached the oldest entry");
             int start = pages[^1].Ids[^1] - 1;
             var page = Parse(Ask(s, rec, Sub2(board, start)));
             check(page);
-            Assert.InRange(page.Ids.Count, 1, 20);
-            Assert.InRange(page.Ids[0], 1, start);
             pages.Add(page);
+            if (page.Ids.Count == 0) break;
+            Assert.InRange(page.Ids[0], 1, start);
+            Assert.Equal(page.Ids.OrderByDescending(id => id), page.Ids);
         }
         return pages;
     }
+
+    /// <summary>The checks for a walk over a list with gaps: the pages together are exactly the remaining ids,
+    /// newest first, each once; the walk ends on one empty page exactly when the oldest left is above 1; and no
+    /// page is short while anything older is left.</summary>
+    private static void AssertWalkReachesEachOnce(List<Page> pages, List<int> remaining)
+    {
+        Assert.Equal(remaining, pages.SelectMany(p => p.Ids));
+        bool endsEmpty = remaining[^1] > 1;
+        Assert.Equal(endsEmpty, pages[^1].Ids.Count == 0);
+        foreach (var p in endsEmpty ? pages.SkipLast(1) : pages)
+        {
+            Assert.NotEmpty(p.Ids);
+            if (remaining.Any(id => id < p.Ids[^1])) Assert.Equal(20, p.Ids.Count);
+        }
+    }
+
+    /// <summary>Which of 1-150 the gap facts delete: the three lowest (so the oldest left is 4), 31-58 (28 in a
+    /// row, wider than a page), the newest (150, so the newest id is not the count), and every ninth.</summary>
+    private static bool DeletedInTheGapFacts(int id) =>
+        id <= 3 || (id >= 31 && id <= 58) || id == 150 || id % 9 == 0;
 
     private sealed record Row(int Id, string Name, byte Month, byte Day, string Topic);
     private sealed record Page(byte Mode, byte Rights, int Board, string Name, List<Row> Rows, byte[] Body)
