@@ -3718,7 +3718,8 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   governs magic and melee alike, and the old `ReceiveSpellDamage` comment claiming *"physical AC does not
   apply to magic (the caster's deflect roll already gates a spell)"* was simply wrong.
   - Mob side: the armor term at each damage site — `LuaDamageTarget`, `LuaMagicDamage` (the `Damage`
-    archetype), `LuaAreaZap` (4-way) and `LuaTargetAreaZap` (the dog 5-way). It lives at the call sites
+    archetype), `LuaAreaZap` (4-way), `LuaTargetAreaZap` (the dog 5-way) and `LuaRangeZap` (Lightning storm's
+    10-tile sweep, 2026-10-24). It lives at the call sites
     because `World.TryDamage` deliberately knows nothing about armor. Each site hands `TryDamage` the product
     unfloored (`Session.SpellRaw`), and `TryDamage` floors it once with a slept or dozed creature's amplifier
     in it (#363); with none armed that is `Session.SpellNet`'s figure, the same floor as before.
