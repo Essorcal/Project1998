@@ -238,7 +238,9 @@ public class ContentSmokeTests
     /// Terrain. THIS is the one that bites on a first Linux deploy (see deploy/README.md §2): a missing .map
     /// file throws nothing and logs one line — collision and spawn placement just silently degrade and players
     /// walk through walls. On Windows it hides even better, because MapData falls back to the local client
-    /// install, so a developer machine looks fine while the host is empty.
+    /// install, so a developer machine looks fine while the host is empty. The test run turns that fallback
+    /// off (<c>P1998_MAPS_INSTALL_FALLBACK=0</c>, set in <c>TestProcessState</c>), and the first assertion
+    /// holds it off: without it this check would quietly go back to counting a retail install's maps.
     /// </summary>
     [Fact]
     public void EveryMapHasItsTerrainFile()
@@ -247,6 +249,9 @@ public class ContentSmokeTests
 
         var (found, total, dirs) = MapData.Availability(Content.Maps.Keys);
 
+        Assert.True(!dirs.Intersect(MapData.ClientInstallMapDirs).Any(),
+            $"the terrain check searched a client install (searched: {string.Join(" | ", dirs)}); the test run "
+            + "must set P1998_MAPS_INSTALL_FALLBACK=0 so a map missing from game-data/maps fails here.");
         Assert.True(found == total,
             $"{total - found} of {total} map(s) have no .map file (searched: {string.Join(" | ", dirs)}). "
             + "Collision and spawn placement are degraded on those maps.");
