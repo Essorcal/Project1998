@@ -417,16 +417,9 @@ public sealed class LoginOutboundTests
                     + $"threshold; the console carried:\n{log}");
     }
 
-    /// <summary>The login channel's one server-&gt;client frame, built exactly as
-    /// <c>LoginSession.SendStatus</c> builds it.</summary>
-    private static byte[] Status(byte code, string text)
-    {
-        var t = Encoding.ASCII.GetBytes(text);
-        var body = new List<byte> { code, (byte)t.Length };
-        body.AddRange(t);
-        body.Add(0);
-        return TkPacket.Build(0x02, 0x02, TkCrypt.Crypt(body.ToArray(), 0x02, TkCrypt.LoginKey));
-    }
+    /// <summary>The login channel's one server-&gt;client frame, built by the same builder
+    /// <c>LoginSession.SendStatus</c> sends through.</summary>
+    private static byte[] Status(byte code, string text) => LoginStatus.Build(code, Encoding.ASCII.GetBytes(text));
 
     private static byte[] Redirect() =>
         LoginRedirect.Build(new byte[] { 127, 0, 0, 1 }, 2005, "drainprobe", new byte[] { 0, 1, 18, 17, 0 });
