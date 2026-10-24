@@ -2292,7 +2292,8 @@ public sealed partial class Session
     /// line through it made the client speak the failure out loud as the player's own words.</summary>
     private void SendBlueMessage(string text) => SendMiniText(text, type: 0);
 
-    /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>).
+    /// <summary>A server-wide announcement: the restart warnings (see <see cref="RestartSchedule"/>),
+    /// <c>@announce</c>, and the world line of Bon-Hwa's Il San promotion.
     ///
     /// <para>The 0x0A system line (type 5) ONLY. This used to also call <see cref="SendLog"/> on the theory
     /// that a restart notice is worth saying twice — but SendLog is <c>SendSpeech(0, _char.Id, …)</c>, the
@@ -2301,23 +2302,23 @@ public sealed partial class Session
     /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para>
     ///
     /// <para><b>Wrapped at its own definition</b> — the <see cref="NotifyGroup"/> shape, #29 rule 2
-    /// (<c>Server/Session.State.cs:25-33</c>). Two callers are cross-session loops over the whole online roster
-    /// on a thread that owns none of the sessions it is writing to: <c>@announce</c>
-    /// (<c>Session.GmCommands.cs</c>, the operator's handler thread) and <c>RestartSchedule.Announce</c>
-    /// (<c>Server/RestartSchedule.cs</c>, the restart ladder's <c>PeriodicTimer</c> task, the trigger-file poll,
-    /// or a GM's <c>@restart</c> handler). <see cref="AnnounceToWorld"/> is <c>@announce</c>'s loop on a player's
-    /// own handler thread, the same shape. Because every caller is cross-session, one acquisition here covers
-    /// them all at once and cannot be forgotten by another; the caller-side wrap would be the same section
-    /// written again. Nothing on this path reads foreign state beyond the send itself — the text is composed before
-    /// either loop — so there is no gate read that has to be pulled into the section with it, which is what makes
+    /// (<c>Server/Session.State.cs:25-33</c>). ALL THREE callers are cross-session loops over the whole online
+    /// roster, writing into sessions their thread does not own: <c>@announce</c> (<c>Session.GmCommands.cs</c>, the
+    /// operator's handler thread), <c>RestartSchedule.Announce</c> (<c>Server/RestartSchedule.cs</c>, the restart
+    /// ladder's <c>PeriodicTimer</c> task, the trigger-file poll, or a GM's <c>@restart</c> handler) and
+    /// <c>AnnounceToWorld</c> (<c>Session.CharacterApi.cs</c>, the promoted player's handler thread, for Bon-Hwa's
+    /// "[SYSTEM]: … has attained First Mark!"). Because every caller is cross-session, one acquisition here covers
+    /// all three at once and cannot be forgotten by a fourth; the caller-side wrap would be the same section
+    /// written three times. Nothing on this path reads foreign state beyond the send itself — the text is composed
+    /// before each loop — so there is no gate read that has to be pulled into the section with it, which is what makes
     /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
     /// torn-byte hazard (read once, passed by value into both the body's encryption and the frame header, so the
     /// worst a lost update does is repeat a nonce — the note above <c>Session.Send</c> in <c>Session.WorldApi.cs</c>);
     /// rule 2 is a blanket rule on entering a peer's state, not a repair for a specific corruption.</para>
     ///
-    /// <para>ONE peer monitor at a time: both callers dispose this guard before the next player. An operator
-    /// announcing to a roster that includes themselves is rule 3's re-entrant case, a no-op, so their own copy
-    /// still goes out in roster order. Rule 1 holds at both callers: <c>World.OnlineRegistry.All()</c>
+    /// <para>ONE peer monitor at a time: every caller disposes this guard before the next player. A caller whose own
+    /// session is in the roster (the operator, the promoted player) is rule 3's re-entrant case, a no-op, so their
+    /// own copy still goes out in roster order. Rule 1 holds at every caller: <c>World.OnlineRegistry.All()</c>
     /// (<c>World.OnlineRegistry.cs:77-81</c>) takes <c>World._lock</c>, materialises the list and returns with it
     /// released, so no world lock is held when this enters a session.</para></summary>
     internal void SystemAnnounce(string text)
