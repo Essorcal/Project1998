@@ -3186,7 +3186,9 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > `@class`. A PC subpath is joined by a grant (`@subpath admit`, from level 50, by a GM or one of the
   > subpath's elders; `Server/Session.Subpaths.cs`) and left back to the base path with the subpath's own
   > spells taken. Those spells are not taught yet: `SpellsForClass` drops every row whose `SplPthId` is a PC
-  > subpath (`Content.IsPcSubpathSpell`), so no trainer offers them and no rebuild grants them.
+  > subpath (`Content.IsPcSubpathSpell`), so no trainer offers them and no rebuild grants them. A member's
+  > base-class trainer teaches them the base class's list and their base class's guild-hall door lets them in,
+  > as RTK does both off `baseClass`; an NPC subpath still needs the full path to match for either.
   >
   > An NPC subpath **is its base class plus a little**. `SpellsForClass` resolves `PathBaseOf` (RTK
   > `classdb_path`, the same PthType the gear gate already uses) and runs the whole base-class list through
@@ -4548,9 +4550,9 @@ non-zero on the twelve PC subpaths (10-21) and the GM row Archon, zero on the ba
 subpaths. Ours now loads `PthChat` (`Content.HasSubpathChat`) and applies it the same way: `/sp`, `/subpathchat`
 and a whisper to `@` (routed beside `!!` and `!` in `Session.DoWhisper`) all go through `DoSubpathChat`, which
 refuses anyone else with RTK's line on the blue channel (`0x0A` type 0) before its own other checks (the `@`
-route meets the whisper's mute and `cantalk` gates first, as in RTK's `clif_parsewisp`). F2 refuses to turn
-the toggle ON for them too (RTK's own F2 toggles for anyone; only its `@` route checks) and still lets a stale ON
-be turned off. Before this, any class could use the channel, base classes included.
+route meets the whisper's mute and `cantalk` gates first, as in RTK's `clif_parsewisp`). F2 still toggles for
+every class, as RTK's does: the gate is on sending, and since the audience is the speaker's own path, a Warrior
+with the toggle on never receives a line. Before this, any class could use the channel, base classes included.
 
 ---
 

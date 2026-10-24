@@ -378,20 +378,17 @@ public sealed partial class Session
 
     /// <summary>RTK's refusal for the subpath channel, verbatim: clif_parsewisp answers a whisper to "@" from a
     /// class with no <c>classdb_chat</c> with <c>clif_sendbluemessage(sd, "You cannot do that.")</c>
-    /// (rtk/src/map/clif.c). Used for <c>/sp</c>, for the "@" route itself and for F2, on RTK's blue channel.</summary>
+    /// (rtk/src/map/clif.c). Used for <c>/sp</c> and for the "@" route itself, on RTK's blue channel.</summary>
     private const string SubpathChatRefusal = "You cannot do that.";
 
     // F2: flip the subpath-chat toggle and confirm via mini-text (RTK: "Subpath Chat: ON"/"OFF" — same
     // wording, same channel used elsewhere for status confirmations). Persisted so it survives a relog.
     //
-    // The channel belongs to the twelve PC subpaths (DoSubpathChat), so anyone else is refused turning it ON,
-    // with the channel's own refusal. RTK's F2 toggles for every class (clif_handle_clickgetinfo) and only its
-    // "@" route checks; refusing here as well is what tells a Warrior pressing F2 that the channel is not
-    // theirs, instead of answering "ON" for a channel that can never carry a line to them. Turning a flag that
-    // is already ON back off is always allowed: a member who leaves keeps it, and must be able to clear it.
+    // For EVERY class, as RTK: clif_handle_clickgetinfo toggles the flag with no class check at all. The
+    // channel's gate is on SENDING (DoSubpathChat, RTK's "@" route), and since the audience is the speaker's
+    // own path, a Warrior with the toggle on simply never receives a line.
     private void ToggleSubpathChat()
     {
-        if (!_char.SubpathChat && !Content.HasSubpathChat(CharClassId)) { SendBlueMessage(SubpathChatRefusal); return; }
         _char.SubpathChat = !_char.SubpathChat;
         SendMiniText($"Subpath Chat: {(_char.SubpathChat ? "ON" : "OFF")}");
         SaveChar();

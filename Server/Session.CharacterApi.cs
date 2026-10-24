@@ -1463,10 +1463,16 @@ public sealed partial class Session : QuestState.ISessionStore
     {
         int p = CharClassId;
         if (p < 0) return new();
+        int relearn = RelearnPathId(p);
         return Content.SpellsForClass(p, _char.Level, _char.Alignment, _char.Mark)
                       .Where(s => !_char.Spells.Contains(s.Id))
-                      .Where(s => Content.CanRelearnAtNpc(s, p)).ToList();
+                      .Where(s => Content.CanRelearnAtNpc(s, relearn)).ToList();
     }
+
+    /// <summary>The path whose relearn rows (<see cref="Content.CanRelearnAtNpc"/>) apply to this character: a
+    /// PC-subpath member is taught its BASE class's list (RTK learnSpell: getUnknownSpells(player.baseClass)),
+    /// so a forgotten Soothe is relearned on the base class's row, which the subpath has none of.</summary>
+    private static int RelearnPathId(int pathId) => Content.IsPcSubpath(pathId) ? Content.PathBaseOf(pathId) : pathId;
 
     /// <summary>Spells this class will unlock at a HIGHER level (RTK "Divine Secret" preview) — not yet
     /// learnable. Ordered by level. Windowed to the next <paramref name="levelsAhead"/> insights the way RTK's
@@ -1476,9 +1482,10 @@ public sealed partial class Session : QuestState.ISessionStore
     {
         int p = CharClassId;
         if (p < 0) return new();
+        int relearn = RelearnPathId(p);
         return Content.SpellsForClass(p, _char.Level + levelsAhead, _char.Alignment, _char.Mark)
                       .Where(s => s.Level > _char.Level && !_char.Spells.Contains(s.Id))
-                      .Where(s => Content.CanRelearnAtNpc(s, p))
+                      .Where(s => Content.CanRelearnAtNpc(s, relearn))
                       .OrderBy(s => s.Level).ThenBy(s => s.Name).ToList();
     }
 

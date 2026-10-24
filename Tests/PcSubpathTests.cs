@@ -252,13 +252,13 @@ public sealed class PcSubpathTests
     }
 
     /// <summary>A base class or an NPC subpath is refused the channel with RTK's line, on RTK's blue channel,
-    /// whether by <c>/sp</c>, by the "@" whisper or by F2 — and another Warrior with the channel on hears
-    /// nothing. F2 still answers a member, and still lets a non-member turn a stale ON off.</summary>
+    /// whether by <c>/sp</c> or by the "@" whisper, and another Warrior with the channel on hears nothing. The
+    /// gate is on sending, which is where RTK's clif_parsewisp refuses.</summary>
     [Fact]
     public void ABaseClassOrNpcSubpathIsRefusedTheChannelAsRtk()
     {
         const string refused = "pane0|You cannot do that.";
-        var (warrior, warriorOut, w) = Player("Warrior", 60, configure: ch => ch.SubpathChat = true);
+        var (warrior, warriorOut, _) = Player("Warrior", 60, configure: ch => ch.SubpathChat = true);
         var (_, listenerOut, _) = Player("Warrior", 60, configure: ch => ch.SubpathChat = true);
         var (chung, chungOut, _) = Player("Chung ryong", 99, configure: ch => ch.SubpathChat = true);
 
@@ -269,28 +269,95 @@ public sealed class PcSubpathTests
 
         Run(chung, "/sp anyone there");
         Assert.Equal(new[] { refused }, CommandTableTests.Transcript(chungOut));
+    }
 
-        // F2. A Warrior's stale ON may still be turned off; turning it on again is refused.
-        warriorOut.Clear();
-        warrior.Receive(F2Frame());
-        Assert.False(w.SubpathChat);
-        warrior.Receive(F2Frame());
-        Assert.False(w.SubpathChat);
-        Assert.Equal(new[] { "pane3|Subpath Chat: OFF", refused }, CommandTableTests.Transcript(warriorOut));
-
+    /// <summary>F2 toggles subpath chat for every class, as RTK's clif_handle_clickgetinfo does with no class
+    /// check: a Warrior and a Chung ryong get "Subpath Chat: ON" and "OFF" like a member. Turning it on gives
+    /// a Warrior nothing to say on it: their <c>/sp</c> is still refused.</summary>
+    [Fact]
+    public void F2TogglesSubpathChatForEveryClassAsRtk()
+    {
+        var (warrior, warriorOut, w) = Player("Warrior", 60);
+        var (chung, chungOut, c) = Player("Chung ryong", 99);
         var (member, memberOut, m) = Player("Barbarian", 60);
+
+        warrior.Receive(F2Frame());
+        Assert.True(w.SubpathChat);
+        warrior.Receive(F2Frame());
+        Assert.False(w.SubpathChat);
+        Assert.Equal(new[] { "pane3|Subpath Chat: ON", "pane3|Subpath Chat: OFF" }, CommandTableTests.Transcript(warriorOut));
+
+        chung.Receive(F2Frame());
         member.Receive(F2Frame());
+        Assert.True(c.SubpathChat);
         Assert.True(m.SubpathChat);
+        Assert.Equal(new[] { "pane3|Subpath Chat: ON" }, CommandTableTests.Transcript(chungOut));
         Assert.Equal(new[] { "pane3|Subpath Chat: ON" }, CommandTableTests.Transcript(memberOut));
+
+        warrior.Receive(F2Frame());
+        warriorOut.Clear();
+        Run(warrior, "/sp anyone there");
+        Assert.Equal(new[] { "pane0|You cannot do that." }, CommandTableTests.Transcript(warriorOut));
+    }
+
+    // ---- trainers and the guild hall -----------------------------------------------------------------
+
+    /// <summary>A PC-subpath member's base-class trainer teaches them the base class's list, as RTK's learnSpell
+    /// does for "regular path and pc subpaths" (getUnknownSpells(player.baseClass)): a level-60 Barbarian at
+    /// Tabaek gets Learn Secret and Divine Secret, and exactly the list a level-60 Warrior with the same empty
+    /// book gets there, Soothe's relearn included and secrets past level 50 among them. Another class's trainer
+    /// still teaches them nothing, and an NPC subpath is left as it was.</summary>
+    [Fact]
+    public void ABaseClassTrainerTeachesAPcSubpathMemberTheBaseList()
+    {
+        var (member, _, _) = Player("Barbarian", 60);
+        var (warrior, _, _) = Player("Warrior", 60);
+        var (chung, _, _) = Player("Chung ryong", 99);
+
+        var memberAtTabaek = At(36, member);   // Tabaek, a Warrior trainer
+        var menu = Menu(memberAtTabaek);
+        Assert.Contains("Learn Secret", menu);
+        Assert.Contains("Divine Secret", menu);
+
+        var keys = memberAtTabaek.LearnableSpells().Select(s => s.Key).ToList();
+        Assert.Equal(At(36, warrior).LearnableSpells().Select(s => s.Key).ToList(), keys);
+        Assert.Contains("soothe", keys);
+        Assert.Contains(memberAtTabaek.LearnableSpells(), s => s.Level > Content.PcSubpathJoinLevel);
+        Assert.DoesNotContain(memberAtTabaek.LearnableSpells(), Content.IsPcSubpathSpell);
+
+        Assert.DoesNotContain("Learn Secret", Menu(At(37, member)));   // a Rogue trainer
+        Assert.DoesNotContain("Learn Secret", Menu(At(36, chung)));
+    }
+
+    /// <summary>The guild-hall door in a path hall checks the base class, as RTK's onScriptedTilesPathHalls.lua
+    /// (player.baseClass) does: a Barbarian walks into the Warriors' guild hall like a Warrior; a Poet is
+    /// refused with RTK's line, and an NPC subpath is left as it was.</summary>
+    [Fact]
+    public void TheGuildHallDoorAdmitsAPcSubpathMemberOfItsBaseClass()
+    {
+        var hall = Content.PathHalls[11];   // Kugnae's Warrior path hall
+        Assert.Equal(1, hall.BaseClass);
+
+        var (warrior, _, w) = Player("Warrior", 60, map: 11, x: 1, y: 22);
+        var (member, _, m) = Player("Barbarian", 60, map: 11, x: 1, y: 22);
+        var (poet, poetOut, p) = Player("Poet", 60, map: 11, x: 1, y: 22);
+        var (chung, _, c) = Player("Chung ryong", 99, map: 11, x: 1, y: 22);
+
+        foreach (var s in new[] { warrior, member, poet, chung }) StepOnGuildDoor(s);
+
+        Assert.Equal(hall.GuildMap, w.Map);
+        Assert.Equal(hall.GuildMap, m.Map);
+        Assert.Equal(11, p.Map);
+        Assert.Equal(11, c.Map);
+        Assert.Contains("pane3|You are not the right class to enter here.", CommandTableTests.Transcript(poetOut));
     }
 
     // ---- no PC-subpath spell from a trainer or a rebuild -----------------------------------------------
 
-    /// <summary>Nobody teaches a PC subpath's own spells yet. A level-99 Barbarian at the Warrior trainer is
-    /// offered none of them in Learn Secret or Divine Secret (and, as the trainer stands, no Learn Secret at
-    /// all); the content list behind both carries none at any rank; and a rebuild into the subpath
-    /// (<c>@class</c>, which now accepts the twelve) fills the book with the Warrior list and no Barbarian
-    /// spell.</summary>
+    /// <summary>Nobody teaches a PC subpath's own spells yet. A level-99 Barbarian at the Warrior trainer, which
+    /// teaches them the Warrior list, is offered none of them in Learn Secret or Divine Secret; the content
+    /// list behind both carries none at any rank; and a rebuild into the subpath (<c>@class</c>, which now
+    /// accepts the twelve) fills the book with the Warrior list and no Barbarian spell.</summary>
     [Fact]
     public void NoTrainerOrRebuildHandsOutAPcSubpathSpell()
     {
@@ -302,14 +369,11 @@ public sealed class PcSubpathTests
         }
 
         var (member, _, _) = Player("Barbarian", 99);
-        var def = Content.NpcById(36)!;   // Tabaek, a Warrior trainer
-        var npc = _fx.World.NpcsNear(def.Map, def.X, def.Y, 0).First(n => n.NpcDefId == 36);
-        var ctx = new NpcContext(member, npc, def);
+        var ctx = At(36, member);   // Tabaek, a Warrior trainer
+        Assert.NotEmpty(ctx.LearnableSpells());
         Assert.DoesNotContain(ctx.LearnableSpells(), Content.IsPcSubpathSpell);
         Assert.DoesNotContain(ctx.FutureSpells(), Content.IsPcSubpathSpell);
         Assert.DoesNotContain(member.LearnableClassSpells(), Content.IsPcSubpathSpell);
-        var menu = NpcScripts.For(def).SelectMany(a => a.Entries(ctx)).Select(e => e.label).ToList();
-        Assert.DoesNotContain("Learn Secret", menu);
 
         var (gm, _, gmChar) = Player("Warrior", 99, name: GmRoster.Name);
         Run(gm, "@class Barbarian");
@@ -350,7 +414,8 @@ public sealed class PcSubpathTests
     /// <summary>A fresh player of <paramref name="className"/> at <paramref name="level"/> and
     /// <paramref name="mark"/>, with a name no other fact uses.</summary>
     private (Session session, RecordingOutbound outbound, Character character) Player(
-        string className, int level, int mark = 0, string? name = null, Action<Character>? configure = null)
+        string className, int level, int mark = 0, string? name = null, Action<Character>? configure = null,
+        ushort map = SessionFixture.HomeMap, ushort x = 5, ushort y = 10)
     {
         name ??= $"pcsp{Interlocked.Increment(ref _serial)}";
         var (session, outbound, character) = _fx.PlayerWith(name, c =>
@@ -359,9 +424,31 @@ public sealed class PcSubpathTests
             c.Level = (byte)level;
             c.Mark = (byte)mark;
             configure?.Invoke(c);
-        });
+        }, map, x, y);
         return (session, outbound, character);
     }
+
+    /// <summary><paramref name="player"/> talking to placed NPC <paramref name="npcId"/>, the way
+    /// NpcCompositionPinTests builds its conversations.</summary>
+    private NpcContext At(int npcId, Session player)
+    {
+        var def = Content.NpcById(npcId)!;
+        var npc = _fx.World.NpcsNear(def.Map, def.X, def.Y, 0).First(n => n.NpcDefId == npcId);
+        return new NpcContext(player, npc, def);
+    }
+
+    /// <summary>The click menu an NPC shows this conversation's player, as labels.</summary>
+    private static List<string> Menu(NpcContext ctx) =>
+        NpcScripts.For(ctx.Def).SelectMany(a => a.Entries(ctx)).Select(e => e.label).ToList();
+
+    private static readonly System.Reflection.MethodInfo PathHallWarp =
+        typeof(Session).GetMethod("TryPathHallWarp", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    /// <summary>The step onto a path hall's south doorway (1,23) that <c>Session.TryPathHallWarp</c> answers, run
+    /// inside the player's own monitor as the walk handler runs it. By reflection: the walk itself would need a
+    /// whole 0x06 exchange to reach a scripted tile whose handling is the point here.</summary>
+    private static void StepOnGuildDoor(Session player) =>
+        player.WithState(() => Assert.True((bool)PathHallWarp.Invoke(player, new object[] { (ushort)1, (ushort)23 })!));
 
     private static void Run(Session session, string command)
     {
