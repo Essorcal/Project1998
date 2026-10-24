@@ -21,15 +21,14 @@ public sealed partial class Session
     /// cover); every outbound path goes through <see cref="_out"/>.</summary>
     private readonly TcpOutbound? _tcp;
 
-    /// <summary>The socket's OWN peer address, which is the proxy's when one is in front — deliberately not
-    /// <see cref="_remoteIp"/>, which is the player's. The re-login throttle and IP ban read this because
-    /// that is what they read when it was <c>_client.Client.RemoteEndPoint</c>. <c>IPAddress.None</c> for a
-    /// socket-free session, matching the fallback that address expression already had.</summary>
-    private readonly System.Net.IPAddress _peerIp;
-
     private readonly int _port;
     private readonly string _remote;
-    private readonly string _remoteIp;   // address only (no port) — handoff tokens are bound to it
+
+    /// <summary>The PLAYER's address, no port: the PROXY header's behind a trusted proxy, the socket's own peer
+    /// otherwise (<see cref="TcpOutbound.RemoteIp"/>), which is the address the login port keys the same
+    /// connection on. Handoff tokens are bound to it, and the re-login's throttle and IP ban key on it
+    /// (<see cref="HandleReLogin"/>). <c>IPAddress.None</c>'s text for a socket-free session.</summary>
+    private readonly string _remoteIp;
     private readonly CharacterStore _store;
     private readonly World _world;   // the shared world (players + mobs); every broadcast goes through it
 
@@ -270,7 +269,6 @@ public sealed partial class Session
         // from a forged header, and it is not recoverable after the fact.
         _remote = outbound.Remote;
         _remoteIp = _tcp?.RemoteIp ?? System.Net.IPAddress.None.ToString();
-        _peerIp = _tcp?.PeerAddress ?? System.Net.IPAddress.None;
         if (character is not null) { _char = character; _enteredWorld = true; }
     }
 
@@ -862,7 +860,13 @@ public sealed partial class Session
         var pass = LoginAuth.ReadPassword(dec, 1 + ulen);
         // Same per-IP failed-attempt budget the login channel enforces — the re-login path accepts the very
         // same credentials, so leaving it ungated would just move the brute-force target to port 2005.
-        var ip = _peerIp;
+        // Keyed, like the IP ban below, on the PLAYER's address: _remoteIp, the field the handoff token at the
+        // end of this method is bound to and the address the login port gates the same connection on. These
+        // gates used to read the socket's own peer, which behind a proxy is the proxy's: every player then
+        // shared one budget behind a remote proxy, and behind a loopback one the throttle's loopback exemption
+        // turned it off for everyone. With no proxy the two are the same address, so nothing changes there.
+        // _remoteIp is an IPAddress's own text, so the parse round-trips and cannot throw.
+        var ip = System.Net.IPAddress.Parse(_remoteIp);
         if (LoginThrottle.IsBlocked(ip))
         {
             Log.Info($"   -> RE-LOGIN BLOCKED (failed-attempt budget exhausted) for user='{user}'");
