@@ -428,7 +428,7 @@ public sealed class LoginSession
     // clif_message (rtk/src/login/clif.c) builds this same frame with codes 0x00/0x03/0x05.
     // Built by Protocol.Tk495's LoginStatus, the one builder the game's Session.SendMessage uses too: the
     // len is one byte, so it cuts the text to 255 (a long ban reason) rather than let the length wrap.
-    // Encoding.ASCII is one byte per character, so that cut never splits a character.
+    // Encoding.ASCII writes only bytes 0x00-0x7F, so no cut can leave half a multi-byte character on the wire.
     private void SendStatus(byte code, string text)
     {
         Send(LoginStatus.Build(code, Encoding.ASCII.GetBytes(text)));

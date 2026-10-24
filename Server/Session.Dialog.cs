@@ -2325,7 +2325,7 @@ public sealed partial class Session
     // The 0x02 login-style message box, [0x0F][len][text][00], built by Protocol.Tk495's LoginStatus — the
     // same builder as the login server's SendStatus. The len is one byte, so the builder cuts the text to 255
     // (a long ban reason) rather than let the length wrap, the way the profile blurb above already does.
-    // AsciiBytes is one byte per character, so that cut never splits a character.
+    // AsciiBytes writes only bytes 0x00-0x7F, so no cut can leave half a multi-byte character on the wire.
     private void SendMessage(string text)
     {
         Send(LoginStatus.Build(0x0F, AsciiBytes(text)));

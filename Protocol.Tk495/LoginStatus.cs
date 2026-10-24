@@ -22,11 +22,11 @@ namespace Protocol.Tk495;
 /// length byte is the length of the text actually sent, and the 00 terminator follows it. A text that
 /// already fits is sent byte for byte as before.</para>
 ///
-/// <para><b>Whole characters.</b> Both callers hand in ASCII: the login server's
+/// <para><b>No half characters on the wire.</b> Both callers hand in ASCII: the login server's
 /// <c>Encoding.ASCII.GetBytes</c> and the game server's <c>Session.AsciiBytes</c> (the same encoder after it
-/// turns typographic punctuation into ASCII). Each writes exactly one byte per character it outputs, and
-/// nothing outside 0x00-0x7F (anything else becomes <c>?</c>), so there is no lead byte of a double-byte
-/// character for a cut to separate from its trail byte: byte 255 is the end of character 255.</para>
+/// turns typographic punctuation into ASCII). Every byte either writes is 0x00-0x7F: anything else becomes
+/// <c>?</c>, one per UTF-16 unit, so a character beyond U+FFFF becomes two. With no lead or trail bytes on the
+/// wire, a cut at byte 255 never leaves half of a multi-byte character; at worst it keeps one of two <c>?</c>.</para>
 /// </summary>
 public static class LoginStatus
 {
