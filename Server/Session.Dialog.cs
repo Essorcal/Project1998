@@ -2322,14 +2322,13 @@ public sealed partial class Session
     }
 
     // ---- helpers ----
+    // The 0x02 login-style message box, [0x0F][len][text][00], built by Protocol.Tk495's LoginStatus — the
+    // same builder as the login server's SendStatus. The len is one byte, so the builder cuts the text to 255
+    // (a long ban reason) rather than let the length wrap, the way the profile blurb above already does.
+    // AsciiBytes writes only bytes 0x00-0x7F, so no cut can leave half a multi-byte character on the wire.
     private void SendMessage(string text)
     {
-        var t = AsciiBytes(text);
-        var body = new List<byte> { 0x0F, (byte)t.Length };
-        body.AddRange(t);
-        body.Add(0);
-        var enc = TkCrypt.Crypt(body.ToArray(), 0x02, TkCrypt.LoginKey);
-        Send(TkPacket.Build(0x02, 0x02, enc));
+        Send(LoginStatus.Build(0x0F, AsciiBytes(text)));
         Log.Info($"   -> message: {text}");
     }
 

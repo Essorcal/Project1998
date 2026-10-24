@@ -426,14 +426,12 @@ public sealed class LoginSession
     // The login channel's one server->client packet shape: 0x02 wrapping [code][len][text][00].
     // The code byte is a sub-dispatch in the client (0x00 = OK/advance, 0x0F = message box); RTK's
     // clif_message (rtk/src/login/clif.c) builds this same frame with codes 0x00/0x03/0x05.
+    // Built by Protocol.Tk495's LoginStatus, the one builder the game's Session.SendMessage uses too: the
+    // len is one byte, so it cuts the text to 255 (a long ban reason) rather than let the length wrap.
+    // Encoding.ASCII writes only bytes 0x00-0x7F, so no cut can leave half a multi-byte character on the wire.
     private void SendStatus(byte code, string text)
     {
-        var t = Encoding.ASCII.GetBytes(text);
-        var body = new List<byte> { code, (byte)t.Length };
-        body.AddRange(t);
-        body.Add(0);
-        var enc = TkCrypt.Crypt(body.ToArray(), 0x02, TkCrypt.LoginKey);
-        Send(TkPacket.Build(0x02, 0x02, enc));
+        Send(LoginStatus.Build(code, Encoding.ASCII.GetBytes(text)));
         Log.Info($"   -> status 0x{code:x2}: {text}");
     }
 
