@@ -376,8 +376,10 @@ public sealed class BonHwaIlSanTests
 
     /// <summary><c>@mark n</c> gives exactly what <c>@lvl 99</c> gives in every deterministic stat (Might, Grace,
     /// Will and AC), whatever n is: a rank adds no growth (Caleb's item 3, "A, no stats, as RTK"). It still sets the
-    /// mark and keeps level 99. Vita and mana are re-rolled by every rebuild, so they are bounded instead: within
-    /// one level-99 roll of the class curve (<c>PathGrowth.csv</c>), never a level above it.</summary>
+    /// mark and keeps level 99. Vita and mana are re-rolled by every rebuild, so they get only a sanity bound: the
+    /// range 98 level-up rolls of the class curve (<c>PathGrowth.csv</c>) can give. That bound cannot tell 98 rolls
+    /// from 99 (with the old extra LevelUp per rank every value still fell inside it); the deterministic
+    /// Might/Grace/Will/AC check is the guard.</summary>
     [Theory]
     [InlineData("Warrior")]
     [InlineData("Mage")]
