@@ -283,6 +283,45 @@ public sealed class SubpathDamageSpellTests
         }
     }
 
+    /// <summary>On a PvP map Lightning storm gives each other player within 10 tiles the same coin flip: twenty players in
+    /// range each either lost vita and read "&lt;caster&gt; hits you with Lightning storm." or were untouched and told
+    /// nothing, and both happened (2 in 2^20 that they all land alike); a player 11 tiles off and the caster are
+    /// untouched. Red on 821914e: with nothing faced the generic cast fell back to its caster and struck only them.</summary>
+    [Fact]
+    public void LightningStormFlipsACoinForEveryPlayerWithinTenTilesOnAPvpMap()
+    {
+        var sp = Spell("lightning_storm");
+        var inRange = new List<(Session s, RecordingOutbound o, Character c)>();
+        for (int i = 0; i < 20; i++)
+        {
+            int dx = (i % 5) * 5 - 10, dy = (i / 5) * 5 - 8;   // -10..10 across, -8..7 down, never 0,0
+            inRange.Add(Player(PvpArena, (ushort)(CX + dx), (ushort)(CY + dy)));
+        }
+        var (farP, farOut, farC) = Player(PvpArena, CX - 11, CY - 11);
+        var (caster, outbound, c) = Caster(sp, PvpArena);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string N(string s) => s.Replace(caster.CharName, "<caster>", StringComparison.Ordinal);
+            var seen = inRange.Select(p => (lost: TargetHp - p.c.Hp,
+                                            lines: string.Join(" | ", SpellCastSupport.MiniTexts(p.o).Select(N)))).ToList();
+            bool Hit((uint lost, string lines) r) => r.lost > 0 && r.lines == "<caster> hits you with Lightning storm.";
+            bool Missed((uint lost, string lines) r) => r.lost == 0 && r.lines == "";
+            string what = $"in range [{string.Join(", ", seen.Select(r => $"{r.lost}:{r.lines}"))}], 11 off lost " +
+                          $"{TargetHp - farC.Hp} and read {SpellCastSupport.MiniTexts(farOut).Count} line(s), caster vita " +
+                          $"{c.Hp}, spent {Mana - c.Mp}";
+            Assert.True(seen.All(r => Hit(r) || Missed(r)) && seen.Any(Hit) && seen.Any(Missed)
+                        && farC.Hp == TargetHp && SpellCastSupport.MiniTexts(farOut).Count == 0
+                        && c.Hp == Hp && c.Mp == Mana - 1_200, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(farP, PvpArena);
+            foreach (var p in inRange) _fx.World.LeaveMap(p.s, PvpArena);
+        }
+    }
+
     // ===== at a player ==========================================================================================
 
     /// <summary>The six that aim at someone, by the slot alone at a faced player (the stock 4.95 client's frame) and,
@@ -410,9 +449,9 @@ public sealed class SubpathDamageSpellTests
 
     // ===== learn levels ========================================================================================
 
-    /// <summary>The level each script's <c>requirements</c> asks: 64 for Hailstorm and Phoenix flames, 99 for the rest,
-    /// Control flames included. Red on 821914e: 0 for all but Nature's smite, which read 99 only through the rank floor
-    /// its mark 2 gave it.</summary>
+    /// <summary>The level each script's <c>requirements</c> asks: 64 for Hailstorm and Phoenix flames, 99 for the other
+    /// six. Red on 821914e: 0 for all but Nature's smite, which read 99 only through the rank floor its mark 2 gave
+    /// it.</summary>
     [Theory]
     [InlineData("assassinate", 99)]
     [InlineData("ki_strike", 99)]
@@ -422,9 +461,21 @@ public sealed class SubpathDamageSpellTests
     [InlineData("earth_strike", 99)]
     [InlineData("natures_smite", 99)]
     [InlineData("lightning_storm", 99)]
-    [InlineData("control_flames", 99)]
     public void EachLearnsAtTheLevelItsScriptAsks(string key, int level) =>
         Assert.Equal(level, Spell(key).Level);
+
+    /// <summary>Control flames, the ninth, is left exactly as it was (packet item 5): its acorn-drop hook would need new
+    /// C# in the item-drop path, so it has no SpellParams row or effect row of its own and keeps its row's level 0 until
+    /// it is ported (the route fixture keeps it on <c>verb=generic</c>). A guard, green on 821914e too.</summary>
+    [Fact]
+    public void ControlFlamesIsLeftAsItWas()
+    {
+        var sp = Spell("control_flames");
+        Assert.Equal(0, sp.Level);
+        Assert.Equal(0, sp.Mark);
+        Assert.False(Content.SpellParams.ContainsKey(sp.Key), "Control flames has a SpellParams row");
+        Assert.Null(Content.FxFor(sp));
+    }
 
     /// <summary>Nature's smite asks no subpath rank: RTK's script asks level 99 and nothing else
     /// (<c>natures_smite.lua:45-51</c>), and its twin Earth strike carries none either. Red on 821914e: mark 2.</summary>

@@ -829,7 +829,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 31300,====Hyun Moo====,====Hyun Moo====,5,9,0,0,0,,0,0,0,0,1,1
 31301,hyun_moo_revival,Hyun moo revival,5,9,-1,0,0,,0,0,0,1,0,1
 31400,====Druid=====,====Druid=====,5,13,0,0,0,,0,0,0,0,1,1
-31401,control_flames,Control flames,5,13,-1,0,99,,0,0,0,1,0,1
+31401,control_flames,Control flames,5,13,-1,0,0,,0,0,0,1,0,1
 31402,druids_rodent,Druid\'s rodent,1,13,-1,0,0,Become what?,0,0,0,1,1,1
 31403,steed,Steed,5,13,-1,0,0,,0,0,0,1,1,1
 31404,lightning_storm,Lightning storm,5,13,-1,0,99,,0,0,0,1,1,1
