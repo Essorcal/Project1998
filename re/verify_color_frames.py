@@ -28,10 +28,14 @@ def load_pal_blocks(path="monster.pal"):
         blocks.append(colors)
     return blocks
 
-# CORRECTED 2026-08-07 (see docs/4.x/Protocol.md §11c). The bottom/right pair at the end of TOC
-# entry i belongs to the NEXT frame's origin, so frame i measures (left[i] - right[i-1]) x (top[i] -
-# bottom[i-1]). Exact for 1309/1309 Item.epf frames; the old same-entry box + "which dim divides pixbytes"
-# guesswork sheared any frame whose box was wrong. Frame 0 has no predecessor, hence frame N+1 == asset id N.
+# CORRECTED 2026-08-07; RE-READ 2026-10-24 against the 4.95 install. This script reads the table at u32@8,
+# 12 bytes before the canonical table at 12 + u32@8 (docs/4.x/Protocol.md §11c; each entry top, left,
+# bottom, right as i16, then pixOff, stencilOff as u32). Read that early, what it unpacks as entry i's
+# top/left are canonical frame i-1's bottom/right, and what it unpacks as entry i-1's bottom/right are
+# frame i-1's top/left, so (left[i] - right[i-1]) x (top[i] - bottom[i-1]) is canonical frame i-1's own box
+# (exact for 1309/1309 Item.epf frames; the old same-entry box + "which dim divides pixbytes" guesswork
+# sheared any frame whose box was wrong). So this script's frame N+1 is canonical frame N, and canonical
+# frame 0 is a real frame it cannot reach.
 def epf_frame(epf, frame_idx):
     frameCount, w, h, unk = struct.unpack_from("<HHHH", epf, 0)
     (tocOffset,) = struct.unpack_from("<I", epf, 8)

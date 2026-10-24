@@ -14,10 +14,13 @@ public sealed partial class Session
 
     // Client walk request. 4.95: 0x32/0x06. 5.33: 0x06 (turn is a SEPARATE opcode, 0x11 -> HandleTurn).
     // Direction is body[0] (NexusTK: 0=N,1=E,2=S,3=W). The client predicts one step then blocks until
-    // the server confirms; a successful step is confirmed with 0x26 (self-walk animation) on 5.33, or
-    // 0x0C+0x04 on 4.95. Passability is enforced HERE, server-side, like Mithia 7.x's clif_parsewalk:
-    // if the destination tile is blocked (PassAt != 0) we do NOT move and re-send 0x04 to snap the
-    // client back, cancelling its optimistic prediction.
+    // the server confirms; a successful step is confirmed with 0x26 (self-walk animation) on 5.33. On 4.95
+    // the default drive (P1998_V495_SELF_MOVE=7) confirms it with a no-scroll 0x04 when the session's
+    // fast-move flag is on, or the same 0x26 when it is off (P1998_V495_SLOW_MOVE=5); the other modes are
+    // legacy (see V495SelfMove). Passability is enforced HERE, server-side, like Mithia 7.x's clif_parsewalk:
+    // if the step is refused (off the map, the ground pass flag, the destination object's SObj.tbl wall for
+    // this heading, a barrier, or an occupant — see THE STEP below) we do NOT move and re-send 0x04 to snap
+    // the client back, cancelling its optimistic prediction.
     //
     // 5.33 walk packets also carry the client's believed current position at body[2..5] (BE u16 x,y).
     // We step from THAT tile (when in-bounds), not just our tracked one, so the collision check runs on
@@ -161,10 +164,12 @@ public sealed partial class Session
         // server-authoritative 0x26 path (32924 of 33219 commits). That path is tolerable at ~360ms/step, but
         // a horse halves that to ~180ms and each fresh 0x26 restarts the ~360ms leg animation before it
         // finishes -> the reported stutter (worst in uncached areas, where the per-step terrain blit also
-        // steals client frame time). FastMoveTrustToggle drives the silent path off the tracked toggle
-        // instead (defaults ON, kept in sync by the 0x1b/09 handler, persisted in SettingFlags bit 9); it
-        // stays opt-in until a fast-move-ON client is proven to self-pace live (vs. block one step then await
-        // an ack, per mode 3). Either way we no longer clobber _fastMove here — the toggle owns it.
+        // steals client frame time). FastMoveTrustToggle drives the client-authoritative path off the tracked
+        // toggle instead (on by default, P1998_V495_FASTMOVE_TRUST_TOGGLE; kept in sync by the 0x1b/09
+        // handler, persisted in SettingFlags bit 9); 0 goes back to the per-walk bit. That path is not
+        // silent: a fast-move-ON client blocks after one step until an ack arrives, so mode 7 acks each good
+        // step with a no-scroll 0x04 (below). Either way we no longer clobber _fastMove here — the toggle
+        // owns it.
         bool clientFast = FastMoveTrustToggle ? _fastMove : (dec.Length > 1 && (dec[1] & 0x80) != 0);
 
         // Both 4.95 and 5.33 report the client's believed current tile at body[2..5] (BE u16 x,y). We step
@@ -349,8 +354,8 @@ public sealed partial class Session
         _world.CheckPlayerTrapTrigger(this, _char.Map, (ushort)nx, (ushort)ny, (byte)(dir & 3));
 
         // Shared world: everyone ELSE on this map watches us step (0x0C animates our entity to the new
-        // tile on their clients). Our OWN client is handled by the self-walk modes below (mode 7 stays
-        // silent and lets the local controller animate) — so exclude ourselves from the broadcast.
+        // tile on their clients). Our OWN client is handled by the self-walk modes below (in mode 7 the local
+        // controller animates and we only ack the step) — so exclude ourselves from the broadcast.
         // We broadcast the SOURCE tile (fromX,fromY), not the destination: the 4.95 client's 0x0C walk ends
         // one tile PAST the packet tile in `dir` (forward-slide overshoot), so anchoring on the source makes
         // a peer land on our true destination instead of one tile ahead. Same fix as the mob moves.
@@ -376,9 +381,9 @@ public sealed partial class Session
         // kill on the far side of the map) is invisible forever unless walking up to it re-draws it.
         SyncGroundItems(_world.ItemsOn(_char.Map));
 
-        // ...and the TERRAIN under that viewport. The client only requests map data (0x05) on map ENTRY, so
-        // without this it runs off the edge of what was streamed and hits a black wall. Pushes just the newly
-        // exposed strip. See StreamViewport.
+        // ...and the TERRAIN under that viewport. The client's own map-data requests (0x05: about every five
+        // steps, 18x16 around itself, and not always) do not keep up, so without this it runs off the edge of
+        // what was streamed and hits a black wall. Pushes just the newly exposed strip. See StreamViewport.
         StreamViewport();
 
         if (_ver == ClientVersion.V533)
@@ -435,7 +440,8 @@ public sealed partial class Session
         else if (V495SelfMove == 7)
         {
             // 4.95 DEFAULT (RTK-faithful, fast-move aware — see RTK clif_parsewalk's FLAG_FASTMOVE gate).
-            // clientFast comes straight from this walk's step-counter high bit (no toggle tracking needed).
+            // clientFast is the session's fast-move flag _fastMove (FastMoveTrustToggle, on by default — see
+            // where clientFast is set above), not this walk's step-counter high bit.
             if (clientFast)
             {
                 // Client-authoritative (fast-move ON): the client animates the legs AND scrolls its own
@@ -695,7 +701,9 @@ public sealed partial class Session
     public void PatchObjRow(ushort startX, ushort y, ushort[] objs) => SendObjRow(startX, y, objs);   // peer-facing (0x06)
 
     // 0x1b = client setting toggle (F-keys). body[0] = setting id (matches RTK's settings-parse switch):
-    //   0x07 = Realm center (F4, camera lock)   0x09 = Fast move   (others logged, not yet acted on).
+    //   0x07 = Realm center (F4, camera lock)   0x09 = Fast move   0x00 = Ride or F10   0x02 = group
+    //   0x08 = exchange   0x0A = clan whisper   plus the flag-only SettingLabels; any other id is logged as
+    //   not handled.
     // For realm-center we flip the flag and re-apply it via an in-place refresh (0x15 mapinfo carries the
     // realm byte to the client's camera rebuild @0x44c570), mirroring RTK's case 0x07 (sendmapinfo/setpos).
     // Re-send the map-entry trio (0x15 mapinfo + position + self-look) in place, then re-assert the peers and
@@ -935,21 +943,22 @@ public sealed partial class Session
         return map.Pass(mx, my);
     }
 
-    // Server-side collision: is this destination cell solid? The GROUND passability flag alone decides —
-    // the ground word's top-2-bits (value 3 = blocked, 0 = walkable; 1/2 never occur). On real world maps
-    // this is NOT 0: e.g. Kugnae TK0 has 14841 flagged cells — water, cliffs, out-of-bounds, AND the ground
-    // under every wall (map authors bake wall footprints into this layer). Confirmed against the heaviest
-    // wall objects on the real maps: obj 1519-1522 (~2000 placements each) sit on pass=3 ground 100% of the
-    // time. So walls are already caught by pass; the object layer is purely VISUAL.
+    // Server-side collision, GROUND half: is this destination cell's ground flagged impassable? The ground
+    // word's top-2-bits (value 3 = blocked, 0 = walkable; 1/2 never occur). On real world maps this is NOT 0:
+    // e.g. Kugnae TK0 has 14841 flagged cells — water, cliffs, out-of-bounds, AND the ground under many walls
+    // (map authors bake wall footprints into this layer). Confirmed against the heaviest wall objects on the
+    // real maps: obj 1519-1522 (~2000 placements each) sit on pass=3 ground 100% of the time.
     //
-    // The object layer is therefore NOT a collision source. It used to be (obj != 0 blocked), which made the
-    // player "stuck on shadows" — shadows, flat rugs, ground-decor are objects on walkable ground and were
-    // wrongly blocked. The authoritative RTK reference server agrees exactly: map_canmove() has `if(obj)
-    // return 1;` COMMENTED OUT and collides on the pass layer only; object_flag_init() even parses SObj.tbl
-    // but leaves `objectFlags[z]=flag;` commented out — the object table's flags are height/draw-order, not
-    // passability (they don't predict blocking: wall objects 1519-1522 have flag high-byte 0x00, while many
-    // 0x0f-flagged objects sit on fully-walkable ground). Doors that ARE closed have pass=3 and still block
-    // (open them via 'o'/0x20); door tiles that are warps get warp-precedence in HandleWalk before this check.
+    // This is NOT the whole terrain test. HandleWalk ORs it with ObjectFlags.Blocks — the client's SObj.tbl
+    // directional wall flags for the destination's object and this heading (the pair MapData.BlockedMove
+    // combines for mob movement) — because some object walls stand on walkable ground (a hut's thin side
+    // wall, pass=0 under it). What does NOT block is the bare object id: it used to (obj != 0 blocked), which
+    // made the player "stuck on shadows" — shadows, flat rugs, ground-decor are objects on walkable ground
+    // with no wall flags. RTK's map_canmove() has `if(obj) return 1;` COMMENTED OUT and collides on the pass
+    // layer only, and its object_flag_init() parses SObj.tbl but leaves `objectFlags[z]=flag;` commented
+    // out; this server applies those flags (see ObjectFlags). A closed door blocks through its pass flag or
+    // its leaves' wall flags (open it via 'o'/0x20, which swaps the object — see HandleOpen); door tiles
+    // that are warps get warp-precedence in HandleWalk before either check.
     private static bool Blocked(MapData map, int mx, int my)
     {
         if (MapDiag.StartsWith("passtest:"))

@@ -1682,15 +1682,19 @@ public sealed partial class Session
     // ---- 0x49 — "resend your profile picture" (server -> client) ---------------------------------------
     // Empty body; the dispatch trampoline doesn't even pass a packet pointer, so there is nothing to fill in.
     // The client (0x44edc0) answers on 0x4F with EXACTLY the packet the profile editor sends, which
-    // HandleChangeProfile above already parses — so this is a safe probe: every failure path still replies,
-    // just with picSize = 0.
+    // HandleChangeProfile above already parses. It is safe for the CLIENT (every failure path still replies,
+    // just with picSize = 0), but it is not a read-only probe on our side: HandleChangeProfile stores the
+    // answer as a profile save, so a picSize-0 answer clears the stored picture, the blurb is replaced by the
+    // one the client sends, and the player gets the profile-save message.
     //
     // What it reads, and therefore what a player has to put on disk for a picture to exist at all
     // (validation reversed from 0x44ef0c onward, all four checks are hard `jne` bails):
     //   file      <client cwd>/users/<CharacterName>.epf   — retried as .face
     //   size      EXACTLY 0xb1c = 2844 bytes
-    //   dword@8   == 0xaf0 = 2800   (the EPF's TOC offset, i.e. 12-byte header + 2800 bytes of pixels)
-    //   frame box  toc[1].top - toc[0].bottom == 0x38  and  toc[1].left - toc[0].right == 0x30
+    //   dword@8   == 0xaf0 = 2800   (the EPF's table offset, relative to the 12-byte header: table at 2812)
+    //   frame box  toc[1].top - toc[0].bottom == 0x38  and  toc[1].left - toc[0].right == 0x30, with toc
+    //              taken at +2800, 12 bytes before the canonical table (docs/4.x/Protocol.md §11c): that is
+    //              canonical frame 0's own height and width
     //              -> the picture is a single 48 x 56 frame. See re/make_profile_epf.py.
     // The user's own capture shows the miss: CreateFileW(".../users/Zaleroo.epf") -> INVALID_HANDLE, and the
     // 0x4F that followed carried picSize 0. Nothing is wrong server-side when that happens — the file just

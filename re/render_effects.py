@@ -2,18 +2,22 @@
 and matched against the nexusatlas spell-animation GIFs.
 
 Asset layout (all extracted from NexusTK.dat into re/fx/):
-  Effect.tbl  text: "NumEffects 121" then per effect an "ID n, NumFrontFrames a, ... NumBackFrames b"
+  Effect.tbl  text: "NumEffects 128" then per effect an "ID n, NumFrontFrames a, ... NumBackFrames b"
               line followed by a+b "Frame# N, Delay ms, Alpha f, Light l" lines. Frame# is the
               ABSOLUTE Effect.epf frame index -- no cumulative-sum needed. The first a are the
               "front" layer (drawn over the sprite), the last b the "back" layer (drawn under it).
-  Effect.frm  u32 count (1432 == epf frame count) then one u32 PER FRAME = its palette index (0-10).
-  Effect.pal  u32 count then N 1056B "DLPalette" blocks: 32B header + 256 RGBA entries at +32.
-              (NOT +38 -- that offset in render_items.py is 6 bytes into the color data and shears
-              every channel, which is why a first pass came out magenta/blue.)
+  Effect.frm  u32 count (1611 == epf frame count) then one u32 PER FRAME = its palette index (0-10).
+  Effect.pal  u32 count then N "DLPalette" blocks. A block's header is 32 + 2*C bytes, C being the u32
+              at +24 (a count of u16 animated-colour slots), then 256 RGBA entries: 1056 + 2*C bytes.
+              THIS SCRIPT reads the colours at a flat +32 (load_palettes), which is right for 12 of the
+              4.95 Effect.pal's 13 blocks (C == 0) and 2 bytes early for the tenth (C == 1).
+              (NOT +38 -- that offset in render_items.py is 6 bytes into a 32-byte header block's color
+              data and shears every channel, which is why a first pass came out magenta/blue.)
   Effect.epf  u16 frameCount, u16 w, u16 h, u16 pad, u32 tocOff; frames are raw 8bpp palette
               indices at 12+pixOff. TOC is at 12+tocOff (RELATIVE to the header, not absolute) and
               each 16B entry is top(i16) left(i16) bottom(i16) right(i16) pixOff(u32) stencilOff(u32)
-              -- 4 shorts then 2 ints. Verified: all 1432 frames satisfy stencilOff-pixOff == w*h.
+              -- 4 shorts then 2 ints. Verified: all 1611 frames satisfy stencilOff-pixOff == w*h.
+              (1432, the count this docstring used to give, is the 4.83 client's; re/find_frame_in_gif.py.)
               Box coords are signed and usually negative: they are offsets from the cast tile, so the
               effect is centred on its target rather than drawn at the canvas origin.
 

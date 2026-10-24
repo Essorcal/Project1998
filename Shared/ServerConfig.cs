@@ -379,9 +379,11 @@ public sealed class ServerConfig
             "and then freezes, so 0x04 must land just after that window. 0 is the old same-frame slide.");
         public static readonly IntKnob SelfMove = new(
             "P1998_V495_SELF_MOVE", ConfigArea.Movement, 7,
-            "Self-walk drive mode with fast-move ON. 0 = 0x04 only (no legs); 1 = legacy 0x0C(dest)+0x04; " +
-            "2 = 0x0C(source)+0x04; 3 = send nothing; 5 = delay then 0x04; 7 = nothing on a good walk, 0x04 only " +
-            "as a correction (default, RTK-faithful).");
+            "4.95 self-walk drive mode; only mode 7 reads the fast-move flag. 0 = 0x04 only (no legs); " +
+            "1 = legacy 0x0C(dest)+0x04; 2 = 0x0C(source)+0x04; 3 = send nothing; 5 = delay then 0x04; " +
+            "7 = fast-move aware (default, RTK-faithful): with fast-move ON every good step gets a no-scroll " +
+            "0x04, with it OFF P1998_V495_SLOW_MOVE drives the step. A refused step gets the 0x04 snap-back in " +
+            "every mode.");
         public static readonly IntKnob AckMs = new(
             "P1998_V495_ACK_MS", ConfigArea.Movement, 360,
             "Delay before the mode-5 unblock 0x04. Must be at least the client's local walk animation (~360ms) " +
@@ -403,8 +405,9 @@ public sealed class ServerConfig
             "the old always-0x26 behaviour.");
         public static readonly BoolKnob PushMap = new(
             "P1998_V495_PUSHMAP", ConfigArea.Movement, true,
-            "Push a margin strip of terrain ahead of a walking 5.33 client instead of waiting for it to ask. " +
-            "0 disables the push entirely and restores the visible black cells.");
+            "Push terrain to the client instead of waiting for it to ask, 4.95 and 5.33 alike: the whole window " +
+            "on login, warp and refresh, then a margin strip ahead of each step. 0 disables the push entirely " +
+            "and restores the visible black cells.");
         public static readonly IntKnob PushGraceSteps = new(
             "P1998_V495_PUSHGRACE", ConfigArea.Movement, 0,
             "Steps to defer that push for. 0 pushes on every step; a higher value restores the old deferral to " +
@@ -701,7 +704,7 @@ public sealed class ServerConfig
     public bool FastMoveDefault => Get<bool>(Knobs.FastMoveDefault);
     /// <summary>Drive the walk reply off the session's fast-move flag.</summary>
     public bool FastMoveTrustToggle => Get<bool>(Knobs.FastMoveTrustToggle);
-    /// <summary>Push terrain ahead of a walking 5.33 client.</summary>
+    /// <summary>Push terrain to a 4.95 or 5.33 client instead of waiting for its own requests.</summary>
     public bool PushMap => Get<bool>(Knobs.PushMap);
     /// <summary>Steps to defer that push for.</summary>
     public int PushGraceSteps => Get<int>(Knobs.PushGraceSteps);

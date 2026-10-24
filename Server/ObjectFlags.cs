@@ -19,7 +19,8 @@ namespace Server;
 ///       u8  tileCount
 ///       tileCount * u16                             // frame ids, object z's vertical sprite stack
 ///       5-byte separator FF FF FF FF 00
-///       u8  flag[z+1]                               // the NEXT object's flag (absent after the last)
+///       u8  flag[z+1]                               // the NEXT object's flag (present after the last
+///                                                   // record too, then one more byte: 0x00 in the 4.95 table)
 /// </code>
 /// <para>The loop below walks it one object out of phase with that — iteration <i>z</i> parses object
 /// <i>z</i>-1's frames (which it skips) and then reads object <i>z</i>'s flag — which lands the right byte
@@ -34,7 +35,8 @@ namespace Server;
 /// later, while the flags at 346/347 (0x0F solid) and 366/367 (0x00 walkable) are already correct as read
 /// here. Both facts are the layout above.</para>
 /// <para>Flag bits (RTK <c>map.h</c>): UP=1 DOWN=2 RIGHT=4 LEFT=8; a solid wall piece = 0x0F (all four sides).
-/// The walk consumes the file to the exact byte and yields exactly the header's object count.</para>
+/// The walk yields exactly the header's object count and stops one byte short of the end of the shipped 4.95
+/// table (7,608 records; the trailing 0x00 is never read).</para>
 /// </summary>
 public static class ObjectFlags
 {
