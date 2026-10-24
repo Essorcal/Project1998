@@ -25,7 +25,11 @@ internal static class TestProcessState
         StateDirectory = Path.Combine(Path.GetTempPath(), $"project1998-tests-{Guid.NewGuid():N}");
         Directory.CreateDirectory(StateDirectory);
         Environment.SetEnvironmentVariable("P1998_STATE", StateDirectory);
-        // ServerConfig reads the environment ONCE and caches it, so the redirect above only takes effect if
+        // The terrain search stops at game-data/maps for the whole run. With the client-install fallback on, a
+        // map missing from the content would be found in a developer's retail install and
+        // ContentSmokeTests.EveryMapHasItsTerrainFile would pass on that box while a Linux host had nothing.
+        Environment.SetEnvironmentVariable("P1998_MAPS_INSTALL_FALLBACK", "0");
+        // ServerConfig reads the environment ONCE and caches it, so the two settings above only take effect if
         // nothing sampled the configuration before this initializer ran. Re-resolving makes that explicit
         // rather than depending on static-initialization order: without it, one early RepoPaths.StateDir()
         // anywhere in the process would pin the snapshot to the REAL state directory and every test that

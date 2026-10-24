@@ -112,10 +112,18 @@ public sealed class ServerConfig
         public static readonly StringKnob MapsDir = new(
             "P1998_MAPS", ConfigArea.Paths, "",
             "First directory searched for the 4.x headerless `.map` terrain files. Blank searches only the " +
-            "built-in list: `<game-data>/maps`, then the two Windows client installs. Point this at a " +
-            "client's `Maps` directory on a host that has no client installed. The value is used as given, " +
-            "not trimmed.",
+            "built-in list: `<game-data>/maps`, then the two Windows client installs, which " +
+            "P1998_MAPS_INSTALL_FALLBACK=0 turns off. Point this at a client's `Maps` directory on a host " +
+            "that has no client installed. The value is used as given, not trimmed.",
             defaultText: "*(blank — search `<game-data>/maps` then the client installs)*");
+        public static readonly BoolKnob MapsInstallFallback = new(
+            "P1998_MAPS_INSTALL_FALLBACK", ConfigArea.Paths, true,
+            "After P1998_MAPS and `<game-data>/maps`, search the two Windows client installs for a `.map` " +
+            "file neither has: `Nexon\\NextAeon\\Maps`, then `Nexon\\NextAeon5\\Maps`, under " +
+            "`C:\\Program Files (x86)`. 0 stops the search at `<game-data>/maps`, so a map missing from " +
+            "the content is reported missing (startup's terrain line, the content tests) instead of being " +
+            "served from a retail install a Linux host would not have. The test run sets 0. On keeps the " +
+            "search order the server has always had.");
         public static readonly StringKnob SObjTable = new(
             "P1998_SOBJ", ConfigArea.Paths, "",
             "First path tried for the client's `SObj.tbl` object-collision table. Blank tries " +
@@ -466,7 +474,7 @@ public sealed class ServerConfig
         /// <summary>Declaration order — the generated reference and the startup banner both walk this.</summary>
         public static readonly IReadOnlyList<ConfigKnob> All =
         [
-            GameData, State, Logs, Run, MapsDir, SObjTable,
+            GameData, State, Logs, Run, MapsDir, MapsInstallFallback, SObjTable,
             LogWire, LogMaxBytes,
             TrustProxy, ProxyHeaderMs, ProxyAllow, BindAddress, HandshakeMs, SlowSendMs, LoginWriteMs,
             LoginMaxConn, LoginPerIp, LoginRate, LoginRateWindowMs, LoginExemptLoopback,
@@ -577,6 +585,8 @@ public sealed class ServerConfig
     public string RunDir => Get<string>(Knobs.Run);
     /// <summary>First directory searched for <c>.map</c> terrain, or "" for the built-in search list.</summary>
     public string MapsDir => Get<string>(Knobs.MapsDir);
+    /// <summary>Search the two client installs after <c>game-data/maps</c>.</summary>
+    public bool MapsInstallFallback => Get<bool>(Knobs.MapsInstallFallback);
     /// <summary>First path tried for <c>SObj.tbl</c>, or "" for the built-in candidates.</summary>
     public string SObjTable => Get<string>(Knobs.SObjTable);
 

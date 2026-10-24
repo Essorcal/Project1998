@@ -479,7 +479,12 @@ public sealed class MapData
     private static MapData? Load(ushort id, ushort xs, ushort ys)
     {
         var path = Locate(id);
-        if (path is null) { Log.Info($"   !! map TK{id}.map not found (searched P1998_MAPS, game-data/maps, client installs)"); return null; }
+        if (path is null)
+        {
+            Log.Info($"   !! map TK{id}.map not found (searched P1998_MAPS, game-data/maps" +
+                     (ServerConfig.Current.MapsInstallFallback ? ", client installs)" : "; client installs off)"));
+            return null;
+        }
 
         var d = File.ReadAllBytes(path);
         int cells = xs * ys;
@@ -550,10 +555,13 @@ public sealed class MapData
         return md;
     }
 
-    private static string? Locate(ushort id)
+    private static string? Locate(ushort id) => Locate(id, SearchDirs());
+
+    /// <summary>The first of <paramref name="dirs"/> that holds <c>TK&lt;id&gt;.map</c>, or null.</summary>
+    internal static string? Locate(ushort id, IEnumerable<string> dirs)
     {
         string file = $"TK{id}.map";
-        foreach (var dir in SearchDirs())
+        foreach (var dir in dirs)
         {
             var p = Path.Combine(dir, file);
             if (File.Exists(p)) return p;
@@ -567,7 +575,8 @@ public sealed class MapData
     /// its own — players walk through walls and, with a client that has no local <c>Maps</c> directory, see
     /// nothing at all. On Windows the last-resort search dirs are the client installs, which is why this never
     /// bit locally and would bite immediately on a Linux host: copy the client's <c>Maps</c> directory to
-    /// <c>game-data/maps</c> or point <c>P1998_MAPS</c> at it.</summary>
+    /// <c>game-data/maps</c> or point <c>P1998_MAPS</c> at it. <c>P1998_MAPS_INSTALL_FALLBACK=0</c> drops the
+    /// installs from the search, so a Windows box counts what a Linux host would.</summary>
     public static (int found, int total, string[] dirs) Availability(IEnumerable<ushort> mapIds)
     {
         int found = 0, total = 0;
@@ -579,16 +588,30 @@ public sealed class MapData
         return (found, total, SearchDirs().ToArray());
     }
 
-    private static IEnumerable<string> SearchDirs()
+    /// <summary>The client installs, searched last because they ship the full 4.x map set. Fixed Windows
+    /// paths: on any other host they simply do not exist.</summary>
+    internal static readonly IReadOnlyList<string> ClientInstallMapDirs = Array.AsReadOnly(new[]
     {
-        var env = ServerConfig.Current.MapsDir;
+        @"C:\Program Files (x86)\Nexon\NextAeon\Maps",
+        @"C:\Program Files (x86)\Nexon\NextAeon5\Maps",
+    });
+
+    private static IEnumerable<string> SearchDirs() => SearchDirs(ServerConfig.Current, ClientInstallMapDirs);
+
+    /// <summary>Where a <c>.map</c> is looked for, in order. <paramref name="installDirs"/> is
+    /// <see cref="ClientInstallMapDirs"/> in the server; a test hands in a temp directory instead, because the
+    /// real installs cannot be created or removed from a test.</summary>
+    internal static IEnumerable<string> SearchDirs(ServerConfig config, IReadOnlyList<string> installDirs)
+    {
+        var env = config.MapsDir;
         if (env.Length > 0) yield return env;
 
         // game-data/maps — terrain is authored CONTENT, versioned with the CSVs it has to agree with.
-        yield return Path.Combine(Shared.RepoPaths.GameDataDir(), "maps");
+        yield return Path.Combine(config.GameDataDir, "maps");
 
-        // fall back to the client installs, which ship the full 4.x map set
-        yield return @"C:\Program Files (x86)\Nexon\NextAeon\Maps";
-        yield return @"C:\Program Files (x86)\Nexon\NextAeon5\Maps";
+        // P1998_MAPS_INSTALL_FALLBACK=0 stops here, so a map the content lacks is reported missing rather
+        // than served from a retail install (the test run sets it; ContentSmokeTests.EveryMapHasItsTerrainFile).
+        if (!config.MapsInstallFallback) yield break;
+        foreach (var dir in installDirs) yield return dir;
     }
 }

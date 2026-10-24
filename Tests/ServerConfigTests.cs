@@ -74,6 +74,8 @@ public class ServerConfigTests
         Assert.Null(config.LogWire);                   // caller supplies the per-process default
         Assert.Null(config.LogMaxBytes);
 
+        Assert.True(config.MapsInstallFallback);       // the terrain search still ends at the client installs
+
         Assert.Empty(config.Warnings);
     }
 
@@ -104,7 +106,8 @@ public class ServerConfigTests
             ("P1998_GAME_HOST", "10.0.0.5"),
             ("P1998_LOG_WIRE", "1"),
             ("P1998_LOG_MAX_BYTES", "1048576"),
-            ("P1998_STATE", @"D:\somewhere\state"));
+            ("P1998_STATE", @"D:\somewhere\state"),
+            ("P1998_MAPS_INSTALL_FALLBACK", "0"));
 
         Assert.Equal(3000, config.AutoSaveMs);
         Assert.False(config.PassEnforce);
@@ -119,6 +122,7 @@ public class ServerConfigTests
         Assert.True(config.LogWire);
         Assert.Equal(1048576L, config.LogMaxBytes);
         Assert.Equal(@"D:\somewhere\state", config.StateDir);
+        Assert.False(config.MapsInstallFallback);
 
         Assert.Empty(config.Warnings);
         Assert.Contains(config.Entries, e => e.Knob.Name == "P1998_AUTOSAVE_MS" && e.FromEnvironment);
