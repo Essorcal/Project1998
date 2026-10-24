@@ -2010,6 +2010,15 @@ viewport-gated and `height > 1` is fine — the door path only ever sends one ro
 needs. Server code: `Session.HandleMapRequest`, one branch per `_ver`. Requests arriving before `0x15`
 enter-map (the client fires two `(0,0) 12×12` at connect) are ignored; it re-asks once in-world.
 
+**A reply is never more than one frame.** The frame's u16 length counts op + inc + body (§2), and the body is
+6 + 4·w·h bytes on 4.95 or 6 + 6·w·h on 5.33, so past 16,381 cells (4.95) or 10,921 (5.33) the length would
+wrap. `Session.SendMapRect` clamps such a reply by rows: `x0`, `y0` and `w` stay as asked, `h` becomes the most
+rows that fit (at least 64 on 4.95 and 42 on 5.33, since `w` is a byte), the header names exactly the cells
+sent, the stream's coverage tracker records what was sent, and the log line says `CLAMPED to one frame`. A rect
+that fits goes out unchanged. Only a hand-built request is that big (the client asks about 18×16, the server's
+own window is 27×25), and only six maps are big enough to answer one (seven on 5.33, where Islets' 80×200 is
+too); it gets fewer rows than it asked for.
+
 **The client re-requests as it scrolls — roughly every 5 steps.** Measured over one 61 MB server log:
 2162 requests / 10598 walks (0.204) in sessions where the server never replied, and 139 / 810 (0.172) after
 it started replying — the same rate either way, so this is scroll-driven, not retry-on-silence. Each request
