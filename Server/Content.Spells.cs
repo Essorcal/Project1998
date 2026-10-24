@@ -545,8 +545,8 @@ public static partial class Content
     /// <b>Spells.csv stops dead at mark 3</b>: 46 mark-1 rows, 57 mark-2, 18 mark-3, and zero for 4 or 5.
     /// (That asymmetry is exactly what proved Sam san was an RTK implementation gap rather than an
     /// out-of-era feature — see the nexustk-495-subpath-spells note; Sa san is the same gap, one tier up and
-    /// not yet closed.) Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is a
-    /// title (a rank adds no stats), so the ladder stops here until those spells are written.
+    /// not yet closed.) Allowing rank 4 would mint a "Sa san" whose only difference from a Sam san is one
+    /// more level of stat growth and a title, so the ladder stops here until those spells are written.
     /// <para>KNOWN CONSEQUENCE: the 34 mark-4 items stay unwearable, since the ItmMark gear gate reads the
     /// same field. That is the correct behaviour for a rank nobody can hold — Sa san gear is precisely what
     /// a Sa san would wear — and it reverses the moment this constant moves.</para></summary>
