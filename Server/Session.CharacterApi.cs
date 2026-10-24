@@ -603,6 +603,8 @@ public sealed partial class Session : QuestState.ISessionStore
     /// reward can carry a low-level character through several levels at once), refresh TNL, push the HUD exp
     /// bar, and persist. Every exp source (quests, melee/spell kills) funnels through here so leveling happens
     /// the same way regardless of who granted it. See LevelUp for the per-level stat/HP/MP gain formulas.
+    /// <para>Exp stops at <see cref="uint.MaxValue"/> (4,294,967,295), RTK's cap: an award that reaches it reads
+    /// "You cannot gain any more experience until you sell some." instead of the amount. See THE CAP below.</para>
     /// <para>Kill experience should go through <see cref="AwardKillExp"/> instead, which splits it across the
     /// group first and then calls this once per member.</para></summary>
     internal void AwardExp(uint amount, bool killExp = false, bool? totemTime = null)
@@ -629,11 +631,31 @@ public sealed partial class Session : QuestState.ISessionStore
         // time (see the anyTotem comment there). Null — every other caller — means "decide from my own
         // totem", which is the solo case and identical to what this always did.
         bool totem = killExp && (totemTime ?? _world.Clock.IsTotemTime(_char.Totem));
-        if (totem) amount = (uint)Math.Round(amount * 1.05, MidpointRounding.AwayFromZero);
+        // Clamped at uint.MaxValue: for an award above 4,090,445,043, the bonus rounds to a double past the top
+        // of a uint, and .NET 8 leaves that conversion unspecified (on x64 it kept the low 32 bits, so 4.1
+        // billion came out as about 10 million). Only a GM's "@exp <n> kill" can send an award that big. At or
+        // below it the Math.Min changes nothing.
+        if (totem) amount = (uint)Math.Min(Math.Round(amount * 1.05, MidpointRounding.AwayFromZero), uint.MaxValue);
+        // THE CAP (RTK player.lua giveXPStacked:4285-4290). Exp is a uint and this add used to wrap: a level-99
+        // holds 2 to 3 billion of the 4,294,967,295 it can, so banking for the rank trials' 1.2 billion apiece
+        // could carry it over the top and leave a small number. RTK stops at 4294967295 instead, and an award
+        // that REACHES the cap, not only one that would pass it (its test is >=), reads RTK's own line in
+        // place of "N experience!" and returns without the level check. Ported as is (Caleb, 2026-10-24,
+        // decision 9: "As RTK"). The sum is taken in 64 bits so the test itself cannot wrap. "Sell" means the
+        // shadow-stat vendors, which spend banked exp. Below the cap nothing here changes.
+        if ((ulong)_char.Exp + amount >= uint.MaxValue)
+        {
+            _char.Exp = uint.MaxValue;
+            _char.Tnl = 0;   // no level threshold exceeds the cap, so nothing is left to the next one
+            SendMiniText("You cannot gain any more experience until you sell some.");
+            SendStats();
+            SaveChar();
+            return;
+        }
         // RTK player.lua giveXPStacked: every exp grant pops a status-box message, not just combat —
         // quest/tutorial/NPC rewards get the same notice retail players see on a kill.
         SendMiniText($"{amount:N0} experience!");
-        _char.Exp += amount;
+        _char.Exp += amount;   // cannot wrap: the cap test above took every sum that reaches uint.MaxValue
         int path = CharBasePathId;
         byte levelBefore = _char.Level;
         while (_char.Level < 99)
