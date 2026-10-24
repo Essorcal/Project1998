@@ -193,22 +193,31 @@ public sealed class SamSanAlignedRowTests
         Assert.True(problems.Count == 0, string.Join("\n", problems));
     }
 
+    /// <summary>The playable paths other than Peasant, in id order: base classes 1-4, NPC subpaths 6-9, PC subpaths
+    /// 10-21 (<c>game-data/Paths.csv</c>).</summary>
+    private static readonly int[] SamSanPaths = { 1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21 };
+
     /// <summary>A Sam san character of each playable class and subpath is offered its own alignment's rows of its base
     /// class's families and none of the other alignments' or the unaligned base rows, by the trainers' menu
     /// (<see cref="Content.SpellsForClass"/>) and by the rebuild <c>@mark 3</c> runs
     /// (<see cref="Content.RespecSpellSet"/>); an unaligned one keeps the base rows and gets none of the new ones; and
     /// below Sam san nobody gets either. Red on 473789e: an aligned Sam san character is offered none of the new
-    /// rows (they do not exist) and none of the base rows, for every class.</summary>
+    /// rows (they do not exist) and none of the base rows, for every class.
+    /// <para>The paths it visits are every playable one but Peasant, and it checks that they are exactly these twenty
+    /// (<see cref="SamSanPaths"/>), so an empty or short loop fails: the four base classes (1 Warrior, 2 Rogue, 3 Mage,
+    /// 4 Poet), the four NPC subpaths (6 Chung ryong, 7 Baekho, 8 Ju jak, 9 Hyun moo) and the twelve PC subpaths, which
+    /// #393 made playable (10 Barbarian, 11 Merchant, 12 Diviner, 13 Druid, 14 Chongun, 15 Ranger, 16 Geomancer,
+    /// 17 Monk, 18 Do, 19 Spy, 20 Shaman, 21 Muse). Each subpath is offered its base class's rows.</para></summary>
     [Fact]
     public void AnAlignedSamSanCharacterIsOfferedItsOwnAlignmentsRowsOnly()
     {
         var allRows = Families.SelectMany(f => f.Rows.Select(r => r.Key)).ToHashSet(StringComparer.Ordinal);
         var bases = Families.Select(f => f.Base).ToHashSet(StringComparer.Ordinal);
         var problems = new List<string>();
-        int checkedPaths = 0;
+        var visited = new List<int>();
         foreach (int path in Content.PlayablePaths.Where(p => p != 0).OrderBy(p => p))
         {
-            checkedPaths++;
+            visited.Add(path);
             int basePath = Content.PathBaseOf(path);
             var mine = Families.Where(f => Content.SpellByKey(f.Base)?.PathId == basePath).ToList();
             Assert.NotEmpty(mine);
@@ -239,7 +248,7 @@ public sealed class SamSanAlignedRowTests
                     problems.Add($"path {path} alignment {alignment}: offered a Sam san row at Ee san");
             }
         }
-        Assert.Equal(8, checkedPaths);
+        Assert.Equal(SamSanPaths, visited);
         Assert.True(problems.Count == 0, string.Join("\n", problems));
     }
 
