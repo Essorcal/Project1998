@@ -2301,13 +2301,14 @@ public sealed partial class Session
     /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para>
     ///
     /// <para><b>Wrapped at its own definition</b> — the <see cref="NotifyGroup"/> shape, #29 rule 2
-    /// (<c>Server/Session.State.cs:25-33</c>). BOTH callers are cross-session loops over the whole online roster
+    /// (<c>Server/Session.State.cs:25-33</c>). Two callers are cross-session loops over the whole online roster
     /// on a thread that owns none of the sessions it is writing to: <c>@announce</c>
     /// (<c>Session.GmCommands.cs</c>, the operator's handler thread) and <c>RestartSchedule.Announce</c>
     /// (<c>Server/RestartSchedule.cs</c>, the restart ladder's <c>PeriodicTimer</c> task, the trigger-file poll,
-    /// or a GM's <c>@restart</c> handler). Because every caller is cross-session, one acquisition here covers
-    /// both at once and cannot be forgotten by a third; the caller-side wrap would be the same section written
-    /// twice. Nothing on this path reads foreign state beyond the send itself — the text is composed before
+    /// or a GM's <c>@restart</c> handler). <see cref="AnnounceToAll"/> is <c>@announce</c>'s loop on a player's
+    /// own handler thread, the same shape. Because every caller is cross-session, one acquisition here covers
+    /// them all at once and cannot be forgotten by another; the caller-side wrap would be the same section
+    /// written again. Nothing on this path reads foreign state beyond the send itself — the text is composed before
     /// either loop — so there is no gate read that has to be pulled into the section with it, which is what makes
     /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
     /// torn-byte hazard (read once, passed by value into both the body's encryption and the frame header, so the
@@ -2323,6 +2324,26 @@ public sealed partial class Session
     {
         using var _ = EnterState();
         SendMiniText(text, type: 5);
+    }
+
+    /// <summary>RTK <c>broadcast(-1, text)</c> from a player's own action: the same line <c>@announce</c> sends
+    /// (0x0A type 5, RTK's broadcast type), to every player online. Baek's "[SUBPATH]" line on joining an NPC
+    /// subpath is the caller (<see cref="NpcSubpathAbility"/>).
+    ///
+    /// <para>The loop is <c>AnnounceCmd</c>'s (<c>Session.GmCommands.cs</c>): a thread that holds this player's own
+    /// monitor, as the GM's handler thread holds the GM's, enters each recipient's through
+    /// <see cref="SystemAnnounce"/>, one at a time, and rule 2 resolves each acquisition as it does there; our own
+    /// copy is rule 3's re-entrant case. Rule 1 holds: <c>Online.All()</c> snapshots under <c>World._lock</c> and
+    /// returns with it released (<c>World.OnlineRegistry.cs:77-81</c>). One player's failure must not stop the
+    /// line reaching the others.</para></summary>
+    internal void AnnounceToAll(string text)
+    {
+        foreach (var s in _world.Online.All())
+        {
+            try { s.SystemAnnounce(text); }
+            catch (Exception e) { Log.Error($"announcement to {s.Remote} threw — the others still hear it", e); }
+        }
+        Log.Info($"   -> announce by {_char.Name}: \"{text}\"");
     }
 
     // ---- helpers ----
