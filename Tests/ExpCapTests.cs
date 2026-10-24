@@ -34,15 +34,25 @@ public sealed class ExpCapTests
     public ExpCapTests(SessionFixture fx) => _fx = fx;
 
     /// <summary>The defect. A level-99 holding 4,000,000,000 is awarded 500,000,000: exp stops at the cap.
+    /// <para>The cap branch returns before the code an ordinary award ends with, so it does its own refresh and
+    /// save, and both are pinned here (PR #391's review, F1). The stored row is read back holding the cap: a
+    /// dropped save would leave the capped exp waiting for the next MarkDirty, lost if the server went down
+    /// first. Exactly one 0x08 stats packet carries the capped exp at offset 32 (<c>Session.SendStats</c>), so
+    /// the HUD bar shows it. Nothing else saves or refreshes on this path: the row is NotFound without the save,
+    /// and no 0x08 goes out without the refresh.</para>
     /// <para>Red on master: 4.5 billion wrapped to 205,032,704.</para></summary>
     [Fact]
     public void AnAwardThatWouldPassTheCapLeavesExpAtTheCap()
     {
-        var (session, _, character) = Warrior("ExpCapPast", level: 99, exp: 4_000_000_000);
+        const string name = "ExpCapPast";
+        var (session, outbound, character) = Warrior(name, level: 99, exp: 4_000_000_000);
 
         session.WithState(() => session.AwardExp(500_000_000));
 
         Assert.Equal(uint.MaxValue, character.Exp);
+        var row = _fx.Store.Load(name);
+        Assert.Equal((CharacterLoadStatus.Ok, (uint?)uint.MaxValue), (row.Status, row.Character?.Exp));
+        Assert.Equal(new[] { uint.MaxValue }, StatsExp(outbound));
     }
 
     /// <summary>An award that lands exactly on 4,294,967,295 reads RTK's line, not the amount: RTK's test is
@@ -168,6 +178,13 @@ public sealed class ExpCapTests
         outbound.Clear();
         return (session, outbound, character);
     }
+
+    /// <summary>The exp field of each 0x08 stats packet sent, in order: a u32, big-endian, at offset 32 of the
+    /// body (<c>Session.SendStats</c>).</summary>
+    private static uint[] StatsExp(RecordingOutbound outbound) =>
+        outbound.BodiesOf(ServerOp.Stats)
+            .Select(b => System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(32)))
+            .ToArray();
 
     /// <summary>The status-box lines (0x0A type 3) the award sent, in order.</summary>
     private static string[] MiniText(RecordingOutbound outbound) =>
