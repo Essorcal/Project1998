@@ -740,7 +740,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 30405,assess_opponent_do,Assess opponent,2,18,-1,0,0,Which target? >,0,0,0,1,1,1
 30406,balance_weapon,Balance weapon,5,18,-1,1,0,,0,0,0,1,1,1
 30407,master_weapon,Master weapon,5,18,-1,2,0,,0,0,0,1,1,1
-30408,ki_strike,Ki strike,2,18,-1,0,0,Which target? >,0,0,0,1,1,1
+30408,ki_strike,Ki strike,2,18,-1,0,99,Which target? >,0,0,0,1,1,1
 30409,crossing_swords,Crossing swords,5,18,-1,0,0,,0,0,0,1,1,1
 30410,,,5,5,-1,0,0,,0,0,0,1,1,1
 30500,====Baekho======,====Baekho====,5,7,0,0,0,,0,0,0,0,1,1
@@ -773,7 +773,7 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 30803,hear_footstep_spy,Hear footstep,5,19,-1,0,0,,0,0,0,1,1,1
 30804,spy_kit,Spy kit,5,19,-1,0,0,,0,0,0,1,1,1
 30805,mimic_spy,Mimic,5,19,-1,0,0,,0,0,0,1,1,1
-30806,assassinate,Assassinate,5,19,-1,0,0,,0,0,0,1,1,1
+30806,assassinate,Assassinate,5,19,-1,0,99,,0,0,0,1,1,1
 30807,apply_stealth,Apply stealth,5,19,-1,0,0,,0,0,0,1,1,1
 30808,assess_opponent_spy,Assess opponent,2,19,-1,0,0,Which target? >,0,0,0,1,1,1
 30809,dagger_to_throat,Dagger to throat,5,19,-1,0,0,,0,0,0,1,1,1
@@ -809,15 +809,15 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 31109,neutrality_recognition,Neutrality recognition,5,16,-1,0,0,,0,0,0,1,1,1
 31110,elementalists_mark,Elementalist\'s mark,5,16,-1,0,0,,0,0,0,1,1,1
 31111,good_earth,Goodearth,5,16,-1,0,0,,0,0,0,1,1,1
-31112,hailstorm,Hailstorm,2,16,-1,0,0,,0,0,0,1,0,1
+31112,hailstorm,Hailstorm,2,16,-1,0,64,,0,0,0,1,0,1
 31113,soften_skin,Soften skin,2,16,-1,0,0,,0,0,0,1,1,1
 31114,earths_spite,Earths Spite,2,16,-1,1,0,,0,0,0,1,1,1
-31115,ice_bombardment,Ice bombardment,2,16,-1,0,0,,0,0,0,1,1,1
+31115,ice_bombardment,Ice bombardment,2,16,-1,0,99,,0,0,0,1,1,1
 31116,stone_casing,Stone Casing,2,16,-1,0,0,,0,0,0,1,0,1
 31117,,,5,5,-1,0,0,,0,0,0,1,1,1
 31200,====Shaman====,====Shaman====,5,20,0,0,0,,0,0,0,0,1,1
 31201,shamans_solace,Shaman\'s solace,2,20,-1,1,0,,0,0,0,1,0,1
-31202,phoenix_flames,Phoenix flames,5,20,-1,0,0,,0,0,0,1,1,1
+31202,phoenix_flames,Phoenix flames,5,20,-1,0,64,,0,0,0,1,1,1
 31203,reincarnate,Reincarnate,5,20,-1,0,0,,0,0,0,1,0,1
 31204,,,5,5,-1,0,0,,0,0,0,1,1,1
 31205,,,5,5,-1,0,0,,0,0,0,1,1,1
@@ -829,15 +829,15 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 31300,====Hyun Moo====,====Hyun Moo====,5,9,0,0,0,,0,0,0,0,1,1
 31301,hyun_moo_revival,Hyun moo revival,5,9,-1,0,0,,0,0,0,1,0,1
 31400,====Druid=====,====Druid=====,5,13,0,0,0,,0,0,0,0,1,1
-31401,control_flames,Control flames,5,13,-1,0,0,,0,0,0,1,0,1
+31401,control_flames,Control flames,5,13,-1,0,99,,0,0,0,1,0,1
 31402,druids_rodent,Druid\'s rodent,1,13,-1,0,0,Become what?,0,0,0,1,1,1
 31403,steed,Steed,5,13,-1,0,0,,0,0,0,1,1,1
-31404,lightning_storm,Lightning storm,5,13,-1,0,0,,0,0,0,1,1,1
+31404,lightning_storm,Lightning storm,5,13,-1,0,99,,0,0,0,1,1,1
 31405,sea_breeze,Sea breeze,5,13,-1,0,0,,0,0,0,1,0,1
 31406,natures_bloom,Nature\'s bloom,5,13,-1,0,0,,0,0,0,1,1,1
-31407,earth_strike,Earth strike,2,13,-1,0,0,,0,0,0,1,1,1
+31407,earth_strike,Earth strike,2,13,-1,0,99,,0,0,0,1,1,1
 31408,energy_bloom,Energy bloom,2,13,-1,1,0,,0,0,0,1,1,1
-31409,natures_smite,Nature\'s smite,2,13,-1,2,0,,0,0,0,1,1,1
+31409,natures_smite,Nature\'s smite,2,13,-1,0,99,,0,0,0,1,1,1
 31410,efflorescence,Efflorescence,5,13,-1,0,0,,0,0,0,1,1,1
 31500,====Monk========,====Monk=====,5,17,0,0,0,,0,0,0,0,1,1
 31501,read_karma_monk,Read karma,5,17,0,0,0,,0,0,0,1,0,1

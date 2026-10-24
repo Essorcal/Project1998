@@ -1459,6 +1459,134 @@ function verbs.generic(ctx, row)
   return true
 end
 
+-- =========================================================================================================
+-- PC-SUBPATH DAMAGE SPELLS (RTK rtklua/Accepted/Spells/Subpaths/): Assassinate (Spy), Ki strike (Do), Hailstorm and
+-- Ice bombardment (Geomancer), Phoenix flames (Shaman), Earth strike, Nature's smite and Lightning storm (Druid).
+-- Caleb, 2026-10-22 ("the nine subpath spells get their RTK scripts") and 2026-10-24 (decision sheet item 18). They
+-- have no spell_effects archetype, so they fell to `generic` above: 5 mana for 1 + 4*Will + 3*Grace at a creature.
+-- Each is bound by its SpellParams.csv row, which carries its numbers; each verb below is the shape of one RTK
+-- script, in that script's order. The graphic and sound over a victim are the spell's spell_effects.csv row, a
+-- Utility row, so the cast takes no cast delay, as it took none before. RTK is weight 0 for balance; these numbers
+-- are its scripts' by that decision.
+--
+-- Where the port parts from the scripts, on purpose:
+--   * A cast aimed at a player the caster may not attack (off a PvP map, yourself included) is refused before
+--     anything is spent: "You can't attack that target." and nothing else, the #351/#356 rule (sheet item 18).
+--     RTK's Earth strike and Nature's smite spend their 600 mana first; that is not ported. Phoenix flames and
+--     Lightning storm aim at nobody: like RTK they pass over a player they may not attack and strike the rest.
+--   * A wait is checked first, with this file's own line, and armed under the spell's own key. Phoenix flames'
+--     script arms `phoenix_flame`, a key no spell has, so its 1 s wait never held; here it is `phoenix_flames`.
+--   * A player struck reads the engine's one line for every spell, "<caster> hits you with <spell>.", where the
+--     scripts word it each their own way. Phoenix flames' says "casts Hailstorm on you", a copy slip.
+--   * RTK waives Assassinate's mana and wait for a GM; no verb here waives anything for staff.
+-- Control flames (Druid) is not here: its acorn-drop hook needs C# in the item-drop path (Session.HandleDropItem),
+-- so it stays on `generic` until that hook exists.
+-- =========================================================================================================
+
+-- The reach RTK's Earth strike, Nature's smite and Lightning storm test with distanceSquare(player, target, 10):
+-- 10 tiles on the larger axis. The scripts' own note: "maximum 10 tiles away in either direction (verified on NTK)".
+local SUBPATH_REACH = 10
+
+-- RTK's damage line for six of the scripts: base + level*coeff + floor((will + 1) / 2 * willcoeff), from the
+-- caster's effective Will. Earth strike wraps it in math.ceil, which an integer leaves as it is.
+local function subpath_amount(ctx, row)
+  return (row.base or 0) + ctx.level * (row.coeff or 0) + math.floor((ctx.will + 1) / 2 * (row.willcoeff or 0))
+end
+
+-- True, with the refusal said, while the spell's own wait (row.duration) runs. RTK's engine refuses a cast inside
+-- its aethers before the script runs (clif_parsemagic), so this is every verb's first question.
+local function subpath_waiting(ctx, row)
+  if (row.duration or 0) > 0 and ctx:onCooldown(ctx.spellKey) then
+    ctx:say(ctx.spellName .. " isn't ready yet.")
+    return true
+  end
+  return false
+end
+
+-- Assassinate (Spy; RTK Subpaths/Spy/assassinate.lua). The faced creature, or the faced player on a PvP map, takes
+-- ceil(coeff*vita + amount*mana) of the caster's own vita and mana as they stand before the spend, `flat` times
+-- that on a `chance`% critical, and the caster keeps 2/3 of their vita (rounded up) only when it struck. The mana
+-- and the wait go whatever stands there: at nothing, or at an NPC (no blow can hurt one, and RTK's strike looks for
+-- a BL_MOB only), it is still a cast, as the script's own note says. Row: mana 4000, duration 50000, coeff 0.25,
+-- amount 1.25, chance 5, flat 5.
+function verbs.assassinate(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  local nothing = ctx.victimIsNpc or not ctx.hasDamageTarget or ctx.castAtNothing
+  if not nothing and not ctx:canStrike() then return false end    -- a player it may not strike: free, with its line
+  local damage = (row.coeff or 0) * ctx.hp + (row.amount or 0) * ctx.mp   -- before the spend, as the script reads it
+  if ctx:roll(row.chance or 0) then damage = damage * (row.flat or 1) end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  if nothing then return true end
+  ctx:setHp(math.ceil(ctx.hp * 2 / 3))
+  ctx:damage(math.ceil(damage))
+  return true
+end
+
+-- Ki strike (Do), Hailstorm and Ice bombardment (Geomancer) (RTK Subpaths/Do/ki_strike.lua,
+-- Subpaths/Geomancer/hailstorm.lua and ice_bombardment.lua, one body): the target and whatever stands on its four
+-- sides take subpath_amount each, a player only on a PvP map. An id that names nobody, or an NPC, casts nothing,
+-- silently and for free: RTK's engine runs the script only for a target it found (clif_parsemagic). The sweep is
+-- the 5-way primitive the dog fire and the Inferno ladder share (ctx:targetAreaZap), with its 10-tile reach.
+-- Row: mana, base, coeff, willcoeff, and duration for Ki strike's 7 s wait (the Geomancer pair has none).
+function verbs.splash_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.victimIsNpc or ctx.castAtNothing then return false end   -- silent, free: nothing to strike
+  local mana = row.mana or 0
+  if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
+  if not ctx:canStrike() then return false end                     -- a player it may not strike: free, with its line
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:targetAreaZap(subpath_amount(ctx, row))                      -- 0 struck is still a cast
+  return true
+end
+
+-- Phoenix flames (Shaman; RTK Subpaths/Shaman/phoenix_flames.lua): whatever stands on the caster's four sides takes
+-- subpath_amount each, a player only on a PvP map, through the 4-way primitive the mage zap ladder uses
+-- (ctx:areaZap). Mana first, then the sweep, so a cast into an empty room still costs, as the script orders it.
+-- Row: mana 880, base 1030, coeff 3, willcoeff 3, duration 1000 (its wait, under its own key).
+function verbs.ring_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if not ctx:enoughMana(mana) then return false end                -- "You do not have enough mana."
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:areaZap(subpath_amount(ctx, row))
+  return true
+end
+
+-- Earth strike and Nature's smite (Druid; RTK Subpaths/Druid/earth_strike.lua and natures_smite.lua, one body but
+-- the name): the target takes subpath_amount, a player only on a PvP map. Beyond SUBPATH_REACH, or at nothing or an
+-- NPC, the cast does nothing, silently and for free, as the script's distanceSquare return does. Row: mana 600,
+-- base 50, coeff 2, willcoeff 1.5.
+function verbs.ranged_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.victimIsNpc or ctx.castAtNothing then return false end   -- silent, free: nothing to strike
+  if ctx.victimDistance > SUBPATH_REACH then return false end      -- silent, free: out of reach
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if not ctx:canStrike() then return false end                     -- a player it may not strike: free, with its line
+  ctx:debitMana(mana)
+  ctx:damage(subpath_amount(ctx, row))
+  return true
+end
+
+-- Lightning storm (Druid; RTK Subpaths/Druid/lightning_storm.lua): every creature within SUBPATH_REACH of the
+-- caster, and every other player there on a PvP map, takes a flat `amount` on its own `chance`% roll (the script's
+-- "only 50% of targets"). Mana and the wait first, then the sweep, so a cast that strikes nothing still costs.
+-- Row: mana 1200, duration 87000, amount 3600, chance 50.
+function verbs.storm_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:rangeZap(row.amount or 0, SUBPATH_REACH, row.chance or 100)
+  return true
+end
+
 -- Amnesia (RTK Spells/rogue/amnesia.lua): the target mob FORGETS you. Your threat on it is wiped and it will
 -- not choose you again for row.duration, though it keeps fighting anyone else -- so this is a peel, not a
 -- mez: the creature stays dangerous, just not to you. Hitting it again reminds it instantly (the engine

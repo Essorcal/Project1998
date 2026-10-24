@@ -147,6 +147,10 @@ public sealed class SpellContext
     /// refuses silently and for free (Caleb, 2026-10-21; RTK's zap returns there first, global_zap.lua:8-10). An id
     /// aimed at the caster is not nothing. See <c>Session.LuaCastAtNothing</c>.</summary>
     public bool castAtNothing           => _s.LuaCastAtNothing(_sp, Victim, _targetId);
+    /// <summary>How many tiles this cast's victim (<see cref="Victim"/>) stands from the caster on the larger of the two
+    /// axes (RTK's <c>distanceSquare</c>), or -1 when there is none. Earth strike and Nature's smite read it for their
+    /// 10-tile reach (RTK <c>Spells/Subpaths/Druid/earth_strike.lua:10-14</c>).</summary>
+    public double victimDistance        => _s.LuaVictimDistance(Victim);
     /// <summary>Full magic-attack sequence matching the C# Damage archetype exactly: mana check → this cast's victim
     /// (<see cref="Victim"/>; an NPC is none) → spend mana → deflect roll → apply. Returns false if the cast couldn't
     /// happen (no mana, with a notice; no victim, silently), true otherwise (including a deflect). Used by
@@ -290,6 +294,12 @@ public sealed class SpellContext
     /// damage on each, centred on the TARGET rather than on the caster. Returns how many were hit; 0 also
     /// covers a range miss, which is this spell's only failure mode.</summary>
     public double targetAreaZap(double amt) => _s.LuaTargetAreaZap((int)System.Math.Round(amt), _sp, _targetId);
+    /// <summary>Lightning storm's sweep: every creature (an NPC is none), and every other player on a PvP map, within
+    /// <paramref name="range"/> tiles of the caster on the larger axis takes <paramref name="amt"/>, each on its own
+    /// <paramref name="chance"/>% roll, netted against its own armour, with this spell's graphic over it. Returns how
+    /// many were struck; 0 is still a cast.</summary>
+    public double rangeZap(double amt, double range, double chance) =>
+        _s.LuaRangeZap((int)System.Math.Round(amt), (int)range, chance, _sp);
     /// <summary>Heal every PLAYER on the four cardinally-adjacent cells (the poet 4-way heal ladder). Not the
     /// caster, not pets — RTK scans BL_PC only. Returns how many were healed.</summary>
     public double areaHeal(double amt) => _s.LuaAreaHeal((int)System.Math.Round(amt), _sp);

@@ -2440,6 +2440,28 @@ public sealed partial class World
         }
     }
 
+    /// <summary>The living creatures (NPCs left out: no blow can hurt one) and the players (a session a second login
+    /// replaced left out, as <see cref="PeerAt"/> leaves it) within <paramref name="radius"/> tiles (Chebyshev) of a
+    /// point, each list in the map's own order. Lightning storm's sweep (<c>Session.LuaRangeZap</c>) strikes from it.
+    /// One pass under <c>_lock</c>, the lock every writer of a mob's or a player's tile holds, reading the same fields
+    /// <see cref="MobAt"/>, <see cref="PeerAt"/> and <see cref="HiddenPlayersNear"/> read, and nothing else is entered:
+    /// the caller strikes from these copies after the lock is released, as the 4-way and 5-way zaps strike what
+    /// <see cref="MobAt"/> and <see cref="PeerAt"/> returned.</summary>
+    public (List<Mob> Mobs, List<Session> Players) StrikeablesNear(ushort mapId, int x, int y, int radius)
+    {
+        var mobs = new List<Mob>();
+        var players = new List<Session>();
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return (mobs, players);
+            foreach (var mo in m.Mobs)
+                if (mo.Alive && !mo.IsNpc && Math.Max(Math.Abs(mo.X - x), Math.Abs(mo.Y - y)) <= radius) mobs.Add(mo);
+            foreach (var p in m.Players)
+                if (!p.IsReplaced && Math.Max(Math.Abs(p.PlayerX - x), Math.Abs(p.PlayerY - y)) <= radius) players.Add(p);
+        }
+        return (mobs, players);
+    }
+
     /// <summary>The nearest living mob with this identifier within <paramref name="radius"/> tiles (Chebyshev)
     /// of a point, or null. One pass under the world lock — the alternative, probing <see cref="MobAt"/> over
     /// a box, takes the lock once per tile and gets expensive fast for anything wider than a couple of steps.</summary>

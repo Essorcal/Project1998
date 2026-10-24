@@ -1089,6 +1089,65 @@ public sealed partial class Session
         return hitCount;
     }
 
+    /// <summary>How far this cast's victim (<see cref="LuaDamageVictim"/>) stands from the caster, in tiles on the
+    /// larger axis (RTK's <c>distanceSquare</c>), or -1 with no victim: <c>SpellContext.victimDistance</c>, which Earth
+    /// strike and Nature's smite read for their 10-tile reach. A player's tile is a bare read of their character, as
+    /// <see cref="LuaTargetAreaZap"/>'s centre is.</summary>
+    internal int LuaVictimDistance((Mob? mob, Session? pc) victim)
+    {
+        var (mob, pc) = victim;
+        int? vx = mob?.X ?? pc?._char.X, vy = mob?.Y ?? pc?._char.Y;
+        if (vx is not int x || vy is not int y) return -1;
+        return Math.Max(Math.Abs(x - _char.X), Math.Abs(y - _char.Y));
+    }
+
+    /// <summary>Lightning storm's sweep (RTK <c>Spells/Subpaths/Druid/lightning_storm.lua</c>: every object in the
+    /// caster's area that <c>distanceSquare(player, target, 10)</c> passes, on <c>math.random(1, 2) == 1</c>). Every
+    /// creature within <paramref name="range"/> tiles of the caster on the larger axis, and every other player there
+    /// on a PvP map (RTK gates its PC branch on <c>canPK</c>), takes <paramref name="amt"/> on its own
+    /// <paramref name="chance"/>% roll. An NPC is none: no blow can hurt one, and the script strikes BL_MOB and BL_PC
+    /// only. Each creature nets the same raw amount against its own armour, as the 4-way zap's do, and each one struck
+    /// gets the spell's graphic and sound, an HP bar, and its exp if it dies.
+    /// <para>No deflect roll: RTK rolls a spell's deflect in its engine for a cast aimed at a target only
+    /// (clif_parsemagic), and this cast aims at nobody. The roll is the spell's one way to miss.</para>
+    /// <para>Who stands in range is one snapshot (<see cref="World.StrikeablesNear"/>), taken under the world lock and
+    /// released before anything is struck, so the blows here take the same locks, in the same order, as the 4-way and
+    /// 5-way zaps': <see cref="World.TryDamage"/> for a creature, the victim's own monitor
+    /// (<see cref="ReceiveSpellDamage"/>) for a player.</para></summary>
+    internal int LuaRangeZap(int amt, int range, double chance, SpellDef sp)
+    {
+        if (amt < 1) amt = 1;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        bool pvp = Content.IsPvpMap(_char.Map);
+        var (mobs, players) = _world.StrikeablesNear(_char.Map, _char.X, _char.Y, range);
+        int hitCount = 0;
+        foreach (var mob in mobs)
+        {
+            if (!LuaRoll(chance)) continue;
+            if (_world.TryDamage(_char.Map, mob, SpellRaw(amt, mob), out bool died, _char.Id))
+            {
+                BroadcastFx(mob.Id, anim, snd);
+                ShowDamageResult(mob.Id, mob, died);
+                if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
+                hitCount++;
+            }
+        }
+        if (pvp)
+        {
+            foreach (var peer in players)
+            {
+                if (ReferenceEquals(peer, this) || !LuaRoll(chance)) continue;
+                BroadcastFx(peer._char.Id, anim, snd);
+                peer.ReceiveSpellDamage(amt, this, sp.Name);
+                hitCount++;
+            }
+        }
+        Log.Info($"      (lua) {sp.Name} -> {range}-tile sweep {amt} dmg at {chance}% each, {hitCount} target(s)");
+        return hitCount;
+    }
+
     /// <summary>The 4-way heal: restore HP to every PLAYER on a cardinally-adjacent cell (RTK's poet ladder
     /// scans <c>BL_PC</c> only — these do not heal your pet, and they do not heal you). Each gets the spell's
     /// animation, the "&lt;caster&gt; casts X on you." line, and a refreshed over-head bar.</summary>
