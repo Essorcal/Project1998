@@ -1506,14 +1506,23 @@ public sealed partial class Session : QuestState.ISessionStore
     {
         int old = _char.Spells.Count;
         if (!_char.Spells.Remove(spellId)) return;
-        for (int slot = old - 1; slot >= 0; slot--)
+        RedrawSpellbook(old);
+        SaveChar();
+    }
+
+    /// <summary>Redraw the client's book after entries were removed from <see cref="Character.Spells"/>: clear
+    /// all <paramref name="oldCount"/> slots it was showing, then send the list as it is now, so every later
+    /// entry lands in its new slot. Shared by <see cref="ForgetOneSpell"/> and leaving a PC subpath, which
+    /// takes several at once and redraws once.</summary>
+    private void RedrawSpellbook(int oldCount)
+    {
+        for (int slot = oldCount - 1; slot >= 0; slot--)
             SendMap(ServerOp.RemoveSpell, _gameInc++, new byte[] { (byte)(slot + 1) }, $"removespell(0x18) slot={slot}");
         for (int i = 0; i < _char.Spells.Count; i++)
         {
             var sp = Content.SpellById(_char.Spells[i]);
             if (sp is not null) SendAddSpell(i, sp);
         }
-        SaveChar();
     }
 
     /// <summary>Send the player a status/minitext line (RTK sendMinitext).</summary>
