@@ -1783,16 +1783,7 @@ public sealed partial class Session
         d.Add((byte)(_char.Exchange ? 1 : 0));   // trailing flag = exchange/trade status (client field +0x935)
 
         var legs = _char.Legends ?? new List<Legend>();
-        d.Add((byte)Math.Min(legs.Count, 255));   // legend count is a single u8 in 4.95 (NOT u16)
-        foreach (var lg in legs)
-        {
-            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
-            if (t.Length > 255) t = t[..255];
-            d.Add(lg.Icon);
-            d.Add(lg.Color);
-            d.Add((byte)t.Length);
-            d.AddRange(t);
-        }
+        AddLegends(d, legs);   // legend count is a single u8 in 4.95 (NOT u16)
 
         SendMap(ServerOp.SelfProfile, _gameInc++, d.ToArray(),
             $"self-profile(0x39) ac={_char.Ac} class='{_char.ClassName}' buffs={_buffs.Count} legends={legs.Count}");
@@ -1862,16 +1853,7 @@ public sealed partial class Session
         // Legend record is 4.95's, confirmed against the parser loop at 0x49d32d: count u8, then each
         // { icon u8, colour u8, len u8, text }.
         var legs = _char.Legends ?? new List<Legend>();
-        d.Add((byte)Math.Min(legs.Count, 255));                           // legend count
-        foreach (var lg in legs)
-        {
-            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
-            if (t.Length > 255) t = t[..255];
-            d.Add(lg.Icon);
-            d.Add(lg.Color);
-            d.Add((byte)t.Length);
-            d.AddRange(t);
-        }
+        AddLegends(d, legs);
 
         SendMap(ServerOp.SelfProfile, _gameInc++, d.ToArray(),
             $"self-profile533(0x39) {d.Count}B ac={_char.Ac} class='{_char.ClassName}' " +
@@ -2008,12 +1990,37 @@ public sealed partial class Session
     /// which re-runs 5.33's own grammar over the result.</summary>
     public static string BuffBoxJoin(IEnumerable<string> lines) => string.Join(BuffBoxSep, lines);
 
-    // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte.
+    // length-prefixed ASCII string: [len u8][bytes]. Empty string -> a single 0 byte. Over 255 bytes it is cut to
+    // its first 255, so the length byte says what was sent: the buff box has no cap of its own, and enough long
+    // buffs at once pass 255. Encoding.ASCII writes only bytes 0x00-0x7F, so the cut never splits a character.
     private static void AddLenStr(List<byte> d, string? s)
     {
         var b = Encoding.ASCII.GetBytes(s ?? "");
+        if (b.Length > 255) b = b[..255];
         d.Add((byte)b.Length);
         d.AddRange(b);
+    }
+
+    // The legend list all three profile cards end with (0x39 on both clients, 0x34): count u8, then each
+    // { icon u8, colour u8, textLen u8, text }. The count is one byte, so past 255 the list stops at the first
+    // 255 and the count names exactly the legends written (it used to say 255 over all of them). RTK's 7.x
+    // cards write this count as a u16 and send every legend (clif.c, the MAX_LEGENDS loops); 4.95's cannot.
+    private static void AddLegends(List<byte> d, List<Legend> legs)
+    {
+        int count = Math.Min(legs.Count, 255);
+        d.Add((byte)count);
+        int written = 0;
+        foreach (var lg in legs)
+        {
+            if (written == count) break;
+            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
+            if (t.Length > 255) t = t[..255];
+            d.Add(lg.Icon);
+            d.Add(lg.Color);
+            d.Add((byte)t.Length);
+            d.AddRange(t);
+            written++;
+        }
     }
 
     // 0x34 = the "click" profile: the public view shown when you click a character. Distinct from the
@@ -2141,16 +2148,7 @@ public sealed partial class Session
 
         // FIELD #17/#18 — legends: count u8, then each { icon u8, color u8, textLen u8, text }
         var legs = tc.Legends ?? new List<Legend>();
-        d.Add((byte)Math.Min(legs.Count, 255));
-        foreach (var lg in legs)
-        {
-            var t = Encoding.ASCII.GetBytes(lg.Text ?? "");
-            if (t.Length > 255) t = t[..255];
-            d.Add(lg.Icon);
-            d.Add(lg.Color);
-            d.Add((byte)t.Length);
-            d.AddRange(t);
-        }
+        AddLegends(d, legs);
 
         // FIELD #19 (5.33 only) — the GUARDIAN BACKDROP frame. This was the "broken/flipping background".
         // The 5.33 parser reads ONE trailing u8 after the legends (0x4d2184, gated on client build >= 0x213)
@@ -2292,7 +2290,8 @@ public sealed partial class Session
     /// line through it made the client speak the failure out loud as the player's own words.</summary>
     private void SendBlueMessage(string text) => SendMiniText(text, type: 0);
 
-    /// <summary>A server-wide announcement (restart warnings — see <see cref="RestartSchedule"/>).
+    /// <summary>A server-wide announcement: the restart warnings (see <see cref="RestartSchedule"/>),
+    /// <c>@announce</c>, and the world line of Bon-Hwa's Il San promotion.
     ///
     /// <para>The 0x0A system line (type 5) ONLY. This used to also call <see cref="SendLog"/> on the theory
     /// that a restart notice is worth saying twice — but SendLog is <c>SendSpeech(0, _char.Id, …)</c>, the
@@ -2301,22 +2300,23 @@ public sealed partial class Session
     /// SendLog's 250-char chat cap into the bargain. One channel, and it's this one.</para>
     ///
     /// <para><b>Wrapped at its own definition</b> — the <see cref="NotifyGroup"/> shape, #29 rule 2
-    /// (<c>Server/Session.State.cs:25-33</c>). BOTH callers are cross-session loops over the whole online roster
-    /// on a thread that owns none of the sessions it is writing to: <c>@announce</c>
-    /// (<c>Session.GmCommands.cs</c>, the operator's handler thread) and <c>RestartSchedule.Announce</c>
-    /// (<c>Server/RestartSchedule.cs</c>, the restart ladder's <c>PeriodicTimer</c> task, the trigger-file poll,
-    /// or a GM's <c>@restart</c> handler). Because every caller is cross-session, one acquisition here covers
-    /// both at once and cannot be forgotten by a third; the caller-side wrap would be the same section written
-    /// twice. Nothing on this path reads foreign state beyond the send itself — the text is composed before
-    /// either loop — so there is no gate read that has to be pulled into the section with it, which is what makes
+    /// (<c>Server/Session.State.cs:25-33</c>). ALL THREE callers are cross-session loops over the whole online
+    /// roster, writing into sessions their thread does not own: <c>@announce</c> (<c>Session.GmCommands.cs</c>, the
+    /// operator's handler thread), <c>RestartSchedule.Announce</c> (<c>Server/RestartSchedule.cs</c>, the restart
+    /// ladder's <c>PeriodicTimer</c> task, the trigger-file poll, or a GM's <c>@restart</c> handler) and
+    /// <c>AnnounceToWorld</c> (<c>Session.CharacterApi.cs</c>, the promoted player's handler thread, for Bon-Hwa's
+    /// "[SYSTEM]: … has attained First Mark!"). Because every caller is cross-session, one acquisition here covers
+    /// all three at once and cannot be forgotten by a fourth; the caller-side wrap would be the same section
+    /// written three times. Nothing on this path reads foreign state beyond the send itself — the text is composed
+    /// before each loop — so there is no gate read that has to be pulled into the section with it, which is what makes
     /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
     /// torn-byte hazard (read once, passed by value into both the body's encryption and the frame header, so the
     /// worst a lost update does is repeat a nonce — the note above <c>Session.Send</c> in <c>Session.WorldApi.cs</c>);
     /// rule 2 is a blanket rule on entering a peer's state, not a repair for a specific corruption.</para>
     ///
-    /// <para>ONE peer monitor at a time: both callers dispose this guard before the next player. An operator
-    /// announcing to a roster that includes themselves is rule 3's re-entrant case, a no-op, so their own copy
-    /// still goes out in roster order. Rule 1 holds at both callers: <c>World.OnlineRegistry.All()</c>
+    /// <para>ONE peer monitor at a time: every caller disposes this guard before the next player. A caller whose own
+    /// session is in the roster (the operator, the promoted player) is rule 3's re-entrant case, a no-op, so their
+    /// own copy still goes out in roster order. Rule 1 holds at every caller: <c>World.OnlineRegistry.All()</c>
     /// (<c>World.OnlineRegistry.cs:77-81</c>) takes <c>World._lock</c>, materialises the list and returns with it
     /// released, so no world lock is held when this enters a session.</para></summary>
     internal void SystemAnnounce(string text)

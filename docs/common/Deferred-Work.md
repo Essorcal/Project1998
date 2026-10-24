@@ -476,7 +476,7 @@ TSWolf, 2003-04-13: *"The Sage NPC takes 100k without upgrading yer sage. (I per
 teaches before it charges and takes nothing on a failed teach. Recorded so the next person to find that post
 does not "fix" our version into matching it.
 
-## The Forever Tree / Bon-Hwa — what is built, and the trials that are not
+## The Forever Tree / Bon-Hwa — what is built, and the Ee San trials that are not
 
 Bon-Hwa is the immortal at the Forever Tree (map 1229). Its two everyday services are **built**
 (`Server/BonHwa.cs`, from RTK `NPCs/wilderness/bon_hwa.lua` and the `npcIsBonHwa` branch of
@@ -489,16 +489,18 @@ Bon-Hwa is the immortal at the Forever Tree (map 1229). Its two everyday service
   Might/Grace/Will caps past 130 and the 100M-per-point cost. The four in-era cap rows (marks 0–3) are
   transcribed from `_bonHwaLimits`.
 
-**What is NOT built: the San-rank trials themselves.** bon_hwa.lua's `"Il San"` and `"Ee San"` menu branches
-(and the commented-out Sam/Sa/Oh San) are how you *earn* a mark. We do not have them — marks are `@mark`-set,
-and the weapon/stat tiers above simply read whatever mark you hold. Each trial set is a legend-gated checklist
-(`passed_first_trial_of_*`) that, once complete, fires `updatePath(class, mark)` and a server broadcast. The
-trials, from bon_hwa.lua:
+bon_hwa.lua's `"Il San"` and `"Ee San"` menu branches (and the commented-out Sam/Sa/Oh San) are how you *earn*
+a mark. Each trial set is a legend-gated checklist (`passed_first_trial_of_*`) that, once complete, fires
+`updatePath(class, mark)` and a server broadcast; a rank adds no stats. **Il San is built** (`Server/BonHwa.cs`),
+but its Wealth trial asks for 5 Well Crafted White Ambers and nothing in our world sells, drops or crafts that
+amber (RTK gemcuts it), so in play nobody can finish it until crafting exists; that was kept as RTK has it, with
+no stand-in source. **Ee San is NOT built**, so mark 2 and 3 stay `@mark`-set. The weapon/stat tiers above read
+whatever mark you hold. The trials, from bon_hwa.lua:
 
-| Rank | Trials (RTK) | Blocked on |
+| Rank | Trials (RTK) | Status |
 |---|---|---|
-| **Il san** (mark 1) | Knowledge (1.2B exp → Tree), Strength (kill Spirit Rat, `killCount`), Wealth (600k coin + 5 Well Crafted White Amber) | Well Crafted White Amber item; the rest is buildable now (exp/coin/kill-count all exist) |
-| **Ee san** (mark 2) | Knowledge (1.2B exp), Strength (Spirit+Avenger in 8 mythic caves via `allMythicCaveBosses`), Wealth (2M coin), Skill (6 carnage **or** 12 combined minigame wins), Culture (Skilled in a craft), Spirit (Tiger karma) | carnage/minigame win counters, crafting skill levels — neither modelled |
+| **Il san** (mark 1) | Knowledge (1.2B exp → Tree), Strength (kill Spirit Rat, `killCount`), Wealth (600k coin + 5 Well Crafted White Amber) | Built; Wealth blocked in play on the Well Crafted White Amber, which has no source |
+| **Ee san** (mark 2) | Knowledge (1.2B exp), Strength (Spirit+Avenger in 8 mythic caves via `allMythicCaveBosses`), Wealth (2M coin), Skill (6 carnage **or** 12 combined minigame wins), Culture (Skilled in a craft), Spirit (Tiger karma) | Not built: carnage/minigame win counters, crafting skill levels — neither modelled |
 
 Knowledge/Wealth/Strength(rat)/Spirit(karma) are wireable today; Skill and Culture are the real blockers, and
 they are the same systems the greater alliances and the Sam san Sage gate wait on. Sam/Sa san stay out of era

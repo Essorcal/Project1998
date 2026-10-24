@@ -2,12 +2,12 @@
 """Merge the archive-extracted spell level/cost data (re/archive_{warrior,mage,rogue,poet}_spells.md,
 NUMERIC-LEVEL base-spell tables only -- the Il/Ee/Sam/Sa-san alignment-tier and Dog-trainer spells are a
 separate, not-yet-implemented rank-progression system and are deliberately excluded here, not silently
-guessed, save the five Sam san rows in LIVE_PAGE_TIER_ROWS) against Spells.csv (for key/pathId) and the
+guessed, save the nineteen rank rows in LIVE_PAGE_TIER_ROWS) against Spells.csv (for key/pathId) and the
 Lua-extracted baseline (re/spell_requirements_lua.json, used as a fallback for any spell with no archive
 coverage). The 9 within-archive conflicts already identified were resolved directly with the user
 (2026-07-27) and are hardcoded as overrides below, and so are the three Lua-fallback levels the era pages
-correct (LUA_LEVEL_OVERRIDES, 2026-10-21) and the five Sam san learn rows the live Nexus Atlas pages print
-(LIVE_PAGE_TIER_ROWS, 2026-10-22).
+correct (LUA_LEVEL_OVERRIDES, 2026-10-21) and the rank learn rows the live Nexus Atlas pages print
+(LIVE_PAGE_TIER_ROWS: five Sam san rows on 2026-10-22, fourteen more rank rows on 2026-10-24).
 
 Run: python re/merge_spell_costs.py, from any directory (re/_paths.py anchors every path to the repo).
 
@@ -162,6 +162,26 @@ LUA_LEVEL_OVERRIDE_SOURCE = "tswolf-2001-spells-classes|atlas-2002-12-30-spells-
 # ("Il san spike", "Ee san blood") and name the plain one bare, as in Hoche's "Spike", which hoche_warrior's row
 # reads as spike. Level 99 is the level the hand rows gave these Sam san spells. The source is written as the
 # game-data/Sources.csv ids, as LUA_LEVEL_OVERRIDE_SOURCE is, so SpellLearnCosts.csv carries these rows byte for byte.
+#
+# ---- More rank learn rows from the same pages (Caleb, 2026-10-24, decision sheet items 8 and 9) -----------------
+# The fourteen rows after those five. Six are the other hand-written Sam san rows, which cited
+# extrapolated-from-ee-san and asked costs neither source prints. Each now costs what its live Atlas page prints
+# (atlas-warrior-spells, atlas-rogue-spells, atlas-mage-spells), and the tutor-board tier tables print the same for
+# five of them (re/archive_rogue_spells.md "Blades charm", "Power stream", "Explorer's remedy";
+# re/archive_mage_spells.md "Supress", "Energy flow"). The warrior table has no Dragon's harness row, so that row
+# cites the live page alone. Dooms Fire's hand row already asks 750,000 coins, as both sources do; it is left as it
+# is. Suppress's "Sam san surge" is Items.csv sam_san_surge, the ranked mage weapon, named with its rank as above.
+# Race and its three alignment names (Il san) cost "Blood, 1 Splendid tiger pelt, 25,000 coins" on the live rogue
+# page and in the rogue tier table; the Blood is the plain weapon, as the page's picture (weapons60/blood.gif)
+# shows. tswolf's July 2001 Il san page prints 25,000 coins and 1 Mountain ginseng instead; the decision took the
+# tutor table and the live page. Race's rows were absent (RTK's race.lua has no requirements()), so trainers
+# taught it free at level 99; the rows keep level 99, so only the fee changes.
+# Dagger's remedy and its three names (Ee san) cost 3 Mountain ginseng and 75,000 coins on the live rogue page and
+# in the rogue tier table, and RTK's daggers_remedy.lua requirements() asks the same. Their Spells.csv rows carry
+# SplPthId 99, as RTK's own Spells table does, so no class list reaches them: RTK's trainer on the "Dagger" map in
+# Nagnang adds them by name at mark 2. The Rogue row is what lets our rogue trainers offer them at all, and
+# Content.CityLockedSpells keeps that to the Nagnang ones. LIVE_PAGE_PATH_99_KEYS names these four for the
+# Spells.csv check below.
 LIVE_PAGE_TIER_ROWS = [
     # (key, class, level, cost text as parse_cost reads it, source)
     ("siege_warrior",         "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
@@ -169,7 +189,29 @@ LIVE_PAGE_TIER_ROWS = [
     ("lifes_end_warrior",     "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
     ("winter_chill_warrior",  "warrior", 99, "1 Blood, 1 Spike, 600000 Coins", "atlas-warrior-spells|archive-spells-warrior"),
     ("focused_blow_rogue",    "rogue",   99, "750000 Coins",                   "atlas-rogue-spells|archive-spells-rogue"),
+    # 2026-10-24: the six Sam san rows, in their SpellLearnCosts.csv order
+    ("dragons_harness_warrior", "warrior", 99, "80000 Coins", "atlas-warrior-spells"),
+    ("blades_charm_rogue",      "rogue",   99, "500000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("explorers_remedy_rogue",  "rogue",   99, "4 Mountain ginseng, 100000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("power_stream_rogue",      "rogue",   99, "2 Mountain ginseng, 100000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("energy_flow_mage",        "mage",    99, "10 Mountain ginseng, 50000 Coins", "atlas-mage-spells|archive-spells-mage"),
+    ("suppress_mage",           "mage",    99, "1 Sam san surge, 6 Star-staff, 6 Scribe's book, 120000 Coins",
+                                                "atlas-mage-spells|archive-spells-mage"),
+    # 2026-10-24: Race and its alignment names (Il san)
+    ("race_rogue",              "rogue",   99, "1 Blood, 1 Splendid tiger pelt, 25000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("spiritual_jump_rogue",    "rogue",   99, "1 Blood, 1 Splendid tiger pelt, 25000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("leap_of_faith_rogue",     "rogue",   99, "1 Blood, 1 Splendid tiger pelt, 25000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("transport_rogue",         "rogue",   99, "1 Blood, 1 Splendid tiger pelt, 25000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    # 2026-10-24: Dagger's remedy and its alignment names (Ee san, Nagnang only)
+    ("daggers_remedy_rogue",         "rogue", 99, "3 Mountain ginseng, 75000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("kwisin_daggers_remedy_rogue",  "rogue", 99, "3 Mountain ginseng, 75000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("mingken_daggers_remedy_rogue", "rogue", 99, "3 Mountain ginseng, 75000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
+    ("ohaeng_daggers_remedy_rogue",  "rogue", 99, "3 Mountain ginseng, 75000 Coins", "atlas-rogue-spells|archive-spells-rogue"),
 ]
+# The LIVE_PAGE_TIER_ROWS keys whose Spells.csv SplPthId is 99 rather than their class's path (see above).
+LIVE_PAGE_PATH_99_KEYS = {
+    "daggers_remedy_rogue", "kwisin_daggers_remedy_rogue", "mingken_daggers_remedy_rogue", "ohaeng_daggers_remedy_rogue",
+}
 
 # ---- Archive tables (numeric-level base spells only; Il/Ee/Sam/Sa-san + Dog-trainer spells excluded --
 # see script docstring) -- re-encoded from re/archive_*_spells.md's "no conflict" rows + the overrides above.
@@ -400,14 +442,15 @@ def main():
         rows.append(row)
         lua_fallback_count += 1
 
-    # The live-page Sam san rows (LIVE_PAGE_TIER_ROWS). They are copied by hand, so a key that is not that class's
-    # Spells.csv row, a key a row above already covers, or a cost part that does not resolve is an error, not a
-    # skipped row or a dropped item.
+    # The live-page rank rows (LIVE_PAGE_TIER_ROWS). They are copied by hand, so a key that is not that class's
+    # Spells.csv row (or, for LIVE_PAGE_PATH_99_KEYS, not a SplPthId 99 row), a key a row above already covers, or a
+    # cost part that does not resolve is an error, not a skipped row or a dropped item.
     covered_keys = {r["key"] for r in rows}
     for key, cls, level, cost_text, source in LIVE_PAGE_TIER_ROWS:
         pth = CLASS_PATHID[cls]
-        if key not in spells_by_key or spells_by_key[key][1] != pth:
-            raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key} is not a {cls} spell in Spells.csv")
+        spells_csv_pth = 99 if key in LIVE_PAGE_PATH_99_KEYS else pth
+        if key not in spells_by_key or spells_by_key[key][1] != spells_csv_pth:
+            raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key} is not a Spells.csv row with SplPthId {spells_csv_pth}")
         if key in covered_keys:
             raise SystemExit(f"LIVE_PAGE_TIER_ROWS: {key} already has a row above")
         gold, items, unresolved = parse_cost(cost_text)

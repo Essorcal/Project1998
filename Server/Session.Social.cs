@@ -695,8 +695,8 @@ public sealed partial class Session
     // posting/sending/deleting (intif.c: "Your message has been posted."/"...sent."/"...deleted.").
     private void SendBoardAck(byte other, bool ok, string msg)
     {
-        // Existing board/mail builders keep their historical length casts (including overlong persisted
-        // fields). New layouts can use Str8's strict limit; silently retuning old layouts is not this refactor.
+        // Existing board/mail builders keep their historical length casts, except the two mail topic fields
+        // (the mailbox row and the letter view), which cut at 255. New layouts can use Str8's strict limit.
         var d = new PacketWriter().U8(other).U8((byte)(ok ? 1 : 0));
         var mb = Ascii(msg);
         d.U8((byte)mb.Length);
@@ -777,6 +777,10 @@ public sealed partial class Session
                 d0.U8(m.Day);
                 var topic = (m.IsRead ? "" : "* ") + m.Topic;
                 var tn0 = Ascii(topic);
+                // A subject is at most 255 bytes (it arrives through a u8), but the unread mark makes a 254- or
+                // 255-byte one 256 or 257, and a kept copy's "[To <name>] " goes further. Cut to what the length
+                // byte can say: Ascii writes only bytes 0x00-0x7F, so the cut never splits a character.
+                if (tn0.Length > 255) tn0 = tn0[..255];
                 d0.U8((byte)tn0.Length);
                 d0.Bytes(tn0);
             }
@@ -959,6 +963,7 @@ public sealed partial class Session
         d.U8(mail.Month);
         d.U8(mail.Day);
         var tn = Ascii(mail.Topic);
+        if (tn.Length > 255) tn = tn[..255];   // a kept copy's "[To <name>] <subject>" can pass 255 (HandleNmailSend)
         d.U8((byte)tn.Length);
         d.Bytes(tn);
         var bn = Ascii(mail.Body);
