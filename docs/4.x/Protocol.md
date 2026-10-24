@@ -203,9 +203,18 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 4. Then either **account creation** (§9) or **login**:
 
    **Login — client → server `0x03`:** body = `nameLen name pwLen pw 00`. Example decrypted:
-   `03 04 "test" 07 "dragon5" 00`. **The client DOES send a password** (3–8 chars); the server verifies it
-   with **BCrypt** against the `accounts` table. (Creation `0x02` carries `nameLen name pwLen pw 00 00 00` —
+   `03 04 "test" 07 "dragon5" 00`. **The client DOES send a password**; the server verifies it with
+   **BCrypt** against the `accounts` table. (Creation `0x02` carries `nameLen name pwLen pw 00 00 00` —
    same password field.)
+
+   **Password rule (corrected 2026-10-24; this item used to say "3–8 chars").** The server's rule is **4 to 16
+   characters with at least one digit** (`LoginServer/LoginSession.cs:206-216`, `PasswordProblem`), and it is
+   applied only where a password is chosen: the `0x02` name check when one is supplied (`:158`), creation
+   `0x04` (`:247`) and the `0x26` change (`:393`). Login does not re-apply it; `HandleLogin` reads the password
+   and verifies it against the stored hash (`:286-287`, `:313`), so an account made under an older rule still
+   logs in. The field is u8-length, so 16 is the server's choice, not a wire limit. "3–8" survives only as what
+   the retail client's entry box is believed to accept; nobody has measured it (the server logs the length,
+   never the password, to find out: `:176-179`).
 
    **Login never creates anything (hosting pass).** Three refusals, each a `0x02` message box with no
    handoff — the client stays on the login screen showing the text:
@@ -223,7 +232,7 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    created with — world entry no longer overwrites the stored name with whatever the player typed.
 
    Failed attempts are budgeted per source IP (default 10 / 5 min, `P1998_LOGIN_FAILS`), refused before the
-   BCrypt verify runs; a 3–8 char password does not survive an unmetered guessing loop, and `ConnGuard`
+   BCrypt verify runs; a short password does not survive an unmetered guessing loop, and `ConnGuard`
    only limits how often an address may *connect*, not what it sends once connected. The same gate is on
    the game channel's re-login path — otherwise the brute-force target just moves to port 2005.
 
@@ -327,10 +336,13 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 ### 4.2 Game channel (port 2005)
 
 1. **The client speaks first** — do **not** send anything on connect. The client sends **`0x10`
-   (arrival)** in **plaintext**:
+   (arrival)** with a **plaintext** body in the standard §2 envelope, increment byte included:
    ```
-   10 | 09 "NexonInc." | nameLen "name" | <handoff token bytes>
+   AA len(u16BE) 10 inc | 09 "NexonInc." | nameLen "name" | <handoff token bytes>
    ```
+   Only the body skips the cipher; the frame is split like any other (`TkPacket.Parse`,
+   `Protocol.Tk495/TkPacket.cs:61-66`), and `body[0]` is the byte after the increment
+   (`Server/Session.cs:1104-1116`; corrected 2026-10-24, this block used to leave out the header).
    Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`.
    The trailing bytes are the **handoff token** (`body[2+klen+ulen ..]`); the game server
    **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
@@ -484,24 +496,38 @@ CONSTRUCTED"), and the client begins loading the map and sending game packets ba
 
 ## 6. World-entry packet sequence (the working burst)
 
-After the client's `0x10`, send this exact sequence (all game-channel, all NexonInc-encrypted, no
-trailer). This is the confirmed-working `HandleArrival` burst:
+After the client's `0x10`, the server sends this sequence (all game-channel, all NexonInc-encrypted, no
+trailer), in this order (`Session.HandleArrival`, `Server/Session.cs:1239-1269`; corrected 2026-10-24, this
+table used to stop at row 7 and gave the time as a constant `10 32`):
 
 | # | Opcode | Body (decrypted) | Purpose |
 |---|---|---|---|
 | 1 | `0x02` | `00` | **Enter-world trigger** — builds the world object (§5). Must be first. |
 | 2 | `0x1E` | `06 00 00` | Ack / handshake. |
-| 3 | `0x20` | `10 32` | Time-of-day (shows the day/night icon). |
+| 3 | `0x20` | `hour(u8) year(u8)` | Time-of-day (shows the day/night icon), read from the world clock (`World.Clock.Time`, `Server/Session.cs:1248`; `SendTime`, `Server/Session.Media.cs:243-244`), the same calendar as the hourly `0x20` broadcast (§11n). |
 | 4 | `0x05` | `entityId(u32BE) 00 00 00 02 00 00 00 00` | **Your own entity id.** Binds camera/input to the self. Without it the client stays black and won't move even after the map loads. |
-| 5 | `0x15` | enter-map (see §7) | Loads `Maps\TK<mapId>.map`. |
+| 5 | `0x15` | enter-map (see §7) | Opens the map's cache file `Maps\TK<mapId>.map` (§10.8). |
 | 6 | `0x04` | coords (see §7) | Sets camera scroll. |
-| 7 | `0x33` | self appearance (see §7, §8) | Spawns & renders the player. |
+| 7 | `0x33` | self appearance (see §7, §8) | Spawns & renders the player (an `0x07` self entry instead while a morph restored at login is active). |
+| 8 | `0x06` | the terrain window (27×25, clamped to the map) | Fills the cache from the stream (`PrimeViewport`, §10.7); skipped when `P1998_V495_PUSHMAP=0`. |
+| 9 | `0x08` | stats (§9) | The HUD; body byte 46 sets the client's fast-move flag before the first step (§10.1). |
+| 10 | `0x1F` | weather (§7.1) | The map's current weather, `0` when the player's Weather setting is off. |
+| 11 | `0x19` | sound 412 | The login sound. The map's music (`0x19` too) is only armed here; it goes out on the client's first packet after the arrival (`Server/Session.Media.cs:346-362`). |
+| 12 | `0x33` / `0x07` | per entity in view | The world join: other players in view (`0x33`), then mobs and floor items in view (`0x07`), each through the viewport gate (§11b, §11b.1). |
+| 13 | `0x0F` / `0x37` | per bag and gear slot | Fills the bag and the equipment window (§11c). |
+| 14 | `0x17` | per learned spell | Fills the spell book (§11d). |
 
-Ordering notes:
+Last, a status line goes out only when the player's marriage or engagement is one the partner no longer
+names, which ends it there (`SettleVowHalves`).
+
+Ordering notes (what the client is known to depend on; the rest is the server's order, not a known
+client requirement):
+- `0x02` first: until it arrives the world dispatcher does not exist and every other packet is dropped (§5).
 - `0x05` (entity id) **must** precede `0x33`, and the id in `0x33` **must equal** the id in `0x05`,
   or the client won't recognize the entity as "self".
 - `0x04` sets the camera scroll and **must** be sent before `0x33` so the spawn's placement check
   passes (see the viewport gotcha in §8/§14).
+- `0x06` after `0x15`: the client has mapped the cache file by the time it parses the cell writes (§10.7).
 
 ---
 
@@ -517,24 +543,24 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x00` | Version | (plaintext) | Login channel. |
 | `0x02` | NameCheck | `nameLen name pwLen pw 00 00 00` | Creation step 1. **Carries name AND password.** |
 | `0x04` | CreateAppearance | 5 bytes (see §9) | Creation step 2. |
-| `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. |
-| `0x26` | Change password | `nameLen name oldLen old newLen new` | Login channel; **no trailing NUL** unlike `0x03`. The dialog is MODAL until the `0x02` status reply — `0x00` changed / `0x03` credentials / `0x05` weak new password. Counts against the per-IP failed-login budget. See §4.1 item 5. |
-| `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, **plaintext**, client speaks first. |
+| `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. Also answered on the game channel: a `0x03` there is re-authenticated and handed back to the same game port (`Session.HandleReLogin`, `Server/Session.cs:696`; §4.2 item 3). |
+| `0x26` | Change password | `nameLen name oldLen old newLen new` | Login channel; **no trailing NUL** unlike `0x03`. The dialog is MODAL until the `0x02` status reply — `0x00` changed / `0x03` credentials / `0x05` weak new password, and `0x05` too for a body that does not parse (`LoginServer/LoginSession.cs:368-372`). Counts against the per-IP failed-login budget. See §4.1 item 5. |
+| `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, client speaks first. The **body is plaintext**, but the frame keeps the standard envelope with its increment byte, `AA len 10 inc` then this body (§2, §4.2 item 1). |
 | `0x0b` | **Exit to select screen** (Alt+X) | `00` (constant) | Game channel. "I left the world." Answer with the `0x03` redirect struct (§4.1) pointed at the **login** port, or the select screen stays bound to the game socket and character creation hangs. RTK `case 0x0B → clif_closeit`. See §4.2. (server→client `0x0b` is a client-side no-op — §13.) |
 | `0x32` | Walk step | `dir(u8) stepCounter(u8) X(u16) Y(u16) pad` | Self-walk request (see §10). |
 | `0x05` | **Map-data request** (view rect) | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + 4 junk bytes | **The terrain stream request — 4.95 sends this too** (corrected 2026-08-07; this table previously said 4.95 never sent `0x05`). Reply with an `0x06` cell block covering the rect (§13). See §10.7. |
 | `0x06` | Walk (long form) | `dir(u8) step(u8) X(u16BE) Y(u16BE)` + the same 4 junk bytes | Sent every few steps instead of `0x32`. Handle identically for movement. **Both** client packets are 10 bytes = a 6-byte payload + 4 trailing bytes; `0x32` is the same walk without them (7 bytes). **Those 4 bytes are UNINITIALIZED STACK, not a checksum** — ignore them (see §10.7). |
 | `0x0E` | Chat | `chatType(u8) msgLen(u8) msg` | (see §11). |
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
-| `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` **in byte arithmetic — two of the sixteen keys wrap**. The client's key handler `0x491560` maps `a`..`l` → 11..22, `m`/`n` → **9**/**10**, `o`/`p` → 23/24, and its sender `0x491810` transmits `action - 11` in one unsigned byte. So `m`/`n` arrive as **`0xFE`/`0xFF`** and only wraparound recovers Respect/Triumph. Do not clamp or range-check `idx`. (see §11). |
-| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e). |
+| `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` **in byte arithmetic — two of the sixteen keys wrap**. The client's key handler `0x491560` maps `a`..`l` → 11..22, `m`/`n` → **9**/**10**, `o`/`p` → 23/24, and its sender `0x491810` transmits `action - 11` in one unsigned byte. So `m`/`n` arrive as **`0xFE`/`0xFF`** and only wraparound recovers Respect/Triumph. Do not clamp or range-check `idx`. It is action-budget gated: it pays into the shared per-second action budget and is dropped once that is spent (`Server/Session.cs:739`, `ActionAllowed` `:550-555`). (see §11). |
+| `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e); another connected **player** → that player's `0x34` (`Server/Session.Dialog.cs:352-353`). Two sentinel ids are not entities: `0xFFFFFFFE` (F2) toggles subpath chat (§11i) and `0xFFFFFFFF` opens the F1 Central Functions menu (§11k), both checked before any lookup (`:317-318`). |
 | `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
-| `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. |
+| `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. The server answers every request with the `0x59` sub-1 town table first, then the `0x36` (`Server/Session.UserList.cs:145-149`). |
 | `0x11` | Turn / face | `side(u8) pad` | First press in a new direction turns in place (no step). Echo `Be32(id), side, 00` so the client turns (see §10.4). |
-| `0x1b` | Setting toggle | `subCmd(u8) pad pad` | The whole Options menu — one sub-command per toggle, table below. Two bytes only, **no state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below: the server re-seeds after the weather, magic and advice toggles, and deliberately not after fast-move. |
-| `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`+entities (recenters). See §10.6. |
+| `0x1b` | Setting toggle | `subCmd(u8) 00` | The whole Options menu — one sub-command per toggle, table below. **Two body bytes** (the fast-move capture `1b 09 00` below; the send primitive in "Edge-trigger" builds `1b <sub> 00`); only the Ride key sends three, `00 01 00`. The server reads `body[0]`, and `body[1]` only for sub `0x00` (Ride or F10), and ignores anything after (`Server/Session.Movement.cs:715`, `:768`). **No state** — but it is *not* a plain flip notification: it is **edge-triggered against a client-stored byte** the server seeds via `0x23`. See "Edge-trigger" below: the server re-seeds after the weather, magic and advice toggles, and deliberately not after fast-move. |
+| `0x38` | Hard refresh | `38 00` | Ctrl+R. Grays the screen; reply with the in-place refresh burst `0x15`+`0x04`+`0x33`, the `0x06` terrain window (`PrimeViewport`, unless `P1998_V495_PUSHMAP=0`), then the entities (recenters; `Server/Session.Movement.cs:893-897`). See §10.6. |
 | `0x66` | **Examine item** (right-click a bag slot) | `00 cursorY(u8) 00 01 01 SLOT(u8) 01 00 00 00` | **`body[0] == 0`.** The item is in **body[5]**, 1-based, the same slot id a left-click sends as `0x1C`. body[1] is the click's pane-local cursor Y — echo it back as the `0x59` tooltip's Y anchor (§11c.1). |
 | `0x66` | **Town-table request** | `01 00 01 01 00 01 01 00` | **`body[0] == 1`** — the same opcode, split on the first byte. Fixed body, sent from `0x449ed0` only when the client's own town table is empty. Reply `0x59` sub-1 — §13c. |
 
@@ -657,10 +683,15 @@ entityId(u32) 00 00 00 02 00 00 00 00
 
 **`0x15` — enter-map**
 ```
-mapId(u16) width(u16) height(u16) flagA(=05) flagB(=00) nameLen name light(u16, e.g. 232=0x00E8)
+mapId(u16) width(u16) height(u16) flagA flagB nameLen name light(u16, e.g. 232=0x00E8)
 ```
-Loads `Maps\TK<mapId>.map` from the client's install. Example working values: mapId 32, 33×33,
-name "Nexus", light 232.
+`flagA` is the render byte: **4 when the player's Weather setting is on, 5 when it is off**
+(`Server/Session.Dialog.cs:2225`), and a new character has Weather on (`Shared/Character.cs:210-212`, bit 6),
+so most players get 4 (the `0x1F` weather block in §7.1 says why). `flagB` is the realm-centre byte, 0 or 1
+(`:2226`; §10.5). Corrected 2026-10-24: this used to give `flagA(=05) flagB(=00)`.
+
+Opens the map's cache file `Maps\TK<mapId>.map`, which the `0x06` stream fills (§10.7, §10.8). Example
+working values: mapId 32, 33×33, name "Nexus", light 232.
 
 **`0x04` — coords / camera** (call it `SendXy`)
 ```
@@ -886,21 +917,31 @@ Lua passed a local variable (`slash_warrior` sound 60, and the `spellFX` spells)
 
 **The animation id space, decoded from the client (2026-08-05).** `Effect.epf`/`.tbl`/`.frm`/`.pal` extract out
 of `NexusTK.dat` (`re/pak_extract.py`), and `re/render_effects.py` renders every animation to a contact sheet
-or gif. The table declares **`NumEffects 121` — ids 0–120**, not 0–127 as previously assumed.
+or gif. The table declares **`NumEffects 128` — ids 0–127**, and holds 128 `ID` lines, ids 0–127 in order
+(re-counted from the 4.95 install 2026-10-24; this used to say `NumEffects 121`, ids 0–120). One of the 128
+has no frames.
 
 | File | Layout |
 | --- | --- |
 | `Effect.tbl` | text; per effect an `ID n, NumFrontFrames a, …, NumBackFrames b` line then `a+b` `Frame# N, Delay ms, …` lines. **`Frame#` is the absolute `Effect.epf` frame index** — no cumulative sum. The first `a` draw over the sprite, the last `b` behind it. |
-| `Effect.frm` | `u32` count (1432 = epf frame count) then one `u32` **per frame** = its palette index (0–10) |
-| `Effect.pal` | `u32` count then N 1056-byte `DLPalette` blocks: 32-byte header + 256 RGBA entries **at +32** |
-| `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1432 frames satisfy `stencilOff-pixOff == w*h`. Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
+| `Effect.frm` | `u32` count (1611 = epf frame count) then one `u32` **per frame** = its palette index (0–10) |
+| `Effect.pal` | `u32` count (13) then 13 `DLPalette` blocks. A block is not a fixed 1056 bytes: its header is `32 + 2·C` bytes, where `C`, the animation-entry count, is the **u32 at +24**, and the 256 RGBA entries follow the header. Twelve of Effect.pal's blocks have `C = 0` (entries at +32); one has `C = 1` (a 34-byte header, entries at +34). |
+| `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1611 frames satisfy `stencilOff-pixOff == w*h` (1,611 re-counted from the install 2026-10-24; this table used to say 1432). Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
+
+**`.pal` files come in two forms.** Twelve of the install's 36 `.pal` files (Effect.pal among them) are a u32
+block count followed by that many blocks; 23 are a single `DLPalette` block with **no** count prefix (the
+remaining one holds no `DLPalette` block at all). Across all 188 blocks the header length is `32 + 2·(u32@+24)`
+without exception, and it takes the values 32, 34, 36, 38 and 40.
 
 Two decoding traps here, both of which produce plausible-but-wrong output rather than an error: the colour
-table is at **+32**, not the `+38` that `re/render_items.py` uses (at +38 every channel shears and everything
-renders magenta/blue), and the TOC field is **relative to the 12-byte header**.
+table follows the header (**+32** for a block with no animation entries), not the fixed `+38` that
+`re/render_items.py` uses (on an Effect.pal block at +38 every channel shears and everything renders
+magenta/blue), and the TOC field is **relative to the 12-byte header**.
 
 **Wire id = table index + 1.** The client loads `Effect.tbl` 1-based, so `0x29` byte *N* draws table entry
-*N−1* (`Session.SendEffect`, `EfxWireOffset = 0`, live-proven). So the `animation` column holds 1–121.
+*N−1* (`Session.SendEffect`, `EfxWireOffset = 0`, live-proven). So the client accepts an `animation` value of
+1–128; wire 73 (table entry 72) is the one with no frames. (The history table below speaks of a "1–121 range";
+it records the 2026-08-05 pass as it ran, under the old count.)
 
 **Animations identified against nexusatlas (2026-08-05).** The 2002-03 nexusatlas spell pages carry a capture
 of each spell's animation as a GIF; `re/scrape_atlas_spellfx.py` pulls them and `re/match_spell_fx.py` +
@@ -968,7 +1009,7 @@ subpath pages (`ilsan`/`eesan`/`samsan`) 404 in every capture, so subpath spells
 that would silently poison a 4.95 match.
 
 **Missing-entity policy (2026-07-25): no fallbacks.** When an effect/sound id doesn't exist in the 4.95 client
-(`Effect.tbl` ids run 0–120, i.e. wire 1–121, so RTK anims above that like `dark_veil`'s 136 are absent; a few RTK sounds
+(`Effect.tbl` ids run 0–127, i.e. wire 1–128, so RTK anims above that like `dark_veil`'s 136 are absent; a few RTK sounds
 have no matching `.wav`), we send it as-is and let the client show/play **nothing**, rather than substituting a
 stand-in — so a broken entry is visibly empty and easy to spot. `@efx <id>` auditions raw `Effect.tbl` ids
 (0–127) live to help identify the real 4.95 effect for a spell whose RTK id doesn't line up (a version-gap
@@ -1164,8 +1205,10 @@ layout:**
 > sweep also re-pointed 65 Items.csv rows whose per-family art index only exists in later clients (Might
 > spear `10087→10015`, the out-of-range staves/blades/charms, etc.) at era-plausible 4.95 art — contact
 > sheets to retune any of them: `re/render_weapons.py` → `re/weapons_{sword,spear,fan,shield}.png`.
-> (Same script documents the variable-length `DLPalette` header: color data at `+32 + 2*count(u32@+24)`,
-> count 0 in Effect.pal which is why render_effects.py's flat `+32` worked.)
+> (Same script documents the variable-length `DLPalette` header: color data at `+32 + 2*count(u32@+24)`.
+> The count is 0 in 12 of Effect.pal's 13 blocks, which is why render_effects.py's flat `+32` mostly worked;
+> the thirteenth has count 1, so a flat `+32` shears that block by two bytes. Re-counted from the install
+> 2026-10-24; this used to say the count is 0 in Effect.pal.)
 >
 > **⚠ Weapon/shield "empty" = `0xFF`, not `0` (proven live 2026-07-25 + RTK `clif.c`).** A row-sweep of `[5]`/`[6]`
 > showed every value `0..15` renders a distinct blade/shield for **both** sexes; only `-1` (byte `0xFF`) is bare
@@ -1411,8 +1454,12 @@ like.
 
 Creation is two login-channel packets:
 
-1. **`0x02` NameCheck** — `nameLen name pwLen pw 00 00 00` (name + password). Server replies `0x02`
-   with payload `00` = "available / OK".
+1. **`0x02` NameCheck** — `nameLen name pwLen pw 00 00 00` (name + password). Server replies with the
+   standard `0x02` frame §2 describes: increment `0x01` and a body of **four zero bytes** — code `0x00`
+   ("available / OK"), text length 0, the text's `00` terminator, and one more `00`. The literal frame is
+   `AA 00 06 02 01 4F 64 79 6E` (`LoginServer/LoginSession.cs:175`), which deciphers to `00 00 00 00` with
+   increment `0x01`. A reader takes the code from the first byte and ignores what trails. (Corrected
+   2026-10-24: this used to say the payload is a single `00`.)
 
    **Refusal.** No "name taken" reply form has been observed from a real server, so this server refuses by
    sending ONLY the message box (`0x02` wrapping a `0x0F`, the same form `"Incorrect password."` uses on
@@ -1540,8 +1587,9 @@ AND dismisses the creation screen back to the main menu (confirmed live; with th
 screen stuck and players re-submitted, hitting the duplicate-name refusal). This is exactly RTK's
 `clif_message` (`rtk/src/login/clif.c`, codes `0x00`/`0x03`/`0x05`; create success at
 `rtk/src/login/intif.c` `intif_parse_2002` → `clif_message(fd, 0x00, LGN_NEWCHAR)`) — RTK supplied the
-structure, the live client supplied the proof. The name-availability OK in §9.1 is this same frame
-with code `0x00` and an empty string.
+structure, the live client supplied the proof. The name-availability OK (item 1 above) is this same frame
+with code `0x00` and an empty string, plus one trailing `00`: four body bytes, all zero, at increment `0x01`
+(§2).
 
 ---
 
@@ -1741,16 +1789,24 @@ the file.
 | path | `<client cwd>/users/<CharacterName>.epf`, retried as `.face` |
 | size | **exactly `0xb1c` = 2844 bytes** |
 | `dword @ +8` | **`0xaf0` = 2800** — the EPF TOC offset (12-byte header + 2800 bytes of pixel area) |
-| geometry | `toc[1].top − toc[0].bottom == 0x38` and `toc[1].left − toc[0].right == 0x30` |
+| geometry | `toc[1].top − toc[0].bottom == 0x38` and `toc[1].left − toc[0].right == 0x30`, with `toc` taken at `+2800` |
 
-The frame box is split across two TOC entries (frame *i*'s size is `left[i] − right[i−1]` by
-`top[i] − bottom[i−1]`, see `re/render_items.py`), so frame 0 is a pure origin marker and the picture is
-frame 1: **48 × 56, 8bpp**. Those numbers are fixed — any other geometry is rejected outright, not merely
-drawn wrong.
+Read canonically (the table at `12 + u32@8` = 2812, each entry `top,left,bottom,right` then
+`pixOff,stencilOff`, as in the `Effect.epf` row of §7.2 and `Item.epf` in §11c), the file holds two entries and
+the picture is **frame 0: 48 × 56, 8bpp**. The geometry row's two subtractions are frame 0's own
+`bottom − top` and `right − left`: a `toc` taken at `+2800` starts 12 bytes before the table, which splits
+each box across two entries. In the file `re/make_profile_epf.py` writes, frame 1 is all zeros. (Corrected
+2026-10-24: this paragraph used to call frame 0 a pure origin marker and the picture frame 1, which is that
+12-byte-early reading; the bytes are the same, only the frame numbers differ.) Those numbers are fixed — any
+other geometry is rejected outright, not merely drawn wrong.
 
 `re/make_profile_epf.py <image> <out.epf>` builds a conforming file (it asserts all four checks before
 writing). Server side, **`0x49`** (`@askpic`) makes a client re-read the file and answer on `0x4f` without
-the player reopening the profile editor — a safe probe, since the failure path still replies.
+the player reopening the profile editor. It is safe for the client, since the failure path still replies,
+but **the server stores the answer** like any profile save: `HandleChangeProfile` replaces the stored picture,
+clears it when `picSize = 0`, replaces the blurb with the one the answer carries
+(`Server/Session.Dialog.cs:1650-1667`) and answers with the profile-save message. So an `@askpic` on a player
+with no valid file clears the picture the server held for them.
 
 Which palette the client draws the picture with is **not** pinned; the generator defaults to `Item.pal`
 block 0. If colours come out wrong, sweep the block index — the client accepted the file either way.
@@ -1792,9 +1848,13 @@ the player-state dispatcher rejects it before the table is even consulted (`0x48
 Two things matter when refusing:
 * **Send something.** The client has already predicted the step and blocks awaiting the ack. Returning
   silently freezes it permanently, not for the duration of whatever you were enforcing.
-* **Snap to the SERVER's `(X,Y)`, not the client's reported tile.** A normal step trusts the client's claim
-  (above); a *refused* one must not, or a client that keeps reporting a tile further along creeps one step
-  per packet.
+* **For a hold, snap to the SERVER's `(X,Y)`, not the client's reported tile.** A held player (asleep or
+  paralyzed) gets `0x04` at the server's own tile (`Server/Session.Movement.cs:139-151`): a normal step trusts
+  the client's claim (above), but a hold must not, or a client that keeps reporting a tile further along
+  creeps one step per packet. Every other refusal (a blocked step, a refused warp) snaps to the client's
+  reported from-tile when it lies on the map, the tile a good step starts from (§10.2 steps 2 and 4;
+  `:174-180`, `:262`, `:334`). Corrected 2026-10-24: this bullet used to say every refusal snaps to the
+  server's tile.
 
 RTK gates four things on `paralyzed || sleep`: `clif_parsewalk`, `clif_noparsewalk` (its click-to-move),
 `clif_parseattack` (silent `return 0`), and `case 0x0F` magic (silently skipped). Turning is folded into its
@@ -2309,9 +2369,11 @@ via the trailing `0x33`, but peers/mobs vanish. So any in-place `0x15` resend mu
 a movement-side TODO.
 
 Mobs persist on a map after everyone leaves (they belong to the map, not a session); `@kill` clears the
-current map's world mobs for everyone. (Players still have no view-distance streaming: two players far apart
-on a large map may not see each other until one walks close and a re-sync redraws them — fine when they're
-near each other, the common case. Only **mobs** are viewport-streamed; see §11b.1.)
+current map's world mobs for everyone. **Players are viewport-streamed like mobs** (corrected 2026-10-24; this
+used to say only mobs were): `Session.SyncPeers` (`Server/Session.WorldApi.cs:487`) runs the same show / despawn /
+re-show decision mobs get, so a peer is drawn with `0x33` as it comes into view and despawned as it leaves. It
+runs at world entry (`Server/Session.cs:1265`), after each of our own steps (`Server/Session.Movement.cs:370`),
+on a warp, and on every world tick (`World.ReconcileViews`, `Server/World.cs:3539`). See §11b.1 for the gate.
 
 ---
 
@@ -2507,12 +2569,18 @@ a frame offset, and adding it blindly lands on an unrelated sprite. A second gua
 another item already claims as its own `ItmIcon` (catches rows where RTK gave the variants real icons and
 left a stale color — `star_armor_dress` 172+2 is `sun_armor_dress`'s icon).
 
-**⚠ `Item.epf` TOC decode was off by one — `re/render_items.py` and `re/verify_color_frames.py` had it
-wrong.** Reading 16-byte entries at `tocOffset + i*16` as `top,left,pixOff,stencilOff,bottom,right` gives a
-box that does **not** match the pixel span. The `bottom`/`right` in entry *i* belong to the *next* frame's
-origin pair; the correct rule is `w = left[i] - right[i-1]`, `h = top[i] - bottom[i-1]`, which reproduces
-`stencilOff-pixOff` for **1309/1309** frames exactly. Consequence: **`Item.epf` frame `N+1` is client item
-id `N`** (frame 0 is unusable), which is why id 265 draws the green helm that lives at frame 266.
+**`Item.epf` is read like every other EPF: the table at `12 + tocOffset`** (corrected 2026-10-24 against the
+4.95 install). Each 16-byte entry is `top,left,bottom,right` (i16×4) then `pixOff,stencilOff` (u32×2), the
+`Effect.epf` layout of §7.2. Read that way, all **1310** frames satisfy `stencilOff − pixOff == w·h`, frame 0
+included (a 24×24 box), and **frame `N` is client item id `N`**, as "Icons" below says: id 265 draws the green
+helm at frame 265.
+
+This passage used to say the opposite, following `re/render_items.py` and `re/verify_color_frames.py`: read the
+entries at `tocOffset + i*16` as `top,left,pixOff,stencilOff,bottom,right`, take the box across two entries
+(`w = left[i] − right[i−1]`, `h = top[i] − bottom[i−1]`), and conclude that frame `N+1` is item `N` and frame 0
+is unusable. That table base is 12 bytes early. Its "frame *i*" is the canonical frame *i*−1, byte for byte,
+for all 1309 *i* ≥ 1 (the install count), so its "frame 266" is frame 265 and both readings name the same
+sprite; only the numbering is off by one.
 
 **✅ Binary note — CORRECTED 2026-08-07. There is no "different build"; there are SIX dispatchers.**
 This section used to say that because `NexusTK_local.exe`'s world dispatcher (`0x44b9c0`) no-ops
@@ -5140,7 +5208,8 @@ Eye reveals these tiles (see above).
 
 ## 12. Maps
 
-Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`). They are:
+The client keeps each map as `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`), a cache it fills from the server's
+`0x06` stream (§10.7, §10.8); the server's own copies are under `game-data/maps`. The files are:
 
 - **Headerless.** `width × height` cells, **4 bytes per cell**, row-major.
 - Each cell = `ground(u16, little-endian) object(u16, little-endian)`.
@@ -5160,8 +5229,18 @@ Map files live in the client's install at `Maps\TK<mapId>.map` (e.g. `Maps\TK32.
   turns every sheet-2 cell into an unrelated sheet-1 tile, and sheet 2 is 31.5% of the 1,926,803 cells in the
   2,031 maps under `game-data/maps` (no word there lies in `0x4000`–`0xBFFF`).
 
-The server's `0x15` (enter-map) tells the client which map id + dimensions to load; the client reads
-the `.map` file itself. Pick a map that actually has content: `TK27` is a uniform "void" tile (renders
+  **The tile tables** (checked against the 4.95 install 2026-10-24). Each is exactly **`11 + 2·count`
+  bytes**: `count` (u32), `palCount` (u32), `base` (u16), then byte 10, the sheet number (1 in TileA, 2 in
+  TileB, 3 in TileC), then two bytes per frame: the frame's palette index (always below `palCount`) and a byte
+  that is 0 in every frame of all three. `TileC.tbl` has the same layout, with base `0x0001`. Counts: TileA
+  9,922 frames and 24 palettes, TileB 8,938 and 24, TileC 16,409 and 41; each `count` equals its `.epf`'s
+  frame count and each `palCount` its `.pal`'s block count.
+
+The server's `0x15` (enter-map) tells the client which map id + dimensions to open; the cells then come
+from the server, which pushes the window on entry and the newly exposed strip after every step
+(`PrimeViewport`, `Server/Session.cs:1254`; `StreamViewport`, `:1491-1516`), and the client writes them into
+the memory-mapped `.map` (§10.7, §10.8). (Corrected 2026-10-24: this used to say the client reads the `.map`
+file itself.) For a test, pick a map whose server copy has content: `TK27` is a uniform "void" tile (renders
 black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
 
 **Passability — ground pass flag PLUS `SObj.tbl` directional object-walls (corrected 2026-07-26).** Two
@@ -5203,11 +5282,17 @@ player sees. RTK's player path (`clif_canmove`→`clif_object_canmove`) does use
 the table — the live client is the only thing enforcing it there. (Doors are separate — the **'o' key
 (`0x20`)** toggles a door's graphic; see "Doors" below.)
 
-**`SObj.tbl` format** (confirmed: the record walk consumes the file to the exact byte AND yields exactly the
-header object count; then validated tile-by-tile against the hut geometry): `u32 count` header, **1 lead
-byte**, then `count` records each = `u8 tileCount` · `tileCount × u16` frame ids · **5-byte separator
-`FF FF FF FF 00`** · `u8 flag`. `flag[objId]` (1-based) is indexed directly by the map's object id; id `0` =
-no object = flag `0`. The **client's** table (`NexusTK.dat` → `SObj.tbl`, 7608 objects) is authoritative for
+**`SObj.tbl` format** (the record walk yields exactly the header object count, then validated tile-by-tile
+against the hut geometry): `u32 count` header, **1 lead byte**, then `count` records each = `u8 tileCount` ·
+`tileCount × u16` frame ids · **5 bytes** · `u8 flag`, and **one more byte, a 0, after the last flag**.
+`flag[objId]` (1-based) is indexed directly by the map's object id; id `0` = no object = flag `0`.
+Corrected 2026-10-24 against the 4.95 install (7,608 records): the five bytes are **data, not a separator**.
+They read `FF FF FF FF 00` in all but 28 records; in those 28 the first four bytes are something else, and in 2
+of them the fifth byte is non-zero too. The last record's flag is stored, and the walk ends one byte short of
+the end of the file, not on its last byte. The server's loader skips the five bytes unchecked and reads the
+shipped table correctly (`Server/ObjectFlags.cs:112-119`).
+
+The **client's** table (`NexusTK.dat` → `SObj.tbl`, 7608 objects) is authoritative for
 the object-id space the `.map` files use; RTK's copy (`RTK-Server/rtk/SObj.tbl`, 18954 objects) is a superset
 that agrees on every in-range id. Extract the client copy with
 `python re/pak_extract.py "<install>/NexusTK.dat" SObj.tbl game-data/SObj.tbl`.
@@ -5270,7 +5355,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x44` | `0x4511a0` | no-op (`mov al,1; ret`) |
 | `0x49` | `0x44edc0` | **"resend your profile picture"** — empty body (the trampoline passes no packet pointer). Client reads `<cwd>/users/<name>.epf` (fallback `.face`) and answers on `0x4f`. §13a |
 | `0x46` | `0x451020` | **"Power" board** (RTK `clif_sendpowerboard`): `01 count(u16BE)` then `count` × `id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[]`. §13a |
-| `0x4a` | `0x4514d0` | `GetModuleFileName` anti-cheat check |
+| `0x4a` | `0x4514d0` | ⚠ **remote file-tamper primitive**: behind a hardcoded magic it overwrites the first byte of `<System32>\Mscfg.dll` and truncates it. Never send it — §13d |
 | `0x4b` | `0x451630` | **remote-send**: `len(u16BE) bytes[len]` — the client sends `bytes` back **verbatim** as its next packet (`bytes[0]` is the opcode). `0x451d10` is a plain `memcpy`, so the payload is plaintext. Buffer is `0x2714`. §13a |
 | `0x59` | `0x43c1b0` (inventory pane) / `0x449f60` (world) | ✓ **item tooltip** when `body[0]==0`: `00 anchorY(u8) u16BE len text` — the box that hangs off the item list; anchorY = the box's vertical center in pane-local px (echo the request's cursor Y), 10s lifetime, X self-centering. ✓ **`body[0]==1` = the town/nation table** (§13c) — a prerequisite for the user list, not an optional extra. See §11c.1 |
 | `0x66` | `0x4511b0` | ✓ **"open this URL"**: `kind(u8)` then 1 or 2 `u16BE`-length strings, string 1 = the URL. kind 0 = embedded IE (**crashes this build**, missing `XBUTTON.EPF`); kind 1/2 = the parchment OK dialog, and **kind 1 exits the game**. Not the item window. See §11c.1 |
@@ -5305,7 +5390,8 @@ no-op. Four of the nine are fully decoded; five open a window whose body layout 
   pairs differing by `0x38` and `0x30`, then answers on **`0x4f`** with
   `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` — byte-for-byte the packet it already sends when you save the
   profile editor, which `HandleChangeProfile` parses today. Any failure along the way still replies, with
-  `picSize = 0`, so this is a safe probe.
+  `picSize = 0`, so it is safe for the client; but the server stores the answer as a profile save, so a
+  `picSize = 0` answer clears the stored picture (§9.5a; `Server/Session.Dialog.cs:1650-1667`).
 
 **`0x35` is the PAPER POPUP, not a mail reader.** Earlier notes had this wrong. Parse `0x468550` reads
 `00 width(u8) height(u8) 00 len(u16BE) text[len]` — four flag bytes then a length-prefixed message, which it
@@ -5700,7 +5786,7 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x35` | paper popup | 🔧 decoded, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
 | `0x42` | trade window | ✅ done | 6 sub-types; sub-0 opens (`00 targetId(u32BE) nameLen(u8) name[] level(u16BE)`), 1-5 drive the open window. §11l |
 | `0x46` | "Power" board | 🔧 decoded, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
-| `0x49` | resend profile picture | ✅ done | `@askpic`. Client answers on 0x4f; picSize 0 = it couldn't read a valid file, §9.5a |
+| `0x49` | resend profile picture | ✅ done | `@askpic`. Client answers on 0x4f; picSize 0 = it couldn't read a valid file, §9.5a. The server stores the answer as a profile save |
 | `0x4b` | remote send | 🔧 decoded, not wired | len(u16BE) bytes[] — client re-emits them verbatim as its own packet |
 | `0x67` | countdown timer | 🔧 decoded, not wired | kind(u8) seconds(u32BE); kind 3 closes, 12 kinds 0-3 |
 | `0x68` | challenge ping | 🔧 decoded, not wired | token(u32BE); client answers 0x75, which we do not handle |
@@ -5717,78 +5803,6 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x44` | no-op | ⊘ client no-op | mov al,1; ret |
 
 **40 implemented · 7 decoded but not wired · 1 decoded and deliberately not wired · 6 still unread · 2 client no-ops** (of 56).
-
-### 13b. Opcode implementation status (server -> client)
-
-Generated from the client's own dispatch tables (the six chained dispatchers, SS13) against every opcode this
-server actually puts on the wire. 53 opcodes are accepted by a dispatcher; three more (`0x02`, `0x1e`, `0x22`)
-we send successfully, so they belong to a dispatcher not yet enumerated.
-
-| op | what | status | notes |
-|---|---|---|---|
-| `0x02` | enter-world trigger | DONE | mandatory first packet; builds the world object |
-| `0x04` | coords / camera scroll | DONE |  |
-| `0x05` | self entity id | DONE |  |
-| `0x06` | map cell-patch | DONE |  |
-| `0x07` | creature/monster list | DONE | also the floor-item path |
-| `0x08` | stat/HUD block | DONE | partial - mail flag, nation, totem probed |
-| `0x0a` | minitext / system line | DONE | type(u8) len(u16BE) text |
-| `0x0c` | move / animate entity | DONE |  |
-| `0x0d` | over-head speech | DONE |  |
-| `0x0e` | despawn list | DONE |  |
-| `0x0f` | add item to bag slot | DONE |  |
-| `0x10` | remove from bag slot | DONE | reason byte picks the client's line; 12 is the only silent one |
-| `0x11` | turn / face | DONE |  |
-| `0x13` | damage / over-head HP bar | DONE |  |
-| `0x15` | enter-map | DONE |  |
-| `0x16` | ground item spawn (walk projectile) | DONE | thrown items only; floor items use 0x07 |
-| `0x17` | add spell to book | DONE |  |
-| `0x18` | remove spell from book | DONE |  |
-| `0x19` | music | DONE |  |
-| `0x1a` | action (attack/sit/emote) | DONE |  |
-| `0x1e` | ack | DONE |  |
-| `0x1f` | weather | DONE | banded, not a raw state — RTK's byte reads as CLEAR |
-| `0x20` | time of day | DONE |  |
-| `0x22` | (sent during world entry) | DONE |  |
-| `0x26` | self-walk pace | DONE |  |
-| `0x29` | effect animation | DONE |  |
-| `0x2e` | world map / skill list | DONE |  |
-| `0x2f` | merchant grid family | PARTIAL | **3/4/5 wired** (amount prompt, buy grid, sell grid). Sub-kind 0 is a menu we do NOT use — menus go through `0x30` instead. 1 is a 2nd `0x494` menu, 2 a 2nd `0x48c` amount, and 6/8/10 are three more `0x284` GRIDS (same class as 4/5) — 7 and 9 are client no-ops |
-| `0x30` | NPC dialog | DONE |  |
-| `0x31` | board write ACK | DONE |  |
-| `0x33` | self/entity spawn | DONE |  |
-| `0x34` | click-profile window | DONE |  |
-| `0x37` | equip-window entry | DONE |  |
-| `0x38` | unequip-window | DONE |  |
-| `0x39` | self-profile | DONE |  |
-| `0x59` | item tooltip / town list | DONE | both sub-kinds wired (0 tooltip, 1 town table) |
-| `0x66` | open URL / parchment OK | DONE | kind 1 EXITS the game; kind 0 crashes this build |
-| `0x1b` | writable paper popup | DECODED, not wired | invSlot(u8) width(u8) height(u8) 00 len(u16BE) text[] |
-| `0x35` | paper popup | DECODED, not wired | 00 width(u8) height(u8) 00 len(u16BE) text[] |
-| `0x42` | trade window | DONE | 6 sub-types; sub-0 opens, 1-5 drive the open window. See §11l |
-| `0x46` | "Power" board | DECODED, not wired | 01 count(u16BE), then id(u32BE) path(u8) power(u32BE) dye(u8) nameLen(u8) name[] |
-| `0x49` | resend profile picture | DONE | `@askpic`; client answers on 0x4f, §9.5a |
-| `0x4b` | remote send | DECODED, not wired | len(u16BE) bytes[] - the client re-emits them verbatim as its own packet |
-| `0x67` | countdown timer | DECODED, not wired | kind(u8) seconds(u32BE); kinds 0-3, 3 closes it |
-| `0x68` | challenge ping | DECODED, not wired | token(u32BE); client answers on 0x75, which we do not handle |
-| `0x03` | download / URL | not decoded | reads HKLM registry (handler 0x44f0e0) |
-| `0x12` | entity + 2 bytes | not decoded | handler 0x4509a0 |
-| `0x1d` | entity + 1 byte | not decoded | handler 0x450db0 |
-| `0x21` | UI window (0x174) | not decoded | handler 0x450f90 |
-| `0x24` | (player-state dispatcher) | not decoded | inbound 0x24 is drop-gold; the outbound meaning is unread |
-| `0x36` | user list window | DONE | §13c. `0x18` requests it; `0x59` sub-1 town table must precede it |
-| `0x3b` | board list | not decoded | client heartbeat companion |
-| `0x4a` | anti-cheat check | not decoded | GetModuleFileName |
-| `0x4e` | (player-state dispatcher) | not decoded |  |
-| `0x0b` | no-op | client no-op | handler returns immediately |
-| `0x44` | no-op | client no-op | mov al,1; ret |
-
-**37 implemented, 8 decoded but not wired, 9 still unread, 2 client no-ops** (of 56).
-
-Inbound (client -> server) we handle 32 opcodes: `05 06 07 08 09 0e 0f 11 12 13 17 19 1a 1b 1c 1d 1f
-20 24 2d 2e 32 38 39 3a 3b 3f 41 43 4a 4f 66`, plus `0x10` (arrival) before the switch. That side can't
-be enumerated exhaustively the way the send side can -- it would mean finding every send site in the
-client -- but the only known gap is `0x75`, the answer to a `0x68` ping we never send.
 
 ---
 
@@ -5939,8 +5953,8 @@ magnitude faster for "what does this byte mean" questions.
   empty — §11a.2); make aggressive mobs fight back (`0x1A`/`0x13` toward the player + HP bars); a proper RTK
   colour → client-palette mapping (§11b.1).
 - **Other players / NPCs.** Rendering + movement broadcast are proven and shared-world is live (§11b). Peers
-  are **not** viewport-streamed yet (only mobs are), so distant players may not appear until close; add the
-  same `SyncMobs`-style streaming for players.
+  are viewport-streamed the way mobs are (`Session.SyncPeers`, §11b; corrected 2026-10-24, this item used to
+  say only mobs were and to add it).
 - **NPCs — built (§11e).** Stationary NPCs from RTK `NPCs0` render + stream like mobs, pace when RTK gives
   them a move timer, and open dialogs on click. Dialog (`0x30` text/menu/input + `0x3a` reply) is live on
   4.95; NPCs are composed from reusable abilities (Shop, Bank, Transport [stub — see below], Time, Repair).

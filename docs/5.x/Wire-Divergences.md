@@ -472,10 +472,12 @@ The `0x1b` option toggles the 5.33 client SENDS are byte-identical to 4.95 (live
 same 2-byte `<sub> 00` shape, and the server flips the right `SettingFlags` bit for each. **Inbound
 needs no change.**
 
-The bug was OUTBOUND. 4.95 needs a `0x23` re-seed after every synced toggle to keep the options
-window's stored byte in sync (§9.5), so `HandleSetting` calls `SendOptions()` on `0x04/0x05/0x06` and
-on F10-open. But `0x23` is **not handled by any of 5.33's three receive dispatchers** (all resolve it
-to the shared no-op `0x4d6002`/`0x463c77`) — it must have a separate options-window handler as on 4.95,
+The bug was OUTBOUND. 4.95 needs a `0x23` re-seed after the weather, magic and advice toggles to keep
+the options window's stored byte in sync (§9.5), so `HandleSetting` calls `SendOptions()` on
+`0x04/0x05/0x06` and on F10-open (not after fast-move `0x09`, whose value reaches a 4.95 client in the stats
+packet instead: `docs/4.x/Protocol.md` §7.1, "Fast Move is the exception"). But `0x23` is **not handled by
+any of 5.33's three receive dispatchers** (all resolve it to the shared no-op `0x4d6002`/`0x463c77`) — it
+must have a separate options-window handler as on 4.95,
 and our 4.95-format seed reaches it wrong, visibly flipping the NEIGHBOURING radios. Symptom: toggling
 Magic also flipped Weather/Wisdom/Sound. Fix: `SendOptions()` early-returns for V533 — 5.33 tracks its
 own radio state client-side, so sending nothing keeps server and client in phase. If 5.33's real seed
