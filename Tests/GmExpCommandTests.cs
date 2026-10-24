@@ -145,6 +145,29 @@ public sealed class GmExpCommandTests
         Assert.Equal((uint)0, memberCharacter.Exp);
     }
 
+    /// <summary>Two large grants through the real command stop at the cap instead of wrapping (RTK's
+    /// <c>giveXPStacked</c> cap; the rules are pinned in <see cref="ExpCapTests"/>). The command takes any
+    /// <c>uint</c>, so a level-99 Warrior holding 4,000,000,000 and given 200,000,000 twice reaches it on the
+    /// second grant.
+    /// <para>Red on master: the second grant wrapped 4.4 billion to 105,032,704.</para></summary>
+    [Fact]
+    public void TwoLargeGrantsStopAtTheCap()
+    {
+        var (caller, _, callerCharacter) = _fx.PlayerWith(GmName, c =>
+        {
+            c.ClassName = "Warrior";
+            c.Level = 99;
+            c.Mark = 0;
+            c.Totem = 4;
+            c.Exp = 4_000_000_000;
+        });
+
+        Run(caller, "@exp 200000000");
+        Run(caller, "@exp 200000000");
+
+        Assert.Equal(uint.MaxValue, callerCharacter.Exp);
+    }
+
     /// <summary>The row's description grew when the <c>kill</c> form stopped being a flag. Width is now
     /// <see cref="CommandTableTests.EveryHelpRowFitsThePane"/>'s job — it sweeps every <c>CommandTable</c>
     /// row, <c>exp</c> included, so the per-row pin #155 added here for width is gone (#176). What is NOT
