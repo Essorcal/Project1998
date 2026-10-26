@@ -315,7 +315,9 @@ public sealed partial class Session
         Log.Info($"   -> CLICK-INFO (0x43) id={id}");
 
         if (id == SubpathChatSentinel) { ToggleSubpathChat(); return; }
-        if (id == F1MenuSentinel) { OpenF1Menu(); return; }
+        // F1 is an NPC click in RTK too (its "F1Npc", the `nd->bl.m == 0` branch), so it drops a waiting
+        // conversation first, like any other NPC click below. See DropWaitingDialog.
+        if (id == F1MenuSentinel) { DropWaitingDialog("F1"); OpenF1Menu(); return; }
 
         // id 0 (or explicitly our own id, e.g. "@click") -> our own PUBLIC profile — the 0x34 view-others
         // card, deliberately the same thing other players see when they click you. This is NOT the `s`
@@ -328,7 +330,8 @@ public sealed partial class Session
 
         // An NPC click opens its dialog instead of a profile. NPCs live in the shared mob list (as
         // non-fighting mobs), so MobById finds them; the IsNpc flag distinguishes them from a real creature.
-        if (_world.MobById(_char.Map, id) is { IsNpc: true } npc) { OpenNpcDialog(npc); return; }
+        // Any conversation still waiting is dropped first, as RTK frees it on every NPC click (DropWaitingDialog).
+        if (_world.MobById(_char.Map, id) is { IsNpc: true } npc) { DropWaitingDialog($"click on '{npc.Name}'"); OpenNpcDialog(npc); return; }
 
         // Clicking a real (non-NPC) mob: RTK's own handler (clif.c clif_handle_clickgetinfo, BL_MOB case)
         // runs "onLook", whose player-facing branch is gated on player.gmLevel > 0 -- stock RTK gives
@@ -669,10 +672,46 @@ public sealed partial class Session
         return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
     }
 
-    /// <summary>Is a prompt currently waiting on the client's 0x3A? True means the player is sitting in a
-    /// MODAL box, and anything that would open another one has to stand down — <see cref="AwaitReply"/>
-    /// overwrites the pending completion source, which orphans the conversation that was waiting on it.</summary>
+    /// <summary>Is a prompt currently waiting on the client's 0x3A? True while the player has a box up, and also
+    /// after they have closed one: the 4.95 client sends nothing on a close, so the prompt stays pending until the
+    /// next NPC click, NPC speech or floor step drops it (<see cref="DropWaitingDialog"/>) or a map change lets it
+    /// go. Opening another prompt over it (<see cref="AwaitReply"/>) orphans the conversation that was waiting.</summary>
     internal bool DialogBusy => _dlgReply is not null;
+
+    /// <summary>Drop the conversation still waiting on this player's reply, before something new starts: an NPC
+    /// click (<see cref="HandleClickInfo"/>, F1 included), speech that reaches an NPC (<see cref="DispatchSpeech"/>),
+    /// or a step onto a floor trigger (the event-cave and Forever Tree entrances and the step encounters, in
+    /// <c>Session.Navigation.cs</c>). RTK frees a waiting script with <c>sl_async_freeco</c> on an NPC click and on
+    /// speech to an NPC in earshot (<c>clif_sendnpcsay</c>), both in rtk/src/map/clif.c, and on a step onto a floor
+    /// NPC (<c>pc_runfloor_sub</c>, in rtk/src/map/pc.c, which clif.c's walk handlers call; clif.c's own
+    /// <c>clif_runfloor_sub</c> is never called).
+    /// <para><b>Why.</b> The 4.95 client sends nothing when a box is closed by its close button or Esc (a static
+    /// read of the exe, not a live capture). So a closed box left its prompt pending: the flow stayed suspended,
+    /// <see cref="DialogBusy"/> stayed true, and the floor triggers that stood down for it did not fire until a map
+    /// change.</para>
+    /// <para><b>Where this parts from RTK.</b> Our floor triggers are ports of RTK's <c>onScriptedTile</c> and
+    /// map-entry scripts, not floor NPCs. RTK starts those under <c>async</c>, which refuses to start while a script
+    /// waits (<c>sl_async</c>, rtk/src/map/sl.c), so in RTK they stay silent until a click or speech frees it. Here
+    /// they drop it and fire, so that a closed box blocks nothing (a decision of 2026-10-26). The same holds for a
+    /// box still on screen: a trigger that fires drops its conversation.</para>
+    /// <para><b>Dropped, never answered.</b> The pending completion sources are let go, as <see cref="EnterMap"/>
+    /// lets go of <c>_dlgReply</c> and as a new prompt replaces an old one in <see cref="AwaitReply"/>. Nothing
+    /// completes the old task, so the flow awaiting it never resumes: nothing after its await runs, nothing is
+    /// taken or given, and nothing is thrown into it, so no catch logs an error (and no <c>finally</c> runs).
+    /// Completing it with a "next" or a pick instead would run the rest of the old script, charges included. A
+    /// merchant window's pending reply (<c>_shopReply</c>, Session.Shop.cs) goes too: a flow waiting on its grid is
+    /// a conversation still waiting, and keeping it would let a late pick in the old window buy or sell after the
+    /// new thing began.</para>
+    /// <para>Runs on this player's own handler thread, inside their monitor, where both pending replies are read
+    /// and written. It touches no other session.</para></summary>
+    private void DropWaitingDialog(string cause)
+    {
+        AssertStateHeld(nameof(DropWaitingDialog));
+        if (_dlgReply is null && _shopReply is null) return;
+        _dlgReply = null;
+        _shopReply = null;
+        Log.Info($"   -> dropped the conversation waiting on {_char.Name} ({cause})");
+    }
 
     /// <summary>Push a multi-page dialog at the player with NO NPC in front of them — a scripted interjection
     /// (a milestone briefing) rather than a conversation they started. Same 0x30 frame as

@@ -1053,7 +1053,12 @@ public sealed partial class Session
             var handlers = NpcScripts.For(def).OfType<INpcSayHandler>().ToList();
             if (handlers.Count > 0 || NpcScript.HasSay(def.Key)) candidates.Add((npc, def, handlers));   // C# and/or Lua say-handler
         }
-        if (candidates.Count > 0) _ = RunNpcSayAsync(candidates, say);
+        if (candidates.Count == 0) return;
+        // Speech that reaches an NPC drops any conversation still waiting before the NPCs hear it, whether or not
+        // one of them answers: RTK frees the waiting script for every NPC in earshot (clif_sendnpcsay). See
+        // DropWaitingDialog.
+        DropWaitingDialog("speech to an NPC");
+        _ = RunNpcSayAsync(candidates, say);
     }
 
     private async Task RunNpcSayAsync(List<(Mob npc, NpcDef def, List<INpcSayHandler> handlers)> candidates, string speech)
