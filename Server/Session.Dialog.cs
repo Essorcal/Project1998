@@ -677,9 +677,10 @@ public sealed partial class Session
     /// <summary>Drop the conversation still waiting on this player's reply, before something new starts: an NPC
     /// click (<see cref="HandleClickInfo"/>, F1 included), speech that reaches an NPC (<see cref="DispatchSpeech"/>),
     /// or a step onto a floor trigger (the event-cave and Forever Tree entrances and the step encounters, in
-    /// <c>Session.Navigation.cs</c>). RTK frees a waiting script with <c>sl_async_freeco</c> on an NPC click, on
-    /// speech to an NPC in earshot (<c>clif_sendnpcsay</c>) and on a step onto a floor NPC (<c>pc_runfloor_sub</c>),
-    /// all in rtk/src/map/clif.c.
+    /// <c>Session.Navigation.cs</c>). RTK frees a waiting script with <c>sl_async_freeco</c> on an NPC click and on
+    /// speech to an NPC in earshot (<c>clif_sendnpcsay</c>), both in rtk/src/map/clif.c, and on a step onto a floor
+    /// NPC (<c>pc_runfloor_sub</c>, in rtk/src/map/pc.c, which clif.c's walk handlers call; clif.c's own
+    /// <c>clif_runfloor_sub</c> is never called).
     /// <para><b>Why.</b> The 4.95 client sends nothing when a box is closed by its close button or Esc (a static
     /// read of the exe, not a live capture). So a closed box left its prompt pending: the flow stayed suspended,
     /// <see cref="DialogBusy"/> stayed true, and the floor triggers that stood down for it did not fire until a map

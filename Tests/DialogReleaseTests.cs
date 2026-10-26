@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text;
 using Server;
@@ -154,6 +155,143 @@ public sealed class DialogReleaseTests
         finally { _fx.World.LeaveMap(s, s.CharMap); }
     }
 
+    // The other four encounters. Each leaves a text page waiting (LeavePage), then runs the player's after-step hooks
+    // where they stand (StepHere: OnScriptedTileStep, which HandleWalk runs at the end of every accepted step, so the
+    // facts need no walkable tile). Each is red with master's guard put back on its encounter
+    // (`if (IsDead || DialogBusy) return;`, `return false;` on the altar): the encounter stands down for the page.
+
+    /// <summary>
+    /// <b>The fox finds a player over a waiting page.</b> On a Worn path map, the steps go on until the fox's own
+    /// one-in-ten roll comes up (at most <see cref="FoxSteps"/>). The page is dropped and the riddle's input box opens.
+    /// A late text-box reply then reaches the riddle as a non-answer: no charm and no throw back to Nagnang. The
+    /// page's flow never resumes.
+    /// </summary>
+    [Fact]
+    public void TheFoxFindsAPlayerOverAWaitingPage()
+    {
+        var (s, o, c) = PlayerMid("FoxWalker", FoxSpirit.Maps[0]);
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            Task? page = null;
+            OnOwnThread(() =>
+            {
+                page = LeavePage(s, o);
+                for (int i = 0; i < FoxSteps && !Dialogs(o).Any(d => d.Kind == Input); i++) StepHere(s);
+                var riddle = Dialogs(o).LastOrDefault(d => d.Kind == Input);
+                Assert.True(riddle.Text is not null, $"the fox never came in {FoxSteps} steps while the page waited");
+                Assert.Contains(riddle.Text, FoxSpirit.Riddles.Select(r => r.Item1));
+
+                s.Receive(Next());                                   // a text box's reply: not a submit
+                Assert.False(s.DialogBusy);
+            });
+            Assert.Equal(FoxSpirit.Maps[0], s.CharMap);              // a wrong answer would have thrown them out
+            Assert.Equal(0, Count(c, FoxSpirit.Charm));
+            Assert.False(page!.IsCompleted, "the dropped page's flow resumed");
+            AssertDroppedQuietly(log, c.Name, "fox spirit");
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
+    /// <summary>
+    /// <b>The crypt spirit answers Void's task over a waiting page.</b> In Oh-mudum crypt, with Void's mouse zapped and
+    /// the spirit not yet met, one step drops the page, sets the "met" flag and opens the spirit's first page; its
+    /// pages then run to their end, and the dropped page's flow never resumes.
+    /// </summary>
+    [Fact]
+    public void TheCryptSpiritAppearsOverAWaitingPage()
+    {
+        var (s, o, c) = PlayerMid("CryptWalker", MageStoneQuest.CryptMap,
+            ch => QuestState.Over(ch, MageStoneQuest.StageReg).Set(MageStoneQuest.Zapped("void_mouse"), 1));
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            Task? page = null;
+            OnOwnThread(() =>
+            {
+                page = LeavePage(s, o);
+                StepHere(s);
+                Assert.True(QuestState.Over(c, MageStoneQuest.StageReg).Get(MageStoneQuest.MetGhost) == 1,
+                            "the crypt spirit stood down for the waiting page");
+                Assert.Equal(MageStoneQuest.SpiritPages[0], Dialogs(o)[^1].Text);
+
+                for (int i = 0; i < MageStoneQuest.SpiritPages.Length; i++) s.Receive(Next());
+                Assert.False(s.DialogBusy);
+            });
+            Assert.False(page!.IsCompleted, "the dropped page's flow resumed");
+            AssertDroppedQuietly(log, c.Name, "crypt spirit");
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
+    /// <summary>
+    /// <b>The crow takes Maro's acorn over a waiting page.</b> In Kugnae, sent after the acorn and carrying it, one
+    /// step drops the page; the crow takes the acorn, the quest moves on, and the crow's pages open and run to their
+    /// end. The dropped page's flow never resumes.
+    /// </summary>
+    [Fact]
+    public void TheCrowStrikesOverAWaitingPage()
+    {
+        var (s, o, c) = PlayerMid("CrowWalker", DaggerUniformQuest.KugnaeMap, ch =>
+        {
+            QuestState.Over(ch, DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.StealAcorn);
+            ch.Inventory.Add(new InvItem(0, Item(DaggerUniformQuest.StolenAcorn).Id, 1));
+        });
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            Task? page = null;
+            OnOwnThread(() =>
+            {
+                page = LeavePage(s, o);
+                StepHere(s);
+                Assert.True(Count(c, DaggerUniformQuest.StolenAcorn) == 0,
+                            "the crow stood down for the waiting page; the acorn is still in the bag");
+                Assert.Equal(DaggerUniformQuest.Stage.CrowTookIt, QuestState.Over(c, DaggerUniformQuest.Key).Stage);
+                Assert.Equal(DaggerUniformQuest.CrowSnatch[0], Dialogs(o)[^1].Text);
+
+                for (int i = 0; i < DaggerUniformQuest.CrowSnatch.Length; i++) s.Receive(Next());
+                Assert.False(s.DialogBusy);
+            });
+            Assert.False(page!.IsCompleted, "the dropped page's flow resumed");
+            AssertDroppedQuietly(log, c.Name, "the crow");
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
+    /// <summary>
+    /// <b>The Gauntlet statue pays over a waiting page.</b> On the ring around the statue in the first tier's
+    /// Objective room, with nothing forbidden killed, one step drops the page; the shield and the legend are given and
+    /// the statue's pages open and run to their end. The dropped page's flow never resumes.
+    /// </summary>
+    [Fact]
+    public void TheGauntletStatueAnswersOverAWaitingPage()
+    {
+        const ushort objective = 2549;
+        Assert.True(NagnangShieldQuest.IsObjective(objective) && NagnangShieldQuest.AtAltar(8, 3));
+        var (s, o, c) = Player("StatueWalker", objective, 8, 3);
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            Task? page = null;
+            OnOwnThread(() =>
+            {
+                page = LeavePage(s, o);
+                StepHere(s);
+                Assert.True(c.Legends.Any(l => l.Name == NagnangShieldQuest.Legend),
+                            "the statue stood down for the waiting page; no legend");
+                Assert.Equal(1, Count(c, NagnangShieldQuest.Shield));
+                Assert.Equal(NagnangShieldQuest.StatueReward[0], Dialogs(o)[^1].Text);
+
+                for (int i = 0; i < NagnangShieldQuest.StatueReward.Length; i++) s.Receive(Next());
+                Assert.False(s.DialogBusy);
+            });
+            Assert.False(page!.IsCompleted, "the dropped page's flow resumed");
+            AssertDroppedQuietly(log, c.Name, "Gauntlet altar");
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
     // ---- clicks and speech ------------------------------------------------------------------------------------------
 
     /// <summary>
@@ -284,6 +422,42 @@ public sealed class DialogReleaseTests
         finally { _fx.World.LeaveMap(s, s.CharMap); }
     }
 
+    /// <summary>
+    /// <b>F1 drops a shop window left open, as any NPC click does.</b> The player opens Walsuk's buy grid, leaves it,
+    /// and presses F1 (the real <c>0x43</c> with the sentinel id <c>FFFFFFFF</c>). The F1 menu opens as it always
+    /// does, and a pick from the old grid that arrives after it buys nothing.
+    /// <para>Red with F1's drop removed: F1's menu replaces only a pending <c>0x3A</c> prompt, so the grid's flow
+    /// stayed waiting and the late pick bought the apple.</para>
+    /// </summary>
+    [Fact]
+    public void F1DropsAShopWindowLeftOpen()
+    {
+        var (s, o, c) = Player("F1Presser", 2, 18, 6, ch => ch.Coins = 1000);
+        var walsuk = NpcMob(WalsukNpcId);
+        var apple = Content.ItemByKey("apple")!;
+        try
+        {
+            using var log = LogLineSink.Acquire();
+            OnOwnThread(() =>
+            {
+                s.Receive(Click(walsuk));
+                s.Receive(MenuPick(1));                              // Buy
+                Assert.Single(o.BodiesOf(ServerOp.Shop));
+
+                s.Receive(F1());
+                Assert.Equal((Menu, $"Hello {c.Name}! How can I help you today?"), (Dialogs(o)[^1].Kind, Dialogs(o)[^1].Text));
+
+                s.Receive(BuyPick(apple.Name));
+                Assert.True(c.Coins == 1000 && c.Inventory.All(i => i.ItemId != apple.Id),
+                            $"the old grid's flow resumed after F1 and bought: coins {c.Coins}");
+                Assert.Single(o.BodiesOf(ServerOp.Shop));
+                Assert.True(s.DialogBusy, "F1's menu is no longer waiting");
+            });
+            AssertDroppedQuietly(log, c.Name, "F1");
+        }
+        finally { _fx.World.LeaveMap(s, s.CharMap); }
+    }
+
     // ---- controls: green before and after ---------------------------------------------------------------------------
 
     /// <summary>
@@ -340,9 +514,42 @@ public sealed class DialogReleaseTests
 
     // ---- harness ----------------------------------------------------------------------------------------------------
 
-    private const byte Text = 0x00, Menu = 0x02;
+    private const byte Text = 0x00, Menu = 0x02, Input = 0x04;
+
+    /// <summary>After-step runs the fox fact allows: the chance that the fox's one-in-ten roll misses every one of
+    /// them is (9/10)^400, about 5e-19.</summary>
+    private const int FoxSteps = 400;
+
+    private const string WaitingPage = "A page the player leaves unanswered.";
+
+    private static readonly MethodInfo AfterStep =
+        typeof(Session).GetMethod("OnScriptedTileStep", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    /// <summary>The after-step hooks for the tile the player stands on, inside their monitor: what
+    /// <c>HandleWalk</c> runs at the end of every accepted step.</summary>
+    private static void StepHere(Session s) => s.WithState(() => AfterStep.Invoke(s, null));
+
+    /// <summary>Open one text page on the player, from Lake, inside their monitor as a click would, and leave it
+    /// unanswered. Returns its flow, which must never complete once dropped.</summary>
+    private Task LeavePage(Session s, RecordingOutbound o)
+    {
+        var lake = NpcMob(LakeNpcId);
+        Task? page = null;
+        s.WithState(() => page = new NpcContext(s, lake, Content.NpcById(LakeNpcId)!).Say(WaitingPage));
+        Assert.True(s.DialogBusy, "the page is not waiting");
+        Assert.Equal(WaitingPage, Dialogs(o)[^1].Text);
+        return page!;
+    }
 
     private static string Name(string stem) => $"{stem}{Interlocked.Increment(ref _serial)}";
+
+    /// <summary>A player standing in the middle of <paramref name="map"/>.</summary>
+    private (Session S, RecordingOutbound O, Character C) PlayerMid(string stem, ushort map,
+                                                                   Action<Character>? configure = null)
+    {
+        var info = Content.Maps[map];
+        return Player(stem, map, (ushort)(info.Xs / 2), (ushort)(info.Ys / 2), configure);
+    }
 
     /// <summary>A socket-free player on <paramref name="map"/>, with the map's size on the character (the walk
     /// handler bounds a step by it) and no other setup unless <paramref name="configure"/> adds some.</summary>
@@ -420,6 +627,10 @@ public sealed class DialogReleaseTests
         return SessionFixture.Frame(ClientOp.ClickInfo,
             new byte[] { 0x01, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id, 0x00 });
     }
+
+    /// <summary>The F1 key: the same <c>0x43</c> with the sentinel id <c>FFFFFFFF</c>.</summary>
+    private static byte[] F1() =>
+        SessionFixture.Frame(ClientOp.ClickInfo, new byte[] { 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 });
 
     /// <summary>The text box's next arrow (<c>0x3A</c>): kind 1, step 2 at [8]. The echoed entity id at [1..4] is
     /// left 0; the server does not read it.</summary>
