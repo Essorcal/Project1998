@@ -207,9 +207,10 @@ public sealed partial class Session
     private bool TryEventCaveEntrance(ushort x, ushort y)
     {
         if (!Content.EventCaveTiles.TryGetValue((_char.Map, x, y), out var cave)) return false;
-        // Already sitting in a modal box: AwaitReply would overwrite that conversation's completion source
-        // and orphan it. Hold them at the from-tile and let the next step try again.
-        if (DialogBusy) { SendXy(); return true; }
+        // A conversation still waiting (a closed box sends nothing, so its prompt stays pending) is dropped
+        // first, and the entry runs. It used to hold the player at the from-tile until a map change. See
+        // DropWaitingDialog, which also says where this parts from RTK.
+        DropWaitingDialog("event-cave entrance");
 
         // Cancel the client's step prediction up front, so the player is standing still for the whole
         // conversation and both outcomes start from the same place — the refusal needs it, and the warp
@@ -301,7 +302,7 @@ public sealed partial class Session
     private bool TryForeverTreeEntrance(ushort x, ushort y)
     {
         if (_char.Map != 1002 || x != 19 || y != 91) return false;
-        if (DialogBusy) { SendXy(); return true; }   // mid-dialog: hold at the from-tile, retry on the next step
+        DropWaitingDialog("Forever Tree entrance");   // a waiting conversation goes first, as at the event caves
         SendXy();                                     // cancel the client's step prediction — stand still for the box
         _ = RunForeverTreeEntryAsync();
         return true;
@@ -502,14 +503,15 @@ public sealed partial class Session
     // still run — the fox is an interjection, not a gate.
     //
     // Fire-and-forget: the encounter awaits the player's answer, and a step handler cannot block on that.
-    // Guarded on DialogBusy because opening a box while one is already pending orphans the conversation
-    // waiting on it (AwaitReply overwrites the completion source) — a fox that interrupts a shopkeeper
-    // would hang the shop. Dead players are skipped: a ghost walking home should not be quizzed.
+    // When it fires, a conversation still waiting is dropped first (DropWaitingDialog). It used to stand down
+    // instead, so a box the player had closed (which sends nothing) kept it from firing until a map change.
+    // Dead players are skipped: a ghost walking home should not be quizzed.
     private void TryFoxSpirit()
     {
         if (!FoxSpirit.IsFoxCountry(_char.Map)) return;
-        if (IsDead || DialogBusy) return;
+        if (IsDead) return;
         if (QuestRandom(FoxSpirit.OddsOneIn) != 1) return;
+        DropWaitingDialog("fox spirit");
         _ = RunFoxSpiritAsync();
     }
 
@@ -557,16 +559,17 @@ public sealed partial class Session
     ///
     /// <para>Void asks you to listen, so the flag is set BEFORE the pages open rather than after: a player
     /// who closes the box halfway has still met the spirit, and there is no second chance in the room to
-    /// give them. Fire-and-forget with the same DialogBusy/ghost guards as the fox — see
-    /// <see cref="TryFoxSpirit"/> for why both matter on a step hook.</para></summary>
+    /// give them. Fire-and-forget with the same ghost guard as the fox, and like the fox it drops a waiting
+    /// conversation when it fires — see <see cref="TryFoxSpirit"/>.</para></summary>
     private void TryMageStoneSpirit()
     {
         if (_char.Map != MageStoneQuest.CryptMap) return;
-        if (IsDead || DialogBusy) return;
+        if (IsDead) return;
         var stone = Quest(MageStoneQuest.StageReg);
         if (stone.Get(MageStoneQuest.Zapped("void_mouse")) != 1) return;
         if (stone.Get(MageStoneQuest.MetGhost) != 0) return;
 
+        DropWaitingDialog("crypt spirit");
         stone.Set(MageStoneQuest.MetGhost, 1);
         Notify("A spirit appears!");
         _ = ShowMageStoneSpiritAsync();
@@ -586,15 +589,17 @@ public sealed partial class Session
     /// step out into the sunlight"). The theft is therefore unavoidable — which is the point, since the crow
     /// IS the next step of the quest and not a punishment for being seen.
     ///
-    /// <para>Order matters: the busy/ghost guards come BEFORE the acorn is taken, so a player mid-dialog
-    /// keeps the acorn and gets the whole beat on their next step rather than losing it unannounced.</para></summary>
+    /// <para>Order matters: the ghost guard comes BEFORE the acorn is taken, so a ghost keeps the acorn and gets
+    /// the whole beat on a later step rather than losing it unannounced. When the crow strikes, a conversation
+    /// still waiting is dropped before its pages open, as the fox drops one (see <see cref="TryFoxSpirit"/>).</para></summary>
     private void TryCrowSnatch()
     {
         if (_char.Map != DaggerUniformQuest.KugnaeMap) return;
         if (Quest(DaggerUniformQuest.Key).Stage != DaggerUniformQuest.Stage.StealAcorn) return;
-        if (IsDead || DialogBusy) return;
+        if (IsDead) return;
         if (!TakeItem(DaggerUniformQuest.StolenAcorn, 1)) return;
 
+        DropWaitingDialog("the crow");
         Quest(DaggerUniformQuest.Key).SetStage(DaggerUniformQuest.Stage.CrowTookIt);
         _ = ShowCrowSnatchAsync();
     }
@@ -621,16 +626,17 @@ public sealed partial class Session
     /// <c>math.random(1, 50)</c>, and only 1 finds the rabbit. Split from the roll so a fact can choose it.
     ///
     /// <para>The flag is set before the box opens, so a player who closes it is still blessed. Fire-and-forget,
-    /// with the busy and ghost guards every dialog on a step hook has (see <see cref="TryFoxSpirit"/>): a box over
-    /// an open conversation would orphan it, and a ghost is skipped as the fox skips one.</para></summary>
+    /// with the ghost guard every dialog on a step hook has, and like the fox it drops a waiting conversation
+    /// when it fires (see <see cref="TryFoxSpirit"/>).</para></summary>
     internal void WatcherStep(int roll)
     {
         if (!NpcSubpathQuest.InWatcherField(_char.Map, _char.X, _char.Y)) return;
-        if (IsDead || DialogBusy) return;
+        if (IsDead) return;
         if (roll != 1) return;
         var registry = Quest(QuestState.Registry);
         if (registry.Get(NpcSubpathQuest.BlessedReg) != 0) return;
 
+        DropWaitingDialog("Watcher");
         bool smiles = Karma.Meets(_char.Karma, NpcSubpathQuest.BlessingKarma);
         if (smiles) registry.Set(NpcSubpathQuest.BlessedReg, 1);
         Log.Info($"   -> WATCHER at ({_char.X},{_char.Y}) for {_char.Name}: {(smiles ? "blessed" : "karma below ox, not blessed")}");
@@ -848,7 +854,8 @@ public sealed partial class Session
         if (!NagnangShieldQuest.IsObjective(_char.Map)) return false;
         if (!NagnangShieldQuest.AtAltar(_char.X, _char.Y)) return false;
         if (HasLegend(NagnangShieldQuest.Legend)) return false;   // already won — it is stone again
-        if (IsDead || DialogBusy) return false;
+        if (IsDead) return false;
+        DropWaitingDialog("Gauntlet altar");   // the statue answers now, as the fox does (TryFoxSpirit)
 
         var trial = Quest(NagnangShieldQuest.StageReg);
         if (ForbiddenGauntletKills() > trial.Get(NagnangShieldQuest.KillSnapshot))
