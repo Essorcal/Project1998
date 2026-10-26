@@ -52,6 +52,12 @@ public static class Db
         AddColumn("parcels", "item_owner", "ALTER TABLE parcels ADD COLUMN item_owner TEXT NOT NULL DEFAULT '';"),
         AddColumn("characters", "unreadable_since", "ALTER TABLE characters ADD COLUMN unreadable_since INTEGER;"),
         new(RekeyHandoffTokens, (cn, tx) => PrimaryKeyIs(cn, tx, "handoff_tokens", "username", "nonce_hash")),
+        // Migration 5: the hash of the hand-off's one-time key (Shared/HandoffTokens, "THE REDIRECT KEY").
+        // Nullable with no default, because NULL is a meaning, not a gap: a token minted without a key, by a
+        // login server from before this column or for the 5.33 channel. The statements of the code before
+        // it name every other column and never this one, so a server not yet restarted writes NULL here and
+        // ignores it when it consumes, and the two builds consume each other's tokens through the deploy.
+        AddColumn("handoff_tokens", "key_hash", "ALTER TABLE handoff_tokens ADD COLUMN key_hash TEXT;"),
     };
 
     /// <summary>
@@ -284,12 +290,17 @@ CREATE TABLE IF NOT EXISTS world_state (
 -- 11-letter name and one byte of 255 values at 10, so a key of the hash alone was one key shared by every
 -- 11-letter account (255 for every 10-letter one), and a second account's mint collided with the first's
 -- row. Migration 4 rebuilds a table created with that key; the hash itself is unchanged.
+--
+-- `key_hash` is the SHA-256 of the one-time key a hand-off to a 4.95 game port carries in the redirect's
+-- 9-byte key field, which the client returns whole at every name length; NULL when the hand-off carried
+-- none (the 5.33 channel, or a login server from before the column). Migration 5 adds it to an older table.
 CREATE TABLE IF NOT EXISTS handoff_tokens (
   nonce_hash  TEXT NOT NULL,
   username    TEXT NOT NULL,
   expires_utc INTEGER NOT NULL,
   consumed    INTEGER NOT NULL DEFAULT 0,
   ip          TEXT NOT NULL DEFAULT '',
+  key_hash    TEXT,
   PRIMARY KEY (username, nonce_hash)
 );
 

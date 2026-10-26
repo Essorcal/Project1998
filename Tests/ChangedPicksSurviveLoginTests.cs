@@ -615,15 +615,8 @@ public sealed class ChangedPicksSurviveLoginTests : IClassFixture<SessionFixture
         c.MapXs = info?.Xs ?? 20; c.MapYs = info?.Ys ?? 20;
     }
 
-    private static byte[] ArrivalFrame(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    private static byte[] ArrivalFrame(string user) =>
+        Handoff.ArrivalFrame(user, System.Net.IPAddress.None.ToString());
 
     // ---- talking to an NPC ----------------------------------------------------------------------------
 

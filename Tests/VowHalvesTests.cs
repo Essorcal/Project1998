@@ -3070,15 +3070,8 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         _fx.World.Online.Unregister(key, s);
     }
 
-    private static byte[] ArrivalFrame(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    private static byte[] ArrivalFrame(string user) =>
+        Handoff.ArrivalFrame(user, System.Net.IPAddress.None.ToString());
 
     // ===== what a player holds ================================================================================
 

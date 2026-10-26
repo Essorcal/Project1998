@@ -23,8 +23,9 @@ namespace Protocol.Tk495;
 /// <code>
 ///   ip[3] ip[2] ip[1] ip[0]   octets REVERSED (127.0.0.1 -> 01 00 00 7F)
 ///   port(u16BE)
-///   23 00 09                  constants observed in the working handoff
-///   "NexonInc."               the 9-byte key string, echoed
+///   23 00 09                  constants observed in the working handoff; the 09 is the key's length
+///   key[9]                    echoed whole in the 0x10 arrival: a one-time secret on a hand-off to a 4.95
+///                             game port, "NexonInc." on the bounce to login and on a 5.33 hand-off
 ///   nameLen name
 ///   tail[5]
 /// </code>
@@ -34,15 +35,38 @@ public static class LoginRedirect
     /// <summary>Total width of the client's single NUL-terminated field holding <c>nameLen name tail</c>.</summary>
     public const int TailBytes = 5;
 
+    /// <summary>Width of the key field, the <c>09</c> the struct carries before it. The same 9 as
+    /// <see cref="HandoffTokens.KeyBytes"/>, which mints what goes in it.</summary>
+    public const int KeyBytes = HandoffTokens.KeyBytes;
+
+    /// <summary>The hand-off to a game port: the grant's key in the key field, or <c>"NexonInc."</c>
+    /// (<see cref="TkCrypt.LoginKey"/>) when its channel carries none, and its token in the tail. Both callers
+    /// that send a client to a game port build through here, so a minted key cannot be left out of the wire,
+    /// and the port must be the one the grant was minted for, so the redirect and the arrival's check name the
+    /// same channel.</summary>
+    public static byte[] Build(byte[] host, int port, string user, HandoffTokens.Grant grant)
+    {
+        if (grant.GamePort != port)
+            throw new ArgumentException($"grant was minted for port {grant.GamePort}, not {port}", nameof(grant));
+        return Build(host, port, user, grant.Key ?? TkCrypt.LoginKey, grant.Token);
+    }
+
     /// <param name="host">Address the CLIENT must be able to reach — a bind address or a loopback default is
     /// wrong behind a proxy. Four octets, in normal order; this reverses them for the wire.</param>
+    /// <param name="key">The 9 bytes of the key field. The client copies them back unchanged at the head of
+    /// its 0x10 arrival, all 9 at every name length (live check 2026-10-26), and its cipher never reads them:
+    /// it keeps its own <c>"NexonInc."</c> literal. A one-time secret on a hand-off to a 4.95 game port
+    /// (<see cref="HandoffTokens.Mint(string, string, int)"/>); <see cref="TkCrypt.LoginKey"/> on the bounce
+    /// back to login and on a 5.33 hand-off. Must be exactly <see cref="KeyBytes"/> long: the struct is fixed
+    /// and <c>klen</c> other than 9 was never tried.</param>
     /// <param name="tail">The 5 bytes after the username: a single-use handoff nonce when the client is being
     /// sent to a GAME port, zero padding when it is being sent back to LOGIN (which mints its own). Must stay
     /// exactly <see cref="TailBytes"/> long — the client reads a fixed-size struct, and a 16-byte token was
     /// live-proven to corrupt the parse and break login outright.</param>
-    public static byte[] Build(byte[] host, int port, string user, byte[] tail)
+    public static byte[] Build(byte[] host, int port, string user, byte[] key, byte[] tail)
     {
         if (host.Length != 4) throw new ArgumentException("host must be 4 octets", nameof(host));
+        if (key.Length != KeyBytes) throw new ArgumentException($"key must be {KeyBytes} bytes", nameof(key));
         if (tail.Length != TailBytes) throw new ArgumentException($"tail must be {TailBytes} bytes", nameof(tail));
 
         var p = new List<byte>
@@ -50,9 +74,9 @@ public static class LoginRedirect
             0xAA, 0, 0, Opcode.Login,
             host[3], host[2], host[1], host[0],
             (byte)(port >> 8), (byte)(port & 0xFF),
-            23, 0, 9
+            23, 0, KeyBytes
         };
-        p.AddRange(TkCrypt.LoginKey);
+        p.AddRange(key);
         var uname = Encoding.ASCII.GetBytes(user);
         p.Add((byte)uname.Length);
         p.AddRange(uname);

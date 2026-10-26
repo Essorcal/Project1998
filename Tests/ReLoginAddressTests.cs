@@ -204,11 +204,12 @@ public sealed class ReLoginAddressTests : IDisposable
 
         var ok = link.ReLogin(user, pass);
         Assert.Equal(Opcode.Login, ok.Opcode);
+        byte[] key = ok.Frame[13..22];
         byte[] token = ok.Frame[^LoginRedirect.TailBytes..];
-        Assert.Equal(LoginRedirect.Build(HostAddress.Parse(ServerConfig.Current.GameHost), GamePort, user, token),
+        Assert.Equal(LoginRedirect.Build(HostAddress.Parse(ServerConfig.Current.GameHost), GamePort, user, key, token),
                      ok.Frame);
-        Assert.False(HandoffTokens.Consume(token, user, link.ProxyAddress), "the token is bound to the proxy");
-        Assert.True(HandoffTokens.Consume(token, user, a.ToString()), "the token is not bound to the player");
+        Assert.False(HandoffTokens.Consume(token, key, user, link.ProxyAddress, GamePort), "the token is bound to the proxy");
+        Assert.True(HandoffTokens.Consume(token, key, user, a.ToString(), GamePort), "the token is not bound to the player");
 
         string after = Nobody();
         Assert.Equal(NoCharacter, link.ReLogin(after, "guess").Text);
@@ -228,6 +229,46 @@ public sealed class ReLoginAddressTests : IDisposable
         using var sink = LogLineSink.Acquire();
         using var link = Open(Proxy.Loopback, ip);
         AssertBudgetFor(ip, link, sink, user);
+    }
+
+    /// <summary>The game-to-game re-login mints like the login server: on the 4.95 port its redirect carries a
+    /// one-time key in the key field, nine non-zero bytes that are not <c>"NexonInc."</c>, and the token it
+    /// carries enters only with that key, once. On the 5.33 port it carries <c>"NexonInc."</c> and no key, and its
+    /// token enters there as before.
+    /// <para>Red on master: the re-login's key field was always <c>"NexonInc."</c>. Falsified by minting the
+    /// re-login for any port but its own (<c>HandoffTokens.Mint(user, _remoteIp, 2006)</c> in
+    /// <c>Session.HandleReLogin</c>): the redirect's grant check throws and no redirect is sent.</para></summary>
+    [Fact]
+    public void A_relogin_carries_a_one_time_key_on_the_495_port_and_NexonInc_on_the_533_port()
+    {
+        var a = Player();
+        var (user, pass) = Account();
+        using (var link = Open(Proxy.Loopback, a))
+        {
+            var ok = link.ReLogin(user, pass);
+            Assert.Equal(Opcode.Login, ok.Opcode);
+            Assert.Equal(new byte[] { 0x07, 0xD5 }, ok.Frame[8..10]);   // back to 2005
+            Assert.Equal(9, ok.Frame[12]);
+            byte[] key = ok.Frame[13..22];
+            byte[] token = ok.Frame[^LoginRedirect.TailBytes..];
+            Assert.NotEqual(TkCrypt.LoginKey, key);
+            Assert.DoesNotContain((byte)0, key);
+            Assert.False(HandoffTokens.Consume(token, TkCrypt.LoginKey, user, a.ToString(), GamePort),
+                         "the re-login's token entered with \"NexonInc.\" in place of its key");
+            Assert.True(HandoffTokens.Consume(token, key, user, a.ToString(), GamePort), "the re-login's own key was refused");
+            Assert.False(HandoffTokens.Consume(token, key, user, a.ToString(), GamePort), "the re-login's key was replayed");
+        }
+
+        using (var link = Link.Tcp(a, _world, _store, Handoff.Game533))
+        {
+            var ok = link.ReLogin(user, pass);
+            Assert.Equal(Opcode.Login, ok.Opcode);
+            Assert.Equal(new byte[] { 0x07, 0xD6 }, ok.Frame[8..10]);   // back to 2006
+            Assert.Equal(TkCrypt.LoginKey, ok.Frame[13..22]);
+            byte[] token = ok.Frame[^LoginRedirect.TailBytes..];
+            Assert.True(HandoffTokens.Consume(token, ok.Frame[13..22], user, a.ToString(), Handoff.Game533),
+                        "the 5.33 re-login's token was refused on its own port");
+        }
     }
 
     // ---- helpers ------------------------------------------------------------------------------------------
@@ -316,7 +357,7 @@ public sealed class ReLoginAddressTests : IDisposable
         private readonly string[] _files;
         private readonly Session _session;
 
-        private Link(Socket client, TcpClient server, IPAddress? realIp, World world, CharacterStore store,
+        private Link(Socket client, TcpClient server, IPAddress? realIp, World world, CharacterStore store, int port,
                      params string[] files)
         {
             _client = client;
@@ -324,7 +365,7 @@ public sealed class ReLoginAddressTests : IDisposable
             _client.ReceiveTimeout = 5_000;
             _replies = new NetworkStream(client, ownsSocket: false);
             _out = new TcpOutbound(server, OutboundOptions.Game, realIp);   // = Session(TcpClient, ..., realIp)
-            _session = new Session(_out, GamePort, store, world);
+            _session = new Session(_out, port, store, world);
             _writer = _out.RunWriterAsync(_ => { });
         }
 
@@ -334,13 +375,13 @@ public sealed class ReLoginAddressTests : IDisposable
         public string ProxyAddress => _out.PeerAddress.ToString();
 
         /// <summary>A TCP pair on 127.0.0.1: a direct loopback client, or the loopback proxy.</summary>
-        public static Link Tcp(IPAddress? realIp, World world, CharacterStore store)
+        public static Link Tcp(IPAddress? realIp, World world, CharacterStore store, int port = GamePort)
         {
             using var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             client.Connect(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port);
-            return new Link(client, listener.AcceptTcpClient(), realIp, world, store);
+            return new Link(client, listener.AcceptTcpClient(), realIp, world, store, port);
         }
 
         /// <summary>A Unix-domain stream pair: a peer the transport reads as <see cref="IPAddress.None"/>. Both
@@ -359,7 +400,7 @@ public sealed class ReLoginAddressTests : IDisposable
             var server = new TcpClient();
             server.Client.Dispose();          // the unconnected TCP socket TcpClient made for itself
             server.Client = listener.Accept();
-            return new Link(client, server, realIp, world, store, serverPath, clientPath);
+            return new Link(client, server, realIp, world, store, GamePort, serverPath, clientPath);
         }
 
         /// <summary>Send one re-login, as the client frames it on the game socket, and read the one frame the

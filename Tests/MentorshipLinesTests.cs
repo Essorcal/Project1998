@@ -323,15 +323,8 @@ public sealed class MentorshipLinesTests
         _fx.World.Online.Unregister(key, s);
     }
 
-    private static byte[] ArrivalFrame(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    private static byte[] ArrivalFrame(string user) =>
+        Handoff.ArrivalFrame(user, System.Net.IPAddress.None.ToString());
 
     /// <summary>An outbound that keeps every frame and whether the thread that handed it over held the owner's state
     /// monitor at that moment (<c>Session.StateHeld</c>, <c>Monitor.IsEntered</c>): <c>Session.Send</c> hands each

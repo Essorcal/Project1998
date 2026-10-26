@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using Protocol.Tk495;
 using Shared;
 using Tests.Support;
 using Xunit;
@@ -14,11 +15,17 @@ namespace Tests;
 /// bounced at world entry with "invalid/expired handoff token". The client shares ONE fixed 13-byte field
 /// between the username and the nonce, so a name longer than 7 characters truncates the nonce — and the
 /// game server was comparing a fixed 4 bytes it would never receive.
+///
+/// <para>Since 2026-10-26 a hand-off to the 4.95 game port also carries a one-time key in the redirect's 9-byte
+/// key field, which the client returns whole at every name length. The facts mint and consume on that port unless
+/// they name the 5.33 one, so they run the keyed path the 4.95 client takes.</para>
 /// </summary>
 [Collection("db")]
 public class HandoffTokenTests : IDisposable
 {
     private const string Ip = "203.0.113.7";           // TEST-NET-3; never a real client
+    private const int Game495 = Handoff.Game495;       // keyed
+    private const int Game533 = Handoff.Game533;       // no key, "NexonInc." on the wire
     private readonly List<string> _minted = new();
 
     /// <summary>A throwaway username of EXACTLY <paramref name="length"/> characters — the length is the
@@ -65,6 +72,26 @@ public class HandoffTokenTests : IDisposable
         return blob.GetRange(1 + user.Length, ClientField - 1 - user.Length).ToArray();   // the token slot
     }
 
+    /// <summary>What the client hands back from one hand-off: the token slot of its 13-byte field, and the key
+    /// field whole, which sits outside that field. That is the key the redirect carried, or <c>"NexonInc."</c>
+    /// when it carried none.</summary>
+    private readonly record struct Echo(byte[] Token, byte[] Key);
+
+    private static Echo EchoOf(string user, HandoffTokens.Grant grant) =>
+        new(ClientEcho(user, grant.Token), grant.Key ?? TkCrypt.LoginKey);
+
+    /// <summary>A mint on the process database, as the client echoes it back.</summary>
+    private static Echo MintEcho(string user, int port = Game495, string ip = Ip) =>
+        EchoOf(user, HandoffTokens.Mint(user, ip, port));
+
+    /// <summary>The game server's consume on the process database.</summary>
+    private static bool Enters(Echo echo, string user, int port = Game495, string ip = Ip) =>
+        HandoffTokens.Consume(echo.Token, echo.Key, user, ip, port);
+
+    /// <summary>The stored form of a key: the hex SHA-256, as <c>key_hash</c> holds it.</summary>
+    private static string KeyHash(byte[] key) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(key));
+
     // 7 chars was the only length ever probed, which is how the fixed-4-bytes assumption survived. The 8-
     // to 10-char cases are the bug: each one used to be rejected at world entry.
     [Theory]
@@ -76,10 +103,10 @@ public class HandoffTokenTests : IDisposable
     public void TruncatedTokenStillConsumes(int nameLength)
     {
         var user = Name(nameLength);
-        var nonce = HandoffTokens.Mint(user, Ip);
-        Assert.Equal(5, nonce.Length);   // the wire slot is always 5 bytes, however much survives
+        var grant = HandoffTokens.Mint(user, Ip, Game495);
+        Assert.Equal(5, grant.Token.Length);   // the wire slot is always 5 bytes, however much survives
 
-        Assert.True(HandoffTokens.Consume(ClientEcho(user, nonce), user, Ip),
+        Assert.True(Enters(EchoOf(user, grant), user),
             $"a {nameLength}-character name must survive the client's truncation");
     }
 
@@ -87,19 +114,18 @@ public class HandoffTokenTests : IDisposable
     public void TokenIsSingleUse()
     {
         var user = Name(8);
-        var nonce = HandoffTokens.Mint(user, Ip);
-        var echo = ClientEcho(user, nonce);
+        var echo = MintEcho(user);
 
-        Assert.True(HandoffTokens.Consume(echo, user, Ip));
-        Assert.False(HandoffTokens.Consume(echo, user, Ip));   // replayed 0x10
+        Assert.True(Enters(echo, user));
+        Assert.False(Enters(echo, user));   // replayed 0x10
     }
 
     [Fact]
     public void TokenIsBoundToTheLoginAddress()
     {
         var user = Name(8);
-        var echo = ClientEcho(user, HandoffTokens.Mint(user, Ip));
-        Assert.False(HandoffTokens.Consume(echo, user, "198.51.100.9"));
+        var echo = MintEcho(user);
+        Assert.False(Enters(echo, user, ip: "198.51.100.9"));
     }
 
     [Fact]
@@ -107,18 +133,18 @@ public class HandoffTokenTests : IDisposable
     {
         var user = Name(8);
         var other = Name(8);
-        var echo = ClientEcho(user, HandoffTokens.Mint(user, Ip));
-        Assert.False(HandoffTokens.Consume(echo, other, Ip));
+        var echo = MintEcho(user);
+        Assert.False(Enters(echo, other));
     }
 
     /// <summary>A wrong nonce must still fail — the truncation fix must not have degraded into accepting
-    /// anything of the right length.</summary>
+    /// anything of the right length, and the key must not have replaced the nonce check.</summary>
     [Fact]
     public void WrongNonceIsRejected()
     {
         var user = Name(8);
-        HandoffTokens.Mint(user, Ip);
-        Assert.False(HandoffTokens.Consume(new byte[] { 1, 2, 3, 0 }, user, Ip));
+        var echo = MintEcho(user);
+        Assert.False(Enters(echo with { Token = new byte[] { 1, 2, 3, 0 } }, user));
     }
 
     /// <summary>The truncation budget the two sides derive independently. If this table ever changes, the
@@ -147,13 +173,12 @@ public class HandoffTokenTests : IDisposable
     }
 
     /// <summary>The longest name creation allows still enters the world: no nonce byte survives, so its token
-    /// consumes on the username and the address binding alone.</summary>
+    /// consumes on the key, the username and the address.</summary>
     [Fact]
     public void LongestAllowedNameStillConsumes()
     {
         var user = Name(HandoffTokens.MaxNameLength);
-        var nonce = HandoffTokens.Mint(user, Ip);
-        Assert.True(HandoffTokens.Consume(ClientEcho(user, nonce), user, Ip),
+        Assert.True(Enters(MintEcho(user), user),
             $"a {HandoffTokens.MaxNameLength}-character name must survive the client's truncation");
     }
 
@@ -171,11 +196,12 @@ public class HandoffTokenTests : IDisposable
     /// database file: nothing to clean up in the process database, so it is not recorded for Dispose.</summary>
     private static string Fresh(int length) => ("zz" + Guid.NewGuid().ToString("N"))[..length];
 
-    private static byte[] MintAt(Func<SqliteConnection> open, string user, long now, string ip = Ip) =>
-        ClientEcho(user, HandoffTokens.Mint(user, ip, open, now));
+    private static Echo MintAt(Func<SqliteConnection> open, string user, long now, string ip = Ip, int port = Game495) =>
+        EchoOf(user, HandoffTokens.Mint(user, ip, port, open, now));
 
-    private static bool ConsumeAt(Func<SqliteConnection> open, byte[] echo, string user, long now, string ip = Ip) =>
-        HandoffTokens.Consume(echo, user, ip, open, now);
+    private static bool ConsumeAt(Func<SqliteConnection> open, Echo echo, string user, long now, string ip = Ip,
+                                  int port = Game495) =>
+        HandoffTokens.Consume(echo.Token, echo.Key, user, ip, port, open, now);
 
     /// <summary>One login as the two servers perform it: the mint the login server makes, the client's
     /// truncating echo, and the consume the game server makes on arrival.</summary>
@@ -315,7 +341,7 @@ public class HandoffTokenTests : IDisposable
             Exec(db.Open, "CREATE TRIGGER refuse_mint BEFORE INSERT ON handoff_tokens " +
                           "BEGIN SELECT RAISE(ABORT, 'test trigger refuses this insert'); END;");
             var user = Fresh(9);
-            byte[] echo;
+            Echo echo;
             LogLineSink.Entry warning;
             using (var sink = LogLineSink.Acquire())
             {
@@ -351,9 +377,9 @@ public class HandoffTokenTests : IDisposable
 
         /// <summary>#332: a consume the database refuses is logged once, at Error, with the account and the
         /// exception, and still answers false, as an invalid token; what the arrival does with that answer is
-        /// the arrival's, and unchanged. The line carries neither the token's bytes nor the stored hash. Before
-        /// this the fault was swallowed and the arrival's "invalid/expired handoff token" line was all an
-        /// operator saw.</summary>
+        /// the arrival's, and unchanged. The line carries neither the token's bytes nor the key's, nor either
+        /// stored hash. Before this the fault was swallowed and the arrival's "invalid/expired handoff token"
+        /// line was all an operator saw.</summary>
         [Fact]
         public void AConsumeTheDatabaseRefusesIsAnErrorAndStillRefuses()
         {
@@ -376,16 +402,18 @@ public class HandoffTokenTests : IDisposable
             Assert.Contains("answered as an invalid token", error.Line);
             Assert.Contains("test trigger refuses this update", error.Line);
             Assert.Contains(typeof(SqliteException).FullName!, error.Line);
-            var surviving = echo[..HandoffTokens.SurvivingBytes(user)];
+            var surviving = echo.Token[..HandoffTokens.SurvivingBytes(user)];
             Assert.DoesNotContain(Convert.ToHexString(surviving), error.Line, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain(PreviousHash(user, echo), error.Line, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(PreviousHash(user, echo.Token), error.Line, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(Convert.ToHexString(echo.Key), error.Line, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(KeyHash(echo.Key), error.Line, StringComparison.OrdinalIgnoreCase);
         }
     }
 
     // -- the security properties, where the key change could have touched them --
 
-    /// <summary>Two 11-letter names carry no nonce byte at all, so only the username and the address bind a
-    /// token. A's token presented as B is refused both when B has no token and when B's token is bound to
+    /// <summary>Two 11-letter names carry no nonce byte at all, so only the key, the username and the address
+    /// bind a token. A's token presented as B is refused both when B has no token and when B's token is bound to
     /// another address, and consuming A's leaves B's alone.</summary>
     [Fact]
     public void ElevenLetterTokenIsBoundToItsAccountAndAddress()
@@ -417,9 +445,183 @@ public class HandoffTokenTests : IDisposable
         Assert.True(ConsumeAt(db.Open, inTime, other, T0 + 59), "a token was refused a second before its expiry");
     }
 
-    // -- the deploy window: a login server and a game server on either side of this change --
+    // -- the redirect key (2026-10-26): one guard per fact the change names --
 
-    // The two statements of Shared/HandoffTokens.cs as they were before this change (upstream/master
+    /// <summary>An 11-letter name carries no nonce byte, so before the key its token entered on the address alone.
+    /// It now enters with the key its redirect carried and is refused with any other: each of the nine bytes
+    /// changed in turn, and <c>"NexonInc."</c>, what the field held before. The refusals spend nothing, so the
+    /// right key still enters after them.
+    /// <para>Red on master, where the consume never read a key. Falsified by dropping the key predicate,
+    /// <c>AND (key_hash=$k OR key_hash IS NULL)</c>, from the keyed consume: every wrong key enters.</para></summary>
+    [Fact]
+    public void ElevenLetterNameEntersWithItsKeyAndIsRefusedWithAWrongOne()
+    {
+        using var db = new IsolatedDatabase();
+        var user = Fresh(11);
+        var echo = MintAt(db.Open, user, T0);
+        Assert.Equal(HandoffTokens.KeyBytes, echo.Key.Length);
+        for (int i = 0; i < HandoffTokens.KeyBytes; i++)
+        {
+            var wrong = (byte[])echo.Key.Clone();
+            wrong[i] = (byte)(wrong[i] == 0xFF ? 0x01 : wrong[i] + 1);
+            Assert.False(ConsumeAt(db.Open, echo with { Key = wrong }, user, T0), $"a key wrong in byte {i} entered");
+        }
+        Assert.False(ConsumeAt(db.Open, echo with { Key = TkCrypt.LoginKey }, user, T0), "\"NexonInc.\" entered for a keyed token");
+        Assert.True(ConsumeAt(db.Open, echo, user, T0), "the right key was refused, or a wrong one spent the token");
+    }
+
+    /// <summary>A key field of any other width is refused like a wrong key: none at all (<c>klen</c> 0), one byte
+    /// short or long, and a null. The client always sends <c>klen</c> 9, so another width is not a client this
+    /// server has seen.</summary>
+    [Fact]
+    public void AMissingKeyOrAnotherKeyLengthIsRefused()
+    {
+        using var db = new IsolatedDatabase();
+        var user = Fresh(11);
+        var echo = MintAt(db.Open, user, T0);
+        Assert.False(ConsumeAt(db.Open, echo with { Key = Array.Empty<byte>() }, user, T0), "an arrival with no key entered");
+        Assert.False(ConsumeAt(db.Open, echo with { Key = echo.Key[..8] }, user, T0), "an 8-byte key entered");
+        Assert.False(ConsumeAt(db.Open, echo with { Key = [.. echo.Key, 0x01] }, user, T0), "a 10-byte key entered");
+        Assert.False(ConsumeAt(db.Open, echo with { Key = null! }, user, T0), "a null key entered");
+        Assert.True(ConsumeAt(db.Open, echo, user, T0), "the right key was refused after the malformed ones");
+    }
+
+    /// <summary>A key is single-use with its token: the arrival that spends it spends the row, and the same nine
+    /// bytes presented again are refused. Falsified by consuming without marking the row
+    /// (<c>SET consumed=consumed</c>): the replay enters.</summary>
+    [Fact]
+    public void AReplayedKeyIsRefused()
+    {
+        using var db = new IsolatedDatabase();
+        var user = Fresh(11);
+        var echo = MintAt(db.Open, user, T0);
+        Assert.True(ConsumeAt(db.Open, echo, user, T0));
+        Assert.False(ConsumeAt(db.Open, echo, user, T0), "a key was accepted twice");
+    }
+
+    /// <summary>A key is bound to the account and the address it was minted for, like the token it rides with:
+    /// A's key is refused as B (who has no token, then one of their own), from another address, and B's key does
+    /// not open A's row. Each of the two still enters with its own.</summary>
+    [Fact]
+    public void AKeyMintedForAnotherNameOrAddressIsRefused()
+    {
+        using var db = new IsolatedDatabase();
+        var a = Fresh(11);
+        var b = Fresh(11);
+        var echoA = MintAt(db.Open, a, T0);
+        Assert.False(ConsumeAt(db.Open, echoA, b, T0), "A's key entered as B, who has no token");
+        Assert.False(ConsumeAt(db.Open, echoA, a, T0, OtherIp), "A's key entered from another address");
+        var echoB = MintAt(db.Open, b, T0);
+        Assert.False(ConsumeAt(db.Open, echoA, b, T0), "A's key entered as B");
+        Assert.False(ConsumeAt(db.Open, echoA with { Key = echoB.Key }, a, T0), "B's key opened A's token");
+        Assert.True(ConsumeAt(db.Open, echoA, a, T0), "A's own key was refused");
+        Assert.True(ConsumeAt(db.Open, echoB, b, T0), "B's own key was refused");
+    }
+
+    /// <summary>Every key byte is 1-255 over a thousand mints, every key is nine bytes, none is
+    /// <c>"NexonInc."</c>, and no two are alike. Falsified by drawing the bytes from 0-255
+    /// (<c>GetInt32(0, 256)</c>): over 9,000 bytes a zero is all but certain ((255/256)^9000 is about 5e-16).</summary>
+    [Fact]
+    public void KeyBytesAreNonZeroOverManyMints()
+    {
+        using var db = new IsolatedDatabase();
+        var seen = new HashSet<string>();
+        for (int i = 0; i < 1000; i++)
+        {
+            var grant = HandoffTokens.Mint(Fresh(11), Ip, Game495, db.Open, T0);
+            Assert.NotNull(grant.Key);
+            Assert.Equal(HandoffTokens.KeyBytes, grant.Key!.Length);
+            Assert.DoesNotContain((byte)0, grant.Key);
+            Assert.NotEqual(TkCrypt.LoginKey, grant.Key);
+            Assert.True(seen.Add(Convert.ToHexString(grant.Key)), $"mint {i + 1} repeated an earlier key");
+        }
+    }
+
+    /// <summary>The key is stored only as its SHA-256, beside the nonce hash on the same row, which keeps its
+    /// meaning: the SHA-256 of the surviving nonce bytes and nothing else, so a server from before the key column
+    /// still finds the row (the deploy window, below).</summary>
+    [Fact]
+    public void TheKeyIsStoredOnlyAsItsHashBesideAnUnchangedNonceHash()
+    {
+        using var db = new IsolatedDatabase();
+        var user = Fresh(7);
+        var echo = MintAt(db.Open, user, T0);
+        using var cn = db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT nonce_hash, key_hash FROM handoff_tokens;";
+        using var row = cmd.ExecuteReader();
+        Assert.True(row.Read());
+        Assert.Equal(PreviousHash(user, echo.Token), row.GetString(0));
+        Assert.Equal(KeyHash(echo.Key), row.GetString(1));
+        Assert.False(row.Read());
+    }
+
+    /// <summary>A 5.33 hand-off is today's: no key minted (the redirect carries <c>"NexonInc."</c>), the row
+    /// exactly what the code before the key wrote (the same nonce hash, <c>key_hash</c> NULL), and its port reads
+    /// no key, so it enters whatever the key field holds. Falsified by keying every port
+    /// (<c>CarriesKey</c> returning true): the grant has a key and the stored row a hash.</summary>
+    [Fact]
+    public void AFiveThreeThreeHandOffIsUnchanged()
+    {
+        using var db = new IsolatedDatabase();
+        Assert.False(HandoffTokens.CarriesKey(Game533));
+        foreach (int length in new[] { 7, 11 })
+        {
+            var user = Fresh(length);
+            var grant = HandoffTokens.Mint(user, Ip, Game533, db.Open, T0);
+            Assert.Null(grant.Key);
+            var echo = EchoOf(user, grant);
+            Assert.Equal(TkCrypt.LoginKey, echo.Key);
+            Assert.Equal(1, Scalar(db.Open, "SELECT COUNT(*) FROM handoff_tokens WHERE key_hash IS NULL " +
+                                            $"AND nonce_hash='{PreviousHash(user, echo.Token)}' AND username='{Auth.Key(user)}';"));
+            Assert.True(ConsumeAt(db.Open, echo, user, T0, port: Game533), $"a {length}-letter 5.33 hand-off was refused");
+
+            var other = Fresh(length);
+            var otherEcho = EchoOf(other, HandoffTokens.Mint(other, Ip, Game533, db.Open, T0));
+            Assert.True(ConsumeAt(db.Open, otherEcho with { Key = Array.Empty<byte>() }, other, T0, port: Game533),
+                        "the 5.33 port read the key field");
+        }
+    }
+
+    /// <summary>The 5.33 port refuses a token minted for a 4.95 login, even with its key: spending it there would
+    /// skip the key check its own port makes. The refusal spends nothing, and the token still enters at 4.95.
+    /// <para>Red on master, where any port consumed any token. Falsified by dropping <c>AND key_hash IS NULL</c>
+    /// from the 5.33 consume.</para></summary>
+    [Fact]
+    public void TheFiveThreeThreePortRefusesATokenMintedForFourNineFive()
+    {
+        using var db = new IsolatedDatabase();
+        foreach (int length in new[] { 7, 11 })
+        {
+            var user = Fresh(length);
+            var echo = MintAt(db.Open, user, T0);
+            Assert.False(ConsumeAt(db.Open, echo, user, T0, port: Game533), $"a {length}-letter 4.95 token entered at 5.33");
+            Assert.False(ConsumeAt(db.Open, echo with { Key = TkCrypt.LoginKey }, user, T0, port: Game533),
+                         $"a {length}-letter 4.95 token entered at 5.33 with \"NexonInc.\"");
+            Assert.True(ConsumeAt(db.Open, echo, user, T0), $"the {length}-letter token no longer entered at 4.95");
+        }
+    }
+
+    /// <summary>The channel decides, and only the 5.33 port is exempt: the 4.95 port and a port the pairing does
+    /// not know (a custom layout such as 7005) both mint a key and refuse an arrival without it. Falsified by
+    /// keying only the 4.95 port (<c>gamePort == 2005</c>): the unknown port mints no key.</summary>
+    [Fact]
+    public void AnUnknownPortRequiresTheKey()
+    {
+        using var db = new IsolatedDatabase();
+        Assert.True(HandoffTokens.CarriesKey(Game495));
+        Assert.True(HandoffTokens.CarriesKey(7005));
+        var user = Fresh(11);
+        var echo = MintAt(db.Open, user, T0, port: 7005);
+        Assert.NotEqual(TkCrypt.LoginKey, echo.Key);
+        Assert.False(ConsumeAt(db.Open, echo with { Key = TkCrypt.LoginKey }, user, T0, port: 7005),
+                     "an unknown port let a token in without its key");
+        Assert.True(ConsumeAt(db.Open, echo, user, T0, port: 7005), "an unknown port refused the right key");
+    }
+
+    // -- the deploy window: a login server and a game server on either side of a change --
+
+    // The two statements of Shared/HandoffTokens.cs as they were before the rekey (upstream/master
     // 9c00b98583495bf53684397f48beda773fdbd3ff, Mint and Consume), and the hash they used, computed here
     // rather than borrowed, so a change to the stored hash has something independent to disagree with.
     private const string PreviousMintSql = @"INSERT INTO handoff_tokens(nonce_hash, username, expires_utc, consumed, ip)
@@ -427,6 +629,13 @@ public class HandoffTokenTests : IDisposable
     private const string PreviousConsumeSql = @"UPDATE handoff_tokens SET consumed=1
                                 WHERE nonce_hash=$h AND username=$u AND ip=$ip
                                   AND consumed=0 AND expires_utc>$now;";
+
+    // Mint's statement as it was before the key column (upstream/master e67cd9df81e5784656a5f7f02971bd1dc073d9aa),
+    // the last code that names no key_hash. Its consume is PreviousConsumeSql unchanged.
+    private const string KeylessMintSql = @"INSERT INTO handoff_tokens(nonce_hash, username, expires_utc, consumed, ip)
+                                VALUES($h, $u, $e, 0, $ip)
+                                ON CONFLICT(username, nonce_hash) DO UPDATE
+                                  SET expires_utc=excluded.expires_utc, consumed=0, ip=excluded.ip;";
 
     private static string PreviousHash(string user, byte[] echo) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(echo[..HandoffTokens.SurvivingBytes(user)]));
@@ -440,10 +649,22 @@ public class HandoffTokenTests : IDisposable
         return PreviousMint(cn, user, echo, expires);
     }
 
-    private static int PreviousMint(SqliteConnection cn, string user, byte[] echo, long expires)
+    private static int PreviousMint(SqliteConnection cn, string user, byte[] echo, long expires) =>
+        RunMint(cn, PreviousMintSql, user, echo, expires);
+
+    private static int KeylessMint(Func<SqliteConnection> open, string user, byte[] echo, long expires)
+    {
+        using var cn = open();
+        return KeylessMint(cn, user, echo, expires);
+    }
+
+    private static int KeylessMint(SqliteConnection cn, string user, byte[] echo, long expires) =>
+        RunMint(cn, KeylessMintSql, user, echo, expires);
+
+    private static int RunMint(SqliteConnection cn, string sql, string user, byte[] echo, long expires)
     {
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = PreviousMintSql;
+        cmd.CommandText = sql;
         cmd.Parameters.AddWithValue("$h", PreviousHash(user, echo));
         cmd.Parameters.AddWithValue("$u", Auth.Key(user));
         cmd.Parameters.AddWithValue("$e", expires);
@@ -468,37 +689,45 @@ public class HandoffTokenTests : IDisposable
         return cmd.ExecuteNonQuery();
     }
 
-    /// <summary>New login server, old game server, and the reverse. The old game server consumes the tokens
-    /// this code mints, this code consumes the tokens the old login server mints, and the old login server's
-    /// insert for an 11-letter account no longer meets another account's row.</summary>
+    /// <summary>The window across the key column, both ways, on both game ports. This login server mints (a key
+    /// on 4.95, none on 5.33) and the game server before it consumes, reading no key and no column. The login
+    /// server before it mints (no <c>key_hash</c>, <c>"NexonInc."</c> on the wire) and this game server consumes:
+    /// on 4.95 through the keyless path, on 5.33 as before. Then an 11-letter account's token from each side in
+    /// flight at once.
+    /// <para>Falsified one way by hashing the key into <c>nonce_hash</c> (the previous game server then refuses
+    /// every keyed token), and the other by dropping <c>OR key_hash IS NULL</c> from the keyed consume (this game
+    /// server then refuses the previous login server's 4.95 tokens).</para></summary>
     [Fact]
     public void TheServerBeforeThisChangeAndThisOneConsumeEachOthersTokens()
     {
         using var db = new IsolatedDatabase();
-        foreach (int length in new[] { 7, 10, 11 })
-        {
-            var user = Fresh(length);   // this login server mints, the previous game server consumes
-            Assert.True(PreviousConsume(db.Open, user, MintAt(db.Open, user, T0), T0) == 1,
-                $"the previous game server refused a {length}-letter token this login server minted");
+        foreach (int port in new[] { Game495, Game533 })
+            foreach (int length in new[] { 7, 10, 11 })
+            {
+                var user = Fresh(length);   // this login server mints, the previous game server consumes
+                Assert.True(PreviousConsume(db.Open, user, MintAt(db.Open, user, T0, port: port).Token, T0) == 1,
+                    $"the previous game server refused a {length}-letter token this login server minted for {port}");
 
-            var other = Fresh(length);  // the previous login server mints, this game server consumes
-            var echo = ClientEcho(other, PreviousNonce);
-            Assert.Equal(1, PreviousMint(db.Open, other, echo, expires: T0 + 60));
-            Assert.True(ConsumeAt(db.Open, echo, other, T0), $"this game server refused a {length}-letter token the previous login server minted");
-        }
+                var other = Fresh(length);  // the previous login server mints, this game server consumes
+                var echo = ClientEcho(other, PreviousNonce);
+                Assert.Equal(1, KeylessMint(db.Open, other, echo, expires: T0 + 60));
+                Assert.True(ConsumeAt(db.Open, new Echo(echo, TkCrypt.LoginKey), other, T0, port: port),
+                    $"this game server refused at {port} a {length}-letter token the previous login server minted");
+            }
 
         // The previous login server mints for an 11-letter account while this code's token for another
-        // 11-letter account is in flight: the same hash, which was the same key.
+        // 11-letter account is in flight.
         var ours = Fresh(11);
         var ourEcho = MintAt(db.Open, ours, T0 + 1);
         var theirs = Fresh(11);
         var theirEcho = ClientEcho(theirs, PreviousNonce);
-        Assert.Equal(1, PreviousMint(db.Open, theirs, theirEcho, expires: T0 + 61));
-        Assert.True(ConsumeAt(db.Open, theirEcho, theirs, T0 + 1), "the previous login server's in-flight token was refused");
+        Assert.Equal(1, KeylessMint(db.Open, theirs, theirEcho, expires: T0 + 61));
+        Assert.True(ConsumeAt(db.Open, new Echo(theirEcho, TkCrypt.LoginKey), theirs, T0 + 1),
+            "the previous login server's in-flight token was refused");
         Assert.True(ConsumeAt(db.Open, ourEcho, ours, T0 + 1), "this login server's in-flight token was refused");
     }
 
-    /// <summary>Migration 4 on the database a deployment has today: the old key, with a live token, a
+    /// <summary>Migration 4 on the database a deployment had before it: the old key, with a live token, a
     /// consumed one and an expired one in it. The live one survives and still enters, the spent ones are
     /// gone, the key is the new one, and a second run changes nothing. A connection opened before the
     /// migration — the server that has not restarted yet — runs the previous code's statements on the new
@@ -549,7 +778,7 @@ PRAGMA user_version = 3;";
         var third = Fresh(11);     // the previous code's insert, on the running connection, for the same hash
         var thirdEcho = ClientEcho(third, PreviousNonce);
         Assert.Equal(1, PreviousMint(running, third, thirdEcho, expires: now + 60));
-        Assert.True(ConsumeAt(open, liveEcho, live, now), "a token minted before the migration was lost");
+        Assert.True(ConsumeAt(open, new Echo(liveEcho, TkCrypt.LoginKey), live, now), "a token minted before the migration was lost");
         Assert.True(ConsumeAt(open, anotherEcho, another, now), "a mint after the migration was refused");
         Assert.Equal(1, PreviousConsume(running, third, thirdEcho, now));
 
@@ -557,6 +786,76 @@ PRAGMA user_version = 3;";
         Assert.True(PrimaryKeyIsUserThenHash(open), "a second run changed the key");
         Assert.Equal(Db.CurrentSchemaVersion, Scalar(open, "PRAGMA user_version;"));
     }
+
+    /// <summary>Migration 5 on the database a deployment has today: <c>handoff_tokens</c> exactly as
+    /// upstream/master e67cd9d declares it, at schema version 4, with a live token for each game port minted by
+    /// the code before the key. The migration adds <c>key_hash</c> as NULL on those rows, and both still enter at
+    /// their ports. A connection opened before it, the server not yet restarted, runs that code's statements on
+    /// the new table: its mint enters through this code's consume, and this code's keyed mint through its
+    /// consume. A second run changes nothing.
+    /// <para>Falsified by deleting the migration's entry from <c>Db.Migrations</c>: the column is never added
+    /// (and this code's mint and consume, which name it, fail).</para></summary>
+    [Fact]
+    public void KeyColumnMigrationKeepsLiveTokensAndTheOldStatementsWork()
+    {
+        string dir = System.IO.Path.Combine(TestProcessState.StateDirectory, $"keycol-{Guid.NewGuid():N}");
+        System.IO.Directory.CreateDirectory(dir);
+        string path = System.IO.Path.Combine(dir, "project1998.db");
+        Func<SqliteConnection> open = () => Db.Open(path);
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        using (var cn = new SqliteConnection($"Data Source={path}"))
+        {
+            cn.Open();
+            using var cmd = cn.CreateCommand();
+            cmd.CommandText = @"
+CREATE TABLE handoff_tokens (
+  nonce_hash  TEXT NOT NULL,
+  username    TEXT NOT NULL,
+  expires_utc INTEGER NOT NULL,
+  consumed    INTEGER NOT NULL DEFAULT 0,
+  ip          TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (username, nonce_hash)
+);
+PRAGMA journal_mode = WAL;
+PRAGMA user_version = 4;";
+            cmd.ExecuteNonQuery();
+        }
+        var live495 = Fresh(11);
+        var live533 = Fresh(11);
+        var echo495 = ClientEcho(live495, PreviousNonce);
+        var echo533 = ClientEcho(live533, PreviousNonce);
+        Assert.Equal(1, KeylessMint(open, live495, echo495, expires: now + 60));
+        Assert.Equal(1, KeylessMint(open, live533, echo533, expires: now + 60));
+        Assert.Equal(0, KeyColumns(open));
+        using var running = open();   // the process that has not restarted: its connection predates the column
+
+        Db.InitializeDatabase(path);
+
+        Assert.Equal(1, KeyColumns(open));
+        Assert.Equal(Db.CurrentSchemaVersion, Scalar(open, "PRAGMA user_version;"));
+        Assert.Equal(2, Scalar(open, "SELECT COUNT(*) FROM handoff_tokens WHERE key_hash IS NULL;"));
+        Assert.True(ConsumeAt(open, new Echo(echo495, TkCrypt.LoginKey), live495, now, port: Game495),
+                    "a 4.95 token minted before the migration was lost");
+        Assert.True(ConsumeAt(open, new Echo(echo533, TkCrypt.LoginKey), live533, now, port: Game533),
+                    "a 5.33 token minted before the migration was lost");
+
+        var theirs = Fresh(11);   // the previous code's mint on the running connection; this code consumes
+        var theirEcho = ClientEcho(theirs, PreviousNonce);
+        Assert.Equal(1, KeylessMint(running, theirs, theirEcho, expires: now + 60));
+        Assert.True(ConsumeAt(open, new Echo(theirEcho, TkCrypt.LoginKey), theirs, now),
+                    "this game server refused a token the not-yet-restarted login server minted");
+        var ours = Fresh(11);     // this code's keyed mint; the previous code consumes on the running connection
+        var ourEcho = MintAt(open, ours, now);
+        Assert.Equal(1, PreviousConsume(running, ours, ourEcho.Token, now));
+
+        Db.InitializeDatabase(path);
+        Assert.Equal(1, KeyColumns(open));
+        Assert.Equal(Db.CurrentSchemaVersion, Scalar(open, "PRAGMA user_version;"));
+    }
+
+    private static long KeyColumns(Func<SqliteConnection> open) =>
+        Scalar(open, "SELECT COUNT(*) FROM pragma_table_info('handoff_tokens') WHERE name='key_hash';");
 
     private static bool PrimaryKeyIsUserThenHash(Func<SqliteConnection> open)
     {

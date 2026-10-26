@@ -253,8 +253,9 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    AA  len(u16BE)  03             // envelope: len = 25 + nameLen, no increment follows
    ip[3] ip[2] ip[1] ip[0]        // 4 bytes, IP octets REVERSED (e.g. 127.0.0.1 -> 01 00 00 7F)
    port(u16, big-endian)          // game server port, e.g. 2005 -> 07 D5
-   17 00 09                       // (constants observed in the working handoff)
-   "NexonInc."                    // the 9-byte key string, echoed
+   17 00 09                       // (constants observed in the working handoff); 09 = the key's length
+   <key: 9 bytes>                 // echoed whole in 0x10: a one-time secret on a hand-off to a 4.95 game
+                                  // port, "NexonInc." on the bounce to login and on a 5.33 hand-off
    nameLen name                   // the username
    <token: 5 bytes>               // handoff token, echoed back by the client in 0x10
    ```
@@ -297,9 +298,30 @@ handled as plaintext by the client. Most importantly for the server, the **game-
      is not the one the token was minted for. An account already created with a 12-letter name stays locked
      out.
    - Because that leaves as little as one byte (or none), **the address binding, not the nonce, is what
-     carries the security for long names.** Mint records the login connection's IP; the `0x10` arrival must
-     come from the same address. Keep the significant nonce bytes **non-zero** — the client's copy stops at
-     the first NUL.
+     carries the security for long names**, or did until the redirect key below. Mint records the login
+     connection's IP; the `0x10` arrival must come from the same address. Keep the significant nonce bytes
+     **non-zero** — the client's copy stops at the first NUL.
+
+   **Hand-off key — a one-time secret in the key field (2026-10-26).** The 9 bytes between `23 00 09` and the
+   name used to be the constant `"NexonInc."`. The client copies them back at the head of its `0x10` arrival,
+   and they sit **outside** the shared 13-byte field, so all 9 come back at every name length. A static read of
+   the 4.95 client found no code that writes `"NexonInc."` into a packet (its only copy of the string feeds the
+   cipher). A live login with the stock client on 2026-10-26 returned a server-chosen key byte for byte, high
+   bytes included, at 3, 7 and 11 letters, and entered the world each time.
+   - A hand-off to a **4.95 game port** (the login server's, and the game server's re-login) now carries 9 bytes
+     from the cryptographic RNG, each 1-255, minted with the nonce (`HandoffTokens.Mint`). The arrival must
+     return them: `klen` 9 and the same 9 bytes, or it is refused exactly like a bad token. An 11-letter name,
+     which keeps no nonce byte, is guarded by a 72-bit single-use secret again, not by the address alone.
+   - The row stores the key's SHA-256 in its own column, `key_hash` (schema migration 5); `nonce_hash` keeps
+     its meaning, so the login and game servers on either side of the change consume each other's tokens
+     during a deploy.
+   - A port the channel pairing does not name as 5.33 counts as 4.95 here, so an unknown port requires the key
+     (`HandoffTokens.CarriesKey`).
+   - The **5.33** hand-off is unchanged: `"NexonInc."` and no key, since its client was never checked for the
+     echo. Its game port refuses a token minted for a 4.95 login, which would otherwise skip its key there.
+   - The **bounce to login** (Alt+X, §4.2) keeps `"NexonInc."`: the login server checks the password itself.
+   - `klen` stays 9 and the struct keeps its width. The cipher is unchanged: the client keeps its own
+     `"NexonInc."` literal for it, so nothing derives a cipher key from these bytes.
 
 5. **Password change — client → server `0x26`** *(added 2026-08-25, observed live from the 5.33 client)*:
    body = `nameLen name oldLen old newLen new` — the `0x03` login body plus a third length-prefixed
@@ -340,16 +362,19 @@ handled as plaintext by the client. Most importantly for the server, the **game-
 1. **The client speaks first** — do **not** send anything on connect. The client sends **`0x10`
    (arrival)** with a **plaintext** body in the standard §2 envelope, increment byte included:
    ```
-   AA len(u16BE) 10 inc | 09 "NexonInc." | nameLen "name" | <handoff token bytes>
+   AA len(u16BE) 10 inc | 09 <key: 9 bytes> | nameLen "name" | <handoff token bytes>
    ```
    Only the body skips the cipher; the frame is split like any other (`TkPacket.Parse`,
    `Protocol.Tk495/TkPacket.cs:61-66`), and `body[0]` is the byte after the increment
-   (`Server/Session.cs:1104-1116`; corrected 2026-10-24, this block used to leave out the header).
-   Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`.
+   (`Server/Session.cs:1119-1140`; corrected 2026-10-24, this block used to leave out the header).
+   Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`. The key
+   is `body[1 .. 1+klen]`, the redirect's key field returned whole (§4.1, hand-off key): on the 4.95 port
+   it must be the 9 bytes the hand-off carried, on the 5.33 port it is `"NexonInc."` and not read.
    The trailing bytes are the **handoff token** (`body[2+klen+ulen ..]`); the game server
    **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
-   and bound to this user *and this source address*) — otherwise it **closes the connection**. This is what
-   stops a client from connecting straight to the game port and claiming any username.
+   and bound to this user *and this source address*, and on the 4.95 port carrying the same key) — otherwise
+   it **closes the connection**. This is what stops a client from connecting straight to the game port and
+   claiming any username.
    (`P1998_ENFORCE_HANDOFF=0` downgrades a failure to a warning as a fallback.)
    **The token is NOT always 5 bytes here** — it is however much the client's shared 13-byte field had
    room for after the name (§4.1), so compare only the first `11 - nameLen` bytes.
@@ -499,14 +524,14 @@ CONSTRUCTED"), and the client begins loading the map and sending game packets ba
 ## 6. World-entry packet sequence (the working burst)
 
 After the client's `0x10`, the server sends this sequence (all game-channel, all NexonInc-encrypted, no
-trailer), in this order (`Session.HandleArrival`, `Server/Session.cs:1239-1269`; corrected 2026-10-24, this
+trailer), in this order (`Session.HandleArrival`, `Server/Session.cs:1251-1281`; corrected 2026-10-24, this
 table used to stop at row 7 and gave the time as a constant `10 32`):
 
 | # | Opcode | Body (decrypted) | Purpose |
 |---|---|---|---|
 | 1 | `0x02` | `00` | **Enter-world trigger** — builds the world object (§5). Must be first. |
 | 2 | `0x1E` | `06 00 00` | Ack / handshake. |
-| 3 | `0x20` | `hour(u8) year(u8)` | Time-of-day (shows the day/night icon), read from the world clock (`World.Clock.Time`, `Server/Session.cs:1248`; `SendTime`, `Server/Session.Media.cs:243-244`), the same calendar as the hourly `0x20` broadcast (§11n). |
+| 3 | `0x20` | `hour(u8) year(u8)` | Time-of-day (shows the day/night icon), read from the world clock (`World.Clock.Time`, `Server/Session.cs:1260`; `SendTime`, `Server/Session.Media.cs:243-244`), the same calendar as the hourly `0x20` broadcast (§11n). |
 | 4 | `0x05` | `entityId(u32BE) 00 00 00 02 00 00 00 00` | **Your own entity id.** Binds camera/input to the self. Without it the client stays black and won't move even after the map loads. |
 | 5 | `0x15` | enter-map (see §7) | Opens the map's cache file `Maps\TK<mapId>.map` (§10.8). |
 | 6 | `0x04` | coords (see §7) | Sets camera scroll. |
@@ -546,8 +571,8 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x02` | NameCheck | `nameLen name pwLen pw 00 00 00` | Creation step 1. **Carries name AND password.** |
 | `0x04` | CreateAppearance | 5 bytes (see §9) | Creation step 2. |
 | `0x03` | Login | `nameLen name pwLen pw 00` | Login channel. Also answered on the game channel: a `0x03` there is re-authenticated and handed back to the same game port (`Session.HandleReLogin`, `Server/Session.cs:696`; §4.2 item 3). |
-| `0x26` | Change password | `nameLen name oldLen old newLen new` | Login channel; **no trailing NUL** unlike `0x03`. The dialog is MODAL until the `0x02` status reply — `0x00` changed / `0x03` credentials / `0x05` weak new password, and `0x05` too for a body that does not parse (`LoginServer/LoginSession.cs:368-372`). Counts against the per-IP failed-login budget. See §4.1 item 5. |
-| `0x10` | Arrival | `09 "NexonInc." nameLen name <token>` | Game channel, client speaks first. The **body is plaintext**, but the frame keeps the standard envelope with its increment byte, `AA len 10 inc` then this body (§2, §4.2 item 1). |
+| `0x26` | Change password | `nameLen name oldLen old newLen new` | Login channel; **no trailing NUL** unlike `0x03`. The dialog is MODAL until the `0x02` status reply — `0x00` changed / `0x03` credentials / `0x05` weak new password, and `0x05` too for a body that does not parse (`LoginServer/LoginSession.cs:371-375`). Counts against the per-IP failed-login budget. See §4.1 item 5. |
+| `0x10` | Arrival | `09 <key: 9 bytes> nameLen name <token>` | Game channel, client speaks first. The **body is plaintext**, but the frame keeps the standard envelope with its increment byte, `AA len 10 inc` then this body (§2, §4.2 item 1). The key is the redirect's key field returned whole: on the 4.95 port the hand-off's one-time key, which must match; on the 5.33 port `"NexonInc."`, not read (§4.1, hand-off key). |
 | `0x0b` | **Exit to select screen** (Alt+X) | `00` (constant) | Game channel. "I left the world." Answer with the `0x03` redirect struct (§4.1) pointed at the **login** port, or the select screen stays bound to the game socket and character creation hangs. RTK `case 0x0B → clif_closeit`. See §4.2. (server→client `0x0b` is a client-side no-op — §13.) |
 | `0x32` | Walk step | `dir(u8) stepCounter(u8) X(u16) Y(u16) pad` | Self-walk request (see §10). |
 | `0x05` | **Map-data request** (view rect) | `x0(u16BE) y0(u16BE) w(u8) h(u8)` + 4 junk bytes | **The terrain stream request — 4.95 sends this too** (corrected 2026-08-07; this table previously said 4.95 never sent `0x05`). Reply with an `0x06` cell block covering the rect (§13). See §10.7. |
@@ -655,7 +680,7 @@ no binary.
    `0x465200` only paints the checkbox and never writes `[state+0x451]`; what reset the flag was the stats
    packet, whose byte 46 was then always 0.
 
-A third wording, at `Server/Session.cs:1567-1568`, has the re-seed nudge the flag through the options window's
+A third wording, at `Server/Session.cs:1579-1580`, has the re-seed nudge the flag through the options window's
 apply path.
 
 #### `0x1F` — weather ⚠ *RTK's byte does not work here*
@@ -2386,7 +2411,7 @@ Mobs persist on a map after everyone leaves (they belong to the map, not a sessi
 current map's world mobs for everyone. **Players are viewport-streamed like mobs** (corrected 2026-10-24; this
 used to say only mobs were): `Session.SyncPeers` (`Server/Session.WorldApi.cs:487`) runs the same show / despawn /
 re-show decision mobs get, so a peer is drawn with `0x33` as it comes into view and despawned as it leaves. It
-runs at world entry (`Server/Session.cs:1265`), after each of our own steps (`Server/Session.Movement.cs:370`),
+runs at world entry (`Server/Session.cs:1277`), after each of our own steps (`Server/Session.Movement.cs:370`),
 on a warp, and on every world tick (`World.ReconcileViews`, `Server/World.cs:3539`). See §11b.1 for the gate.
 
 ---
@@ -5319,7 +5344,7 @@ The client keeps each map as `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`), a cach
 
 The server's `0x15` (enter-map) tells the client which map id + dimensions to open; the cells then come
 from the server, which pushes the window on entry and the newly exposed strip after every step
-(`PrimeViewport`, `Server/Session.cs:1254`; `StreamViewport`, `:1491-1516`), and the client writes them into
+(`PrimeViewport`, `Server/Session.cs:1266`; `StreamViewport`, `:1503-1528`), and the client writes them into
 the memory-mapped `.map` (§10.7, §10.8). (Corrected 2026-10-24: this used to say the client reads the `.map`
 file itself.) For a test, pick a map whose server copy has content: `TK27` is a uniform "void" tile (renders
 black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.

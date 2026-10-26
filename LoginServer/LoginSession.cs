@@ -335,21 +335,24 @@ public sealed class LoginSession
         Log.Info($"   -> LOGIN accepted for user='{_user}' (name {_user.Length} chars, password {pass.Length} chars)");
         Accounts.TouchLogin(_user);
 
-        // Mint a single-use handoff nonce (5 bytes on the wire; how many the client can carry back depends
-        // on the username length — see Shared/HandoffTokens) bound to this connection's source address, and
-        // record it in the shared DB; the game server validates+consumes it on 0x10 arrival.
-        var nonce = HandoffTokens.Mint(_user, _ip.ToString());
-
         // handoff: send the client to the GAME server (reversed IP octets + port). Keep the version's
         // channel together: a V533 login (port 2001) hands off to the V533 game port 2006; V495 -> 2005.
         int gport = ChannelPorts.GameFor(_port);
+
+        // Mint the single-use hand-off for that game port, bound to this connection's source address and
+        // recorded in the shared DB; the game server validates+consumes it on 0x10 arrival. The nonce is 5
+        // bytes on the wire, of which the client carries back as many as the username leaves room for (see
+        // Shared/HandoffTokens). A 4.95 game port's hand-off also carries a 9-byte one-time key, which comes
+        // back whole at every name length; the 5.33 channel's carries "NexonInc." as before.
+        var grant = HandoffTokens.Mint(_user, _ip.ToString(), gport);
+
         // Shared builder (Protocol.Tk495/LoginRedirect): the game server sends this same struct back the other
         // way when the client exits to the select screen (0x0B), and the client parses it as a fixed-size
-        // record — so a byte of drift between the two processes hangs a screen instead of throwing.
-        // `nonce` = the 5-byte single-use handoff token (was the static {0,1,18,17,0}); echoed back in 0x10.
-        Send(LoginRedirect.Build(GameHost, gport, _user, nonce));
+        // record — so a byte of drift between the two processes hangs a screen instead of throwing. The grant
+        // puts its key in the key field and its token (was the static {0,1,18,17,0}) in the tail.
+        Send(LoginRedirect.Build(GameHost, gport, _user, grant));
         Log.Info($"   -> game handoff -> {GameHost[0]}.{GameHost[1]}.{GameHost[2]}.{GameHost[3]}:{gport}");
-        if (Log.WireEnabled) Log.Info($"        token minted {Log.Hex(nonce)}");
+        if (Log.WireEnabled) Log.Info($"        token minted {Log.Hex(grant.Token)}");
     }
 
     // Login-screen password change (0x26): `nameLen name oldLen old newLen new`, the 0x03 login shape

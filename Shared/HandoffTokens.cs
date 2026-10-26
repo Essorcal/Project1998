@@ -33,13 +33,14 @@ namespace Shared;
 ///
 /// The same field caps the name itself. At 11 letters the length byte and the name fill all 12 bytes and
 /// nothing of the nonce is left; at 12 the name loses its last letter, so the 0x10 arrival claims a
-/// username the token was never minted for and <see cref="Consume(byte[], string, string)"/> refuses it. Such an account is
-/// created and then can never enter the world (#299), which is why account creation refuses any name
-/// longer than <see cref="MaxNameLength"/>.
+/// username the token was never minted for and <see cref="Consume(byte[], byte[], string, string, int)"/>
+/// refuses it. Such an account is created and then can never enter the world (#299), which is why account
+/// creation refuses any name longer than <see cref="MaxNameLength"/>.
 ///
 /// Because that leaves as little as one byte (or none), the nonce alone is NOT the security boundary for
-/// long names — the address binding is. An attacker must both be at the login's source address and guess
-/// whatever entropy survived, inside the TTL, once.
+/// long names. Until the redirect key below it was the address binding: an attacker had to be at the
+/// login's source address and guess whatever entropy survived, inside the TTL, once. On a 4.95 port the
+/// key now carries it.
 ///
 /// THE KEY. The same shortage is why a row is keyed by the account as well as the hash (Shared/Db.cs,
 /// <c>handoff_tokens</c>). Keyed by the hash alone, every 11-letter account shared one key (the hash of no
@@ -51,11 +52,49 @@ namespace Shared;
 /// The stored hash is still the SHA-256 of the surviving bytes and nothing else, on purpose. Deploys
 /// restart the login and game servers minutes apart, and in between one runs this code and the other the
 /// code before it; with the hash unchanged each side consumes the tokens the other mints.
+///
+/// THE REDIRECT KEY (2026-10-26). The 0x03 redirect carries a second field the client returns: the 9-byte
+/// key between <c>23 00 09</c> and the name, which the client copies back at the head of its 0x10 arrival.
+/// It sits OUTSIDE the shared 13-byte field, so all 9 bytes come back at every name length (a static read of
+/// the 4.95 client, and a live login on 2026-10-26 at 3, 7 and 11 letters with high bytes in the key). It
+/// used to be the constant <c>"NexonInc."</c>. A hand-off to a 4.95 game port now puts a fresh secret there,
+/// 9 bytes from the cryptographic RNG, each 1-255 like the nonce, stored as its SHA-256 in <c>key_hash</c> on
+/// the same row and consumed with it. The arrival must hand the same 9 bytes back. An 11-letter name, which
+/// carries no nonce byte, is then guarded by a 72-bit single-use secret again, not by the address alone.
+/// The client's cipher never reads these bytes: it keeps its own <c>"NexonInc."</c> literal.
+///
+/// <para>The channel decides it (<see cref="CarriesKey"/>): every game port but the 5.33 one carries a key,
+/// so a port <see cref="ChannelPorts"/> does not know is checked. The 5.33 client was never checked for the
+/// echo, so its hand-off is today's: <c>"NexonInc."</c> on the wire and <c>key_hash</c> NULL. Its game
+/// port accepts only rows with no key, so a token minted for a 4.95 login cannot be spent there.</para>
+///
+/// <para>The key has its own column, not a longer hash input, for the deploy window above. A game server
+/// from before the column consumes on the nonce hash, the name and the address and never reads
+/// <c>key_hash</c>, so it still accepts this login server's tokens. A login server from before the column
+/// writes rows its statements leave NULL, which a 4.95 port accepts on the nonce and the address, as it did
+/// before. So does a 5.33 row presented at a 4.95 port, on the same terms its own port gives it. A row this
+/// login server minted for 4.95 always has a key, so neither path reaches it.</para>
+///
+/// <para>One case the window cannot cover, and only when rolling BACK past this change while the game server
+/// still runs it: the older login server's upsert does not name <c>key_hash</c>. If it re-mints an 11-letter
+/// account whose keyed row from this login server is still live (that client never arrived), the row keeps
+/// the stale key, and this game server refuses the arrival until the row lapses unrefreshed or the game
+/// server restarts onto the older build.</para>
 /// </summary>
 public static class HandoffTokens
 {
     private const int TtlSeconds = 60;   // generous: the client opens the game port within ~1s of the 0x03 reply
     private const int SigBytes = 4;      // nonce bytes we mint; how many SURVIVE depends on the name (see above)
+
+    /// <summary>The width of the 0x03 redirect's key field, the <c>09</c> of <c>23 00 09</c>, and so of the
+    /// secret a keyed hand-off carries in it. Fixed: the client reads the redirect as a fixed-size struct, and
+    /// <c>klen</c> other than 9 was never tried.</summary>
+    public const int KeyBytes = 9;
+
+    /// <summary>What one mint hands the redirect: the game port it was minted for, the 5-byte token for the
+    /// tail, and the secret for the key field, or null on a channel that carries none (that redirect sends
+    /// <c>"NexonInc."</c>, as before).</summary>
+    public sealed record Grant(int GamePort, byte[] Token, byte[]? Key);
 
     /// <summary>The usable bytes of the client's handoff field: the 13-byte field of the truncation rule
     /// above, less the NUL terminator the client forces. The length byte, the username and whatever of
@@ -63,9 +102,9 @@ public static class HandoffTokens
     public const int HandoffFieldBytes = 12;
 
     /// <summary>The longest name that reaches the game server whole: the field less its length byte. One
-    /// letter more and the arrival carries a cut name that <see cref="Consume(byte[], string, string)"/> can never match, so
-    /// account creation (<see cref="NameRules"/>) refuses anything longer. Nothing of the nonce survives
-    /// at this length; the address binding carries the check (see above).</summary>
+    /// letter more and the arrival carries a cut name that <see cref="Consume(byte[], byte[], string, string, int)"/>
+    /// can never match, so account creation (<see cref="NameRules"/>) refuses anything longer. Nothing of the
+    /// nonce survives at this length; on a 4.95 port the key carries the check (see above).</summary>
     public const int MaxNameLength = HandoffFieldBytes - 1;
 
     /// <summary>How many nonce bytes the client will still be carrying when it re-sends them in its 0x10
@@ -74,60 +113,82 @@ public static class HandoffTokens
     public static int SurvivingBytes(string username) =>
         Math.Clamp(11 - (username ?? "").Length, 0, SigBytes);
 
-    /// <summary>Mint a fresh nonce for <paramref name="username"/> arriving from <paramref name="ip"/>,
-    /// store the hash of the prefix that will survive the client's truncation, and return the raw bytes
-    /// for the 0x03 handoff reply's 5-byte token slot. The significant bytes are kept non-zero so the
-    /// client's NUL-terminated copy can't end early; the trailing 5th byte is the terminator.</summary>
-    public static byte[] Mint(string username, string ip) =>
-        Mint(username, ip, Db.Open, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    /// <summary>Whether a hand-off to <paramref name="gamePort"/> carries a one-time key in the redirect's key
+    /// field, and so whether that port's arrival must return one. Every game port does except the 5.33
+    /// channel's (<see cref="ChannelPorts.IsV533"/>), so a port the pairing does not know is checked rather
+    /// than waved through. The login server asks with the game port it redirects to, and the game server with
+    /// its own port, so the two decide from the same port.</summary>
+    public static bool CarriesKey(int gamePort) => !ChannelPorts.IsV533(gamePort);
+
+    /// <summary>Mint a fresh hand-off for <paramref name="username"/> arriving from <paramref name="ip"/> at
+    /// <paramref name="gamePort"/>: the nonce for the 0x03 reply's 5-byte token slot (the significant bytes
+    /// non-zero, so the client's NUL-terminated copy cannot end early; the trailing 5th byte is the
+    /// terminator), and on a keyed port (<see cref="CarriesKey"/>) the 9-byte key for the key field. The
+    /// stored row holds the hash of the nonce prefix that will survive the client's truncation and the hash
+    /// of the key.</summary>
+    public static Grant Mint(string username, string ip, int gamePort) =>
+        Mint(username, ip, gamePort, Db.Open, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
     /// <summary>
-    /// <see cref="Mint(string, string)"/> against a connection source and a clock the caller names: the
+    /// <see cref="Mint(string, string, int)"/> against a connection source and a clock the caller names: the
     /// public overload passes the shared database and the current time, and the tests pass a database file
     /// of their own and a fixed clock.
     ///
     /// <para>Two statements, each a single autocommit statement taking SQLite's one write lock the way every
     /// write from either process does; neither depends on the other's result, so no transaction spans them.
-    /// First the purge: it deletes only rows <see cref="Consume(byte[], string, string)"/> refuses already
-    /// (consumed, or expired at <paramref name="now"/>), so it cannot take a live token from a login in flight
-    /// in either process, and the table holds no more than the tokens minted within the TTL. Then the
+    /// First the purge: it deletes only rows <see cref="Consume(byte[], byte[], string, string, int)"/> refuses
+    /// already (consumed, or expired at <paramref name="now"/>), so it cannot take a live token from a login in
+    /// flight in either process, and the table holds no more than the tokens minted within the TTL. Then the
     /// insert. The key is <c>(username, nonce_hash)</c> (Shared/Db.cs), so it can only meet a row of this
     /// same account with the same surviving bytes; for an 11-letter name that is every earlier token of the
     /// account. Such a row is either spent (the purge has just removed it) or a live token from a login of
-    /// this account that has not arrived yet, which the new token replaces: the two are identical to
-    /// <see cref="Consume(byte[], string, string)"/> apart from the address and the expiry, and the newer
+    /// this account that has not arrived yet, which the new token replaces, its key included: the newer
     /// login's are the ones to keep.</para>
     ///
     /// <para>A failure of either statement is logged at Warn with its exception. The insert's is the one that
     /// matters: the reply still goes out (the caller sends it regardless), and that login's arrival will be
     /// refused at the game door.</para>
     /// </summary>
-    internal static byte[] Mint(string username, string ip, Func<SqliteConnection> open, long now)
+    internal static Grant Mint(string username, string ip, int gamePort, Func<SqliteConnection> open, long now)
     {
         var sig = new byte[SigBytes];
         RandomNumberGenerator.Fill(sig);
         for (int i = 0; i < SigBytes; i++) if (sig[i] == 0) sig[i] = 1;   // keep all significant bytes non-zero
+        byte[]? key = CarriesKey(gamePort) ? NewKey() : null;
         string user = Auth.Key(username);
         try
         {
             using var cn = open();
             Purge(cn, now);
             using var cmd = cn.CreateCommand();
-            cmd.CommandText = @"INSERT INTO handoff_tokens(nonce_hash, username, expires_utc, consumed, ip)
-                                VALUES($h, $u, $e, 0, $ip)
+            cmd.CommandText = @"INSERT INTO handoff_tokens(nonce_hash, username, expires_utc, consumed, ip, key_hash)
+                                VALUES($h, $u, $e, 0, $ip, $k)
                                 ON CONFLICT(username, nonce_hash) DO UPDATE
-                                  SET expires_utc=excluded.expires_utc, consumed=0, ip=excluded.ip;";
+                                  SET expires_utc=excluded.expires_utc, consumed=0, ip=excluded.ip,
+                                      key_hash=excluded.key_hash;";
             cmd.Parameters.AddWithValue("$h", HashHex(sig[..SurvivingBytes(username)]));
             cmd.Parameters.AddWithValue("$u", user);
             cmd.Parameters.AddWithValue("$e", now + TtlSeconds);
             cmd.Parameters.AddWithValue("$ip", ip ?? "");
+            cmd.Parameters.AddWithValue("$k", key is null ? DBNull.Value : HashHex(key));
             cmd.ExecuteNonQuery();
         }
         catch (Exception e)
         {
             Log.Warn($"handoff token for '{user}' could not be recorded — that login's arrival will be refused", e);
         }
-        return new byte[] { sig[0], sig[1], sig[2], sig[3], 0 };   // 5-byte wire token; the client keeps a prefix
+        // The 5-byte wire token, of which the client keeps a prefix; the key, if any, comes back whole.
+        return new Grant(gamePort, new byte[] { sig[0], sig[1], sig[2], sig[3], 0 }, key);
+    }
+
+    /// <summary>A fresh key: <see cref="KeyBytes"/> bytes from the cryptographic RNG, each drawn uniformly
+    /// from 1-255. Never 0x00, like the nonce: the client was only shown to return non-zero bytes, and a NUL
+    /// is the one byte a copy that stops early would lose.</summary>
+    private static byte[] NewKey()
+    {
+        var key = new byte[KeyBytes];
+        for (int i = 0; i < KeyBytes; i++) key[i] = (byte)RandomNumberGenerator.GetInt32(1, 256);
+        return key;
     }
 
     /// <summary>Delete the rows no consume can accept any more: consumed, or expired at
@@ -148,44 +209,64 @@ public static class HandoffTokens
         }
     }
 
-    /// <summary>Validate + single-use-consume a token for the claimed username and source address. Compares
-    /// exactly the prefix the client was able to carry (<see cref="SurvivingBytes"/>) — a caller cannot
-    /// shorten the comparison by claiming a longer name, because the length is derived from the SAME name
-    /// the row is keyed on. Returns true only if the row exists, matches username + address, is unexpired,
-    /// and was not already consumed: one atomic UPDATE, so a replayed 0x10 fails the second time.</summary>
-    public static bool Consume(byte[] token, string expectedUser, string ip) =>
-        Consume(token, expectedUser, ip, Db.Open, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    /// <summary>The consume on a keyed port: the row's key must be the one the arrival returned. A row with no
+    /// key was minted without one, by a login server from before the key column (the deploy window, class
+    /// summary) or for the 5.33 channel, and enters on the nonce and the address, as every row did before.</summary>
+    private const string ConsumeKeyedSql = @"UPDATE handoff_tokens SET consumed=1
+                                WHERE nonce_hash=$h AND username=$u AND ip=$ip
+                                  AND consumed=0 AND expires_utc>$now
+                                  AND (key_hash=$k OR key_hash IS NULL);";
+
+    /// <summary>The consume on the 5.33 port: today's check, plus refusing any row that carries a key. Such a
+    /// row was minted for a 4.95 login, and spending it here would skip its key.</summary>
+    private const string ConsumeUnkeyedSql = @"UPDATE handoff_tokens SET consumed=1
+                                WHERE nonce_hash=$h AND username=$u AND ip=$ip
+                                  AND consumed=0 AND expires_utc>$now
+                                  AND key_hash IS NULL;";
+
+    /// <summary>Validate + single-use-consume a hand-off for the claimed username and source address at
+    /// <paramref name="gamePort"/>. Compares exactly the nonce prefix the client was able to carry
+    /// (<see cref="SurvivingBytes"/>): a caller cannot shorten the comparison by claiming a longer name,
+    /// because the length is derived from the SAME name the row is keyed on. On a keyed port
+    /// (<see cref="CarriesKey"/>) <paramref name="key"/> is the arrival's key field and must be exactly
+    /// <see cref="KeyBytes"/> long and match the row's key; on the 5.33 port it is not read. Returns true only
+    /// if the row exists, matches username + address (+ key), is unexpired, and was not already consumed: one
+    /// atomic UPDATE, so a replayed 0x10 fails the second time, key and all.</summary>
+    public static bool Consume(byte[] token, byte[] key, string expectedUser, string ip, int gamePort) =>
+        Consume(token, key, expectedUser, ip, gamePort, Db.Open, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 
     /// <summary>
-    /// <see cref="Consume(byte[], string, string)"/> against a connection source and a clock the caller names
-    /// (see the <see cref="Mint(string, string, Func{SqliteConnection}, long)"/> overload). One autocommit
-    /// UPDATE: SQLite runs it under the write lock both processes share, so of two arrivals presenting the same
-    /// token only one can change the row.
+    /// <see cref="Consume(byte[], byte[], string, string, int)"/> against a connection source and a clock the
+    /// caller names (see the <see cref="Mint(string, string, int, Func{SqliteConnection}, long)"/> overload).
+    /// One autocommit UPDATE: SQLite runs it under the write lock both processes share, so of two arrivals
+    /// presenting the same token only one can change the row.
     ///
     /// <para>A database fault (a write lock held past the busy timeout, a missing table, a file that will not
-    /// open) is logged at Error with its exception and the account, never the token, and answered as an
-    /// invalid token: false, the answer it got before the fault was logged (#332). What the arrival does with
-    /// that false is its own decision and is unchanged: it refuses, or with <c>P1998_ENFORCE_HANDOFF=0</c> lets
-    /// the client in with a warning. Either way it still writes its own "invalid/expired" or "invalid handoff
-    /// token" line after this one, because false is the only answer this method has for a token it could not
-    /// check; the Error line before it is what tells the two apart.</para>
+    /// open) is logged at Error with its exception and the account, never the token or the key, and answered
+    /// as an invalid token: false, the answer it got before the fault was logged (#332). What the arrival does
+    /// with that false is its own decision and is unchanged: it refuses, or with <c>P1998_ENFORCE_HANDOFF=0</c>
+    /// lets the client in with a warning. Either way it still writes its own "invalid/expired" or "invalid
+    /// handoff token" line after this one, because false is the only answer this method has for a token it
+    /// could not check; the Error line before it is what tells the two apart.</para>
     /// </summary>
-    internal static bool Consume(byte[] token, string expectedUser, string ip, Func<SqliteConnection> open, long now)
+    internal static bool Consume(byte[] token, byte[] key, string expectedUser, string ip, int gamePort,
+                                 Func<SqliteConnection> open, long now)
     {
         int need = SurvivingBytes(expectedUser);
         if (token is null || token.Length < need) return false;
+        bool keyed = CarriesKey(gamePort);
+        if (keyed && (key is null || key.Length != KeyBytes)) return false;   // no key, or another klen
         var sig = token[..need];
         try
         {
             using var cn = open();
             using var cmd = cn.CreateCommand();
-            cmd.CommandText = @"UPDATE handoff_tokens SET consumed=1
-                                WHERE nonce_hash=$h AND username=$u AND ip=$ip
-                                  AND consumed=0 AND expires_utc>$now;";
+            cmd.CommandText = keyed ? ConsumeKeyedSql : ConsumeUnkeyedSql;
             cmd.Parameters.AddWithValue("$h", HashHex(sig));
             cmd.Parameters.AddWithValue("$u", Auth.Key(expectedUser));
             cmd.Parameters.AddWithValue("$ip", ip ?? "");
             cmd.Parameters.AddWithValue("$now", now);
+            if (keyed) cmd.Parameters.AddWithValue("$k", HashHex(key!));
             return cmd.ExecuteNonQuery() == 1;   // exactly one row updated -> valid & now consumed
         }
         catch (Exception e)
@@ -196,5 +277,5 @@ public static class HandoffTokens
         }
     }
 
-    private static string HashHex(byte[] sig) => Convert.ToHexString(SHA256.HashData(sig));
+    private static string HashHex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
 }

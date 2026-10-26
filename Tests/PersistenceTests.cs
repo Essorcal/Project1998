@@ -773,15 +773,8 @@ CREATE TABLE parcels (
     private static string FixturePath() =>
         Path.Combine(RepoPaths.Root(), "Tests", "Fixtures", "character-v1.json");
 
-    private static byte[] ArrivalFrame(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    private static byte[] ArrivalFrame(string user) =>
+        Handoff.ArrivalFrame(user, System.Net.IPAddress.None.ToString());
 
     private static void InsertRawCharacter(string user, string json)
     {
@@ -840,6 +833,7 @@ CREATE TABLE parcels (
         Assert.Equal(1, ColumnCount(cn, "handoff_tokens", "ip"));
         Assert.Equal(1, ColumnCount(cn, "parcels", "item_owner"));
         Assert.Equal(1, ColumnCount(cn, "characters", "unreadable_since"));
+        Assert.Equal(1, ColumnCount(cn, "handoff_tokens", "key_hash"));
     }
 
     private static int ParcelCount(string recipient)

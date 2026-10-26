@@ -1127,21 +1127,14 @@ public sealed class TeardownSlotLeakTests
     }
 
     /// <summary>The 0x10 arrival as the client sends it after the login server's handoff: the plaintext
-    /// <c>klen "NexonInc." ulen user token</c>, with a token minted for this user and the socket-free address.
+    /// <c>klen key ulen user token</c>, minted for this user and the socket-free address at the 4.95 port.
     ///
     /// <para>The account names in this class are 9 letters or fewer, so each token keeps at least 2 nonce bytes. The
     /// token table's primary key is the hash of the surviving bytes, and a name of 11 letters or more hashes an
     /// empty prefix: its mint then fails on any other such name's row still in the table, and that arrival is
     /// refused (a 13-letter name here broke <c>PersistenceTests</c>' 24-letter arrival that way).</para></summary>
-    private static byte[] ArrivalFrame(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, System.Net.IPAddress.None.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    private static byte[] ArrivalFrame(string user) =>
+        Handoff.ArrivalFrame(user, System.Net.IPAddress.None.ToString());
 
     private static List<string> MiniTexts(RecordingOutbound o) =>
         o.BodiesOf(MiniTextOut).Select(b => Encoding.ASCII.GetString(b, 3, (b[1] << 8) | b[2])).ToList();
