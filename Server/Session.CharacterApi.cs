@@ -1088,7 +1088,10 @@ public sealed partial class Session : QuestState.ISessionStore
     internal void PlayEffectOverSelf(int effect) => BroadcastFx(_char.Id, effect, 0);
 
     /// <summary>A system line to every player online: RTK <c>broadcast(-1, text)</c> (<c>clif_broadcast</c>,
-    /// 0x0A type 5 on every loaded map). The loop is <c>@announce</c>'s (<c>AnnounceCmd</c>): each recipient
+    /// 0x0A type 5 on every loaded map). Two callers, both through <c>NpcContext.AnnounceToWorld</c> on the
+    /// handler thread of the player the line names: Bon-Hwa's Il San promotion ("[SYSTEM]: … has attained First
+    /// Mark!", <c>Server/BonHwa.cs</c>) and Baek's NPC subpath join ("[SUBPATH]: Congratulations to our newest …",
+    /// <c>Server/NpcSubpathQuest.cs</c>). The loop is <c>@announce</c>'s (<c>AnnounceCmd</c>): each recipient
     /// goes through <see cref="SystemAnnounce"/>, which takes that recipient's monitor at its own definition and
     /// lets it go before the next, and one dead socket does not stop the rest. RTK skips a recipient whose
     /// shout setting is off; nothing on this server reads that setting (not shouts, not <c>@announce</c>, not

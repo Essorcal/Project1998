@@ -871,10 +871,11 @@ public sealed partial class Session
     }
 
     // Full magic-attack sequence for the archetype Lua path (arch_damage) — a faithful port of CastDamage's body:
-    // mana check FIRST, then resolve target, then the deflect roll (which spends NO mana, RTK-correct), then debit
-    // mana, then apply. Takes a pre-evaluated amount (the engine already ran the spell_effects.csv formula) so the
-    // verb stays pure logic. Returns false only when the cast can't happen (no mana / no target); a deflect still
-    // returns true (the cast "happened", just resisted). Byte-identical to CastDamage so the Lua route can't drift.
+    // mana check FIRST, then the target, then debit mana, then the deflect roll (a deflect still costs the mana;
+    // see the note in the body), then apply. Takes a pre-evaluated amount (the engine already ran the
+    // spell_effects.csv formula) so the verb stays pure logic. Returns false only when the cast can't happen (no
+    // mana / no target); a deflect still returns true (the cast "happened", just resisted). Byte-identical to
+    // CastDamage so the Lua route can't drift.
     // The target is this cast's victim (LuaDamageVictim, through SpellContext), not a resolution of its own: an NPC
     // is no victim, so a cast at one is refused here as a cast at nothing is, before the debit and the archetype's
     // tail (ApplyCast: the pool drain, the vita cost, the shout, the aether), which all wait on this returning true.
@@ -3201,8 +3202,9 @@ public sealed partial class Session
     // Will advantage over the caster (in 10-point steps), then exponential decay (0.9^prot) turns that into a
     // fail chance. Only spells flagged SplCanFail roll this at all. `target.Protection` now comes from the
     // merged-in CTK `MobProtection` column (Content.cs) — previously always 0 for lack of a source column.
-    // No mana is spent on a deflected cast (RTK returns before the Lua "cast" script — which is where mana is
-    // actually debited — ever runs).
+    // RTK spends no mana on a deflected cast (it returns before the Lua "cast" script — which is where its mana
+    // is debited — ever runs). Here every caller spends first or debits on a deflect, so a deflect still costs
+    // the mana.
     private bool RollDeflect(Mob target)
     {
         int casterWill = _char.Will + Totals().will;
@@ -4198,8 +4200,9 @@ public sealed partial class Session
 
     // PvP magic-deflect: the same RTK formula as RollDeflect(mob), but the defender is a PLAYER — resist scales
     // with the target's effective-Will advantage over the caster (PCs carry no innate Protection stat, so that
-    // term is 0 and a caster whose Will >= the target's can never be deflected). No mana is spent on a deflect
-    // (the caller rolls this BEFORE debiting). A self-cast never deflects (willDiff 0), so callers skip it there.
+    // term is 0 and a caster whose Will >= the target's can never be deflected). A deflect still costs the mana,
+    // spent before either caller rolls: by HitPlayerWithSpell (or by the verb, which then passes it 0), and by the
+    // area-zap verbs before LuaAreaZap. A self-cast never deflects (willDiff 0), so callers skip it there.
     private bool RollDeflectPvp(Session target)
     {
         int casterWill = _char.Will + Totals().will;
@@ -4209,11 +4212,12 @@ public sealed partial class Session
         return Random.Shared.Next(100) < failChance;
     }
 
-    // Apply a damage spell to a PC target — the PvP / self path. Self-cast is allowed anywhere (it only hurts
-    // you); hitting ANOTHER player requires a PvP map (Content.IsPvpMap, RTK canPK approximation). Spends `mana`
-    // here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns false with a
-    // notice (mana NOT spent) if disallowed. Rolls the PvP magic-deflect (SplCanFail spells only) before the
-    // debit — a deflected cast spends no mana but still "happened" (returns true), matching the mob path.
+    // Apply a damage spell to a PC target — the PvP / self path. Hitting anyone, yourself included, requires a PvP
+    // map (Content.IsPvpMap, RTK canPK approximation; the note in the body says why a self-cast is not exempt).
+    // Spends `mana` here (pass 0 if the caller already spent it, e.g. the per-spell `damage` primitive). Returns
+    // false with a notice, mana NOT spent, if disallowed or short of mana. Spends BEFORE it rolls the PvP
+    // magic-deflect (SplCanFail spells only, never on a self-cast): a deflected cast still costs its mana and
+    // still "happened" (returns true), as on the mob path (LuaMagicDamage).
     private bool HitPlayerWithSpell(Session pc, double amt, int mana, SpellDef sp) =>
         HitPlayerWithSpell(pc, amt, mana, sp, out _);
 

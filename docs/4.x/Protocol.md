@@ -556,7 +556,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` **in byte arithmetic — two of the sixteen keys wrap**. The client's key handler `0x491560` maps `a`..`l` → 11..22, `m`/`n` → **9**/**10**, `o`/`p` → 23/24, and its sender `0x491810` transmits `action - 11` in one unsigned byte. So `m`/`n` arrive as **`0xFE`/`0xFF`** and only wraparound recovers Respect/Triumph. Do not clamp or range-check `idx`. It is action-budget gated: it pays into the shared per-second action budget and is dropped once that is spent (`Server/Session.cs:739`, `ActionAllowed` `:550-555`). (see §11). |
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e); another connected **player** → that player's `0x34` (`Server/Session.Dialog.cs:352-353`). Two sentinel ids are not entities: `0xFFFFFFFE` (F2) toggles subpath chat (§11i) and `0xFFFFFFFF` opens the F1 Central Functions menu (§11k), both checked before any lookup (`:317-318`). |
-| `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
+| `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent: next, prev, a menu pick or an input submit. **Closing a box sends nothing** (a static read of the 4.95 exe, §11e). `kind` is echoed from the `0x30`: `01` text box, next (`step@8` = 2) or prev (`step@8` = 0) · `02` menu pick (`step@8` = 2, `@10` = 1-based index, never 0) · `04` input submit (`step@8` = 2, `len@10`, text `@11`). A menu or input box's prev sends its own kind with `step@8` = 0. See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
 | `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. The server answers every request with the `0x59` sub-1 town table first, then the `0x36` (`Server/Session.UserList.cs:145-149`). |
@@ -930,10 +930,10 @@ has no frames.
 | `Effect.pal` | `u32` count (13) then 13 `DLPalette` blocks. A block is not a fixed 1056 bytes: its header is `32 + 2·C` bytes, where `C`, the animation-entry count, is the **u32 at +24**, and the 256 RGBA entries follow the header. Twelve of Effect.pal's blocks have `C = 0` (entries at +32); one has `C = 1` (a 34-byte header, entries at +34). |
 | `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1611 frames satisfy `stencilOff-pixOff == w*h` (1,611 re-counted from the install 2026-10-24; this table used to say 1432). Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
 
-**`.pal` files come in two forms.** Twelve of the install's 36 `.pal` files (Effect.pal among them) are a u32
-block count followed by that many blocks; 23 are a single `DLPalette` block with **no** count prefix (the
-remaining one holds no `DLPalette` block at all). Across all 188 blocks the header length is `32 + 2·(u32@+24)`
-without exception, and it takes the values 32, 34, 36, 38 and 40.
+**`.pal` files come in two forms.** Thirteen of the install's 36 `.pal` files (Effect.pal among them) are a u32
+block count followed by that many blocks; one of the thirteen, `Bow.pal`, is a count of 0 and nothing else (4
+bytes, no block). The other 23 are a single `DLPalette` block with **no** count prefix. Across all 188 blocks
+the header length is `32 + 2·(u32@+24)` without exception, and it takes the values 32, 34, 36, 38 and 40.
 
 Two decoding traps here, both of which produce plausible-but-wrong output rather than an error: the colour
 table follows the header (**+32** for a block with no animation entries), not the fixed `+38` that
@@ -3036,9 +3036,10 @@ WFIFOB(sd->fd, 5) = type; // 0 = ingame browser, 1 = popup open browser then clo
 > those against `App Paths`/`PATH` and could *launch a program*.
 >
 > Ruled out along the way (all now identified, and worth keeping): `0x44` = no-op (`mov al,1; ret`), `0x67` =
-> a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a `GetModuleFileName` anti-cheat
-> check, `0x49` = a profile-picture upload request answering on `0x4F`, `0x4b` = a buffer the client echoes
-> straight back as its own next packet, `0x31` = the board ACK, `0x35` = the mail/parcel reader (`MAIL.EPF`/`PARCEL.EPF`), `0x36` = the user
+> a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a remote file-tamper primitive
+> behind a hardcoded magic (§13d: never send it), `0x49` = a profile-picture upload request answering on `0x4F`,
+> `0x4b` = a buffer the client echoes straight back as its own next packet, `0x31` = the board and nmail replies
+> (§11h), `0x35` = the paper popup (§13a; not a mail reader), `0x36` = the user
 > list (`USERLIST.EPF`), `0x42` = the trade window (`DLGEXC1.EPF`), `0x46` = the "Power" window, `0x2f` = the
 > shop grid (`DLGMERC1.EPF`). `#INFOSHOP:` turned out to be a `PHONE.CFG` item-mall marker. The 16 sites that
 > draw an item sprite belong only to: the inventory pane (`ITEMINV.EPF`), ground items, trade, mix/craft
@@ -3547,9 +3548,23 @@ touching the character (§11e) — the same thing RTK does with a throwaway `clo
 
 ### `0x3a` client → server — the reply
 
-`body[0]` kind (`01` text next/close · `02` menu · `04` input) · `[8]` step · `[10]` menu index (**1-based**;
-0 = cancel) **or** input length · `[11..]` input text. For input, RTK requires `step==2` to count as a real
-submit (else it's a cancel). `HandleNpcDialog` just completes the awaited `TaskCompletionSource` — see below.
+`body[0]` kind, echoed from the `0x30`'s `body[1]` (`01` text box · `02` menu · `04` input) · `[8]` step ·
+`[10]` menu index (**1-based**) **or** input length · `[11..]` input text. For input, RTK requires `step==2` to
+count as a real submit (else it's a cancel). `HandleNpcDialog` just completes the awaited `TaskCompletionSource`
+— see below.
+
+**What the 4.95 client sends, and when it sends nothing.** This is a static read of the exe (2026-10-26), not a
+live capture (`briefs/reports/server-close-box-read-opus.md` §3.2-§3.5).
+- **Senders.** Exactly four routines write `0x3a`: prev `0x46c4b0`, next `0x46c550`, menu pick `0x46d570` and
+  input submit `0x46e0d0`. Only the three box classes' command handlers call them.
+- **Step.** `[8]` is the `0x30`'s `body[17..18]` (1, from RTK and from us) minus 1 for prev, and plus 1 for next, a
+  pick or a submit. So it is 0 or 2, never RTK's step 1.
+- **Kind.** `01` is next or prev on a text box, never a close.
+- **Menu pick.** It is always 1 or more: the menu numbers its rows `1, 2, …`, and no control sends a 0 "cancel".
+- **Close.** Closing any of the three boxes sends **nothing**, whether by the close button or by Esc (the boxes'
+  cancel). That command only removes the window: text box command 3 at `0x46cc90`, menu and input command 4 at
+  `0x46d4a0`/`0x46e030`, each calling `0x417780`. An awaited prompt therefore stays pending until something else
+  replaces or clears it.
 
 ### Server-side design — async dialog + composable abilities
 
@@ -4378,17 +4393,27 @@ per value (`type = 3`, used elsewhere for look-at/item names, renders in the min
 modelled: per-player whisper-on/off, silence/mute, ignore lists — none of those systems exist yet.
 
 **Spell resist / deflect** (RTK `clif_parsemagic`'s deflect roll, clif.c:8910-8934). Only spells flagged
-`SplCanFail` (317/905) roll it. `Session.RollDeflect`: `willDiff = max(0, target.Will - caster.Will)`,
-`prot = round(willDiff / 10)`, `failChance = 100 - 0.9^prot * 100` — an exponential curve, not a flat
-percent. `Mob.Will` is now populated from `MobDef.Will` (the RTK `Will` column, real but previously
-unwired — mobs had no Will at all before this). RTK's mob struct also carries a separate per-mob
-`protection` stat; our mob registry has no source column for it, so it's treated as 0 for every mob — a
-real but incomplete port, not an invented number, and it means our mobs resist somewhat less than genuine
-RTK ones with nonzero protection would. Wired into `CastDamage` and `CastDebuff` (the only two PvE-target
-archetypes we have — there is still no PvP cast path at all) right after target resolution and BEFORE the
-mana debit, matching RTK: a deflected cast spends no mana (RTK returns before ever calling into the Lua
-"cast" script that would debit it). Message is RTK's exact line, caster-facing only: "The magic has been
-deflected." — RTK sends nothing to the target on a resist.
+`SplCanFail` roll it. `Session.RollDeflect` (a creature target): `willDiff = max(0, target.Will - caster.Will)`,
+`prot = target.Protection + round(willDiff / 10)`, `failChance = 100 - 0.9^prot * 100` — an exponential curve,
+not a flat percent. The caster's Will is the effective one (base plus gear and buffs). `Mob.Will` comes from
+`MobDef.Will` (the RTK `Will` column), and `target.Protection` from `mobs.csv`'s `MobProtection` (RTK's per-mob
+`protection`). A player target rolls `Session.RollDeflectPvp`: the same curve on the target's effective Will
+over the caster's, with no protection term (RTK also reads a player target's `protection`, clif.c:8915; that
+term is not ported), so a caster whose Will is at least the target's is never deflected. A self-cast never
+rolls.
+
+The roll lives in the cast primitives the spell verbs call: `ctx:magicDamage` (`arch_damage`), `ctx:damage`,
+`ctx:areaZap` (each creature or player it reaches rolls on its own) and `ctx:deflected` (`arch_debuff`, a
+creature target only). The player branches of the first two go through `HitPlayerWithSpell`, so PvP casts roll
+it too. **A deflected cast still costs its mana**, on every path:
+- `ctx:magicDamage` and `HitPlayerWithSpell` debit before they roll.
+- Every verb that calls `ctx:damage` or `ctx:areaZap` spends the mana first.
+- `arch_debuff` debits on a deflect.
+
+RTK differs: its deflect returns before the Lua "cast" script that would debit the mana, so a deflect is free
+there. This server keeps "a deflect still costs its mana" for every spell (2026-10-24), since a free deflect
+makes a resistant target free to keep hammering. The caster reads "Your magic has been deflected." (RTK's line is
+"The magic has been deflected.", clif.c:8934); the target is told nothing, as in RTK.
 
 ---
 
@@ -5398,7 +5423,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
 | `0x2f` | `0x44f490` | **buy/shop grid window** (RTK `clif_buydialog`) — builds a temp stack object (vtable `0x4cc3cc`), parse `0x452c50` (`DLGMERC1.EPF`). Identified, not implemented (shops use `0x30` menus — §11e) |
 | `0x30` | `0x44f530` | ✓ **NPC dialog** (server→client): text box / menu / input, `body[0..1]` kind = `00 01`/`02 02`/`04 04`. Live-confirmed on 4.95. Reply = `0x3a`. See §11e |
-| `0x31` | `0x451080` | ✓ board write ACK (§11f) |
+| `0x31` | `0x451080` | ✓ **boards and nmail** (§11h). Not the write ack: this handler reads only `flags1`. With no board window open (`0x406f90` returns the window global `[0x4fd3f4]`) and `flags1` bit 0 clear, as in a board-sign's server-opened `flags1=2`, it builds the window, `0x406e80(0, pkt)`; otherwise it consumes the packet and does nothing. The open window reads the replies: its container (`0x407140`, a switch on `body[0]`) and its pages, the board and mailbox pages (`0x408890`, `0x40bff0`) and the write and compose pages, which take the write ack (`0x40a400`, `0x40da20`) |
 | `0x33` | `0x44fef0` | ✓ self/entity spawn (appearance) |
 | `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
 | `0x35` | `0x450890` | **paper popup** (RTK `clif_paperpopup`): `00 width(u8) height(u8) 00 len(u16BE) text[]`. A parchment page, NOT the mail reader. §13a |
@@ -5830,7 +5855,7 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x2e` | world map / skill list | ✅ done |  |
 | `0x2f` | merchant grid family | ✅ done | sub-kinds 3/4/5 wired; 0/1/2/6/8/10 not |
 | `0x30` | NPC dialog | ✅ done |  |
-| `0x31` | board write ACK | ✅ done |  |
+| `0x31` | boards and nmail: list, posts, read, write and delete acks | ✅ done | §11h |
 | `0x33` | self/entity spawn | ✅ done |  |
 | `0x34` | click-profile window | ✅ done |  |
 | `0x37` | equip-window entry | ✅ done |  |
@@ -6024,10 +6049,14 @@ magnitude faster for "what does this byte mean" questions.
 - **A client packet you don't answer looks like a client bug.** `0x66` arrived in bursts of 5–8 identical
   packets and read as spam until the builder was traced: it's one right-click, **retried** because nothing
   came back. When a request repeats with an unchanging body, suspect a missing reply before a misparse.
-- **To find who BUILDS a client packet, don't grep for the opcode as an immediate** — this client never
-  stores one with `mov byte [buf], op`. It calls a write-byte helper `0x475bf0(value, dst)`, so the opcode
-  is a `push` operand: search for `6a <op>` (push imm8) followed by `call 0x475bf0`, and the whole body
-  falls out in order at the matching stack offsets. `0x475c10` is the matching u16 writer (**big-endian**),
+- **To find who BUILDS a client packet, search for the opcode as a `push` and as a `mov`, or walk the sends.**
+  Most builders call a write-byte helper `0x475bf0(value, dst)`, so the opcode is a `push` operand: search for
+  `6a <op>` (push imm8) followed by `call 0x475bf0`, and the whole body falls out in order at the matching stack
+  offsets. Some short packets are built with `mov` straight into a stack buffer and sent with `0x475ab0`, so
+  the push search alone misses them. For example, `0x44ed90` does `mov byte [ebp-0xc], 0x18`, `0x4651a0`
+  writes `0x1b`, `0x469760` writes `0x41`, and `0x490d70`-`0x490e1b` write `0x11`, `0x13`, `0x1d` and `0x18`.
+  The sure way is every call to the send routine `0x475ab0` (a static read of the 4.95 exe:
+  `briefs/reports/server-close-box-read-opus.md` §3.2). `0x475c10` is the matching u16 writer (**big-endian**),
   `0x475c90`/`0x475ca0`/`0x475ce0` the u8/u16/u32 readers.
 - **Handler arg0 points at the OPCODE, not the body.** Every `0x4xxxxx` handler reads its first body byte at
   `[esi+1]`. Calibrated against `0x29`, whose layout is known (`0x4504b0`: `esi+1` = the u32 entity id).

@@ -31,8 +31,10 @@ GIFS = os.path.join(FX, "atlas_gifs")
 SHEETS = os.path.join(FX, "atlas_sheets")
 JSON = os.path.join(FX, "atlas_spells.json")
 
-# The /spells/ pages that actually resolve. ilsan/eesan/samsan 404 in EVERY capture -- the subpath
-# spell pages were never archived -- so subpath spells simply have no atlas animation to match.
+# The /spells/ pages this script reads. The rank spell pages (ilsan/eesan/samsan) are left out: they 404
+# in their 2002-12-30 and early-2003 captures (samsan until 2004-04-23), but not in every capture --
+# Wayback holds them answering 200 from 2003-06-09 (ilsan), 2003-08-22 (eesan) and 2004-08-09 (samsan).
+# Nothing in this repo has read those later captures yet, so the rank spells have no atlas animation.
 SPELL_PAGES = ["mage", "poet", "rogue", "warrior", "other", "dog", "sasan"]
 ALIGN_PAGES = [a + c for a in ("kwisin", "mingken", "ohaeng")
                for c in ("mage", "poet", "rogue", "warrior")]
