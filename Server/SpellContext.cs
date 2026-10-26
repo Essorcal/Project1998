@@ -365,8 +365,10 @@ public sealed class SpellContext
     /// verbs use <see cref="buffTarget"/> instead, which resolves AND remembers.</summary>
     public string targetKind            => _s.LuaTargetBuffKind(StatusTarget);
 
-    /// <summary>Roll the RTK magic-deflect check against the resolved mob (only if the spell can fail); true if
-    /// the cast was deflected (no mana is spent — the verb should return true without applying).</summary>
+    /// <summary>Roll the RTK magic-deflect check (only if the spell can fail) against what the cast is aimed at: a
+    /// creature by its protection and Will, another player by their Will, never the caster (see
+    /// <c>Session.LuaDeflected</c>). True if the cast was deflected; the verb then strikes nothing and returns true,
+    /// and decides what the deflect costs (every verb here keeps the cost).</summary>
     public bool deflected()             => _s.LuaDeflected(_sp, _targetId);
     /// <summary>Uniform percent roll: true with probability <paramref name="pct"/>% (RTK Random.Next(100) &lt; pct).</summary>
     public bool roll(double pct)        => _s.LuaRoll(pct);
