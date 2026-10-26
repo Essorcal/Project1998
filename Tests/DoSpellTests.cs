@@ -30,7 +30,8 @@ namespace Tests;
 public sealed class DoSpellTests
 {
     private const ushort DashMap = 3606;
-    private const ushort BlendMap = 62970, HearMap = 62971, AssessMap = 62972, RageMap = 62973, EnchantMap = 62974;
+    private const ushort BlendMap = 62970, HearMap = 62971, AssessMap = 62972, RageMap = 62973, EnchantMap = 62974,
+                         LogoutMap = 62975;
     private const ushort CX = 16, CY = 16;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -53,6 +54,11 @@ public sealed class DoSpellTests
         typeof(Session).GetMethod("CaptureTimedEffects", BindingFlags.NonPublic | BindingFlags.Instance)!;
     private static readonly MethodInfo RestoreMi =
         typeof(Session).GetMethod("RestoreTimedEffects", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly MethodInfo TearDownMethod =
+        typeof(Session).GetMethod("TearDownWorldState", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo StateField =
+        typeof(Session).GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -356,9 +362,96 @@ public sealed class DoSpellTests
                 default:       caster.ReceiveFlush(endHolds: true); break;
             }
             Advance(caster, 5_000);
-            Assert.True(Ticks(caster).Count == 0, $"after {how}: {Ticks(caster).Count} runs left");
+            Assert.True(Ticks(caster).Count == 0 && Due(caster) == 0,
+                        $"after {how}: {Ticks(caster).Count} runs left, the beat's hint {Due(caster)} (want 0)");
         }
         finally { _fx.World.LeaveMap(caster, HearMap); }
+    }
+
+    /// <summary>A logout ends a run on its caster and nothing is said after it: the heartbeat takes its roster before it
+    /// reaches each player, so a logout can run to its end in between. Here a beat is made due with a player hiding beside
+    /// the caster, the roster taken, the real teardown run under the caster's monitor, and the heartbeat's call made from
+    /// that roster. No name is said and the run is gone: #406's logout check at the top of the beat
+    /// (<c>Session.EndSpellTicksIfLeaving</c>) ends every run, this one included, before its verb runs. Red with that
+    /// check and <c>Session.LuaHiddenNear</c>'s both taken out: the beat names the hider to the player who has gone
+    /// (either one alone keeps the line from being said).</summary>
+    [Fact]
+    public void NoSelfBeatRunsAfterTheCastersLogout()
+    {
+        var (hider, _, _) = Player(LogoutMap, CX + 1, CY + 1);
+        var (caster, cOut, _) = Caster("hear_footstep_do", LogoutMap, CX, CY);
+        try
+        {
+            hider.WithState(() => hider.LuaSetStealth(600_000));
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Advance(caster, 5_000, beat: false);                           // a beat is due
+            var roster = _fx.World.Online.All();                           // the heartbeat's snapshot
+            Assert.Contains(caster, roster);
+            caster.WithState(() => TearDownMethod.Invoke(caster, null));   // the logout, run to its end
+            cOut.Clear();
+            foreach (var s in roster) if (ReferenceEquals(s, caster)) s.TickSpellTicks();
+            var lines = SpellCastSupport.MiniTexts(cOut);
+            Assert.True(lines.Count == 0 && Ticks(caster).Count == 0 && Due(caster) == 0,
+                        $"after the logout: lines [{string.Join(" | ", lines)}], runs left {Ticks(caster).Count}, " +
+                        $"the beat's hint {Due(caster)} (want 0)");
+        }
+        finally { _fx.World.LeaveMap(hider, LogoutMap); }
+    }
+
+    /// <summary>A logout that gets in while a self beat waits for the Lua gate says nothing either. The beat runs its verb
+    /// in the caster's monitor and enters the gate from there; on the gate's slow path the monitor is dropped while it
+    /// waits, and a logout can run to its end in that gap, after the beat's own logout check. Here another thread holds
+    /// the gate, the beat starts, takes the monitor and waits at the gate; the teardown runs on this thread; only then is
+    /// the gate let go, and the verb runs for a player who has gone. The order is checked as #406's twin fact checks it.
+    /// No name is said and the run is gone. Red without the logout check in <c>Session.LuaHiddenNear</c>: the beat names
+    /// the hider after the teardown.</summary>
+    [Fact]
+    public void ALogoutWhileTheSelfBeatWaitsForTheLuaGateSaysNothing()
+    {
+        var (hider, _, _) = Player(LogoutMap, CX + 6, CY + 1);
+        var (caster, cOut, _) = Caster("hear_footstep_do", LogoutMap, CX + 5, CY);
+        var gateHeld = new ManualResetEventSlim();
+        var releaseGate = new ManualResetEventSlim();
+        Thread? holder = null, beat = null;
+        Exception? beatFault = null;
+        try
+        {
+            hider.WithState(() => hider.LuaSetStealth(600_000));
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Advance(caster, 5_000, beat: false);                           // a beat is due
+
+            holder = new Thread(() => { using (Session.EnterScriptGate()) { gateHeld.Set(); releaseGate.Wait(Bound); } })
+                     { IsBackground = true, Name = "gate holder" };
+            holder.Start();
+            Assert.True(gateHeld.Wait(Bound), "the gate holder never took the gate");
+
+            beat = new Thread(() => { try { caster.TickSpellTicks(); } catch (Exception e) { beatFault = e; } })
+                   { IsBackground = true, Name = "heartbeat" };
+            beat.Start();
+            Assert.True(SpinWait.SpinUntil(() => (beat.ThreadState & ThreadState.WaitSleepJoin) != 0, Bound),
+                        "the beat never waited");
+
+            caster.WithState(() => TearDownMethod.Invoke(caster, null));   // the logout, in the gap the gate leaves
+            Assert.False(SpinWait.SpinUntil(() => !beat.IsAlive, 250),
+                         "the beat finished before the gate was let go: the teardown came first, not in the gate's gap");
+            Assert.False(Monitor.IsEntered(StateField.GetValue(caster)!));
+            cOut.Clear();
+
+            releaseGate.Set();
+            Assert.True(beat.Join(Bound), "the beat never finished once the gate was let go");
+            Assert.Null(beatFault);
+            var lines = SpellCastSupport.MiniTexts(cOut);
+            Assert.True(lines.Count == 0 && Ticks(caster).Count == 0 && Due(caster) == 0,
+                        $"after the logout in the gate's gap: lines [{string.Join(" | ", lines)}], runs left {Ticks(caster).Count}, " +
+                        $"the beat's hint {Due(caster)} (want 0)");
+        }
+        finally
+        {
+            releaseGate.Set();
+            holder?.Join(Bound);
+            beat?.Join(Bound);
+            _fx.World.LeaveMap(hider, LogoutMap);
+        }
     }
 
     // ===== Assess opponent ======================================================================================
@@ -626,7 +719,27 @@ public sealed class DoSpellTests
         finally { _fx.World.LeaveMap(caster, RageMap); }
     }
 
-    // ===== the teacher ==========================================================================================
+    // ===== the rows and the teacher ===========================================================================
+
+    /// <summary>All nine are Do's path's rows at the level their scripts' <c>requirements()</c> ask, 99, as #406 set
+    /// Shaman's; Balance weapon and Master weapon keep their marks 1 and 2. Red on ccdf2da for the six unmarked rows that
+    /// said 0; Ki strike's (already 99) and the two marked rows' (their mark already loads them at 99,
+    /// <c>Content.MarkSpellLevel</c>) are guards.</summary>
+    [Theory]
+    [InlineData("dash_do", 0)]
+    [InlineData("spirit_blade", 0)]
+    [InlineData("blend", 0)]
+    [InlineData("hear_footstep_do", 0)]
+    [InlineData("assess_opponent_do", 0)]
+    [InlineData("balance_weapon", 1)]
+    [InlineData("master_weapon", 2)]
+    [InlineData("ki_strike", 0)]
+    [InlineData("crossing_swords", 0)]
+    public void TheRowsAreDosAtTheirScriptsLevels(string key, int mark)
+    {
+        var sp = Content.SpellByKey(key)!;
+        Assert.Equal((18, 99, mark), (sp.PathId, sp.Level, sp.Mark));
+    }
 
     /// <summary>The Do teacher's list by rank: the seven unmarked spells from mark 0, Balance weapon from mark 1 and
     /// Master weapon from mark 2, each at its script's level, 99. Red without the price rows: Ki strike and Spirit blade
@@ -677,6 +790,18 @@ public sealed class DoSpellTests
     }
 
     private static object F(object o, string name) => o.GetType().GetField(name)!.GetValue(o)!;
+
+    private static readonly FieldInfo DueField =
+        typeof(Session).GetField("_spellTickDue", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    /// <summary>The beat's pre-check hint (<c>Session._spellTickDue</c>): 0 when the caster holds no run at all, so the
+    /// heartbeat enters nobody's monitor for it. An ended run leaves it due at once until a beat drops the run.</summary>
+    private static long Due(Session s)
+    {
+        long due = 0;
+        s.WithState(() => due = (long)DueField.GetValue(s)!);
+        return due;
+    }
 
     private static readonly FieldInfo NextActionTick =
         typeof(Session).GetField("_nextActionTick", BindingFlags.Instance | BindingFlags.NonPublic)!;

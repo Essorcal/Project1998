@@ -2487,8 +2487,9 @@ public sealed partial class Session
     //     run here (EndSelfTicks, from ClearAllTimedEffects and FlushDurations). A creature's run is the creature's,
     //     and goes on through its caster's death, as before;
     //   * a line in the caster's buff box (RunningSelfTicks), as RTK's client lists a duration on the player.
-    // It ends at logout like every run here: RTK saves a player's durations and would resume one after a relog; this
-    // server saves no run (no new persistence).
+    // It ends at logout like every run here, through EndSpellTicksIfLeaving, and its verb's one read of the world
+    // (LuaHiddenNear) names nobody once the caster is leaving, so nothing is said to a player who has gone. RTK saves
+    // a player's durations and would resume one after a relog; this server saves no run (no new persistence).
 
     /// <summary>One running periodic tick: <see cref="Verb"/> runs every <see cref="EveryMs"/> while
     /// <see cref="Next"/> is before <see cref="Until"/>, against the creature <see cref="MobId"/> on <see cref="Map"/>,
@@ -2767,9 +2768,15 @@ public sealed partial class Session
     /// <summary>Hear footstep's beat (<c>ctx:hiddenNear</c>): the names of the other players invisible within
     /// <paramref name="range"/> tiles of this caster on both axes, on the caster's map now, "\n" between them. One
     /// <see cref="World.HiddenPlayersNear"/> read, under <c>World._lock</c> taken inside this session's monitor, the order
-    /// Second Sight's scan takes; it writes nobody's state.</summary>
+    /// Second Sight's scan takes; it writes nobody's state.
+    /// <para>Nobody, for a caster who is logging out. The beat asks <see cref="EndSpellTicksIfLeaving"/> before it runs
+    /// a verb and after, but the verb enters the Lua gate after the caster's monitor, and on the gate's slow path the
+    /// monitor is dropped while it waits: a logout can run to its end in that gap. Read again here, under the retaken
+    /// monitor, so a run on its caster names nobody to a player who has gone, as <see cref="LuaStrikeVictim"/> lands no
+    /// blow for one (#406 review, F1).</para></summary>
     internal string LuaHiddenNear(int range) =>
-        string.Join("\n", _world.HiddenPlayersNear(_char.Map, _char.X, _char.Y, Math.Max(0, range), except: this));
+        _leaving ? ""
+                 : string.Join("\n", _world.HiddenPlayersNear(_char.Map, _char.X, _char.Y, Math.Max(0, range), except: this));
 
     /// <summary>The engine's magic deflect against a readout's victim (<c>ctx:victimDeflects</c>), for a spell whose row
     /// can fail: RTK's clif_parsemagic rolls it before any script with a target, a creature or a player alike
