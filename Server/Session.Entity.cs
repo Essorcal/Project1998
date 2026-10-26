@@ -917,11 +917,14 @@ public sealed partial class Session
 
     // Show the result of a hit that already resolved in the world: draw the over-head HP bar for everyone on the
     // map, and on death run the death beat (empty bar + delayed despawn). `mob` is read for its remaining HP%.
-    private void ShowDamageResult(uint mobId, Mob mob, bool died, byte critical = 0, byte hitSound = 0)
+    // `onMap` is the creature's map when it is not the hitter's: a periodic spell tick can strike a creature its
+    // caster has just left (Session.LuaStrikeVictim).
+    private void ShowDamageResult(uint mobId, Mob mob, bool died, byte critical = 0, byte hitSound = 0, ushort? onMap = null)
     {
+        ushort map = onMap ?? _char.Map;
         byte pct = died ? (byte)0 : HpPercent(mob);
-        _world.BroadcastWideArea(_char.Map, mob.X, mob.Y, p => p.DamageOver(mobId, pct, critical != 0 ? critical : HitCritByte, hitSound));
-        if (died) ScheduleDespawn(_char.Map, mobId, DeathDespawnMs);
+        _world.BroadcastWideArea(map, mob.X, mob.Y, p => p.DamageOver(mobId, pct, critical != 0 ? critical : HitCritByte, hitSound));
+        if (died) ScheduleDespawn(map, mobId, DeathDespawnMs);
     }
 
     // Remaining-HP percent for OUR OWN over-head bar (mirrors HpPercent(Mob) above), reflecting worn-gear

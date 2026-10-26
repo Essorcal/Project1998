@@ -105,7 +105,9 @@ public sealed class SubpathTeacherTests
 
     /// <summary>The nine working spells at their RTK scripts' <c>requirements()</c> (the facts report's table 2.3),
     /// and nothing at all for the other seven. Each item named is one Items.csv has. Red without the nine rows: every
-    /// list is empty.</summary>
+    /// list is empty. The Shaman spells slice then put Shaman's solace, Reincarnate and Shaman's torment on sale beside
+    /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
+    /// row's level, 0, for nothing (Caleb's P3).</summary>
     [Theory]
     [InlineData("Barbarian", "")]
     [InlineData("Chongun",   "")]
@@ -115,7 +117,7 @@ public sealed class SubpathTeacherTests
     [InlineData("Spy",       "assassinate 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]")]
     [InlineData("Diviner",   "")]
     [InlineData("Geomancer", "hailstorm 64 500 [1 amber, 70 acorn]; ice_bombardment 99 500 [1 amber, 70 acorn]")]
-    [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]")]
+    [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
     [InlineData("Druid",     "earth_strike 99 0 [1 gold_acorn, 1 topaz]; lightning_storm 99 0 [20 rabbit_meat, 30 rat_meat]; natures_smite 99 0 [1 gold_acorn, 1 topaz]")]
     [InlineData("Monk",      "")]
     [InlineData("Muse",      "")]

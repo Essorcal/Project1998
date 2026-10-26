@@ -1190,6 +1190,68 @@ public sealed partial class Session
         return n;
     }
 
+    /// <summary>Reincarnate's sweep (Shaman; RTK <c>Spells/Subpaths/Shaman/reincarnate.lua:27-43</c>): every DEAD player
+    /// on a cell beside the caster comes back where they lie, with <c>floor(maxHealth * <paramref name="fraction"/>)</c>
+    /// vita and the mana they had, the spell's graphic over them and "&lt;caster&gt; casts Reincarnate on you.". The
+    /// living are left alone. The spell's sound plays at the caster when anyone, living or dead, stands on those cells,
+    /// as the script's <c>#targets &gt; 0</c> branch plays it. Returns how many came back.
+    /// <para>"Beside" is RTK's <c>getTargetsAround(player, BL_PC)</c> (<c>Scripts/scripts.lua:672-723</c>): the four
+    /// cardinally-adjacent cells and every player on each, never the caster's own cell. A ghost may share a cell, so each
+    /// cell is read whole, not first-come as the 4-way heal reads it.</para>
+    /// <para><b>Locks: nothing new.</b> Who stands where is <see cref="World.View"/>'s snapshot: the peers (the caster
+    /// left out) with their tiles read under the world lock, one read, as Lightning storm's sweep takes it. Each revive
+    /// is decided and written inside that player's own monitor (<see cref="ReceiveRevive"/>), entered from the caster's
+    /// thread by <c>StateRank</c>: the shape every write to another player here takes (<see cref="ReceiveHeal"/>,
+    /// <see cref="ReviveAt"/>, the <c>@subpath</c> admission's <c>WithState</c>). The bare <c>IsDead</c> the snapshot
+    /// could have read is not trusted: whether they are dead is asked again in their monitor, so a player someone else
+    /// revived meanwhile is left alone.</para></summary>
+    internal int LuaReviveAround(double fraction, SpellDef sp)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        string line = TargetLine(sp);
+        var (peers, _) = _world.View(this, _char.Map);
+        int cx = _char.X, cy = _char.Y, around = 0, revived = 0;
+        foreach (var peer in peers)
+        {
+            if (peer.Session.IsReplaced) continue;
+            if (Math.Abs(peer.X - cx) + Math.Abs(peer.Y - cy) != 1) continue;   // the four sides only
+            around++;
+            if (!peer.Session.ReceiveRevive(fraction, line)) continue;          // living, or logging out: left alone
+            BroadcastFx(peer.Id, anim, -1);
+            revived++;
+        }
+        if (around > 0) BroadcastFx(_char.Id, -1, snd);
+        Log.Info($"      (lua) {sp.Name} -> revive around at {fraction:0.##} vita, {revived} of {around} beside");
+        return revived;
+    }
+
+    /// <summary>Reincarnate lands on THIS player (<see cref="LuaReviveAround"/>): a ghost leaves ghost form where it
+    /// stands with <paramref name="fraction"/> of its effective max vita, floored and at least 1 (0 vita is death here),
+    /// and the mana it had, then reads <paramref name="message"/>. RTK's script: <c>state = 0</c>,
+    /// <c>health = math.floor(maxHealth * 0.10)</c>, <c>sendStatus</c>, <c>updateState</c>, the minitext; it does not
+    /// touch the mana. Returns false, changing nothing, for a player who is alive or logging out.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the
+    /// <see cref="ReceiveHeal"/> shape, and decides inside it. The rest is <see cref="ReviveInPlace"/>'s, in its order:
+    /// the redraw that drops the ghost form, the peer resync, the stats, the line, and <c>SaveChar</c> (#196: the death
+    /// this undoes saved itself). A player logging out is not revived, the check <see cref="ReviveInPlace"/> makes
+    /// (#330).</para></summary>
+    internal bool ReceiveRevive(double fraction, string message)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || !IsDead) return false;
+        _char.Hp = (uint)Math.Max(1, Math.Floor(EffMaxHp * fraction));
+        RefreshAppearance();   // redraw self + everyone watching as living again
+        ResyncPeers();         // living again — stop seeing the PvP ghosts we could see while dead
+        SendStats();
+        SendMiniText(message);
+        SaveChar();
+        Log.Info($"   -> REVIVED (around): {_char.Name} at {_char.Hp}/{EffMaxHp} vita on map {_char.Map} @ ({_char.X},{_char.Y})");
+        return true;
+    }
+
     /// <summary>The Sage ladder's world channel (RTK common/sage.lua
     /// <c>broadcast(-1, "[" .. player.name .. "]: " .. text)</c>): one line to EVERY player on the server, in
     /// the format RTK uses verbatim. This is the whole point of the Share Wisdom ladder — a paid,
@@ -1262,16 +1324,53 @@ public sealed partial class Session
         SendStats();   // caster message is the central "You cast <name>." — no "restores N HP" flavor
     }
 
-    /// <summary>Heal whoever this cast is AIMED at — another player, yourself, or a MOB (healing your own pet or
-    /// a charmed creature is the point of the mob branch). Falls back to the caster when nothing resolves.
-    /// <para>Only <b>SplType 2</b> spells ("Which target? >" — Fleshspeak, Heal Others, Mend Wounds, …) are
-    /// targeted; a Type-5 self-skill like Touch of Health must NOT be redirected onto whatever you happen to be
-    /// facing, so it routes straight to the caster.</para></summary>
-    internal void LuaHealTarget(int amt, SpellDef sp, uint? targetId)
+    /// <summary>Who a heal lands on: a player (the caster included) or a creature. <see cref="LuaResolveHealTarget"/>
+    /// answers it once per cast, and <c>SpellContext</c> hands that one answer to every step that reads it
+    /// (<see cref="LuaHealReach"/>, <see cref="LuaHealIsGhost"/>) and to the heal itself (<see cref="LuaHealTarget(int, SpellDef, HealTarget)"/>),
+    /// so a verb that checks its target and then heals names one target, as <see cref="StatusTarget"/> does for a
+    /// curse (#343).</summary>
+    internal readonly record struct HealTarget(Session? Pc, Mob? Mob);
+
+    /// <summary>Resolve who this cast heals: the caster for anything but a <b>SplType 2</b> spell, else the aimed id or
+    /// the faced tile (<see cref="ResolveTargetBuff(uint?, out Session?, out Mob?, bool)"/>, a player first), else the
+    /// caster. Never nobody.
+    /// <para>Only SplType 2 spells ("Which target? >" — Fleshspeak, Heal Others, Mend Wounds, …) are targeted; a
+    /// Type-5 self-skill like Touch of Health must NOT be redirected onto whatever you happen to be facing, so it
+    /// resolves straight to the caster. A type-2 cast aimed at nothing heals its caster, which is how healing yourself
+    /// works at all: the 4.95 client casts with the slot alone, and you never stand on your own faced tile.</para></summary>
+    internal HealTarget LuaResolveHealTarget(SpellDef sp, uint? targetId)
     {
-        if (sp.Type != 2) { LuaHeal(amt, sp); return; }          // self-skill — never redirect
+        if (sp.Type != 2) return new HealTarget(this, null);                 // self-skill — never redirect
         ResolveTargetBuff(targetId, out var pc, out var mob);
-        if (pc is null && mob is null) { LuaHeal(amt, sp); return; }   // aimed at nothing — heal yourself
+        return pc is null && mob is null ? new HealTarget(this, null) : new HealTarget(pc, mob);   // aimed at nothing — yourself
+    }
+
+    /// <summary>How far the resolved heal target stands from the caster, in tiles on the larger axis (RTK's
+    /// <c>distanceSquare</c>), 0 for the caster. -1 for an NPC: RTK's engine runs no script for one (its health is not
+    /// above 0, clif_parsemagic), so a verb that asks this refuses it as it refuses a target out of reach. Shaman's solace
+    /// reads it for its 10-tile reach (RTK <c>Spells/Subpaths/Shaman/shamans_solace.lua:12-14</c>).</summary>
+    internal int LuaHealReach(HealTarget t)
+    {
+        if (t.Mob is { IsNpc: true }) return -1;
+        int? x = t.Mob?.X ?? t.Pc?._char.X, y = t.Mob?.Y ?? t.Pc?._char.Y;
+        if (x is not int tx || y is not int ty) return -1;
+        return Math.Max(Math.Abs(tx - _char.X), Math.Abs(ty - _char.Y));
+    }
+
+    /// <summary>Is the resolved heal target a dead player, a ghost? A bare read of their health, as
+    /// <see cref="LuaTargetIsDead"/> makes; <see cref="ReceiveHeal"/> asks again under their own monitor.</summary>
+    internal bool LuaHealIsGhost(HealTarget t) => t.Pc?.IsDead ?? false;
+
+    /// <summary>Resolve who this cast heals (<see cref="LuaResolveHealTarget"/>) and heal them, in one step.</summary>
+    internal void LuaHealTarget(int amt, SpellDef sp, uint? targetId) =>
+        LuaHealTarget(amt, sp, LuaResolveHealTarget(sp, targetId));
+
+    /// <summary>Heal the resolved heal target (<see cref="LuaResolveHealTarget"/>) — another player, yourself, or a MOB
+    /// (healing your own pet or a charmed creature is the point of the mob branch).</summary>
+    internal void LuaHealTarget(int amt, SpellDef sp, HealTarget target)
+    {
+        var (pc, mob) = target;
+        if (pc is null && mob is null) { LuaHeal(amt, sp); return; }   // never: the resolution answers the caster
 
         var fx = Content.FxFor(sp);
         int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : 0;
@@ -1692,7 +1791,7 @@ public sealed partial class Session
     /// the rule that makes a hostile self-cast possible at all.
     /// <para>4.95 gives a spell no way to say "me": the client casts with the slot alone, so every targeted
     /// spell resolves off the faced tile, and you are never on your own faced tile. Every self-cast in the
-    /// game is therefore this fallback. <see cref="LuaHealTarget"/> has always had it ("aimed at nothing —
+    /// game is therefore this fallback. <see cref="LuaResolveHealTarget"/> has always had it ("aimed at nothing —
     /// heal yourself"), which is why healing yourself works; the hostile-status paths did not, which is why
     /// self-Doze and the documented self-pestilence defence resolved to nothing and did nothing.</para>
     /// <para>Enabled for hostile STATUS spells (curse · hold · venom) and NOT for damage. A curse or a doze
@@ -2367,6 +2466,246 @@ public sealed partial class Session
     /// <see cref="EnterState"/> across the call exactly as they held it across the lines.</para></summary>
     private void BroadcastStatusFx(int anim) =>
         _world.BroadcastWideArea(_char.Map, _char.X, _char.Y, p => p.EffectOver(_char.Id, anim));
+
+    // ---- PERIODIC SPELL TICKS: a verb that runs again on a beat while its spell lasts ----------------------------
+    // RTK's while_cast_<ms> (rtk/src/map/mob.c: mob_secondduratimer, mob_thirdduratimer and mob_fourthduratimer run a
+    // duration's while_cast_250 / _500 / _1500 with (mob, caster); pc.c the same on a player). A spell sets a duration
+    // on a creature for its caster (setDuration(key, ms, player.ID, recast)) and its script's while_cast_<ms> runs on
+    // that beat while the duration lasts. Shaman's torment is the first port that needs it (RTK
+    // Spells/Subpaths/TESTING/shamans_torment.lua: a 5-20 s duration whose while_cast_1500 strikes the creature).
+    //
+    // The run is held by the CASTER, not by the creature: one list on this session, keyed by spell, creature and map,
+    // which only this session's monitor writes (the cast verb under the read loop's monitor, the beat under its own
+    // EnterState). So no new lock and no write to anyone else's state: a beat reads creatures through the world's own
+    // lookups and strikes them through World.TryDamage, as a cast does. A mob's id is never reused (Session.Entity.cs,
+    // ScheduleDespawn's note), so a creature that died is gone from the run for good, as RTK's mob_flushmagic clears a
+    // dead creature's durations. Not saved: a run ends at logout, as RTK's beat finds no caster then (its while_cast
+    // runs with the creature alone, and torment's script raises on the missing player).
+    //
+    // A beat is World.FlushTick's per-player status loop (beside TickSleep and TickPoison), every heartbeat; the
+    // pre-check reads one hint without the monitor, as theirs do. The verb runs in the caster's monitor and enters
+    // the Lua gate from there, exactly as a cast does (the gate's slow path drops the monitor while it waits;
+    // docs/common/Locking.md). A dead caster's runs go on, as RTK's do: its beat does not ask about the caster.
+    //
+    // Times are clock time, as the venom's are (World.PoisonMob). RTK's own clock is not: mob_timer_spawns runs every
+    // 50 ms and counts a 30-step cycle, and mob_duratimer (timercheck % 20) takes 1,000 ms off a creature's duration
+    // once a cycle, every 1.5 s, so RTK's "5-20 s" lasts 7.5-30 s and beats 4-20 times; here it lasts 5-20 s and
+    // beats 3-13 times.
+    //
+    // The Do slice's Hear footstep runs on the caster themselves, with no creature: a start that records none and a
+    // beat that looks none up are what it adds to this.
+
+    /// <summary>One running periodic tick: <see cref="Verb"/> runs every <see cref="EveryMs"/> while
+    /// <see cref="Next"/> is before <see cref="Until"/>, against the creature <see cref="MobId"/> on <see cref="Map"/>.
+    /// Written only under this session's monitor.</summary>
+    private sealed class SpellTick
+    {
+        public string SpellKey = "";
+        public string Verb = "";
+        public uint MobId;
+        public ushort Map;
+        public int EveryMs;
+        public long Next;
+        public long Until;
+        public bool Ended;
+    }
+
+    private readonly List<SpellTick> _spellTicks = new();
+
+    /// <summary>When the beat next has something to do, 0 when there is no run at all: the earliest
+    /// <see cref="SpellTick.Next"/> of a run with a beat left, the <see cref="SpellTick.Until"/> of one without (so the
+    /// beat drops it when its time runs out), and at once for an ended one. The pre-check's hint, written with a volatile
+    /// write under the monitor and read without it.</summary>
+    private long _spellTickDue;
+
+    /// <summary>A tick of <paramref name="key"/> on the creature <paramref name="mobId"/> that is still running, or null.
+    /// Running is RTK's <c>hasDurationID</c>: the duration has time left, whether or not another beat falls in it.</summary>
+    private SpellTick? LiveTick(string key, uint mobId, ushort map, long now) =>
+        _spellTicks.Find(t => !t.Ended && now < t.Until && t.MobId == mobId && t.Map == map
+                              && t.SpellKey.Equals(key, StringComparison.OrdinalIgnoreCase));
+
+    private void PublishSpellTickDue()
+    {
+        long due = 0;
+        foreach (var t in _spellTicks)
+        {
+            long at = t.Ended ? 1 : t.Next < t.Until ? t.Next : t.Until;
+            if (due == 0 || at < due) due = at;
+        }
+        Volatile.Write(ref _spellTickDue, due);
+    }
+
+    /// <summary>Start, or refresh, this caster's tick of <paramref name="sp"/> on the creature
+    /// <paramref name="victim"/> on <paramref name="map"/>: <paramref name="verb"/> runs every
+    /// <paramref name="everyMs"/> for <paramref name="durMs"/>. A tick already running there takes the new length from
+    /// now and keeps its beat, as RTK's <c>setDuration(key, ms, caster, 1)</c> sets the time again on a recast. False,
+    /// starting nothing, when the victim is not a creature (a player, an NPC, nobody).</summary>
+    internal bool LuaStartTick(SpellDef sp, Mob? victim, ushort map, string verb, int everyMs, int durMs)
+    {
+        AssertStateHeld("a spell tick's start");
+        if (victim is not { IsNpc: false } mob || everyMs <= 0 || durMs <= 0 || string.IsNullOrEmpty(verb)) return false;
+        long now = Environment.TickCount64;
+        var tick = LiveTick(sp.Key, mob.Id, map, now);
+        if (tick is null)
+        {
+            _spellTicks.RemoveAll(t => t.Ended || now >= t.Until);   // spent runs go here as well as on the beat
+            _spellTicks.Add(new SpellTick
+            {
+                SpellKey = sp.Key, Verb = verb, MobId = mob.Id, Map = map, EveryMs = everyMs,
+                Next = now + everyMs, Until = now + durMs,
+            });
+        }
+        else
+        {
+            tick.Until = now + durMs;
+            tick.Verb = verb;
+            tick.EveryMs = everyMs;
+        }
+        PublishSpellTickDue();
+        Log.Info($"      (lua) {sp.Name} -> tick '{verb}' every {everyMs}ms for {durMs}ms on mob {mob.Id} " +
+                 $"({(tick is null ? "started" : "refreshed")})");
+        return true;
+    }
+
+    /// <summary>Does this caster's tick of <paramref name="sp"/> run on the creature <paramref name="victim"/>? RTK's
+    /// <c>hasDurationID(key, player.ID)</c>.</summary>
+    internal bool LuaTickRunning(SpellDef sp, Mob? victim, ushort map) =>
+        victim is not null && LiveTick(sp.Key, victim.Id, map, Environment.TickCount64) is not null;
+
+    /// <summary>End this caster's tick of <paramref name="sp"/> on the creature <paramref name="victim"/> now, RTK's
+    /// <c>setDuration(key, 0, player.ID)</c>. A beat already running goes on to its end; no other beat follows.</summary>
+    internal void LuaEndTick(SpellDef sp, Mob? victim, ushort map)
+    {
+        AssertStateHeld("a spell tick's end");
+        if (victim is null) return;
+        foreach (var t in _spellTicks)
+            if (t.MobId == victim.Id && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+                t.Ended = true;
+        PublishSpellTickDue();
+    }
+
+    /// <summary>How many living creatures on <paramref name="map"/> carry a running tick of <paramref name="sp"/> from
+    /// this caster: RTK's count over <c>getObjectsInSameMap(BL_MOB)</c> of <c>hasDurationID(key, player.ID)</c>. Which
+    /// creatures are alive there is one read of the map's mobs (<see cref="World.View"/>), under the world lock.</summary>
+    internal int LuaTickCount(SpellDef sp, ushort map)
+    {
+        long now = Environment.TickCount64;
+        var ids = new HashSet<uint>();
+        foreach (var t in _spellTicks)
+            if (!t.Ended && now < t.Until && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+                ids.Add(t.MobId);
+        if (ids.Count == 0) return 0;
+        var (_, mobs) = _world.View(this, map);
+        int n = 0;
+        foreach (var m in mobs) if (m.Alive && ids.Contains(m.Id)) n++;
+        return n;
+    }
+
+    /// <summary>Strike the creature <paramref name="victim"/> on <paramref name="map"/> for <paramref name="amt"/>,
+    /// netted against its armour as every spell blow is (<see cref="SpellRaw"/>), and never for less than
+    /// <paramref name="minimum"/> once netted: RTK's <c>calculateDamage</c>, then a floor, then <c>removeHealth</c>
+    /// (shamans_torment.lua:71-75). No deflect roll and no graphic: RTK's beat calls neither. The over-head bar, a kill's
+    /// corpse beat and its experience, as <see cref="LuaDamageTarget"/> gives them, on the creature's own map, which a
+    /// beat can find the caster has left. False, striking nothing, when it is not a living creature, or when the caster is
+    /// logging out.</summary>
+    internal bool LuaStrikeVictim(SpellDef sp, Mob? victim, ushort map, double amt, int minimum)
+    {
+        if (victim is not { IsNpc: false } mob) return false;
+        // A beat's verb enters the Lua gate after the caster's monitor; on the gate's slow path the monitor is dropped
+        // while it waits, and a logout can run to its end in that gap. Read again here, under the retaken monitor, so
+        // the blow never lands for a player who has gone (#406 review, F1).
+        if (_leaving) return false;
+        if (amt < 1) amt = 1;
+        if (!_world.TryDamage(map, mob, SpellRaw(amt, mob), out bool died, _char.Id, minDamage: Math.Max(0, minimum)))
+            return false;
+        ShowDamageResult(mob.Id, mob, died, onMap: map);
+        if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), map, mob.X, mob.Y, mob.Key);
+        Log.Info($"      (lua) {sp.Name} -> struck mob {mob.Id} '{mob.Name}' on map {map} for {SpellNet(amt, mob)} " +
+                 $"before any amplifier, at least {minimum} (raw {amt}, ac {mob.Ac}, died={died})");
+        return true;
+    }
+
+    /// <summary>Draw <paramref name="anim"/> over <paramref name="overId"/> for this caster alone: RTK's
+    /// <c>target:selfAnimation(player.ID, anim, 1)</c>. Nothing when the caster is off <paramref name="map"/> (the entity
+    /// is not in their view) or has spell graphics turned off ("Believe in magic", as <see cref="BroadcastFx"/>
+    /// honours it).</summary>
+    internal void LuaSelfAnimation(uint? overId, ushort map, int anim)
+    {
+        if (overId is not uint id || anim < 0 || map != _char.Map || !WantsMagicFx) return;
+        EffectOver(id, anim);
+    }
+
+    /// <summary>The world heartbeat's call (World.FlushTick, beside <see cref="TickPoison"/>): run every tick that is
+    /// due. The hint is read before the monitor, as <see cref="TickPoison"/> reads its own, for the same reason: almost
+    /// no player has a tick running. A tick due after its time has run out does not beat; a beat late by more than
+    /// a whole interval is not made up (one beat per due, never a burst). A tick verb that returns false, or raises,
+    /// ends its tick, so a broken verb is not run (and its refusal sent) again every beat.</summary>
+    internal void TickSpellTicks()
+    {
+        long due = Volatile.Read(ref _spellTickDue);
+        if (due == 0 || Environment.TickCount64 < due) return;   // the common case: no monitor entered at all
+        RunDueSpellTicks();
+    }
+
+    /// <summary><see cref="TickSpellTicks"/>'s work, a method of its own so that its closures (the sweep's lambda
+    /// captures <c>now</c>) are built here and never on the no-op path every player takes every beat: a captured local
+    /// in <see cref="TickSpellTicks"/> itself would build its display class at method entry, before the pre-check
+    /// returns (the trap <see cref="BroadcastStatusFx"/>'s note measures; <c>Tests/StatusTickAllocationTests.cs</c>
+    /// pins the no-op path at 0 B).</summary>
+    private void RunDueSpellTicks()
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        // A caster who has logged out runs nothing more. The heartbeat takes its roster before it reaches us, so a
+        // logout's teardown (which sets _leaving first, under this monitor) can run to its end between that snapshot
+        // and this call; the runs end here instead of beating for a player who has gone (#406 review, F1).
+        if (EndSpellTicksIfLeaving()) return;
+        long now = Environment.TickCount64;
+        // A copy: a verb may start, refresh or end ticks, and the Lua gate's slow path can let this player's own cast
+        // in between two beats, or the logout's teardown (the check after each beat below).
+        foreach (var t in _spellTicks.ToArray())
+        {
+            if (t.Ended || now < t.Next || t.Next >= t.Until) continue;
+            t.Next += t.EveryMs;
+            if (t.Next <= now) t.Next = now + t.EveryMs;
+            var sp = Content.SpellByKey(t.SpellKey);
+            var mob = _world.MobById(t.Map, t.MobId);   // living, on the map it was struck on; null once it died or left
+            if (sp is null || mob is null || mob.IsNpc) { t.Ended = true; continue; }
+            var row = Content.SpellParams.TryGetValue(sp.Key, out var r) ? r : SpellScript.NoRow;   // the spell's own row
+            if (SpellScript.Run(t.Verb, new SpellContext(this, sp, mob, t.Map), row) != true)
+            {
+                t.Ended = true;
+                Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on mob {t.MobId} did not run to completion — the tick ends");
+            }
+            if (EndSpellTicksIfLeaving()) return;   // a logout that got in while the beat waited for the Lua gate
+        }
+        now = Environment.TickCount64;
+        _spellTicks.RemoveAll(t => t.Ended || now >= t.Until);
+        PublishSpellTickDue();
+    }
+
+    /// <summary>If this player is logging out (<c>_leaving</c>, set first by the logout's teardown under this monitor),
+    /// end every run and say so; under this session's monitor. A logout ends the runs, as RTK's beat finds no caster then
+    /// and its script lands nothing.</summary>
+    private bool EndSpellTicksIfLeaving()
+    {
+        if (!_leaving) return false;
+        if (_spellTicks.Count > 0) Log.Info($"   -> '{_char.Name}' is logging out: {_spellTicks.Count} spell run(s) end");
+        _spellTicks.Clear();
+        PublishSpellTickDue();
+        return true;
+    }
+
+    // RTK player.registry values a verb keeps only for this login (Shaman's torment's "totalsiphon"): not saved, so
+    // they start at 0 on every login. Only this session's monitor reads or writes them (a cast or a beat).
+    private readonly Dictionary<string, int> _tempReg = new(StringComparer.OrdinalIgnoreCase);
+
+    internal int LuaTempReg(string key) => _tempReg.TryGetValue(key, out int v) ? v : 0;
+
+    internal void LuaSetTempReg(string key, int value)
+    {
+        AssertStateHeld("a login-only registry value");
+        _tempReg[key] = value;
+    }
 
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
     // Unlike ReceiveTimedBuff this keeps a zero-amount entry (a curse's category slot matters even with no stat
@@ -3242,8 +3581,17 @@ public sealed partial class Session
         target.WithState(() =>
         {
             if (ReferenceEquals(target, this)) { if (flavor.Length > 0) SendMiniText(flavor); }
-            else target.SendMiniText(flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.");
+            else target.SendMiniText(TargetLine(sp));
         });
+    }
+
+    /// <summary>The line another player reads when this caster's spell lands on them: the spell's recorded target
+    /// flavor, else "&lt;caster&gt; casts &lt;spell&gt; on you.". <see cref="TellTarget"/> sends it; Reincarnate's revive
+    /// sends it from inside the revived player's own section (<see cref="ReceiveRevive"/>).</summary>
+    private string TargetLine(SpellDef sp)
+    {
+        var flavor = Content.TargetTextFor(sp.Key);
+        return flavor.Length > 0 ? flavor : $"{_char.Name} casts {sp.Name} on you.";
     }
 
     /// <summary>Apply a spell's timed stat buff to THIS player — a buff someone else cast on us AND our own

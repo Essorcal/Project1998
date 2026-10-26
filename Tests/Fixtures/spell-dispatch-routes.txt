@@ -20,6 +20,10 @@
 # The aligned Sam san rows slice (2026-10-24) then added thirty lines: the Kwi-Sin, Ming-Ken and Ohaeng rows of
 # ten Sam san families (Caleb's decision sheet item 7), each on its base spell's branch (verb=arch_heal,
 # verb=sacrifice, verb=arch_damage, verb=mend_equipment, verb=ward row or verb=not_castable row). No other line changed.
+# The Shaman spells slice (2026-10-26) then moved three PC-subpath spells from verb=generic to their own verbs,
+# each bound by a SpellParams.csv row: shamans_solace to verb=ranged_heal row, reincarnate to verb=revive_around row
+# and shamans_torment to verb=torment row (Caleb's P5 and Q7: RTK's scripts, torment from its TESTING copy). No
+# other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -620,7 +624,7 @@ reflect_rogue	2056	verb=ambush
 reforge_warrior	1106	verb=mend_equipment
 refresh_rogue	2106	verb=arch_heal
 refresh_spell	4	verb=generic
-reincarnate	31203	verb=generic
+reincarnate	31203	verb=revive_around row
 rejuvenate_mage	3144	verb=arch_heal
 release_binds_mage	3065	verb=arch_cure
 release_binds_poet	4066	verb=arch_cure
@@ -698,8 +702,8 @@ set_swords_dance_trap	2711	verb=bladestorm row
 set_tigers_ambush_trap	2712	verb=bladestorm row
 set_trap	2701	verb=set_trap
 shadow_figure_rogue	2029	verb=arch_buff
-shamans_solace	31201	verb=generic
-shamans_torment	31210	verb=generic
+shamans_solace	31201	verb=ranged_heal row
+shamans_torment	31210	verb=torment row
 share_energy_poet	4102	verb=mana_gift
 share_wisdom	401	verb=sage_shout row
 sharpen_warrior	1045	verb=arch_buff
