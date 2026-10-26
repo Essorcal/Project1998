@@ -193,6 +193,12 @@ All five are in `game-data/Sources.csv` with the exact quotes and the surviving/
 alone — it is also the Silver Thread revive point, and a defeated veteran must not wake up in the newbie
 area.
 
+An operator can replace that spawn with `P1998_START_POINT=map,x,y` (see
+[Configuration.md](Configuration.md)), for a content set that has no Welcome and no home cities. Set, it
+wins over the calendar and the nation for every new character; it changes nothing else, so revives and
+nation homes still go through `HomeCityFor`. Blank, which is the default, leaves the rule above exactly as it
+is.
+
 This is the reason `EraCalendar` lives in `Shared` rather than under `Server`. Placement runs in the
 **login server**, a separate process that never loads world content; if it couldn't read the calendar it
 would place every character by the pre-2000 rule regardless of what the game server believed, and nothing

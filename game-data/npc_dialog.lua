@@ -1183,7 +1183,9 @@ end
 -- you have just given the secrets back. And as RTK's does, it is how a player LEAVES an NPC subpath: a
 -- Chung ryong, Baekho, Ju jak or Hyun moo goes back to the base class, rank kept (RTK updatePath(baseClass,
 -- mark); tswolf 2001's "Leaving an NPC Subpath": say Cleanse to your path's dog, and it takes "ALL your NPC
--- Subpath and Dog Spells"). Joining is Baek's (Server/NpcSubpathQuest.cs).
+-- Subpath and Dog Spells"). Joining is Baek's (Server/NpcSubpathQuest.cs). Also as RTK's does, each dog
+-- answers "cleanse" only from its own base class and that class's NPC subpath: a PC-subpath member (Barbarian
+-- ... Muse) gets no prompt and pays no karma, and leaves their subpath with @subpath leave instead.
 
 local DOG_LEGEND = "dog_linguist"          -- legend id, also the chain-progress registry key
 local DOG_FLAG   = "dog_flag"              -- Content.DogFlagReg -- set once the chain is finished
@@ -1385,8 +1387,12 @@ local function dog_secret(ctx, dog)
 end
 
 local function dog_cleanse(ctx, dog)
-  if ctx:karmaTooLow() then return end
-  if ctx:basePathId() ~= dog.path then return end
+  if ctx:karmaTooLow() then return end                      -- RTK Tools.checkKarma
+  -- RTK's class gate, in silence: each dog answers only its own base class and that class's NPC subpath
+  -- (Mutt 3/8, Jindo dog 2/7, Hunting dog 1/6, Spotted dog 4/9). A PC-subpath member of the same base gets
+  -- no prompt and keeps their karma; they leave with @subpath leave. canLearnDogSpells is that same pair of
+  -- classes, the one RTK's "secret" branches gate on too.
+  if ctx:basePathId() ~= dog.path or not ctx:canLearnDogSpells() then return end
 
   local confirm = ctx:menu("Do you wish to clear your mind, giving back what we taught you? It will cost much karma to do so.",
     { "Yes, clear my mind.", "Nevermind." })

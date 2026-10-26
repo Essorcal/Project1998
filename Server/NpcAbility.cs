@@ -321,10 +321,10 @@ public sealed class NpcContext
 
     /// <summary>The Dog's cleanse leaving an NPC subpath (RTK dog_linguist.lua <c>cleanse</c>,
     /// <c>player:updatePath(player.baseClass, player.mark)</c>): a Chung ryong, Baekho, Ju jak or Hyun moo goes back
-    /// to its base class, rank kept. Any other path is left as it is. RTK's call is unconditional, so it would also
-    /// return a PC subpath to its base; this one does not, because leaving a PC subpath belongs to the PC-subpath
-    /// rules (<c>@subpath leave</c>, wherever PC subpaths can be held), not to the Dog. True if the path
-    /// changed.</summary>
+    /// to its base class, rank kept. Any other path is left as it is. RTK's Dog reaches that call only from the dog's
+    /// base class or that class's NPC subpath (the class gate in dog_linguist.lua's "cleanse" branch, which
+    /// <c>dog_cleanse</c> in npc_dialog.lua keeps), so a PC subpath never gets here; PC-subpath members leave with
+    /// <c>@subpath leave</c>. True if the path changed.</summary>
     public bool LeaveNpcSubpath()
     {
         int cls = _s.CharClassId;
@@ -1487,8 +1487,12 @@ public sealed class ChapelAbility : INpcAbility
         if (!ctx.IsEngagedTo(fiance)) { await ctx.Say(AlreadyEnded("engagement", fiance)); return; }
         if (c != 1) { await ctx.Say("I hope you can salvage your relationship."); return; }
 
-        uint penalty = ctx.MaxMp * 1000;   // RTK: player.baseMagic * 1000
-        ctx.SpendExp(Math.Min(ctx.Exp, penalty));
+        // RTK: player.baseMagic * 1000, in Lua numbers, which do not wrap; it then clamps the penalty at 4294967295 and
+        // takes all of a smaller balance (chapel_npc.lua:144-152). Taken in 64 bits, so the Math.Min below is that clamp
+        // and that zeroing in one. As a uint it wrapped past base mana 4,294,967: 4,294,968 cost 704 experience
+        // (Caleb, 2026-10-26: "As RTK").
+        long penalty = (long)ctx.MaxMp * 1000;
+        ctx.SpendExp((uint)Math.Min(ctx.Exp, penalty));
         ctx.BreakEngagement();
         await ctx.Say("It is done.");
     }
@@ -1515,7 +1519,11 @@ public sealed class ChapelAbility : INpcAbility
     private static async Task Divorce(NpcContext ctx, string spouse)
     {
         await ctx.Say("Oh no! You made a horrible mistake!", "However, I can help you get that divorce you want.");
-        uint expCost = ctx.MaxHp * 2550;   // RTK: player.baseHealth * 2550
+        // RTK: player.baseHealth * 2550, in Lua numbers, which do not wrap (chapel_npc.lua:248-256). Taken in 64 bits:
+        // as a uint it wrapped past base vita 1,684,300, so 1,684,301 was quoted and charged 254 experience. Now it is
+        // quoted in full, more than anyone can hold (experience stops at 4,294,967,295), so "Yes" leads to the
+        // sacrifice below, as for anyone short of experience (Caleb, 2026-10-26: "As RTK").
+        long expCost = (long)ctx.MaxHp * 2550;
         int choice = await ctx.Menu($"It will cost {expCost:N0} experience. Are you sure you want this divorce?",
             new[] { "Yes", "No" });
         // The spouse may have divorced while this question waited: free, whatever the answer, and no sacrifice offered
@@ -1526,7 +1534,7 @@ public sealed class ChapelAbility : INpcAbility
 
         if (ctx.Exp >= expCost)
         {
-            ctx.SpendExp(expCost);
+            ctx.SpendExp((uint)expCost);   // no larger than Exp, a uint
             ctx.Divorce();
             await ctx.Say("You are now divorced.");
             return;

@@ -22,6 +22,9 @@ namespace Tests;
 /// within 10 tiles; Lightning storm 1,200 and 87 s, 3,600 to each creature within 10 tiles on a coin flip, the 10-tile
 /// edge included);</item>
 /// <item>Assassinate and Phoenix flames never deflected, as RTK's engine never deflects a self-cast spell;</item>
+/// <item>Ki strike and Ice bombardment deflected at their target, a creature or a player on a PvP map, as RTK's engine
+/// deflects them, keeping their mana and Ki strike's wait (the server's rule for every deflect) and striking nothing; and
+/// Hailstorm, the third spell on their verb, never;</item>
 /// <item>the free refusal at a player the caster may not attack (the #351/#356 rule), and the spell landing on one on a
 /// PvP map;</item>
 /// <item>RTK's slips fixed: Phoenix flames' wait under its own key (the script arms <c>phoenix_flame</c>) and its
@@ -308,6 +311,273 @@ public sealed class SubpathDamageSpellTests
         {
             _fx.World.LeaveMap(caster, NumbersMap);
             foreach (var m in sides) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    // ===== Ki strike and Ice bombardment deflect ==============================================================
+    // RTK rolls their deflect in its engine, at the target, before the script (clif_parsemagic), and its table gives
+    // both canfail 1, as ours does; Hailstorm, on the same verb, carries canfail 0 in both. The 5-way sweep rolls no
+    // deflect, so the verb rolls it once through ctx:deflected(), at the target, after the spend: a creature by its
+    // protection and its Will over the caster's, a player by their Will over the caster's (RTK's formula, the PvP
+    // blow's roll). A deflected cast keeps its mana and Ki strike's wait, the server's rule for every deflect (RTK's
+    // deflect is free), and strikes nothing.
+    // The player roll is 100 - 0.9^p × 100, rounded, with p = round(WillAdvantage / 10): 0 with no advantage, 52 at an
+    // advantage of 70 (p 7), and 100 from an advantage of 505 (p 51). A player's Will is a byte, so the facts that need
+    // a certain deflect give the target a timed Will buff of 1,000.
+
+    /// <summary>Ki strike and Ice bombardment with their mana and wait, aimed by id from four tiles off or by the slot
+    /// alone at the faced creature.</summary>
+    public static TheoryData<string, uint, long, bool> DeflectCases
+    {
+        get
+        {
+            var data = new TheoryData<string, uint, long, bool>();
+            foreach (var byId in new[] { true, false })
+            {
+                data.Add("ki_strike", 250, 7_000, byId);
+                data.Add("ice_bombardment", 190, 0, byId);
+            }
+            return data;
+        }
+    }
+
+    /// <summary>At a creature with Protection 255 the cast is deflected: "Your magic has been deflected." then "You cast
+    /// X.", the pose, the spell's mana and Ki strike's 7 s wait, and nothing struck, neither the target nor the creatures
+    /// on its sides. Red on e67cd9d: never deflected, the target and its sides each lost the spell's amount.</summary>
+    [Theory]
+    [MemberData(nameof(DeflectCases))]
+    public void KiStrikeAndIceBombardmentAreDeflectedAndKeepTheirCost(string key, uint mana, long waitMs, bool byId)
+    {
+        var sp = Spell(key);
+        int tx = CX + (byId ? 4 : 1);
+        var target = AddCreature(NumbersMap, tx, CY, protection: 255);
+        var sides = new[] { AddCreature(NumbersMap, tx + 1, CY), AddCreature(NumbersMap, tx, CY - 1),
+                            AddCreature(NumbersMap, tx, CY + 1) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, byId ? target.Id : null));
+            long wait = SpellCastSupport.AetherLeft(caster, key);
+            int pose = outbound.BodiesOf(ServerOp.Action).Count;
+            string what = $"{sp.Name}{(byId ? " by id" : " faced")}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], " +
+                          $"target lost {Lost(target)}, sides lost {string.Join("/", sides.Select(Lost))} (want 0 each), spent " +
+                          $"{Mana - c.Mp} (want {mana}), wait {wait} ms (want {waitMs}), pose {pose}";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "Your magic has been deflected.", $"You cast {sp.Name}." })
+                        && Lost(target) == 0 && sides.All(s => Lost(s) == 0) && c.Mp == Mana - mana
+                        && (waitMs == 0 ? wait == 0 : wait > waitMs - SlackMs && wait <= waitMs) && pose == 1, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>The roll is the target's alone. At a creature that never deflects (Protection 0, Will 0), with a
+    /// Protection-255 creature on each of its four sides, the cast lands as it did before: the target and all four
+    /// struck for the spell's amount, its mana and only "You cast X.". A guard, green on e67cd9d too; red if the sides
+    /// rolled as well.</summary>
+    [Theory]
+    [InlineData("ki_strike", KiStrike, 250u)]
+    [InlineData("ice_bombardment", Hailstorm, 190u)]
+    public void WhenTheTargetsRollPassesTheSplashLandsAsBefore(string key, int amount, uint mana)
+    {
+        var sp = Spell(key);
+        var target = AddCreature(NumbersMap, CX + 4, CY);
+        var sides = new[] { AddCreature(NumbersMap, CX + 5, CY, protection: 255), AddCreature(NumbersMap, CX + 3, CY, protection: 255),
+                            AddCreature(NumbersMap, CX + 4, CY - 1, protection: 255), AddCreature(NumbersMap, CX + 4, CY + 1, protection: 255) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.Id));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], target lost {Lost(target)}, " +
+                          $"sides lost {string.Join("/", sides.Select(Lost))} (want {amount} each), spent {Mana - c.Mp} (want {mana})";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && Lost(target) == amount && sides.All(s => Lost(s) == amount) && c.Mp == Mana - mana, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>Hailstorm, the third spell on the verb, is never deflected: its row carries SplCanFail 0, as RTK's table
+    /// does (its script is Ice bombardment's but for the name and level; the table is the difference). At a Protection-255 creature with Protection-255 creatures on its
+    /// sides, all five are struck for its amount, for 190 mana and only "You cast Hailstorm.". A guard, green on e67cd9d
+    /// too; red if its row carried SplCanFail 1.</summary>
+    [Fact]
+    public void HailstormIsNeverDeflected()
+    {
+        var sp = Spell("hailstorm");
+        var target = AddCreature(NumbersMap, CX + 4, CY, protection: 255);
+        var sides = new[] { AddCreature(NumbersMap, CX + 5, CY, protection: 255), AddCreature(NumbersMap, CX + 3, CY, protection: 255),
+                            AddCreature(NumbersMap, CX + 4, CY - 1, protection: 255), AddCreature(NumbersMap, CX + 4, CY + 1, protection: 255) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.Id));
+            string what = $"lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], target lost {Lost(target)}, sides lost " +
+                          $"{string.Join("/", sides.Select(Lost))} (want {Hailstorm} each), spent {Mana - c.Mp} (want 190)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "You cast Hailstorm." })
+                        && Lost(target) == Hailstorm && sides.All(s => Lost(s) == Hailstorm) && c.Mp == Mana - 190, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>At a player on a PvP map whose Will beats the caster's by far more than 505 (a timed Will buff of 1,000),
+    /// every cast is deflected: "Your magic has been deflected." then "You cast X.", the pose, the spell's mana and Ki
+    /// strike's 7 s wait; the player keeps their HP and is told nothing, and the creature on the player's side is
+    /// untouched. Aimed by id from four tiles off, with a creature that never deflects on the tile the caster faces (the
+    /// one an id for a player used to fall back to), or by the slot alone at the faced player. Red on e67cd9d and on
+    /// 90310cd: no roll at a player, so the player and the creature beside them were struck.</summary>
+    [Theory]
+    [MemberData(nameof(DeflectCases))]
+    public void AtAPlayerWhoseWillFarBeatsTheCastersEveryCastIsDeflected(string key, uint mana, long waitMs, bool byId)
+    {
+        var sp = Spell(key);
+        int tx = CX + (byId ? 4 : 1);
+        var (target, tOut, tc) = Player(PvpArena, (ushort)tx, CY);
+        target.WithState(() => target.LuaBuff("will", 1_000, 600_000, sp));
+        var side = AddCreature(PvpArena, tx + 1, CY);
+        var faced = byId ? AddCreature(PvpArena, CX + 1, CY) : null;
+        var (caster, outbound, c) = Caster(sp, PvpArena, dir: 1);
+        try
+        {
+            tOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, byId ? target.PlayerId : null));
+            long wait = SpellCastSupport.AetherLeft(caster, key);
+            int pose = outbound.BodiesOf(ServerOp.Action).Count;
+            string what = $"{sp.Name}{(byId ? " by id" : " faced")}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], " +
+                          $"player lost {TargetHp - tc.Hp} and read {SpellCastSupport.MiniTexts(tOut).Count} line(s), creature beside " +
+                          $"lost {Lost(side)}, faced creature lost {(faced is null ? "-" : Lost(faced))}, spent {Mana - c.Mp} (want " +
+                          $"{mana}), wait {wait} ms (want {waitMs}), pose {pose}";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "Your magic has been deflected.", $"You cast {sp.Name}." })
+                        && tc.Hp == TargetHp && SpellCastSupport.MiniTexts(tOut).Count == 0 && Lost(side) == 0
+                        && (faced is null || Lost(faced) == 0) && c.Mp == Mana - mana
+                        && (waitMs == 0 ? wait == 0 : wait > waitMs - SlackMs && wait <= waitMs) && pose == 1, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(target, PvpArena);
+            _fx.World.DespawnMob(PvpArena, side);
+            if (faced is not null) _fx.World.DespawnMob(PvpArena, faced);
+        }
+    }
+
+    /// <summary>At a player whose Will beats the caster's by 70 (210 against 140), each cast is deflected 52 times in
+    /// 100, by RTK's formula: forty casts by id, the wait cleared between them, each either deflected (the deflect line,
+    /// the player untouched and told nothing) or landed (no line, the player struck and told "&lt;caster&gt; hits you
+    /// with X."), both happened, and every one cost the spell's mana. The chance that forty casts all land alike is
+    /// under 1 in 10^11. Red on e67cd9d and on 90310cd: none was deflected.</summary>
+    [Theory]
+    [InlineData("ki_strike", 250u)]
+    [InlineData("ice_bombardment", 190u)]
+    public void AtAPlayerWhoseWillBeatsTheCastersSomeCastsAreDeflected(string key, uint mana)
+    {
+        var sp = Spell(key);
+        var (target, tOut, tc) = Player(PvpArena, CX + 4, CY, will: 210);
+        var (caster, outbound, c) = Caster(sp, PvpArena, dir: 1);
+        try
+        {
+            string N(string s) => s.Replace(caster.CharName, "<caster>", StringComparison.Ordinal);
+            var seen = new List<string>();
+            int deflected = 0, landed = 0, odd = 0;
+            for (int i = 0; i < 40; i++)
+            {
+                SpellCastSupport.ClearAether(caster, sp.Key);
+                outbound.Clear();
+                tOut.Clear();
+                uint before = tc.Hp;
+                caster.WithState(() => ApplyCastMi.Invoke(caster, new object?[] { sp, target.PlayerId, null }));
+                var lines = SpellCastSupport.MiniTexts(outbound);
+                string told = string.Join(" | ", SpellCastSupport.MiniTexts(tOut).Select(N));
+                if (lines.SequenceEqual(new[] { "Your magic has been deflected." }) && tc.Hp == before && told == "") deflected++;
+                else if (lines.Count == 0 && tc.Hp < before && told == $"<caster> hits you with {sp.Name}.") landed++;
+                else { odd++; seen.Add($"[{string.Join(" | ", lines)}] lost {before - tc.Hp} told [{told}]"); }
+            }
+            string what = $"{sp.Name}: 40 casts, {deflected} deflected, {landed} landed, {odd} neither " +
+                          $"[{string.Join("; ", seen)}], spent {Mana - c.Mp} (want {40 * mana})";
+            Assert.True(odd == 0 && deflected > 0 && landed > 0 && c.Mp == Mana - 40 * mana, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(target, PvpArena);
+        }
+    }
+
+    /// <summary>A caster whose Will is at least the player's is never deflected, and a player target is rolled for by its
+    /// own Will, never by the creature the caster faces. Aimed by id at a player with Will 255, by a caster with Will
+    /// 255 facing a Protection-255 creature, the cast lands on the player: "You cast X.", its mana, the player struck and
+    /// told "&lt;caster&gt; hits you with X.", and the faced creature, outside the blast, untouched. (A caster with more
+    /// Will than the player is the PvP control above, <c>OnAPvpMapTheSameCastLandsOnThePlayer</c>.) Red with
+    /// ctx:deflected() as it was at 90310cd, which took the faced creature for an id that named a player; red too if
+    /// a player target were deflected whatever the Wills.</summary>
+    [Theory]
+    [InlineData("ki_strike", 250u)]
+    [InlineData("ice_bombardment", 190u)]
+    public void ACasterWhoseWillMatchesThePlayersIsNeverDeflected(string key, uint mana)
+    {
+        var sp = Spell(key);
+        var faced = AddCreature(PvpArena, CX + 1, CY, protection: 255);
+        var (target, tOut, tc) = Player(PvpArena, CX + 4, CY, will: 255);
+        var (caster, outbound, c) = Caster(sp, PvpArena, will: 255, dir: 1);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.PlayerId));
+            string N(string s) => s.Replace(caster.CharName, "<caster>", StringComparison.Ordinal);
+            string told = string.Join(" | ", SpellCastSupport.MiniTexts(tOut).Select(N));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], player lost " +
+                          $"{TargetHp - tc.Hp} and read [{told}], faced creature lost {Lost(faced)}, spent {Mana - c.Mp} (want {mana})";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && tc.Hp < TargetHp && told == $"<caster> hits you with {sp.Name}." && Lost(faced) == 0
+                        && c.Mp == Mana - mana, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(target, PvpArena);
+            _fx.World.DespawnMob(PvpArena, faced);
+        }
+    }
+
+    /// <summary>An id for a player on another map never rolls that player's Will. The caster, on a PvP map, aims by id at
+    /// a player on another map whose Will far beats theirs (a Will buff of 1,000, a certain deflect were it rolled), while
+    /// facing a creature that never deflects. The damage resolver answers the faced creature and the sweep centres on it,
+    /// so the roll is the faced creature's: "You cast X." only, the creature struck for the spell's amount, the far player
+    /// untouched and told nothing. PR #397's review, F1 (its probe P1). Red with LuaDeflected's same-map test removed:
+    /// the cast is deflected by the absent player and the faced creature is untouched.</summary>
+    [Theory]
+    [InlineData("ki_strike", KiStrike)]
+    [InlineData("ice_bombardment", Hailstorm)]
+    public void AnIdForAPlayerOnAnotherMapNeverRollsThatPlayersWill(string key, int amount)
+    {
+        var sp = Spell(key);
+        var (far, farOut, farC) = Player(NumbersMap, CX + 4, CY);
+        far.WithState(() => far.LuaBuff("will", 1_000, 600_000, sp));
+        var faced = AddCreature(PvpArena, CX + 1, CY);
+        var (caster, outbound, _) = Caster(sp, PvpArena, dir: 1);
+        try
+        {
+            farOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, far.PlayerId));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], faced creature lost " +
+                          $"{Lost(faced)} (want {amount}), far player lost {TargetHp - farC.Hp} and read " +
+                          $"{SpellCastSupport.MiniTexts(farOut).Count} line(s)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && Lost(faced) == amount && farC.Hp == TargetHp && SpellCastSupport.MiniTexts(farOut).Count == 0, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(far, NumbersMap);
+            _fx.World.DespawnMob(PvpArena, faced);
         }
     }
 
@@ -687,11 +957,13 @@ public sealed class SubpathDamageSpellTests
             ch.Spells.Add(sp.Id);
         }, map, CX, CY);
 
-    /// <summary>A level-50 player with a million vita and nothing running.</summary>
-    private (Session session, RecordingOutbound outbound, Character c) Player(ushort map, ushort x, ushort y) =>
+    /// <summary>A level-50 player with a million vita and nothing running, with Will <paramref name="will"/> when a fact
+    /// gives one (the character's default otherwise).</summary>
+    private (Session session, RecordingOutbound outbound, Character c) Player(ushort map, ushort x, ushort y, byte? will = null) =>
         _fx.PlayerWith($"SubpathTarget{Interlocked.Increment(ref _serial)}", ch =>
         {
             ch.Level = 50;
+            if (will is byte w) ch.Will = w;
             ch.MaxHp = TargetHp; ch.Hp = TargetHp;
             ch.MaxMp = 1_000; ch.Mp = 1_000;
             Wide(ch, map);

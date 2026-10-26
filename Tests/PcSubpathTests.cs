@@ -411,12 +411,20 @@ public sealed class PcSubpathTests
     /// factor (<c>_classFactors[player.baseClass + 1]</c>): a Barbarian and a Chung ryong swing as a Warrior of the
     /// same level in the same gear (the class factor and the Warrior's +2 Dam with a weapon), a Spy as a Rogue, a
     /// Diviner as a Mage (the mage weapon penalty), a Muse as a Poet. Compared over every non-crit figure a
-    /// novice sword (S 10-12) can land on an AC-0 target (PR #393's review, F1).</summary>
+    /// novice sword (S 10-12) can land on an AC-0 target (PR #393's review, F1).
+    /// <para>Each family that has a class term carries an NPC-subpath row beside its PC-subpath one, because a revert
+    /// can key on either kind: Chung ryong for the Warrior's terms, Baekho for the Rogue's class factor, and Ju jak
+    /// for the mage weapon penalty. The Diviner row alone stays green when the penalty is keyed to the base only for
+    /// PC subpaths, which takes it off Ju jak; the Spy row alone stays green when the class terms go back to the
+    /// exact path for NPC subpaths, which leaves Baekho on path 7's factor of 0 (PR #393's re-check, R4 and R5).
+    /// Baekho is a Rogue subpath, so its row pins the class factor, not the mage penalty.</para></summary>
     [Theory]
     [InlineData("Barbarian",   "Warrior", 99)]
     [InlineData("Chung ryong", "Warrior", 99)]
     [InlineData("Spy",         "Rogue",   65)]
+    [InlineData("Baekho",      "Rogue",   65)]
     [InlineData("Diviner",     "Mage",    60)]
+    [InlineData("Ju jak",      "Mage",    60)]
     [InlineData("Muse",        "Poet",    99)]
     public void ASubpathMemberSwingsAsTheirBaseClass(string subpath, string baseClass, int level)
     {
