@@ -2309,7 +2309,7 @@ public sealed partial class Session
     private void SendBlueMessage(string text) => SendMiniText(text, type: 0);
 
     /// <summary>A server-wide announcement: the restart warnings (see <see cref="RestartSchedule"/>),
-    /// <c>@announce</c>, and the world line of Bon-Hwa's Il San promotion.
+    /// <c>@announce</c>, and the world lines of Bon-Hwa's Il San promotion and Baek's NPC subpath join.
     ///
     /// <para>The 0x0A system line (type 5) ONLY. This used to also call <see cref="SendLog"/> on the theory
     /// that a restart notice is worth saying twice — but SendLog is <c>SendSpeech(0, _char.Id, …)</c>, the
@@ -2322,9 +2322,10 @@ public sealed partial class Session
     /// roster, writing into sessions their thread does not own: <c>@announce</c> (<c>Session.GmCommands.cs</c>, the
     /// operator's handler thread), <c>RestartSchedule.Announce</c> (<c>Server/RestartSchedule.cs</c>, the restart
     /// ladder's <c>PeriodicTimer</c> task, the trigger-file poll, or a GM's <c>@restart</c> handler) and
-    /// <c>AnnounceToWorld</c> (<c>Session.CharacterApi.cs</c>, the promoted player's handler thread, for Bon-Hwa's
-    /// "[SYSTEM]: … has attained First Mark!"). Because every caller is cross-session, one acquisition here covers
-    /// all three at once and cannot be forgotten by a fourth; the caller-side wrap would be the same section
+    /// <c>AnnounceToWorld</c> (<c>Session.CharacterApi.cs</c>, the handler thread of the player the line names: the
+    /// promoted player for Bon-Hwa's "[SYSTEM]: … has attained First Mark!", the joining player for Baek's
+    /// "[SUBPATH]: Congratulations to our newest …"). Because every caller is cross-session, one acquisition here
+    /// covers all three at once and cannot be forgotten by a fourth; the caller-side wrap would be the same section
     /// written three times. Nothing on this path reads foreign state beyond the send itself — the text is composed
     /// before each loop — so there is no gate read that has to be pulled into the section with it, which is what makes
     /// the definition the right place rather than the caller. The <c>_gameInc</c> this writes is not a
@@ -2333,8 +2334,8 @@ public sealed partial class Session
     /// rule 2 is a blanket rule on entering a peer's state, not a repair for a specific corruption.</para>
     ///
     /// <para>ONE peer monitor at a time: every caller disposes this guard before the next player. A caller whose own
-    /// session is in the roster (the operator, the promoted player) is rule 3's re-entrant case, a no-op, so their
-    /// own copy still goes out in roster order. Rule 1 holds at every caller: <c>World.OnlineRegistry.All()</c>
+    /// session is in the roster (the operator, the promoted or joining player) is rule 3's re-entrant case, a no-op,
+    /// so their own copy still goes out in roster order. Rule 1 holds at every caller: <c>World.OnlineRegistry.All()</c>
     /// (<c>World.OnlineRegistry.cs:77-81</c>) takes <c>World._lock</c>, materialises the list and returns with it
     /// released, so no world lock is held when this enters a session.</para></summary>
     internal void SystemAnnounce(string text)

@@ -930,10 +930,10 @@ has no frames.
 | `Effect.pal` | `u32` count (13) then 13 `DLPalette` blocks. A block is not a fixed 1056 bytes: its header is `32 + 2·C` bytes, where `C`, the animation-entry count, is the **u32 at +24**, and the 256 RGBA entries follow the header. Twelve of Effect.pal's blocks have `C = 0` (entries at +32); one has `C = 1` (a 34-byte header, entries at +34). |
 | `Effect.epf` | `u16` frameCount, `u16` w, `u16` h, `u16` pad, `u32` tocOff. **TOC lives at `12+tocOff`** (relative to the header, not absolute). Each 16-byte entry is `top,left,bottom,right (i16×4)` then `pixOff,stencilOff (u32×2)` — 4 shorts then 2 ints. Verified: all 1611 frames satisfy `stencilOff-pixOff == w*h` (1,611 re-counted from the install 2026-10-24; this table used to say 1432). Box coords are signed and usually negative — they're offsets from the cast tile, so the effect centres on its target. |
 
-**`.pal` files come in two forms.** Twelve of the install's 36 `.pal` files (Effect.pal among them) are a u32
-block count followed by that many blocks; 23 are a single `DLPalette` block with **no** count prefix (the
-remaining one holds no `DLPalette` block at all). Across all 188 blocks the header length is `32 + 2·(u32@+24)`
-without exception, and it takes the values 32, 34, 36, 38 and 40.
+**`.pal` files come in two forms.** Thirteen of the install's 36 `.pal` files (Effect.pal among them) are a u32
+block count followed by that many blocks; one of the thirteen, `Bow.pal`, is a count of 0 and nothing else (4
+bytes, no block). The other 23 are a single `DLPalette` block with **no** count prefix. Across all 188 blocks
+the header length is `32 + 2·(u32@+24)` without exception, and it takes the values 32, 34, 36, 38 and 40.
 
 Two decoding traps here, both of which produce plausible-but-wrong output rather than an error: the colour
 table follows the header (**+32** for a block with no animation entries), not the fixed `+38` that
@@ -3036,9 +3036,10 @@ WFIFOB(sd->fd, 5) = type; // 0 = ingame browser, 1 = popup open browser then clo
 > those against `App Paths`/`PATH` and could *launch a program*.
 >
 > Ruled out along the way (all now identified, and worth keeping): `0x44` = no-op (`mov al,1; ret`), `0x67` =
-> a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a `GetModuleFileName` anti-cheat
-> check, `0x49` = a profile-picture upload request answering on `0x4F`, `0x4b` = a buffer the client echoes
-> straight back as its own next packet, `0x31` = the board ACK, `0x35` = the mail/parcel reader (`MAIL.EPF`/`PARCEL.EPF`), `0x36` = the user
+> a seconds countdown, `0x68` = a `0x75` challenge/response ping, `0x4a` = a remote file-tamper primitive
+> behind a hardcoded magic (§13d: never send it), `0x49` = a profile-picture upload request answering on `0x4F`,
+> `0x4b` = a buffer the client echoes straight back as its own next packet, `0x31` = the board and nmail replies
+> (§11h), `0x35` = the paper popup (§13a; not a mail reader), `0x36` = the user
 > list (`USERLIST.EPF`), `0x42` = the trade window (`DLGEXC1.EPF`), `0x46` = the "Power" window, `0x2f` = the
 > shop grid (`DLGMERC1.EPF`). `#INFOSHOP:` turned out to be a `PHONE.CFG` item-mall marker. The 16 sites that
 > draw an item sprite belong only to: the inventory pane (`ITEMINV.EPF`), ground items, trade, mix/craft
@@ -5398,7 +5399,7 @@ handler. Opcodes outside `0x03..0x68`, or whose remap = the default `0x44bbcd`, 
 | `0x2e` | `0x450580` | list: name + looped u16 items (skills?) |
 | `0x2f` | `0x44f490` | **buy/shop grid window** (RTK `clif_buydialog`) — builds a temp stack object (vtable `0x4cc3cc`), parse `0x452c50` (`DLGMERC1.EPF`). Identified, not implemented (shops use `0x30` menus — §11e) |
 | `0x30` | `0x44f530` | ✓ **NPC dialog** (server→client): text box / menu / input, `body[0..1]` kind = `00 01`/`02 02`/`04 04`. Live-confirmed on 4.95. Reply = `0x3a`. See §11e |
-| `0x31` | `0x451080` | ✓ board write ACK (§11f) |
+| `0x31` | `0x451080` | ✓ **boards and nmail** (§11h). Not the write ack: this handler reads only `flags1`. With no board window open (`0x406f90` returns the window global `[0x4fd3f4]`) and `flags1` bit 0 clear, as in a board-sign's server-opened `flags1=2`, it builds the window, `0x406e80(0, pkt)`; otherwise it consumes the packet and does nothing. The open window reads the replies: its container (`0x407140`, a switch on `body[0]`) and its pages, the board and mailbox pages (`0x408890`, `0x40bff0`) and the write and compose pages, which take the write ack (`0x40a400`, `0x40da20`) |
 | `0x33` | `0x44fef0` | ✓ self/entity spawn (appearance) |
 | `0x34` | `0x450270` | ✓ **click-profile** window (UI `0x198`); body parsed by widget `0x48b6a0`. See §9.5 |
 | `0x35` | `0x450890` | **paper popup** (RTK `clif_paperpopup`): `00 width(u8) height(u8) 00 len(u16BE) text[]`. A parchment page, NOT the mail reader. §13a |
@@ -5830,7 +5831,7 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x2e` | world map / skill list | ✅ done |  |
 | `0x2f` | merchant grid family | ✅ done | sub-kinds 3/4/5 wired; 0/1/2/6/8/10 not |
 | `0x30` | NPC dialog | ✅ done |  |
-| `0x31` | board write ACK | ✅ done |  |
+| `0x31` | boards and nmail: list, posts, read, write and delete acks | ✅ done | §11h |
 | `0x33` | self/entity spawn | ✅ done |  |
 | `0x34` | click-profile window | ✅ done |  |
 | `0x37` | equip-window entry | ✅ done |  |
