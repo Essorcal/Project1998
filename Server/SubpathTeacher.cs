@@ -105,9 +105,15 @@ public sealed class SubpathTeacherAbility : INpcAbility
         yield return ("Forget Secret", ForgetSecretAbility.Forget);
     }
 
+    // The menu showed Learn Secret to a member, but the list below is the Circle's, not the player's class's, and the
+    // player can leave the subpath (@subpath leave) or be expelled while a box is up. So who is learning is read
+    // again here and once the fee is accepted (SecretLessons.Teach's refuseNow): a member who left between buys
+    // nothing, rather than a subpath spell their leaving already took from the book.
     private static async Task LearnSecret(NpcContext ctx)
     {
         if (!SubpathCircles.SubpathByMap.TryGetValue(ctx.Def.Map, out int subpath)) return;
+        string? NotAMemberNow() => ctx.ClassId == subpath ? null : NotAMember(subpath);
+        if (NotAMemberNow() is { } refusal) { await ctx.Say(refusal); return; }
         if (Content.SubpathTeacherSpells(subpath, int.MaxValue, int.MaxValue).Count == 0)
         {
             await ctx.Say(NothingYet);
@@ -118,6 +124,6 @@ public sealed class SubpathTeacherAbility : INpcAbility
         var learn = Content.SubpathTeacherSpells(subpath, ctx.Level, ctx.Mark).Where(s => !known.Contains(s.Id)).ToList();
         if (learn.Count == 0) { await ctx.Say(SecretLessons.NothingMoreForNow); return; }
 
-        await SecretLessons.Teach(ctx, learn, subpath);
+        await SecretLessons.Teach(ctx, learn, subpath, NotAMemberNow);
     }
 }

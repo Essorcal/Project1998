@@ -742,8 +742,13 @@ internal static class SecretLessons
 
     /// <summary>Pick one of <paramref name="learn"/> (not empty), swear the oath, read the fee priced on
     /// <paramref name="costPath"/>, then pay it and learn. The menu lists BARE names — RTK builds a
-    /// "&lt;name&gt; Lvl: &lt;n&gt;" display string but never actually shows it in the picker.</summary>
-    internal static async Task Teach(NpcContext ctx, IReadOnlyList<SpellDef> learn, int costPath)
+    /// "&lt;name&gt; Lvl: &lt;n&gt;" display string but never actually shows it in the picker.
+    /// <para><paramref name="refuseNow"/>, when given, is asked once the fee is accepted and before anything is
+    /// checked or taken; a line back refuses with that line. It is for a caller whose list does not follow the
+    /// player's class (a subpath teacher's list is its Circle's), since the class can change while a box is up.
+    /// The trainers pass none: their list is their class's.</para></summary>
+    internal static async Task Teach(NpcContext ctx, IReadOnlyList<SpellDef> learn, int costPath,
+                                     Func<string?>? refuseNow = null)
     {
         int pick = await ctx.Menu("Which secret shall I teach you?", learn.Select(s => s.Name).ToList());
         if (pick < 1 || pick > learn.Count) return;
@@ -756,6 +761,7 @@ internal static class SecretLessons
         if (swear != 1) { await ctx.Say(Humble); return; }
 
         if (await ctx.Menu(FeeText(ctx, sp, costPath), new[] { "Yes", "No" }) != 1) { await ctx.Say(Humble); return; }
+        if (refuseNow?.Invoke() is { } refusal) { await ctx.Say(refusal); return; }
 
         // Real item/gold cost (Content.SpellCosts); a spell with no row for this path stays free.
         // Everything is checked BEFORE anything is consumed, so a short fee costs the player nothing.

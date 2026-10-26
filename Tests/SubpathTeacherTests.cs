@@ -267,6 +267,33 @@ public sealed class SubpathTeacherTests
         Assert.Empty(Menus(o));
     }
 
+    /// <summary>The teacher's list is its Circle's, not the player's class's, so who is learning is read again: a
+    /// Druid who leaves the subpath (<c>@subpath leave</c>) with the click menu up, or after accepting the oath, is
+    /// refused with the non-member line, pays nothing and learns nothing. Red without the two re-reads: the second
+    /// buys Earth strike as a Poet, after leaving took the subpath's spells away.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AMemberWhoLeavesMidLessonBuysNothing(bool afterTheOath)
+    {
+        var strike = Content.SpellByKey("earth_strike")!;
+        var (s, o, c) = Member("Druid", 99, ch =>
+        {
+            Give(ch, "gold_acorn", 1);
+            Give(ch, "topaz", 1);
+        });
+        var def = Teacher("Druid");
+        Assert.Equal(new[] { "Learn Secret", "Forget Secret" }, Labels(s, def));
+
+        if (afterTheOath) Converse(s, def, "Learn Secret", Pick(1), Pick(1), "@subpath leave", Pick(1));
+        else Converse(s, def, "Learn Secret", "@subpath leave");   // the leave lands before the pick runs: see Converse
+
+        Assert.Equal("Poet", c.ClassName);
+        Assert.Equal(new[] { "You are not a Druid, I can not help you." }, Boxes(o));
+        Assert.DoesNotContain(strike.Id, c.Spells);
+        Assert.Equal((1, 1), (Count(c, "gold_acorn"), Count(c, "topaz")));
+    }
+
     /// <summary>A teacher with nothing priced yet says so to its member (Barbarian, one of the seven).</summary>
     [Fact]
     public void ATeacherWithNothingToSellSaysSo()
@@ -528,9 +555,11 @@ public sealed class SubpathTeacherTests
     private static byte[] Pick(int index) => MenuFrame((byte)index);
 
     /// <summary>Run <paramref name="label"/>'s entry of <paramref name="def"/>'s menu for this player, inside their
-    /// monitor on a thread of its own, answering with <paramref name="answers"/> in order and then "next" until the
-    /// conversation ends.</summary>
-    private void Converse(Session s, NpcDef def, string label, params byte[][] answers)
+    /// monitor on a thread of its own, then take <paramref name="steps"/> in order, then "next" until the conversation
+    /// ends. A step is a <c>0x3A</c> answer frame, or a typed '@' command (a string), sent as the real chat packet. The
+    /// entry is picked from the menu as it stands before any step; leading commands run after that and before the
+    /// entry does, as a command typed with the click menu still up would.</summary>
+    private void Converse(Session s, NpcDef def, string label, params object[] steps)
     {
         var ctx = new NpcContext(s, TeacherMob(def), def);
         var entry = NpcScripts.For(def).SelectMany(a => a.Entries(ctx)).Single(e => e.label == label);
@@ -538,15 +567,27 @@ public sealed class SubpathTeacherTests
         Exception? fault = null;
         var t = new Thread(() => fault = Record.Exception(() =>
         {
+            int k = 0;
+            for (; k < steps.Length && steps[k] is string first; k++) s.Receive(ChatFrame(first));
             s.WithState(() => { flow = entry.run(ctx); });
-            foreach (var a in answers)
-                if (!flow!.IsCompleted) s.Receive(a);
+            for (; k < steps.Length && !flow!.IsCompleted; k++)
+                s.Receive(steps[k] is string command ? ChatFrame(command) : (byte[])steps[k]);
             for (int i = 0; i < 20 && !flow!.IsCompleted; i++) s.Receive(NextFrame());
         })) { IsBackground = true };
         t.Start();
         Assert.True(t.Join(Bound), "the dialog thread never finished");
         Assert.Null(fault);
         Assert.True(flow!.IsCompletedSuccessfully, "the dialog was still waiting, or failed");
+    }
+
+    /// <summary>A typed line (<c>0x0E</c>): <c>00 len text</c>, the layout PcSubpathTests sends its commands in.</summary>
+    private static byte[] ChatFrame(string line)
+    {
+        var text = Encoding.ASCII.GetBytes(line);
+        var body = new byte[2 + text.Length];
+        body[1] = (byte)text.Length;
+        text.CopyTo(body, 2);
+        return SessionFixture.Frame(ClientOp.Chat, body);
     }
 
     private static byte[] NextFrame()
