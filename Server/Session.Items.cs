@@ -362,6 +362,15 @@ public sealed partial class Session
         // body's cast pose) doesn't play twice — and the mana items (wine, pipes) keep their sip, not this.
         if (def.Type == 0 && !_useGesturePlayed) ItemEatAnim();
 
+        SpendOneUse(it, slot, def);
+    }
+
+    /// <summary>Spend one use of <paramref name="it"/> (bag slot <paramref name="slot"/>, 0-based), as the use key
+    /// does: one charge of a charged consumable, else one of the stack, with the client's own line when the last
+    /// goes. <see cref="HandleUseItem"/>'s tail, and what a member's Qui hyang answer spends
+    /// (<see cref="ItemSubpathScroll"/>), which comes after the use itself has returned.</summary>
+    private void SpendOneUse(InvItem it, int slot, ItemDef def)
+    {
         // Narration (user-specified, 2026-08-07): a consumable is SILENT until it's gone, and speaks exactly
         // once — on the use that removes the last of it. The line comes from the CLIENT itself, off the
         // delitem reason: FOOD (ITM_EAT) gets 2 -> "You ate <item>."; every other consumable (wine/liquor
@@ -408,7 +417,7 @@ public sealed partial class Session
         if (Content.ItemParams.TryGetValue(def.Key, out var row))
         {
             var verb = row.GetValueOrDefault("verb", "");
-            switch (ItemScript.Apply(verb, new ItemContext(this), row))
+            switch (ItemScript.Apply(verb, new ItemContext(this, def), row))
             {
                 case VerbResult.Ok:       return true;    // Lua ran it: consume
                 case VerbResult.Declined: return false;   // a gate refused and has said so: don't consume
@@ -529,6 +538,66 @@ public sealed partial class Session
     }
     internal bool ItemChance(int pct)                => Random.Shared.Next(1, 101) <= pct;   // 1..100 <= pct = success
     internal void ItemWarpHome()                     => ReturnToInn();   // RTK returnFunc -> a random tavern in your nation
+
+    /// <summary>RTK's two Qui hyang choices for a PC-subpath member (<c>qui_hyang.lua</c>), in RTK's order. RTK also
+    /// lists "Home" first and "Clan hall" for a clan member; neither exists here, and "Main Inn" is the tavern the
+    /// scroll has always sent everyone to.</summary>
+    internal static readonly string[] SubpathScrollChoices = { "Subpath Circle", "Main Inn" };
+
+    /// <summary>RTK's prompt over those choices.</summary>
+    internal const string SubpathScrollPrompt = "Where do you wish to go?";
+
+    /// <summary>The Qui hyang for a member of one of the twelve PC subpaths (<c>item_verbs.lua</c>
+    /// <c>quihyang</c>, through <see cref="ItemContext.askSubpathCircle"/>; Caleb, 2026-10-26, "Circle, via scroll"):
+    /// put up RTK's menu under the scroll's own icon (RTK's <c>npcGraphic</c> is the item's graphic) and return
+    /// true. False, with nothing sent, for anyone else, whose scroll the verb then uses as it always has.
+    /// <para>The use has returned by the time the answer comes, declined, so nothing was spent then. The answer
+    /// spends one <paramref name="scroll"/> (<see cref="SpendOneUse"/>, the use key's own consume) and warps:
+    /// "Subpath Circle" to a random walkable tile of RTK's box on the member's Circle
+    /// (<see cref="SubpathCircles.ArrivalTiles"/>), "Main Inn" to a tavern exactly as the scroll does today. A
+    /// closed box spends nothing and moves nobody. RTK never spends a Qui hyang at all (type 18, and its script
+    /// removes nothing); this keeps our scroll's one use per warp, as everyone else's.</para>
+    /// <para>The answer re-reads what the wait could have changed, as the world-map menu does: a member who has
+    /// changed map since the menu went up (a warp orphans the box anyway), died or dropped every Qui hyang, or
+    /// who picks the Circle after leaving the subpath, is moved nowhere and spends nothing.</para></summary>
+    internal bool ItemSubpathScroll(ItemDef? scroll)
+    {
+        if (scroll is null || SubpathCircles.For(CharClassId) is null) return false;
+        _ = RunSubpathScrollAsync(scroll);
+        return true;
+    }
+
+    private async Task RunSubpathScrollAsync(ItemDef scroll)
+    {
+        try
+        {
+            ushort startMap = _char.Map;
+            var icon = DialogPortrait.Item(IconOf(scroll), _ver == ClientVersion.V533 ? scroll.IconColor : (byte)0);
+            int choice = await DlgMenuPush(icon, SubpathScrollPrompt, SubpathScrollChoices);
+            if (choice < 1 || choice > SubpathScrollChoices.Length) return;   // closed: nothing spent, nobody moved
+            if (_char.Map != startMap || IsDead) return;
+
+            var it = _char.Inventory.Where(i => i.ItemId == scroll.Id).OrderBy(i => i.Slot).FirstOrDefault();
+            if (it is null) return;   // no Qui hyang left to spend
+
+            if (choice == 1)
+            {
+                if (SubpathCircles.For(CharClassId) is not { } circle || !Content.TryMap((ushort)circle.Map, out var cm)) return;
+                var tiles = SubpathCircles.ArrivalTiles(circle);
+                var (x, y) = tiles.Count > 0
+                    ? tiles[Random.Shared.Next(tiles.Count)]
+                    : ((ushort)((circle.X1 + circle.X2) / 2), (ushort)((circle.Y1 + circle.Y2) / 2));
+                SpendOneUse(it, it.Slot, scroll);
+                EnterMap(cm.Id, cm.Xs, cm.Ys, x, y, cm.Name);
+            }
+            else
+            {
+                SpendOneUse(it, it.Slot, scroll);
+                ReturnToInn();
+            }
+        }
+        catch (Exception e) { Log.Error($"Qui hyang menu threw for '{_char.Name}': {LuaVerbHost.Describe(e)}", e); }
+    }
 
     // RTK's setDuration/hasDuration namespace: named timed flags, key -> Environment.TickCount64 expiry.
     // Written by USE items (the item_verbs.lua "ward"/"hardenbody" verbs) AND by spell verbs through

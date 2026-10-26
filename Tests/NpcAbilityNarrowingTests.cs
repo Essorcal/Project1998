@@ -11,9 +11,9 @@ namespace Tests;
 /// another identifier, leaves the ability on no one, and a quest simply stops being offered with nothing in
 /// the log a player would ever see.
 ///
-/// <para><b>The set-equality facts.</b> Four abilities keep a per-NPC table because the table carries data
+/// <para><b>The set-equality facts.</b> Five abilities keep a per-NPC table because the table carries data
 /// the ability needs (a guildmaster's path, a shrine's totem, a mythic's alliance row, a shrine map's
-/// alignment). The CSV decides which NPCs carry the ability; the table decides what it does there. If the two
+/// alignment, a Circle map's subpath). The CSV decides which NPCs carry the ability; the table decides what it does there. If the two
 /// drift, an NPC either carries an ability that has nothing to say, or has a table row that nothing reaches.
 /// Each fact holds the CSV's set equal to the table's keys, and also to the NPCs that actually carry the
 /// ability after <see cref="NpcScripts.For"/> applies it.</para>
@@ -119,6 +119,22 @@ public class NpcAbilityNarrowingTests
             .Select(n => n.Id);
         Assert.Equal(Sorted(onShrines), Carriers("alignment"));
         Assert.Equal(AlignmentAbility.Shrines.Count, Carriers("alignment").Length);
+    }
+
+    /// <summary>subpath_teacher's narrowing is the twelve Circle maps of <see cref="SubpathCircles"/>, and the
+    /// teachers that carry it are the twelve SubpathTeacherNpcs standing on them, one per Circle. Red with a map
+    /// dropped from the CSV entry (that Circle's teacher answers "Greetings, traveller.").</summary>
+    [Fact]
+    public void SubpathTeacherNamesExactlyTheCircleMaps()
+    {
+        EnsureLoaded();
+        Assert.Equal(Sorted(SubpathCircles.SubpathByMap.Keys), CsvMapIds("subpath_teacher"));
+
+        var onCircles = Content.Npcs
+            .Where(n => n.Key == "SubpathTeacherNpc" && SubpathCircles.SubpathByMap.ContainsKey(n.Map))
+            .Select(n => n.Id);
+        Assert.Equal(Sorted(onCircles), Carriers("subpath_teacher"));
+        Assert.Equal(SubpathCircles.All.Count, Carriers("subpath_teacher").Length);
     }
 
     /// <summary>dagger_uniform (#302 F3) shipped with no CSV narrowing on the RogueTrainerNpc row at all:

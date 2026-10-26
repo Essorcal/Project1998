@@ -632,3 +632,12 @@ rock_blessing_poet,4,99,100000,purple_ring,10,,,,,,,atlas-poet-spells
 kwisin_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
 mingken_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
 ohaeng_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
+spirit_blade,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
+ki_strike,18,99,500,acorn,70,amber,1,,,,,rtk-lua
+assassinate,19,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
+hailstorm,16,64,500,acorn,70,amber,1,,,,,rtk-lua
+ice_bombardment,16,99,500,acorn,70,amber,1,,,,,rtk-lua
+phoenix_flames,20,64,500,acorn,70,amber,1,,,,,rtk-lua
+lightning_storm,13,99,0,rat_meat,30,rabbit_meat,20,,,,,rtk-lua
+earth_strike,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
+natures_smite,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua

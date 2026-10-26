@@ -56,7 +56,9 @@ public sealed partial class Session
     /// to level 10 and the level-90 secrets go with it) and can never accumulate leftovers from a previous
     /// class or alignment. That is the whole reason the old "@spells" (learn-everything, additive, never
     /// forgets) and "@forgetspells" are gone — between them they could only ever grow the book, and a
-    /// character who had been three classes carried all three books around.
+    /// character who had been three classes carried all three books around. The one carry-over is a PC-subpath
+    /// member's own subpath spells, bought at their teacher: those the book holds stay
+    /// (<see cref="Content.RespecSpellSet"/>), so devoting at a shrine or renouncing at the summit costs none.
     ///
     /// <para>Returns false with the class complaint already sent if the character has no known path.</para></summary>
     private bool SyncSpellbook(bool announce = true)
@@ -74,9 +76,13 @@ public sealed partial class Session
         // itself says when you ask it for the secret.
         bool dogFlag = HasDogFlag && Content.CanLearnDogSpells(path);
         // ...and the Sage rung they paid for, which is path-independent (every class buys the same ladder
-        // from the same NPC), so unlike the Dog spells there is nothing to check but the registry.
+        // from the same NPC), so unlike the Dog spells there is nothing to check but the registry. The book as
+        // it stands goes in too, read before ClearSpellbook below: a PC-subpath member keeps every spell of
+        // their own subpath it holds (bought at their teacher; nothing else can hand them back), and
+        // RespecSpellSet picks those out of it.
+        var held = _char.Spells.Select(Content.SpellById).Where(s => s is not null).Select(s => s!).ToList();
         var want = Content.RespecSpellSet(path, _char.Level, _char.Alignment, _char.Mark, dogFlag,
-                                          Quest(QuestState.Registry).Get(Content.SageRungReg));
+                                          Quest(QuestState.Registry).Get(Content.SageRungReg), held);
 
         ClearSpellbook();
         bool capped = want.Count > SpellBookCap;

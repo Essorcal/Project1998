@@ -11,7 +11,7 @@ namespace Tests;
 /// The PC-subpath foundation (Server/Session.Subpaths.cs): membership of the twelve (Barbarian … Muse) by a GM's
 /// or an appointed elder's grant from level 50, leaving back to the base path with the subpath's spells taken,
 /// the subpath channel limited to the twelve as RTK limits it, and no trainer or rebuild handing out a PC
-/// subpath's own spells before its hall teacher exists.
+/// subpath's own spells (their teacher sells them: SubpathTeacherTests).
 ///
 /// <para>Every fact drives the real entry point: a framed packet through <see cref="Session.Receive"/> (a
 /// typed '@' command, a whisper, the F2 click), so the tier gate, the target's monitor and the reply channel
@@ -354,7 +354,7 @@ public sealed class PcSubpathTests
 
     // ---- no PC-subpath spell from a trainer or a rebuild -----------------------------------------------
 
-    /// <summary>Nobody teaches a PC subpath's own spells yet. A level-99 Barbarian at the Warrior trainer, which
+    /// <summary>No trainer teaches a PC subpath's own spells. A level-99 Barbarian at the Warrior trainer, which
     /// teaches them the Warrior list, is offered none of them in Learn Secret or Divine Secret; the content
     /// list behind both carries none at any rank; and a rebuild into the subpath (<c>@class</c>, which now
     /// accepts the twelve) fills the book with the Warrior list and no Barbarian spell.</summary>
