@@ -38,7 +38,11 @@ an operator sets it to move away from, so a value it cannot use is never replace
 server, which creates every character, refuses to start instead, with an error line naming the value and the
 reason: not three whole numbers `map,x,y`, a map that `map_index.csv` under `P1998_GAME_DATA` does not list,
 or a tile outside that map (the map's size is taken from that row). A value that is not `map,x,y` also gets
-the usual `!!` line in both processes; the game server, which never creates a character, starts anyway.
+the usual `!!` line in both processes; the game server, which never creates a character, starts anyway. The
+login server reads that row once, at its own start-up and under its own `P1998_GAME_DATA`, and logs the start
+and size it will use. A game server `@reload` of the table, or a content root given to the game server only,
+does not reach it: give both processes the same root, and restart the login server after editing the start
+map's row.
 
 Nothing in this set is a secret — it is addresses, sizes, timeouts, paths and diagnostic toggles — so the
 startup banner prints values verbatim. A future knob that IS a secret must not be printed there.
@@ -122,7 +126,7 @@ ignored with one startup warning.
 
 | Variable | Type | Default | What it does |
 |---|---|---|---|
-| `P1998_START_POINT` | `map,x,y` | *(blank — the era's own start)* | Where every new character starts, as `map,x,y`: a map id and a tile on that map, three whole numbers (spaces around each are ignored). Meant for a content set that has no Welcome (4711) or home cities. Blank keeps the start the era gives: Welcome (4711) at (3,5) while the newbie area is in era, else the nation's home. Set, it applies whatever the era or the nation, and only when a character is created: an existing character, a revive and a nation's home are unchanged. The map's size comes from that map's row in `map_index.csv` under P1998_GAME_DATA, not from this value. Unlike every other knob here, a value that cannot be used is never replaced by the default: the login server refuses to start on one that is not three whole numbers, that names a map `map_index.csv` does not list, or that puts the tile outside that map. Whether the tile can be walked on is not checked. |
+| `P1998_START_POINT` | `map,x,y` | *(blank — the era's own start)* | Where every new character starts, as `map,x,y`: a map id and a tile on that map, three whole numbers (spaces around each are ignored). Meant for a content set that has no Welcome (4711) or home cities. Blank keeps the start the era gives: Welcome (4711) at (3,5) while the newbie area is in era, else the nation's home. Set, it applies whatever the era or the nation, and only when a character is created: an existing character, a revive and a nation's home are unchanged. The map's size comes from that map's row in `map_index.csv` under P1998_GAME_DATA, not from this value. The login server reads that row once, at its own start-up, under its own P1998_GAME_DATA: a game-server @reload of the table, or a content root given to the game server only, does not reach it, so give both processes the same root and restart the login server after editing the start map's row. Unlike every other knob here, a value that cannot be used is never replaced by the default: the login server refuses to start on one that is not three whole numbers, that names a map `map_index.csv` does not list, or that puts the tile outside that map. Whether the tile can be walked on is not checked. |
 
 ### Session behaviour
 

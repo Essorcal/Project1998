@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using Server;
 using Shared;
 using Xunit;
@@ -111,7 +113,7 @@ public class StartPointTests
     [Fact]
     public void A_set_start_places_every_new_character_there_whatever_the_era_or_nation()
     {
-        var table = CharacterFactory.ReadMapIndex(RepoPaths.GameData(CharacterFactory.MapIndexFile));
+        var table = CharacterFactory.ReadMapIndex(RepoPaths.GameData(MapIndexTable.File));
         Assert.Equal(((ushort)20, (ushort)20), table.Sizes[4712]);   // asserted, so a content edit fails here by name
 
         try
@@ -140,7 +142,7 @@ public class StartPointTests
         var (start, refusal) = CharacterFactory.ResolveStartPoint(Setting("7,63,47"), () => Table((7, 64, 48)));
 
         Assert.Null(refusal);
-        Assert.Equal(new CharacterFactory.ConfiguredStart(7, 63, 47, 64, 48), start);
+        Assert.Equal(new CharacterFactory.ConfiguredStart(7, 63, 47, 64, 48, "the facts' own table"), start);
         foreach (byte nation in Nations)
             Assert.Equal(((ushort)7, (ushort)63, (ushort)47, (ushort)64, (ushort)48),
                          CharacterFactory.StartFor(nation, start));
@@ -162,7 +164,7 @@ public class StartPointTests
     {
         var (start, refusal) = realTable
             ? CharacterFactory.ResolveStartPoint(Setting(raw),
-                () => CharacterFactory.ReadMapIndex(RepoPaths.GameData(CharacterFactory.MapIndexFile)))
+                () => CharacterFactory.ReadMapIndex(RepoPaths.GameData(MapIndexTable.File)))
             : CharacterFactory.ResolveStartPoint(Setting(raw), () => Table((7, 64, 48)));
 
         Assert.Null(start);
@@ -203,7 +205,8 @@ public class StartPointTests
     /// <summary>The login server loads no content, so it reads <c>map_index.csv</c> itself; the game server builds
     /// <c>Content.Maps</c> from the same file, and a character's saved size is what the game server sends it in the
     /// map-info packet. The two readings must agree on every map, or a start the login server accepted would be
-    /// drawn at a size the game server does not use.
+    /// drawn at a size the game server does not use. Both go through <c>MapIndexTable.Rows</c>; this holds them
+    /// together on today's real file, and the next fact on the shapes that file does not have.
     /// <para>Falsification: swap xs and ys in <c>ReadMapIndex</c> and every non-square map fails (Walsuk Tavern,
     /// map 2, is 30x14).</para></summary>
     [Fact]
@@ -212,7 +215,7 @@ public class StartPointTests
         lock (TestProcessState.Gate)
         {
             TestProcessState.LoadContent();
-            var table = CharacterFactory.ReadMapIndex(RepoPaths.GameData(CharacterFactory.MapIndexFile));
+            var table = CharacterFactory.ReadMapIndex(RepoPaths.GameData(MapIndexTable.File));
 
             Assert.True(Content.Maps.Count > 1000, $"only {Content.Maps.Count} maps loaded");
             Assert.Equal(Content.Maps.Keys.OrderBy(id => id), table.Sizes.Keys.OrderBy(id => id));
@@ -221,5 +224,99 @@ public class StartPointTests
                     $"map {id}: the game server reads {map.Xs}x{map.Ys}, the login server " +
                     $"{table.Sizes[id].Xs}x{table.Sizes[id].Ys}");
         }
+    }
+
+    /// <summary>Both readings of <c>map_index.csv</c>, the login server's (<c>ReadMapIndex</c>) and the game
+    /// server's (<c>Content.Load</c> into <c>Content.Maps</c>), on a table with the shapes the real file lacks: a
+    /// comment above the header, quoted cells, a short row, a row missing its last cell, an extra cell, an
+    /// unparsable size, an id past 65535, padded cells, and two ids that appear twice. For an id, the LAST row that
+    /// parses wins, the game server's rule since the registry existed: 7 is the later 20x30, and 13 keeps 5x6 because
+    /// its later row does not parse. Rows that do not parse are skipped and are not kept in the load report. The
+    /// game server also takes the name from the winning row.
+    /// <para>Falsification: keep the first row for an id (<c>TryAdd</c>) in <c>MapIndexTable.Rows</c>, or give
+    /// either reader its own parse that does, and map 7 reads 10x10.</para></summary>
+    [Fact]
+    public void Both_readings_keep_the_last_row_that_parses_for_each_map()
+    {
+        const string table =
+            "# a comment above the header\n" +
+            "id,name,xs,ys\n" +
+            "7,first,10,10\n" +
+            "\"8\",\"Quoted, name\",64,48\n" +
+            "9,short\n" +
+            "10,x,12\n" +
+            "11,x,12,13,extra\n" +
+            "12,bad,abc,5\n" +
+            "65536,over,5,5\n" +
+            "7,second,20,30\n" +
+            "13,y,5,6\n" +
+            "13,later bad,x,7\n" +
+            "\"# 14\",comment,7,8\n" +
+            " 15 , padded , 40 , 41 \n";
+        var expected = new (ushort Id, ushort Xs, ushort Ys)[]
+        {
+            (7, 20, 30), (8, 64, 48), (11, 12, 13), (13, 5, 6), (15, 40, 41),
+        };
+
+        lock (TestProcessState.Gate)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "nexus-map-index-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, MapIndexTable.File);
+            File.WriteAllText(path, table, new UTF8Encoding(false));
+
+            var login = CharacterFactory.ReadMapIndex(path).Sizes;
+            Assert.Equal(expected, login.Select(kv => (kv.Key, kv.Value.Xs, kv.Value.Ys)).OrderBy(m => m.Key));
+
+            var original = Content.OverridePathForTests(Content.TableId.MapIndex, path);
+            try
+            {
+                TestProcessState.LoadContent();
+
+                Assert.Equal(expected, Content.Maps.Values.Select(m => (m.Id, m.Xs, m.Ys)).OrderBy(m => m.Id));
+                Assert.Equal("second", Content.Maps[7].Name);
+                Assert.Equal("Quoted, name", Content.Maps[8].Name);
+                Assert.Equal("y", Content.Maps[13].Name);
+                Assert.Equal("padded", Content.Maps[15].Name);
+                var load = Content.LoadReport[MapIndexTable.File];
+                Assert.NotNull(load);
+                Assert.Equal((11, 6), (load.Read, load.Kept));
+            }
+            finally
+            {
+                Content.ReplaceSpecForTests(Content.TableId.MapIndex, original);
+                TestProcessState.LoadContent();
+                try { Directory.Delete(dir, true); } catch { /* temp dir; not worth failing a test over */ }
+            }
+        }
+    }
+
+    /// <summary>The tests cannot reference the login server, so this reads its source, as
+    /// <c>CreateFaceByteTests</c> does for its create handler. Its start-up must call <c>UseStartPoint</c> on the
+    /// process's configuration exactly once, and on a refusal log it, set exit code 1 and return. That must happen
+    /// after the CSV reader's warnings are routed to the log and the config banner is written, and before the
+    /// listener is built. Without the call a valid setting is never stored, so every new character silently starts
+    /// at the era's start, and a bad value no longer stops the process.
+    /// <para>Falsification: delete the block, or drop its <c>Environment.ExitCode = 1;</c>, or move it below
+    /// <c>new LoginListener</c>, and this fails.</para></summary>
+    [Fact]
+    public void The_login_server_resolves_the_start_before_it_listens_and_stops_on_a_refusal()
+    {
+        string src = File.ReadAllText(Path.Combine(RepoPaths.Root(), "LoginServer", "Program.cs"));
+
+        Assert.Single(Regex.Matches(src, @"\bUseStartPoint\s*\("));
+        var block = Regex.Match(src,
+            @"if \(CharacterFactory\.UseStartPoint\(ServerConfig\.Current\) is \{ \} (?<r>\w+)\)\s*\{\s*" +
+            @"Log\.Error\([^\n]*\{\k<r>\}[^\n]*\);\s*Environment\.ExitCode = 1;\s*return;\s*\}");
+        Assert.True(block.Success, "LoginServer/Program.cs must refuse start-up through " +
+            "CharacterFactory.UseStartPoint(ServerConfig.Current): log the refusal, set exit code 1 and return");
+
+        int csvWarn = src.IndexOf("Csv.Warn = Log.Warn;", StringComparison.Ordinal);
+        int banner = src.IndexOf("ServerConfig.LogEffective();", StringComparison.Ordinal);
+        int listener = src.IndexOf("new LoginListener(", StringComparison.Ordinal);
+        Assert.True(csvWarn >= 0 && banner >= 0 && listener >= 0, "a start-up landmark is missing from Program.cs");
+        Assert.True(csvWarn < block.Index && banner < block.Index, "the start point must be resolved after the " +
+            "CSV warnings reach the log and the config banner is written");
+        Assert.True(block.Index < listener, "the start point must be resolved before the listener is built");
     }
 }

@@ -163,14 +163,11 @@ public static class CharacterFactory
 
     /// <summary>A start an operator configured: the map and tile from <c>P1998_START_POINT</c>, and the map's
     /// size from its row in <c>map_index.csv</c>, which the client's map-info packet needs and the setting does
-    /// not carry.</summary>
-    internal sealed record ConfiguredStart(ushort Map, ushort X, ushort Y, ushort Xs, ushort Ys);
+    /// not carry. <c>Source</c> is the table it was read from.</summary>
+    internal sealed record ConfiguredStart(ushort Map, ushort X, ushort Y, ushort Xs, ushort Ys, string Source);
 
     /// <summary>The map sizes a map table lists, and where it was read from, for the refusal to name.</summary>
     internal sealed record MapTable(IReadOnlyDictionary<ushort, (ushort Xs, ushort Ys)> Sizes, string Source);
-
-    /// <summary>The file the game server builds its map registry from (<c>Content.Maps</c>).</summary>
-    internal const string MapIndexFile = "map_index.csv";
 
     // The resolved P1998_START_POINT, or null for the era's start. Written once, by UseStartPoint at the login
     // server's start-up before its listener opens, and read by every creation after. Only the login server creates
@@ -186,7 +183,14 @@ public static class CharacterFactory
     /// <para>The login server calls this once, before it listens. Calling it again replaces the start for every
     /// character created after, so tests do it only where nothing else runs.</para></summary>
     public static string? UseStartPoint(ServerConfig config) =>
-        UseStartPoint(config, () => ReadMapIndex(RepoPaths.GameData(MapIndexFile)));
+        UseStartPoint(config, () => ReadMapIndex(RepoPaths.GameData(MapIndexTable.File)));
+
+    /// <summary>The start in use, for the login server's start-up line: the map, the tile, the size and the table
+    /// the size came from. Null while the era's own start is in use.</summary>
+    public static string? StartPointInUse =>
+        Volatile.Read(ref _configuredStart) is { } s
+            ? $"map {s.Map} at ({s.X},{s.Y}); the map is {s.Xs}x{s.Ys} in {s.Source}"
+            : null;
 
     /// <summary><see cref="UseStartPoint(ServerConfig)"/> with the map table supplied, so a test can name maps
     /// the real content does not have. <paramref name="readMaps"/> is called only when the setting is set.</summary>
@@ -210,33 +214,21 @@ public static class CharacterFactory
         string named = $"{ServerConfig.Knobs.StartPoint.Name}='{tile}'";
         const string notStarting = "refused; the login server will not start with it.";
         if (!table.Sizes.TryGetValue(tile.Map, out var size))
-            return (null, $"{named} names map {tile.Map}, which {MapIndexFile} ({table.Source}) does not " +
-                          $"list — {notStarting}");
+            return (null, $"{named} names map {tile.Map}, which {MapIndexTable.File} ({table.Source}) " +
+                          $"does not list — {notStarting}");
         if (tile.X >= size.Xs || tile.Y >= size.Ys)
             return (null, $"{named} puts the tile ({tile.X},{tile.Y}) outside map {tile.Map}, which is " +
                           $"{size.Xs}x{size.Ys}: x must be below {size.Xs} and y below {size.Ys} — {notStarting}");
-        return (new ConfiguredStart(tile.Map, tile.X, tile.Y, size.Xs, size.Ys), null);
+        return (new ConfiguredStart(tile.Map, tile.X, tile.Y, size.Xs, size.Ys, table.Source), null);
     }
 
-    // The rows Content.LoadMaps (Server/Content.Csv.cs) builds the game server's map registry from, read the same
-    // way: a row whose id, xs or ys does not parse is skipped, and a later row for an id replaces an earlier one.
-    // The login server loads no content, so it reads the file itself; Tests/StartPointTests holds the two readings
-    // to the same size for every map.
-    internal static MapTable ReadMapIndex(string path)
-    {
-        var sizes = new Dictionary<ushort, (ushort Xs, ushort Ys)>();
-        foreach (var row in Csv.Open(MapIndexFile, path))
-        {
-            if (ushort.TryParse(row.Require("id"), out var id)
-                && ushort.TryParse(row.Require("xs"), out var xs)
-                && ushort.TryParse(row.Require("ys"), out var ys))
-            {
-                sizes[id] = (xs, ys);
-                row.Keep();
-            }
-        }
-        return new MapTable(sizes, path);
-    }
+    // The login server loads no content, so it reads map_index.csv itself, once, at its start-up, through the same
+    // MapIndexTable.Rows the game server's Content.LoadMaps builds its registry with. The game server's @reload and a
+    // content root only the game server is given do not reach it.
+    internal static MapTable ReadMapIndex(string path) =>
+        new(MapIndexTable.Rows(Csv.Open(MapIndexTable.File, path))
+                         .ToDictionary(entry => entry.Key, entry => (entry.Value.Xs, entry.Value.Ys)),
+            path);
 
     // Place a BRAND NEW character (never persisted before) at their starting point instead of Character's
     // compiled-in fallback. MUST run after ApplyAppearance has decoded the real Nation pick (creation

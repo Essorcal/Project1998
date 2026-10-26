@@ -297,7 +297,10 @@ public sealed class ServerConfig
             "in era, else the nation's home. Set, it applies whatever the era or the nation, and only when a " +
             "character is created: an existing character, a revive and a nation's home are unchanged. The " +
             "map's size comes from that map's row in `map_index.csv` under P1998_GAME_DATA, not from this " +
-            "value. Unlike every other knob here, a value that cannot be used is never replaced by the " +
+            "value. The login server reads that row once, at its own start-up, under its own P1998_GAME_DATA: " +
+            "a game-server @reload of the table, or a content root given to the game server only, does not " +
+            "reach it, so give both processes the same root and restart the login server after editing the " +
+            "start map's row. Unlike every other knob here, a value that cannot be used is never replaced by the " +
             "default: the login server refuses to start on one that is not three whole numbers, that names a " +
             "map `map_index.csv` does not list, or that puts the tile outside that map. Whether the tile can " +
             "be walked on is not checked.");

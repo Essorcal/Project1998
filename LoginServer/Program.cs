@@ -75,6 +75,10 @@ if (CharacterFactory.UseStartPoint(ServerConfig.Current) is { } startRefusal)
     Environment.ExitCode = 1;
     return;
 }
+// Said only when the setting is set. The size is read this once: a later edit of that table, or a game server
+// @reload of it, does not reach this process until it restarts.
+if (CharacterFactory.StartPointInUse is { } startPoint)
+    Log.Info($"=== new characters start on {startPoint} (P1998_START_POINT, read once at start-up) ===");
 Log.Info($"=== channel pairing: login {ports[0]}/{ports[1]} -> " +
          $"game {ChannelPorts.GameFor(ports[0])}/{ChannelPorts.GameFor(ports[1])} ===");
 var store = new CharacterStore(RepoPaths.CharsDir());

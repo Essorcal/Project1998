@@ -7,19 +7,15 @@ public static partial class Content
 
     // ---- CSV loaders ----
 
+    // Which rows count, and which row wins for an id, is MapIndexTable's (Shared/MapIndexTable.cs): the login server
+    // reads the start point's map size through the same rule, so a size it saves is the size this registry holds.
     private static Dictionary<ushort, MapInfo> LoadMaps(CsvTable csv)
     {
         var maps = new Dictionary<ushort, MapInfo>();
-        foreach (var col in csv)
+        foreach (var (id, (col, xs, ys)) in MapIndexTable.Rows(csv))
         {
-            if (ushort.TryParse(col.Require("id"), out var id)
-                && ushort.TryParse(col.Require("xs"), out var xs)
-                && ushort.TryParse(col.Require("ys"), out var ys))
-            {
-                var name = Clean(col.Require("name", ""));
-                maps[id] = new MapInfo(id, string.IsNullOrEmpty(name) ? $"Map {id}" : name, xs, ys);
-                col.Keep();
-            }
+            var name = Clean(col.Require("name", ""));
+            maps[id] = new MapInfo(id, string.IsNullOrEmpty(name) ? $"Map {id}" : name, xs, ys);
         }
         return maps;
     }
