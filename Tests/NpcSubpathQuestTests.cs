@@ -389,6 +389,93 @@ public sealed class NpcSubpathQuestTests
         Assert.False(s.KnowsSpellId(cunning.Id));
     }
 
+    /// <summary>A PC-subpath member who cleanses at their base class's Dog leaves the subpath as <c>@subpath
+    /// leave</c> leaves it (<c>Session.LeavePcSubpath</c>): the base class with the rank kept, so the title is the
+    /// base class's at that rank; the subpath's own spells out of the book and the base class's kept; the elder
+    /// mark gone; and the karma every cleanse takes. The player sees what any cleanse shows: the Dog's "It is done."
+    /// and the karma line, and no path-change line or other words. One row per base class, each at its own
+    /// Dog. Without the change the member stays in the subpath and only the karma goes.</summary>
+    [Theory]
+    [InlineData("Barbarian", "Hunting dog", "Warrior")]
+    [InlineData("Spy", "Jindo dog", "Rogue")]
+    [InlineData("Shaman", "Mutt", "Mage")]
+    [InlineData("Muse", "Spotted dog", "Poet")]
+    public void TheDogsCleanseReturnsAPcSubpathMemberToItsBase(string cls, string dogName, string after)
+    {
+        int path = Content.PathIdForClass(cls), basePath = Content.PathIdForClass(after);
+        Assert.True(Content.IsPcSubpath(path));
+        Assert.Equal(basePath, Content.PathBaseOf(path));
+        var own = Content.Spells.Where(sp => sp.PathId == path).Select(sp => sp.Id).Take(2).ToList();
+        Assert.Equal(2, own.Count);
+        int baseSpell = BaseClassSpell(basePath);
+        var (s, o, c) = Unplaced("PcCleanse", ch =>
+        {
+            Joiner(ch, cls);
+            ch.Mark = 2;
+            ch.Spells.Add(baseSpell);
+            ch.Spells.AddRange(own);
+            QuestState.Over(ch, QuestState.Registry).Set(Session.SubpathElderReg, path);
+        });
+        Assert.True(s.IsPcSubpathElder);
+        double karma = c.Karma;
+
+        Assert.True(Cleanse(s, dogName));
+        Assert.Equal(after, c.ClassName);
+        Assert.Equal(2, c.Mark);
+        Assert.Equal(Content.PathTitle(basePath, 2), s.ClassTitle);
+        Assert.Equal(new[] { baseSpell }, c.Spells);
+        Assert.False(s.IsPcSubpathElder);
+        Assert.Equal(0, s.Quest(QuestState.Registry).Get(Session.SubpathElderReg));
+        Assert.Equal(karma - 4.0, c.Karma);
+        Assert.Equal(new[] { "It is done." }, Boxes(o).Select(b => b.Text));
+        Assert.Equal(new[] { "Your karma has decreased." }, SystemLines(o).Select(l => l.Text));
+    }
+
+    /// <summary>A base-class linguist's cleanse is what it was before PC subpaths could leave at the Dog: the Dog
+    /// spells and the karma go, and the class, the rank, the rest of the book and the elder key stay. This is the
+    /// guard on the PC branch: a leave made unconditional, as RTK's <c>updatePath</c> reads, would run the PC leave
+    /// on a base class and take that class's own spells.</summary>
+    [Fact]
+    public void TheDogsCleanseLeavesABaseClassAsItWas()
+    {
+        var traps = Content.SpellByKey("spot_traps")!;
+        int rogueSpell = BaseClassSpell(2);
+        var (s, o, c) = Unplaced("BaseCleanse", ch =>
+        {
+            Joiner(ch, "Rogue");
+            ch.Mark = 2;
+            ch.Spells.Add(rogueSpell);
+            ch.Spells.Add(traps.Id);
+        });
+        double karma = c.Karma;
+
+        Assert.True(Cleanse(s, "Jindo dog"));
+        Assert.Equal("Rogue", c.ClassName);
+        Assert.Equal(2, c.Mark);
+        Assert.Equal(new[] { rogueSpell }, c.Spells);
+        Assert.Equal(0, s.Quest(QuestState.Registry).Get(Session.SubpathElderReg));
+        Assert.Equal(karma - 4.0, c.Karma);
+        Assert.Equal(new[] { "It is done." }, Boxes(o).Select(b => b.Text));
+        Assert.Equal(new[] { "Your karma has decreased." }, SystemLines(o).Select(l => l.Text));
+    }
+
+    /// <summary>Say "cleanse" to the named Dog and answer its prompt "Yes, clear my mind.". True if it took the
+    /// word.</summary>
+    private bool Cleanse(Session s, string dogName)
+    {
+        var dogDef = Content.Npcs.Single(n => n.Key == "DogLinguistNpc" && n.Name == dogName);
+        var dog = _fx.World.NpcsNear(dogDef.Map, dogDef.X, dogDef.Y, 0).First(m => m.NpcDefId == dogDef.Id);
+        return OnOwnThread(s, () => NpcScript.RunSayAsync(new NpcContext(s, dog, dogDef), "DogLinguistNpc", "cleanse"),
+                           menuPick: 1);
+    }
+
+    /// <summary>A spell of base class <paramref name="basePath"/>'s own list that is not one of its Dog's.</summary>
+    private static int BaseClassSpell(int basePath)
+    {
+        var dogs = Content.DogSpellsFor(basePath, Content.MarkSpellLevel).Select(sp => sp.Id).ToHashSet();
+        return Content.Spells.First(sp => sp.PathId == basePath && !dogs.Contains(sp.Id)).Id;
+    }
+
     // ---- the four spells' prices and who is offered them --------------------------------------------------------
 
     /// <summary>tswolf's NPC spell page (Wayback 2001-02-24): each spell costs its subpath's key, two items and

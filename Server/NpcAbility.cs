@@ -319,18 +319,34 @@ public sealed class NpcContext
     /// <summary>What the player is called now, class plus rank (RTK <c>player.classNameMark</c>): Session.ClassTitle.</summary>
     public string ClassTitle => _s.ClassTitle;
 
-    /// <summary>The Dog's cleanse leaving an NPC subpath (RTK dog_linguist.lua <c>cleanse</c>,
-    /// <c>player:updatePath(player.baseClass, player.mark)</c>): a Chung ryong, Baekho, Ju jak or Hyun moo goes back
-    /// to its base class, rank kept. Any other path is left as it is. RTK's call is unconditional, so it would also
-    /// return a PC subpath to its base; this one does not, because leaving a PC subpath belongs to the PC-subpath
-    /// rules (<c>@subpath leave</c>, wherever PC subpaths can be held), not to the Dog. True if the path
-    /// changed.</summary>
-    public bool LeaveNpcSubpath()
+    /// <summary>The Dog's cleanse leaving a subpath for its base class, rank kept (RTK dog_linguist.lua
+    /// <c>cleanse</c>, <c>player:updatePath(player.baseClass, player.mark)</c>). True if the path changed.
+    /// <list type="bullet">
+    /// <item>A Chung ryong, Baekho, Ju jak or Hyun moo: the path alone moves. The Dog's script has already taken
+    /// the NPC-subpath spell, as RTK's cleanse takes it.</item>
+    /// <item>A PC subpath: leaves through <see cref="Session.LeavePcSubpath"/>, the one leave <c>@subpath
+    /// leave</c> and <c>@subpath expel</c> use, so the subpath's own spells and the elder mark go with it and no
+    /// second way out can drift from the first. RTK's Dog never reaches this case: its speech handler offers the
+    /// cleanse only to the dog's base class and that class's NPC subpath (dog_linguist.lua, the
+    /// <c>speech == "cleanse"</c> branch). Ours offers it to anyone on the dog's base path, and a PC-subpath
+    /// member who confirms is returned to the base class rather than charged for nothing (decided
+    /// 2026-10-24).</item>
+    /// <item>A base class, or anything else: left as it is.</item>
+    /// </list></summary>
+    public bool LeaveSubpath()
     {
         int cls = _s.CharClassId;
-        if (!Content.IsNpcSubpath(cls)) return false;
-        _s.SetCharClass(Content.PathBaseOf(cls));
-        return true;
+        if (Content.IsNpcSubpath(cls))
+        {
+            _s.SetCharClass(Content.PathBaseOf(cls));
+            return true;
+        }
+        if (Content.IsPcSubpath(cls))
+        {
+            _s.LeavePcSubpath();
+            return true;
+        }
+        return false;
     }
 
     // ---- sub-alignment (AlignmentAbility / SummitAbility; RTK swapAlignment.lua) ------------------

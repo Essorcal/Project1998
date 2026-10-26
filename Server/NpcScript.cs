@@ -242,9 +242,10 @@ public static class NpcScript
             case "classId":    return DynValue.NewNumber(ctx.ClassId);
             case "basePathId": return DynValue.NewNumber(ctx.BasePathId);
             case "canLearnDogSpells": return DynValue.NewBoolean(ctx.CanLearnDogSpells);
-            // The Dog's cleanse leaving an NPC subpath for its base class (RTK updatePath(baseClass, mark)). C# owns
-            // which paths it moves (NpcContext.LeaveNpcSubpath), for the same reason as canLearnDogSpells.
-            case "leaveNpcSubpath": return DynValue.NewBoolean(ctx.LeaveNpcSubpath());
+            // The Dog's cleanse leaving a subpath, NPC or PC, for its base class (RTK updatePath(baseClass, mark)).
+            // C# owns which paths it moves and how (NpcContext.LeaveSubpath: a PC subpath through the same leave as
+            // @subpath leave), for the same reason as canLearnDogSpells.
+            case "leaveSubpath": return DynValue.NewBoolean(ctx.LeaveSubpath());
             // This NPC's display name. Several NPCs share ONE identifier and differ only by name (the four
             // Dogs are all DogLinguistNpc), so a handler needs it to know which of them it is speaking as.
             case "npcName":    return DynValue.NewString(ctx.Def.Name);
