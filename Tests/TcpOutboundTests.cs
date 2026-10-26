@@ -5,6 +5,7 @@ using System.Text;
 using Protocol.Tk495;
 using Server;
 using Shared;
+using Tests.Support;
 using Xunit;
 
 namespace Tests;
@@ -69,7 +70,9 @@ public sealed class TcpOutboundTests
             // no reply would miss dispatch: Session.Send already suppresses frames after closure.
             byte[] ignoredArrival = Arrival("zzclosed");
             session.Receive(ignoredArrival);
-            Assert.True(HandoffTokens.Consume(ignoredArrival[^5..], "zzclosed", IPAddress.Loopback.ToString()));
+            // The frame is AA len len 10 inc, then the body: klen at [5], the 9 key bytes at [6..15].
+            Assert.True(HandoffTokens.Consume(ignoredArrival[^5..], ignoredArrival[6..15], "zzclosed",
+                                              IPAddress.Loopback.ToString(), 7005));
             byte[] bytes = await ReadToEof(pair.Client.GetStream());
             Assert.True(TkPacket.TryParse(bytes, out var packet, out int consumed));
             Assert.Equal(bytes.Length, consumed);
@@ -161,15 +164,9 @@ public sealed class TcpOutboundTests
         Assert.False(pair.Outbound.Send(new byte[] { 1 }));
     }
 
-    private static byte[] Arrival(string user)
-    {
-        var body = new List<byte> { 9 };
-        body.AddRange(Encoding.ASCII.GetBytes("NexonInc."));
-        body.Add((byte)user.Length);
-        body.AddRange(Encoding.ASCII.GetBytes(user));
-        body.AddRange(HandoffTokens.Mint(user, IPAddress.Loopback.ToString()));
-        return TkPacket.Build(Opcode.Arrival, 0, body.ToArray());
-    }
+    /// <summary>An arrival at this class's sessions' port, 7005: a port the channel pairing does not know, so its
+    /// hand-off carries a one-time key like the 4.95 port's (<c>HandoffTokens.CarriesKey</c>).</summary>
+    private static byte[] Arrival(string user) => Handoff.ArrivalFrame(user, IPAddress.Loopback.ToString(), 7005);
 
     private static async Task<byte[]> ReadToEof(NetworkStream stream)
     {

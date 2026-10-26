@@ -912,10 +912,12 @@ public sealed partial class Session
         }
         LoginThrottle.RecordSuccess(ip);
 
-        var nonce = HandoffTokens.Mint(user, _remoteIp);
         var host = GameHostOctets;
         int gport = _port;   // redirect back to this same game port (2005 V495 / 2006 V533)
-        Send(LoginRedirect.Build(host, gport, user, nonce));
+        // Minted for that port, so a 4.95 port's re-login carries a one-time key exactly as the login server's
+        // hand-off does, and the 5.33 port's carries "NexonInc." (Shared/HandoffTokens.CarriesKey).
+        var grant = HandoffTokens.Mint(user, _remoteIp, gport);
+        Send(LoginRedirect.Build(host, gport, user, grant));
         Log.Info($"   -> RE-LOGIN ok for '{user}' — handoff back to {host[0]}.{host[1]}.{host[2]}.{host[3]}:{gport} (token minted)");
     }
 
@@ -954,7 +956,9 @@ public sealed partial class Session
         // login connection with a 0x10 carrying these zero bytes — a redirect is a redirect to it — and
         // the login server logs and ignores that (observed live 2026-08-24; this comment used to claim
         // login "never sees a 0x10", which the first logout through this path disproved).
-        Send(LoginRedirect.Build(host, lport, _user, new byte[LoginRedirect.TailBytes]));
+        // No one-time key either: the key field keeps "NexonInc.", because the login server checks the
+        // password itself and reads nothing of this arrival.
+        Send(LoginRedirect.Build(host, lport, _user, TkCrypt.LoginKey, new byte[LoginRedirect.TailBytes]));
         Log.Info($"   -> EXIT-TO-SELECT for '{_user}' — redirect to login {host[0]}.{host[1]}.{host[2]}.{host[3]}:{lport}");
     }
 
@@ -1114,13 +1118,18 @@ public sealed partial class Session
 
     private void HandleArrival(TkPacket pkt)
     {
-        // plaintext body: <klen> "NexonInc." <ulen> "<user>" <token>
+        // plaintext body: <klen> <key> <ulen> "<user>" <token>
         var body = pkt.Body;
+        byte[] key = Array.Empty<byte>();
         byte[] token = Array.Empty<byte>();
         try
         {
             int klen = body[0];
             int ulen = body[1 + klen];
+            // The redirect's key field, copied back whole at every name length: on a 4.95 port the one-time
+            // key the hand-off carried, which Consume requires 9 bytes long and matching; on the 5.33 port
+            // "NexonInc.", which it does not read.
+            key = body[1..(1 + klen)];
             _user = Encoding.ASCII.GetString(body, 2 + klen, ulen);
             int tokenStart = 2 + klen + ulen;
             // What's left of the handoff nonce. NOT always 5 bytes: the client copies <ulen><user><nonce>
@@ -1139,9 +1148,12 @@ public sealed partial class Session
         // Validate the single-use handoff token the login server minted for this username (see
         // Shared/HandoffTokens). This is what stops a client from connecting straight to the game port and
         // claiming ANY username — identity now rests on a login-verified secret, not the client's claim.
+        // On a 4.95 port that secret includes the key, so a wrong or missing key, or a klen other than 9, is
+        // refused here exactly like a bad nonce. This port decides whether a key is required
+        // (HandoffTokens.CarriesKey), the same rule the login server minted by.
         // Safety valve: P1998_ENFORCE_HANDOFF=0 downgrades a failure to a warning (fallback only if a
         // deployment hits a token problem); the default is to enforce.
-        if (!HandoffTokens.Consume(token, _user, _remoteIp))
+        if (!HandoffTokens.Consume(token, key, _user, _remoteIp, _port))
         {
             // Resolved at startup, not per arrival — this was one of the four knobs the issue names as
             // re-read from the environment on every call.

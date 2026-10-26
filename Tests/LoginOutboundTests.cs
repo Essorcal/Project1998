@@ -422,7 +422,8 @@ public sealed class LoginOutboundTests
     private static byte[] Status(byte code, string text) => LoginStatus.Build(code, Encoding.ASCII.GetBytes(text));
 
     private static byte[] Redirect() =>
-        LoginRedirect.Build(new byte[] { 127, 0, 0, 1 }, 2005, "drainprobe", new byte[] { 0, 1, 18, 17, 0 });
+        LoginRedirect.Build(new byte[] { 127, 0, 0, 1 }, 2005, "drainprobe", TkCrypt.LoginKey,
+                            new byte[] { 0, 1, 18, 17, 0 });
 
     /// <summary>Exactly <paramref name="count"/> bytes from the peer, or a failure inside the deadline — the
     /// caller uses it as evidence that the writer really put those bytes on the wire.</summary>
