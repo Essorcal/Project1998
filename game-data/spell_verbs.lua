@@ -1650,13 +1650,14 @@ function verbs.revive_around(ctx, row)
 end
 
 -- Shaman's torment (RTK Subpaths/TESTING/shamans_torment.lua, an unfinished testing script, ported as written). The
--- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), says
--- the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic."; at a creature,
--- a run of rollRange(duration, durationMax) whole seconds whose beat (torment_tick) strikes it every TORMENT_TICK_MS.
+-- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), counts
+-- a creature into the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic.";
+-- at a creature, a run of rollRange(duration, durationMax) whole seconds whose beat (torment_tick) strikes it every
+-- TORMENT_TICK_MS.
 -- At nothing, or at an NPC, it casts nothing, silently and for free: RTK's engine runs no script without a target.
--- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only; "total siphon: N" is the
--- script's own debug line, shown on every cast as RTK shows it. Row: mana 30, coeff 0.01, amount 0.025,
--- duration 5000, durationMax 20000.
+-- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only and never shown: the script's
+-- debug line "total siphon: N", sent on every cast, is dropped on the project owner's decision (2026-10-26). The beat
+-- recounts it and divides its blow by it. Row: mana 30, coeff 0.01, amount 0.025, duration 5000, durationMax 20000.
 local TORMENT_TICK_MS = 1500            -- the script's while_cast_1500
 local TORMENT_ANIM    = 84              -- its target:selfAnimation(player.ID, 84, 1), for the caster alone
 local TORMENT_SIPHON  = "totalsiphon"   -- its player.registry key
@@ -1674,7 +1675,6 @@ function verbs.torment(ctx, row)
     if siphon < 0 then siphon = 0 end
     ctx:setTempReg(TORMENT_SIPHON, siphon)
   end
-  ctx:say("total siphon: " .. ctx:tempReg(TORMENT_SIPHON))
   if creature then
     local secs = ctx:rollRange((row.duration or 0) / 1000, (row.durationMax or 0) / 1000)
     ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * 1000)

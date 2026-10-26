@@ -223,9 +223,9 @@ public sealed class ShamanSpellTests
 
     // ===== Shaman's torment: the cast ===========================================================================
 
-    /// <summary>At a player: the script's debug line, then "This target's soul is too pure for this magic.", for 30 + 1%
-    /// of max mana (230), with the pose and no "You cast" line, and no run started. Red on be75e7e: 5 mana and
-    /// "You cast Shaman's torment.".</summary>
+    /// <summary>At a player: "This target's soul is too pure for this magic." and nothing else, for 30 + 1% of max mana
+    /// (230), with the pose, no "You cast" line, no "total siphon" line (the script's debug line, dropped on the project
+    /// owner's decision), and no run started. Red on be75e7e: 5 mana and "You cast Shaman's torment.".</summary>
     [Fact]
     public void TormentAtAPlayerIsTooPure()
     {
@@ -235,7 +235,7 @@ public sealed class ShamanSpellTests
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
             var lines = SpellCastSupport.MiniTexts(cOut);
-            Assert.True(lines.SequenceEqual(new[] { "total siphon: 0", "This target's soul is too pure for this magic." })
+            Assert.True(lines.SequenceEqual(new[] { "This target's soul is too pure for this magic." })
                         && cc.Mp == Mana - 230 && cOut.BodiesOf(ServerOp.Action).Count > 0 && Ticks(caster).Count == 0
                         && tc.Hp == 1_000,
                         $"lines [{string.Join(" | ", lines)}], spent {Mana - cc.Mp} (want 230), ticks {Ticks(caster).Count}");
@@ -244,7 +244,7 @@ public sealed class ShamanSpellTests
     }
 
     /// <summary>The script's mana check is 2.5% of max mana: 499 of 20,000 is refused, "You do not have enough mana.",
-    /// for free; 500 casts and leaves 270. Red on be75e7e: 499 cast for 5.</summary>
+    /// for free; 500 casts, silently, and leaves 270. Red on be75e7e: 499 cast for 5.</summary>
     [Theory]
     [InlineData(499u, false)]
     [InlineData(500u, true)]
@@ -256,7 +256,7 @@ public sealed class ShamanSpellTests
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
             string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
-            if (casts) Assert.True(lines == "total siphon: 1" && cc.Mp == 270, $"lines [{lines}], mana {cc.Mp} (want 270)");
+            if (casts) Assert.True(lines.Length == 0 && cc.Mp == 270, $"lines [{lines}], mana {cc.Mp} (want 270)");
             else Assert.True(lines == "You do not have enough mana." && cc.Mp == mana && Ticks(caster).Count == 0,
                              $"lines [{lines}], mana {cc.Mp}");
         }
@@ -279,10 +279,11 @@ public sealed class ShamanSpellTests
         finally { _fx.World.LeaveMap(caster, TormentMap); _fx.World.DespawnMob(TormentMap, mob); }
     }
 
-    /// <summary>At a creature: "total siphon: 1" and nothing else, 230 mana, the script's graphic 84 drawn over the
-    /// creature for the caster alone (a player watching sees none), and a run on the creature whose beat comes every
-    /// 1.5 s for a whole number of seconds from 5 to 20. Red on be75e7e: 5 mana, "You cast Shaman's torment.", no
-    /// graphic and no run.</summary>
+    /// <summary>At a creature: no line at all (no "You cast", as in the script, and no "total siphon" line, the script's
+    /// debug line, dropped on the project owner's decision), 230 mana, the script's graphic 84 drawn over the creature
+    /// for the caster alone (a player watching sees none), and a run on the creature whose beat comes every 1.5 s for a
+    /// whole number of seconds from 5 to 20. The siphon count is still kept: it reads 1. Red on be75e7e: 5 mana, "You
+    /// cast Shaman's torment.", no graphic and no run; red with the debug line put back.</summary>
     [Fact]
     public void TormentAtACreatureStartsARun()
     {
@@ -294,14 +295,16 @@ public sealed class ShamanSpellTests
             caster.Receive(SpellCastSupport.CastFrame(0));
             var lines = SpellCastSupport.MiniTexts(cOut);
             var ticks = Ticks(caster);
+            int held = 0;
+            caster.WithState(() => held = caster.LuaTempReg("totalsiphon"));
             var mine = cOut.BodiesOf(ServerOp.Effect).Where(b => Id(b) == mob.Id).ToList();
             var theirs = wOut.BodiesOf(ServerOp.Effect).Where(b => Id(b) == mob.Id).ToList();
             var t = ticks.SingleOrDefault();
             long length = t is null ? 0 : t.UntilIn - t.NextIn + t.Every;   // both were set from one clock reading
-            string what = $"lines [{string.Join(" | ", lines)}], spent {Mana - cc.Mp}, ticks {ticks.Count}, " +
+            string what = $"lines [{string.Join(" | ", lines)}], siphon {held}, spent {Mana - cc.Mp}, ticks {ticks.Count}, " +
                           $"every {t?.Every}, length {length} ms, caster effects {mine.Count} " +
                           $"({string.Join(",", mine.Select(b => b[4]))}), watcher's {theirs.Count}";
-            Assert.True(lines.SequenceEqual(new[] { "total siphon: 1" }) && cc.Mp == Mana - 230
+            Assert.True(lines.Count == 0 && held == 1 && cc.Mp == Mana - 230
                         && t is { Spell: "shamans_torment", Verb: "torment_tick", Every: 1_500, Ended: false } && t.Mob == mob.Id
                         && length >= 5_000 && length <= 20_000 && length % 1_000 == 0
                         && mine.Count == 1 && mine[0][4] == 84 + ServerConfig.Current.EfxWireOffset && theirs.Count == 0, what);
@@ -309,11 +312,12 @@ public sealed class ShamanSpellTests
         finally { Leave(TormentMap, caster, watcher); _fx.World.DespawnMob(TormentMap, mob); }
     }
 
-    /// <summary>A creature counts once while its run lasts: a second cast at it a second later says "total siphon: 1"
-    /// again and sets its length again from now (at least 5 s left) while keeping its beat (half a second off, not a
-    /// fresh 1.5 s), as RTK's <c>setDuration(..., 1)</c> sets the time and nothing else; a cast at a second creature says
-    /// "total siphon: 2". The count is held for the login only: the saved registry has no "totalsiphon". Red on be75e7e:
-    /// no lines but "You cast".</summary>
+    /// <summary>A creature counts once while its run lasts: a second cast at it a second later leaves the siphon count at
+    /// 1 and sets the run's length again from now (at least 5 s left) while keeping its beat (half a second off, not a
+    /// fresh 1.5 s), as RTK's <c>setDuration(..., 1)</c> sets the time and nothing else; a cast at a second creature makes
+    /// it 2. No cast says anything (the script's "total siphon" debug line is dropped on the project owner's decision).
+    /// The count is held for the login only: the saved registry has no "totalsiphon". Red on be75e7e: "You cast" lines
+    /// and no count.</summary>
     [Fact]
     public void ACreatureCountsOnceWhileItsRunLasts()
     {
@@ -329,16 +333,18 @@ public sealed class ShamanSpellTests
             caster.Receive(SpellCastSupport.CastFrame(0));
             string again = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
             var after = Ticks(caster).Single();
-            Assert.True(again == "total siphon: 1" && after.NextIn <= before.NextIn && after.NextIn < 1_000
+            int count = 0;
+            caster.WithState(() => count = caster.LuaTempReg("totalsiphon"));
+            Assert.True(again.Length == 0 && count == 1 && after.NextIn <= before.NextIn && after.NextIn < 1_000
                         && after.UntilIn > 5_000 - SlackMs / 5,
-                        $"again: [{again}], next {before.NextIn} then {after.NextIn} ms, end {before.UntilIn} then {after.UntilIn} ms");
+                        $"again: [{again}], siphon {count}, next {before.NextIn} then {after.NextIn} ms, end {before.UntilIn} then {after.UntilIn} ms");
 
             cOut.Clear();
             caster.Receive(SpellCastSupport.CastFrame(0, second.Id));
             string other = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
             int saved = 0, held = 0;
             caster.WithState(() => { saved = caster.Quest(QuestState.Registry).Get("totalsiphon"); held = caster.LuaTempReg("totalsiphon"); });
-            Assert.True(other == "total siphon: 2" && Ticks(caster).Count == 2 && saved == 0 && held == 2,
+            Assert.True(other.Length == 0 && Ticks(caster).Count == 2 && saved == 0 && held == 2,
                         $"second creature: [{other}], ticks {Ticks(caster).Count}, saved {saved}, held {held}");
         }
         finally { _fx.World.LeaveMap(caster, TormentMap); _fx.World.DespawnMob(TormentMap, first); _fx.World.DespawnMob(TormentMap, second); }
