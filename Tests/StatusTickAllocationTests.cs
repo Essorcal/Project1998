@@ -8,7 +8,8 @@ namespace Tests;
 
 /// <summary>
 /// The no-op path of <see cref="Session.TickSleep"/> and <see cref="Session.TickPoison"/> allocates nothing,
-/// and the paths that DO broadcast still send the same frames with the same arguments.
+/// and the paths that DO broadcast still send the same frames with the same arguments. The periodic spell tick's
+/// (<see cref="Session.TickSpellTicks"/>, the Shaman spells slice) rides the same sweep and is held to the same 0 B.
 ///
 /// <para><b>Why this needs tests by the "would this fail loudly?" rule.</b> Both failure modes are silent.
 /// Move either captured local back up to method scope and the compiler builds its display class at method
@@ -51,8 +52,8 @@ public class StatusTickAllocationTests
 
     public StatusTickAllocationTests(SessionFixture fx) => _fx = fx;
 
-    /// <summary>(a) 400 sessions with neither a hold nor a venom: <c>TickSleep</c> + <c>TickPoison</c> over
-    /// 20 beats allocate <b>0 B</b> on the calling thread.
+    /// <summary>(a) 400 sessions with neither a hold nor a venom nor a spell tick: <c>TickSleep</c> + <c>TickPoison</c>
+    /// + <c>TickSpellTicks</c> over 20 beats allocate <b>0 B</b> on the calling thread.
     ///
     /// <para>Two passes over the same loop, the pattern
     /// <c>TickStepIsolationTests.TheIsolationHelperAllocatesNothingWithAStaticLambda</c> established: the
@@ -78,7 +79,7 @@ public class StatusTickAllocationTests
             {
                 long before = GC.GetAllocatedBytesForCurrentThread();
                 for (int beat = 0; beat < Beats; beat++)
-                    foreach (var s in sessions) { s.TickSleep(); s.TickPoison(); }
+                    foreach (var s in sessions) { s.TickSleep(); s.TickPoison(); s.TickSpellTicks(); }
                 long taken = GC.GetAllocatedBytesForCurrentThread() - before;
                 if (pass == 0) first = taken; else second = taken;
             }

@@ -816,16 +816,16 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 31116,stone_casing,Stone Casing,2,16,-1,0,0,,0,0,0,1,0,1
 31117,,,5,5,-1,0,0,,0,0,0,1,1,1
 31200,====Shaman====,====Shaman====,5,20,0,0,0,,0,0,0,0,1,1
-31201,shamans_solace,Shaman\'s solace,2,20,-1,1,0,,0,0,0,1,0,1
+31201,shamans_solace,Shaman\'s solace,2,20,-1,1,99,,0,0,0,1,0,1
 31202,phoenix_flames,Phoenix flames,5,20,-1,0,64,,0,0,0,1,0,1
-31203,reincarnate,Reincarnate,5,20,-1,0,0,,0,0,0,1,0,1
+31203,reincarnate,Reincarnate,5,20,-1,0,64,,0,0,0,1,0,1
 31204,,,5,5,-1,0,0,,0,0,0,1,1,1
 31205,,,5,5,-1,0,0,,0,0,0,1,1,1
 31206,,,5,5,-1,0,0,,0,0,0,1,1,1
 31207,,,5,5,-1,0,0,,0,0,0,1,1,1
 31208,,,5,5,-1,0,0,,0,0,0,1,1,1
 31209,,,5,5,-1,0,0,,0,0,0,1,1,1
-31210,shamans_torment,Shaman\'s torment,2,5,-1,0,0,Which target?,0,0,0,1,0,1
+31210,shamans_torment,Shaman\'s torment,2,20,-1,0,0,Which target?,0,0,0,1,0,1
 31300,====Hyun Moo====,====Hyun Moo====,5,9,0,0,0,,0,0,0,0,1,1
 31301,hyun_moo_revival,Hyun moo revival,5,9,-1,0,0,,0,0,0,1,0,1
 31400,====Druid=====,====Druid=====,5,13,0,0,0,,0,0,0,0,1,1

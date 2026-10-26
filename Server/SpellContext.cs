@@ -65,10 +65,35 @@ public sealed class SpellContext
     private Session.StatusTarget StatusTarget => _s.LuaStatusTargetHere(_statusTarget ??= _s.LuaStatusTarget(_targetId));
     private Session.StatusTarget? _statusTarget;
 
+    /// <summary>Who this cast's heal lands on, resolved ONCE, as <see cref="StatusTarget"/> is for a curse: the heal
+    /// resolver's answer (<c>Session.LuaResolveHealTarget</c>: the caster for a self-skill, else the aimed id or the
+    /// faced tile, else the caster), taken the first time a verb asks and kept for the rest of the cast.
+    /// <see cref="healReach"/>, <see cref="healIsGhost"/> and <see cref="healTarget"/> all read it, so Shaman's solace
+    /// checks the reach and the ghost of the one target it heals.</summary>
+    private Session.HealTarget HealTarget => _healTarget ??= _s.LuaResolveHealTarget(_sp, _targetId);
+    private Session.HealTarget? _healTarget;
+
     internal SpellContext(Session s, SpellDef sp, uint? targetId, string? answer)
     {
         _s = s; _sp = sp; _targetId = targetId; this.answer = answer ?? "";   // set the PROPERTY, not the param (was leaving ctx.answer null)
     }
+
+    /// <summary>A periodic tick's context (<c>Session.TickSpellTicks</c>): the victim is the creature the tick runs on,
+    /// on the map it was struck on, given here and never resolved (no faced tile, no fallback), so a creature that has
+    /// died is no stand-in for the one the tick was started on. The verb reads it through the members that read
+    /// <see cref="Victim"/>; the target-resolving ones (<see cref="healTarget"/>, the curse and buff sets) mean nothing
+    /// in a tick.</summary>
+    internal SpellContext(Session s, SpellDef sp, Mob tickVictim, ushort tickMap)
+        : this(s, sp, null, null)
+    {
+        _victim = (tickVictim, null);
+        _victimMap = tickMap;
+    }
+
+    /// <summary>The map this cast's victim stands on: a tick's own map, else the caster's (every resolver here finds a
+    /// victim on the caster's map only).</summary>
+    private ushort VictimMap => _victimMap ?? _s.CharMap;
+    private readonly ushort? _victimMap;
 
     /// <summary>Archetype-path ctor: the engine has already resolved this spell's mana cost and evaluated its
     /// per-spell formula (spell_effects.csv <c>amountExpr</c>), so an archetype verb (arch_damage/arch_heal/…) can
@@ -162,8 +187,16 @@ public sealed class SpellContext
     public void heal(double amt)        => _s.LuaHeal((int)System.Math.Round(amt), _sp);
     /// <summary>Heal whoever this cast is AIMED at — another player, a mob (your pet), or yourself — with the
     /// spell's fx drawn over them. Type-5 self-skills always heal the caster; only Type-2 "Which target? &gt;"
-    /// spells redirect. Falls back to the caster when nothing is targeted.</summary>
-    public void healTarget(double amt)  => _s.LuaHealTarget((int)System.Math.Round(amt), _sp, _targetId);
+    /// spells redirect. Falls back to the caster when nothing is targeted. It heals this cast's one heal target
+    /// (<see cref="HealTarget"/>), the one <see cref="healReach"/> and <see cref="healIsGhost"/> read.</summary>
+    public void healTarget(double amt)  => _s.LuaHealTarget((int)System.Math.Round(amt), _sp, HealTarget);
+    /// <summary>How many tiles this cast's heal target (<see cref="HealTarget"/>) stands from the caster, on the
+    /// larger axis (RTK's <c>distanceSquare</c>); 0 for the caster, -1 for an NPC (RTK runs no script for one).
+    /// Shaman's solace refuses beyond its 10 tiles, silently and for free.</summary>
+    public double healReach             => _s.LuaHealReach(HealTarget);
+    /// <summary>Is this cast's heal target (<see cref="HealTarget"/>) a ghost? Shaman's solace answers one "You need
+    /// a different type of cure." (RTK <c>shamans_solace.lua:23-26</c>).</summary>
+    public bool   healIsGhost           => _s.LuaHealIsGhost(HealTarget);
     /// <summary>Current HP of this cast's victim (<see cref="Victim"/>), 0 if it isn't a living mob the blow can hurt
     /// (an NPC is no victim) — Drain's "is it weak enough" test and the amount of life it yields.</summary>
     public double targetHp              => _s.LuaTargetMobHp(Victim);
@@ -643,4 +676,49 @@ public sealed class SpellContext
     public bool   ambushLeap()    => _s.LuaAmbushLeap();
     /// <summary>Swing on the stashed ambush target (gets the free positional backstab if landed on its blind side).</summary>
     public void   ambushStrike()  => _s.LuaAmbushStrike(_sp);
+
+    // ---- revive around (Reincarnate) -------------------------------------------------------------------------------
+    /// <summary>Revive every dead player on the four cells beside the caster, where they lie, with
+    /// <paramref name="fraction"/> of their max vita (floored, at least 1) and the mana they had; the living are left
+    /// alone. Each gets the spell's graphic and "&lt;caster&gt; casts &lt;spell&gt; on you."; the spell's sound plays at the
+    /// caster when anyone stands beside them (RTK <c>Spells/Subpaths/Shaman/reincarnate.lua:27-43</c>). Returns how many
+    /// came back; 0 is still a cast. Each revive is made inside the revived player's own monitor
+    /// (<c>Session.ReceiveRevive</c>).</summary>
+    public double reviveAround(double fraction) => _s.LuaReviveAround(fraction, _sp);
+
+    // ---- periodic ticks (RTK while_cast_<ms>) ----------------------------------------------------------------------
+    /// <summary>Start, or refresh, this caster's tick of this spell on this cast's victim, which must be a creature:
+    /// the verb named <paramref name="verb"/> runs every <paramref name="everyMs"/> for <paramref name="durationMs"/>,
+    /// against that creature (RTK <c>setDuration(key, ms, player.ID, 1)</c> and the script's
+    /// <c>while_cast_&lt;ms&gt;</c>). A tick already running there takes the new length and keeps its beat. False, starting
+    /// nothing, at a player, an NPC or nothing. See <c>Session.TickSpellTicks</c>.</summary>
+    public bool startTick(string verb, double everyMs, double durationMs) =>
+        _s.LuaStartTick(_sp, Victim.mob, VictimMap, verb, (int)everyMs, (int)durationMs);
+    /// <summary>Does this caster's tick of this spell run on this cast's victim? RTK <c>hasDurationID(key, player.ID)</c>.</summary>
+    public bool tickRunning()           => _s.LuaTickRunning(_sp, Victim.mob, VictimMap);
+    /// <summary>End this caster's tick of this spell on this cast's victim now (RTK <c>setDuration(key, 0, player.ID)</c>);
+    /// a beat already running goes on to its end.</summary>
+    public void endTick()               => _s.LuaEndTick(_sp, Victim.mob, VictimMap);
+    /// <summary>How many living creatures on this cast's victim's map carry this caster's tick of this spell.</summary>
+    public double tickCount()           => _s.LuaTickCount(_sp, VictimMap);
+    /// <summary>Is the caster on the map this cast's victim stands on? Always, in a cast; a tick's creature may be on
+    /// a map its caster has left.</summary>
+    public bool   victimHere            => VictimMap == _s.CharMap;
+    /// <summary>Strike this cast's victim, a creature, for <paramref name="amount"/>, netted against its armour, never
+    /// for less than <paramref name="minimum"/> once netted: no deflect roll and no graphic (RTK <c>calculateDamage</c>,
+    /// a floor, <c>removeHealth</c>). The over-head bar, and a kill's experience. False when it is not a living
+    /// creature.</summary>
+    public bool   strikeVictim(double amount, double minimum) =>
+        _s.LuaStrikeVictim(_sp, Victim.mob, VictimMap, amount, (int)minimum);
+    /// <summary>Draw effect <paramref name="anim"/> over this cast's victim for the caster alone (RTK
+    /// <c>target:selfAnimation(player.ID, anim, 1)</c>).</summary>
+    public void   selfAnimation(double anim) =>
+        _s.LuaSelfAnimation(Victim.mob?.Id ?? Victim.pc?.PlayerId, VictimMap, (int)anim);
+
+    // ---- login-only registry ---------------------------------------------------------------------------------------
+    /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value
+    /// this server does not save (Shaman's torment's "totalsiphon"). <see cref="reg"/> is the saved one.</summary>
+    public int  tempReg(string key)                   => _s.LuaTempReg(key);
+    /// <summary>Set a per-caster integer kept for this login only (not saved).</summary>
+    public void setTempReg(string key, double v)      => _s.LuaSetTempReg(key, (int)v);
 }

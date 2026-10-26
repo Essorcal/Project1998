@@ -1595,6 +1595,116 @@ function verbs.storm_strike(ctx, row)
   return true
 end
 
+-- =========================================================================================================
+-- SHAMAN (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Shaman/, and Subpaths/TESTING/ for Shaman's torment):
+-- Shaman's solace, Reincarnate and Shaman's torment. Caleb, 2026-10-26: each spell as its RTK script (P5), and
+-- torment built from RTK's unfinished TESTING script and sold like the others (Q7). Phoenix flames, the fourth, is
+-- ring_strike above. Each is bound by its SpellParams.csv row, which carries its numbers, and each verb is the shape
+-- of its script, in that script's order. The graphic and sound over a target are the spell's spell_effects.csv row, a
+-- Utility row (torment has none: its one graphic is drawn for its caster alone). RTK is weight 0 for balance; these
+-- numbers are its scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose, as the damage spells above part:
+--   * Reincarnate's wait is checked first, with this file's own line, and armed under its own key (subpath_waiting).
+--   * The cast pose is the engine's, on a cast that lands. The scripts send their own: torment's before its mana
+--     check, so RTK poses on that refusal too.
+--   * A player healed or revived reads the engine's one line, "<caster> casts <spell> on you."; solace's script says
+--     "cast". On yourself solace says nothing more than "You cast Shaman's solace.".
+--   * A solace aimed at nothing heals its caster, as every "Which target?" heal here does (the 4.95 client casts with
+--     the slot alone, and you never face yourself). RTK's engine runs no script without a target.
+--   * RTK waives Reincarnate's wait for a GM; no verb here waives anything for staff.
+--   * Torment's run is clock time, 5-20 s, as the venom's is; RTK counts a creature's duration down 1,000 every 1.5 s,
+--     so its run lasts half as long again (the periodic tick's note in Server/Session.Spells.cs). A creature's threat from a beat is the blow it took, as from every blow
+--     here; the script adds its figure before armour. A ghost casts nothing here (the engine's rule); the script's
+--     canCast(0, ...) lets a ghost torment.
+-- =========================================================================================================
+
+-- Shaman's solace (RTK Subpaths/Shaman/shamans_solace.lua): its target, a player or a creature, takes `amount` vita,
+-- within SUBPATH_REACH tiles. Beyond that, or at an NPC, the cast does nothing, silently and for free, as the script's
+-- distanceSquare return does. A ghost answers "You need a different type of cure.", for free. Row: mana 600,
+-- amount 2200.
+function verbs.ranged_heal(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local reach = ctx.healReach
+  if reach < 0 or reach > SUBPATH_REACH then return false end      -- silent, free: out of reach, or an NPC
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if ctx.healIsGhost then ctx:say("You need a different type of cure."); return false end
+  ctx:debitMana(mana)
+  ctx:healTarget(row.amount or 0)
+  return true
+end
+
+-- Reincarnate (RTK Subpaths/Shaman/reincarnate.lua): every dead player on the caster's four sides comes back where
+-- they lie with `amount` of their max vita (the script's math.floor(maxHealth * 0.10)) and the mana they had; the
+-- living are left alone. The mana and the wait go first, so a cast with nobody dead beside you still costs both, as
+-- the script orders it. Row: mana 10000, amount 0.1, duration 7500000 (its 7,500 s wait).
+function verbs.revive_around(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:reviveAround(row.amount or 0)
+  return true
+end
+
+-- Shaman's torment (RTK Subpaths/TESTING/shamans_torment.lua, an unfinished testing script, ported as written). The
+-- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), says
+-- the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic."; at a creature,
+-- a run of rollRange(duration, durationMax) whole seconds whose beat (torment_tick) strikes it every TORMENT_TICK_MS.
+-- At nothing, or at an NPC, it casts nothing, silently and for free: RTK's engine runs no script without a target.
+-- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only; "total siphon: N" is the
+-- script's own debug line, shown on every cast as RTK shows it. Row: mana 30, coeff 0.01, amount 0.025,
+-- duration 5000, durationMax 20000.
+local TORMENT_TICK_MS = 1500            -- the script's while_cast_1500
+local TORMENT_ANIM    = 84              -- its target:selfAnimation(player.ID, 84, 1), for the caster alone
+local TORMENT_SIPHON  = "totalsiphon"   -- its player.registry key
+
+function verbs.torment(ctx, row)
+  if ctx.victimIsNpc or ctx.castAtNothing then return false end    -- silent, free: nothing to torment
+  local maxmp = ctx.maxMp
+  local magic = (row.mana or 0) + maxmp * (row.coeff or 0)
+  if ctx.mp < maxmp * (row.amount or 0) then ctx:say("You do not have enough mana."); return false end
+  ctx:setMana(math.max(0, math.floor(ctx.mp - magic)))             -- RTK's assignment truncates; never below 0 here
+  local creature = ctx.hasTarget
+  if creature then
+    local siphon = ctx:tempReg(TORMENT_SIPHON)
+    if not ctx:tickRunning() then siphon = siphon + 1 end
+    if siphon < 0 then siphon = 0 end
+    ctx:setTempReg(TORMENT_SIPHON, siphon)
+  end
+  ctx:say("total siphon: " .. ctx:tempReg(TORMENT_SIPHON))
+  if creature then
+    local secs = ctx:rollRange((row.duration or 0) / 1000, (row.durationMax or 0) / 1000)
+    ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * 1000)
+    ctx:selfAnimation(TORMENT_ANIM)
+  else
+    ctx:say("This target's soul is too pure for this magic.")
+  end
+  ctx:narrated()                                                   -- the script sends no "You cast" line
+  return true
+end
+
+-- The torment's beat (the script's while_cast_1500), on each creature it holds. If the caster has left the creature's
+-- map the run ends, and this beat still lands, as the script orders it. The siphon count becomes how many creatures on
+-- that map this caster's torment holds; the blow is max mana x 0.1 x 2 / (1 + e^(-0.95 x (n - 1))) / n, rounded up,
+-- plus 1000, with n that count kept between 1 and 20, then netted against the creature's armour and never under 1000.
+function verbs.torment_tick(ctx, row)
+  if not ctx.victimHere then ctx:endTick() end
+  ctx:selfAnimation(TORMENT_ANIM)
+  local total = ctx:tickCount()
+  ctx:setTempReg(TORMENT_SIPHON, total)
+  local amount = total
+  if amount > 20 then amount = 20 end
+  if amount < 1 then amount = 1 end
+  local damage = ctx.maxMp * 0.1
+  local factor = 2 / (1 + 2.71828 ^ (-1 * (0.95 * (amount - 1))))
+  damage = math.ceil(damage * factor / amount) + 1000
+  ctx:strikeVictim(damage, 1000)
+  return true
+end
+
 -- Amnesia (RTK Spells/rogue/amnesia.lua): the target mob FORGETS you. Your threat on it is wiped and it will
 -- not choose you again for row.duration, though it keeps fighting anyone else -- so this is a peel, not a
 -- mez: the creature stays dangerous, just not to you. Hitting it again reminds it instantly (the engine

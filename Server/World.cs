@@ -2480,8 +2480,12 @@ public sealed partial class World
     /// creature's armor, a Backstab/Flank reach), not yet rounded. This method multiplies in the creature's own
     /// sleep-family amplifier, floors the product once (at least 1) and then doubles it when
     /// <paramref name="fromBehind"/> (#363). A whole-number figure (a trap, a poison tick, a pet's swing, a harvest
-    /// swing) passes as it is.</para></summary>
-    public bool TryDamage(ushort mapId, Mob mob, double raw, out bool died, uint attackerId = 0, bool fromBehind = false)
+    /// swing) passes as it is.</para>
+    /// <para><paramref name="minDamage"/> raises the floored figure to at least that much, after the amplifier and
+    /// before the rear x2: Shaman's torment's beat, whose script floors its netted blow at 1,000 (RTK
+    /// shamans_torment.lua:71-74, after calculateDamage). 0, the default, changes nothing.</para></summary>
+    public bool TryDamage(ushort mapId, Mob mob, double raw, out bool died, uint attackerId = 0, bool fromBehind = false,
+                          int minDamage = 0)
     {
         died = false;
         List<GroundItem>? drops = null;
@@ -2504,6 +2508,7 @@ public sealed partial class World
             double amp = mob.TakeDamageAmp(Environment.TickCount64);
             if (amp > 1.0) raw *= amp;
             int dmg = Combat.FloorOnce(raw);
+            if (dmg < minDamage) dmg = minDamage;
             if (fromBehind) dmg *= 2;
             // A mythic boss does not simply die (RTK mob_ai_mythic.on_attacked). Its lethal-blow ladder, in
             // RTK's order, because the order is the mechanic:
@@ -3371,8 +3376,14 @@ public sealed partial class World
 
         // The PLAYER half of the same thing: a dozed player's drowse redraws and their hold lapses. Kept out
         // here with the other broadcasts rather than in the mob loop — it is per-session, not per-mob, and it
-        // sends. Only sleepers do any work; TickSleep returns immediately for everyone else.
-        foreach (var s in Online.All()) { Try(s, static x => x.TickSleep(), "TickSleep"); Try(s, static x => x.TickPoison(), "TickPoison"); }
+        // sends. Only sleepers do any work; TickSleep returns immediately for everyone else. A caster's periodic spell
+        // ticks (Shaman's torment) beat here too, outside the lock, as a cast would run them (Session.TickSpellTicks).
+        foreach (var s in Online.All())
+        {
+            Try(s, static x => x.TickSleep(), "TickSleep");
+            Try(s, static x => x.TickPoison(), "TickPoison");
+            Try(s, static x => x.TickSpellTicks(), "TickSpellTicks");
+        }
         PhaseProbeForTest?.Invoke();   // null except under test — see World.PhaseProbeForTest
         MarkPhase(PhStatus);
 
