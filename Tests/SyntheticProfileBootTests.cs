@@ -40,8 +40,10 @@ namespace Tests;
 /// <c>finally</c>, so a first trigger <see cref="Leash"/> ahead is in place before the server starts: an
 /// orphaned server stops itself.</para>
 ///
-/// <para>The state, log and run folders are new temp folders, deleted afterwards. Every <c>P1998_*</c> variable
-/// of this process is dropped from the child's environment first, so a developer's shell cannot leak into the
+/// <para>The state, log and run folders sit in one new temp folder per boot, deleted afterwards. A test host that
+/// dies cannot delete its own, so each run first sweeps the ones nobody has written to for
+/// <see cref="StaleAfter"/> (<see cref="SweepStaleBootFolders"/>). Every <c>P1998_*</c> variable of this
+/// process is dropped from the child's environment first, so a developer's shell cannot leak into the
 /// boot.</para>
 /// </summary>
 public class SyntheticProfileBootTests
@@ -59,6 +61,16 @@ public class SyntheticProfileBootTests
     /// <summary>The deadline of the trigger written before the server starts, which stops a server whose test
     /// host died: past <see cref="BootBound"/>, so it never cuts a slow boot short.</summary>
     private static readonly TimeSpan Leash = TimeSpan.FromSeconds(120);
+
+    /// <summary>Each boot's temp folder is this prefix and 32 hex digits; the sweep touches nothing else.</summary>
+    private const string BootFolderPrefix = "p1998-synthetic-boot-";
+    private static readonly Regex BootFolderName = new($"^{BootFolderPrefix}[0-9a-f]{{32}}$");
+
+    /// <summary>How long a boot folder must have gone unwritten before the sweep deletes it. A boot in progress
+    /// writes into its folder from the start (the server's log, then <c>run/status.json</c> every 10 s while it
+    /// runs), and the longest a boot lives is three attempts of <see cref="BootBound"/> plus
+    /// <see cref="StopBound"/>, or an orphan's <see cref="Leash"/>: 6 minutes at most, against 15.</summary>
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(15);
 
     /// <summary>The tables the profile does not carry, in load order (the order of <c>Content.TableSpecs</c>).
     /// Each is one "file not found" line when it is opened and one <c>content:</c> line in the load report.</summary>
@@ -167,6 +179,8 @@ public class SyntheticProfileBootTests
         string profile = manifest.Value("P1998_GAME_DATA");
         Assert.Equal(manifest.ProfileDir, profile);
 
+        SweepStaleBootFolders(Path.GetTempPath(), DateTime.UtcNow);
+
         BootRun run;
         int attempts = 0;
         do run = await BootRun.BootAndStopAsync(manifest, FreePortPair());
@@ -221,6 +235,80 @@ public class SyntheticProfileBootTests
         Assert.Equal(0, run.ExitCode);
     }
 
+    /// <summary>The sweep deletes a boot folder nothing has been written to for <see cref="StaleAfter"/>, and
+    /// leaves alone a fresh one, an old one with something written inside it lately (a boot still running), and a
+    /// folder whose name is not a boot folder's. Run on a folder of its own, not the real temp directory.</summary>
+    [Fact]
+    public void The_sweep_deletes_only_boot_folders_nothing_has_written_to_lately()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"p1998-sweep-probe-{Guid.NewGuid():N}");
+        var now = DateTime.UtcNow;
+        try
+        {
+            string Folder(string name, TimeSpan age, TimeSpan? statusAge = null)
+            {
+                string dir = Path.Combine(root, name);
+                Directory.CreateDirectory(Path.Combine(dir, "logs"));
+                Directory.CreateDirectory(Path.Combine(dir, "run"));
+                File.WriteAllText(Path.Combine(dir, "logs", "server.log"), "log");
+                File.WriteAllText(Path.Combine(dir, "run", "status.json"), "{}");
+                // Files first, then folders: a folder's own write time moves when an entry is added inside it.
+                foreach (string file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                    File.SetLastWriteTimeUtc(file, now - age);
+                if (statusAge is { } recent) File.SetLastWriteTimeUtc(Path.Combine(dir, "run", "status.json"), now - recent);
+                foreach (string sub in Directory.EnumerateDirectories(dir)) Directory.SetLastWriteTimeUtc(sub, now - age);
+                Directory.SetLastWriteTimeUtc(dir, now - age);
+                return dir;
+            }
+
+            string stale = Folder(BootFolderPrefix + new string('a', 32), TimeSpan.FromMinutes(20));
+            string fresh = Folder(BootFolderPrefix + new string('b', 32), TimeSpan.FromMinutes(1));
+            string running = Folder(BootFolderPrefix + new string('c', 32), TimeSpan.FromMinutes(20),
+                                    statusAge: TimeSpan.FromSeconds(10));
+            string foreign = Folder(BootFolderPrefix + "notes", TimeSpan.FromMinutes(20));
+
+            int deleted = SweepStaleBootFolders(root, now);
+            Assert.False(Directory.Exists(stale), "a boot folder untouched for 20 minutes was kept");
+            Assert.True(Directory.Exists(fresh), "a boot folder written a minute ago was deleted");
+            Assert.True(Directory.Exists(running), "a boot folder whose status file was written 10 s ago was deleted");
+            Assert.True(Directory.Exists(foreign), "a folder whose name is not a boot folder's was deleted");
+            Assert.Equal(1, deleted);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>Delete every boot folder under <paramref name="tempRoot"/> that nothing has been written to for
+    /// <see cref="StaleAfter"/>: the newest write time of the folder and of everything in it is what counts. Only
+    /// names that are a boot folder's are considered. Best effort: a folder that cannot be read or deleted (a file
+    /// still open, on Windows) is left for a later run. Returns how many were deleted.</summary>
+    private static int SweepStaleBootFolders(string tempRoot, DateTime nowUtc)
+    {
+        int deleted = 0;
+        foreach (string dir in Directory.EnumerateDirectories(tempRoot, BootFolderPrefix + "*"))
+        {
+            if (!BootFolderName.IsMatch(Path.GetFileName(dir))) continue;
+            try
+            {
+                var folder = new DirectoryInfo(dir);
+                DateTime lastWrite = folder.EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
+                    .Select(entry => entry.LastWriteTimeUtc)
+                    .Append(folder.LastWriteTimeUtc)
+                    .Max();
+                if (nowUtc - lastWrite < StaleAfter) continue;
+                folder.Delete(recursive: true);
+                deleted++;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // Gone already (another run swept it) or still held open: either way, not this run's to force.
+            }
+        }
+        return deleted;
+    }
+
     /// <summary>Each log record's text without its <c>[HH:mm:ss.fff] </c> stamp, continuation lines (an
     /// exception's detail) joined to the record they belong to, the profile's path written
     /// <c>&lt;profile&gt;</c> and every backslash a slash.</summary>
@@ -272,7 +360,7 @@ public class SyntheticProfileBootTests
     {
         public static async Task<BootRun> BootAndStopAsync(SyntheticManifest manifest, int port)
         {
-            string temp = Path.Combine(Path.GetTempPath(), $"p1998-synthetic-boot-{Guid.NewGuid():N}");
+            string temp = Path.Combine(Path.GetTempPath(), $"{BootFolderPrefix}{Guid.NewGuid():N}");
             string state = Path.Combine(temp, "state"), logs = Path.Combine(temp, "logs"), run = Path.Combine(temp, "run");
             foreach (string dir in new[] { state, logs, run }) Directory.CreateDirectory(dir);
 

@@ -88,19 +88,27 @@ public class SyntheticProfileLoadTests
 
             Assert.Equal(manifest.ObjectCount, count);
             Assert.Equal(manifest.ObjectCount.ToString(), line.Groups[1].Value);
-            int overridden = manifest.Objects.Count(o => o.FileFlag != o.ServerFlag);
-            Assert.Equal(overridden == 0 ? "" : overridden.ToString(), line.Groups[3].Value);
 
+            // Object by object first, so a wrong flag or a lost override row fails naming the object.
             Assert.Equal(Enumerable.Range(1, manifest.ObjectCount), manifest.Objects.Select(o => o.Id).Order());
             foreach (var o in manifest.Objects)
             {
                 Assert.True(o.ServerFlag == ObjectFlags.Flag(o.Id),
                             $"object {o.Id} ({o.Role}): the server reads flag 0x{ObjectFlags.Flag(o.Id):X2}, " +
-                            $"the manifest says 0x{o.ServerFlag:X2}");
+                            $"the manifest says 0x{o.ServerFlag:X2} (0x{o.FileFlag:X2} in {manifest.ObjectTableFile}" +
+                            (o.FileFlag != o.ServerFlag ? $", 0x{o.ServerFlag:X2} after ObjectFlagOverrides.csv)" : ")"));
                 foreach (var cell in o.Cells)
                     Assert.True(MapData.For(cell.Map)!.Obj(cell.X, cell.Y) == o.Id,
                                 $"object {o.Id} is not on {cell}: the map holds {MapData.For(cell.Map)!.Obj(cell.X, cell.Y)}");
             }
+
+            // Then the override count the load line reports: an override row that changes nothing, or one for an
+            // object the manifest does not list as overridden, shows here.
+            var overridden = manifest.Objects.Where(o => o.FileFlag != o.ServerFlag).Select(o => o.Id).ToList();
+            string reported = line.Groups[3].Value.Length == 0 ? "0" : line.Groups[3].Value;
+            Assert.True(reported == overridden.Count.ToString(),
+                        $"ObjectFlagOverrides.csv changed {reported} flag(s) in {manifest.ObjectTableFile}; the manifest " +
+                        $"overrides {overridden.Count} (object(s) {string.Join(", ", overridden)}): {loaded}");
         });
     }
 
