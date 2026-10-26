@@ -389,52 +389,78 @@ public sealed class NpcSubpathQuestTests
         Assert.False(s.KnowsSpellId(cunning.Id));
     }
 
-    /// <summary>A PC-subpath member who cleanses at their base class's Dog leaves the subpath as <c>@subpath
-    /// leave</c> leaves it (<c>Session.LeavePcSubpath</c>): the base class with the rank kept, so the title is the
-    /// base class's at that rank; the subpath's own spells out of the book and the base class's kept; the elder
-    /// mark gone; and the karma every cleanse takes. The player sees what any cleanse shows: the Dog's "It is done."
-    /// and the karma line, and no path-change line or other words. One row per base class, each at its own
-    /// Dog. Without the change the member stays in the subpath and only the karma goes.</summary>
+    /// <summary>A PC-subpath member with the legend who says "cleanse" at their base class's Dog is ignored, as RTK's
+    /// Dog ignores them: its "cleanse" branch answers only the dog's base class and that class's NPC subpath
+    /// (dog_linguist.lua, the class gate before <c>DogLinguistNpc.cleanse</c>). No prompt or box, no line, the karma
+    /// as it was, and the path, rank, book and elder mark untouched; they leave with <c>@subpath leave</c>. One row
+    /// per base class, each at its own Dog. Without the gate the Dog prompts them and takes 4 karma for
+    /// nothing.</summary>
     [Theory]
-    [InlineData("Barbarian", "Hunting dog", "Warrior")]
-    [InlineData("Spy", "Jindo dog", "Rogue")]
-    [InlineData("Shaman", "Mutt", "Mage")]
-    [InlineData("Muse", "Spotted dog", "Poet")]
-    public void TheDogsCleanseReturnsAPcSubpathMemberToItsBase(string cls, string dogName, string after)
+    [InlineData("Barbarian", "Hunting dog")]
+    [InlineData("Spy", "Jindo dog")]
+    [InlineData("Shaman", "Mutt")]
+    [InlineData("Muse", "Spotted dog")]
+    public void TheDogIgnoresAPcSubpathMembersCleanse(string cls, string dogName)
     {
-        int path = Content.PathIdForClass(cls), basePath = Content.PathIdForClass(after);
+        int path = Content.PathIdForClass(cls);
         Assert.True(Content.IsPcSubpath(path));
-        Assert.Equal(basePath, Content.PathBaseOf(path));
+        var (s, o, c) = PcSubpathLinguist(cls);
+        var book = c.Spells.ToList();
+        double karma = c.Karma;
+
+        Assert.True(Cleanse(s, dogName));
+        Assert.Empty(o.BodiesOf(ServerOp.NpcDialog));
+        Assert.Empty(SystemLines(o));
+        Assert.Equal(karma, c.Karma);
+        Assert.Equal(cls, c.ClassName);
+        Assert.Equal(2, c.Mark);
+        Assert.Equal(book, c.Spells);
+        Assert.True(s.IsPcSubpathElder);
+    }
+
+    /// <summary>RTK's order: the karma check comes before the class gate, so a PC-subpath member at scum karma hears
+    /// "Go away scum!" from the Dog, as every scum player does, and nothing else happens. A guard on the order, not
+    /// on the gate: it passes without the gate too, and goes red if the gate is moved above the karma check.</summary>
+    [Fact]
+    public void AScumPcSubpathMemberHearsOnlyGoAwayScum()
+    {
+        var (s, o, c) = PcSubpathLinguist("Spy", karma: -3);
+        var book = c.Spells.ToList();
+
+        Assert.True(Cleanse(s, "Jindo dog"));
+        Assert.Empty(o.BodiesOf(ServerOp.NpcDialog));
+        Assert.Equal(new[] { "Go away scum!" }, SystemLines(o).Select(l => l.Text));
+        Assert.Equal(-3.0, c.Karma);
+        Assert.Equal("Spy", c.ClassName);
+        Assert.Equal(book, c.Spells);
+    }
+
+    /// <summary>A level-99 member of PC subpath <paramref name="cls"/> holding the Dog-linguist legend, at rank 2, with
+    /// one spell of the base class and two of the subpath's own, an elder of it, at <paramref name="karma"/> (Ox by
+    /// default).</summary>
+    private (Session Session, RecordingOutbound Out, Character Character) PcSubpathLinguist(string cls, double? karma = null)
+    {
+        int path = Content.PathIdForClass(cls), basePath = Content.PathBaseOf(path);
         var own = Content.Spells.Where(sp => sp.PathId == path).Select(sp => sp.Id).Take(2).ToList();
         Assert.Equal(2, own.Count);
         int baseSpell = BaseClassSpell(basePath);
-        var (s, o, c) = Unplaced("PcCleanse", ch =>
+        var made = Unplaced("PcCleanse", ch =>
         {
             Joiner(ch, cls);
             ch.Mark = 2;
+            if (karma is { } k) ch.Karma = k;
             ch.Spells.Add(baseSpell);
             ch.Spells.AddRange(own);
             QuestState.Over(ch, QuestState.Registry).Set(Session.SubpathElderReg, path);
         });
-        Assert.True(s.IsPcSubpathElder);
-        double karma = c.Karma;
-
-        Assert.True(Cleanse(s, dogName));
-        Assert.Equal(after, c.ClassName);
-        Assert.Equal(2, c.Mark);
-        Assert.Equal(Content.PathTitle(basePath, 2), s.ClassTitle);
-        Assert.Equal(new[] { baseSpell }, c.Spells);
-        Assert.False(s.IsPcSubpathElder);
-        Assert.Equal(0, s.Quest(QuestState.Registry).Get(Session.SubpathElderReg));
-        Assert.Equal(karma - 4.0, c.Karma);
-        Assert.Equal(new[] { "It is done." }, Boxes(o).Select(b => b.Text));
-        Assert.Equal(new[] { "Your karma has decreased." }, SystemLines(o).Select(l => l.Text));
+        Assert.True(made.Session.IsPcSubpathElder);
+        return made;
     }
 
-    /// <summary>A base-class linguist's cleanse is what it was before PC subpaths could leave at the Dog: the Dog
-    /// spells and the karma go, and the class, the rank, the rest of the book and the elder key stay. This is the
-    /// guard on the PC branch: a leave made unconditional, as RTK's <c>updatePath</c> reads, would run the PC leave
-    /// on a base class and take that class's own spells.</summary>
+    /// <summary>A base-class linguist's cleanse at their own Dog is what it was: the prompt, the Dog spells and the
+    /// karma go, and the class, the rank, the rest of the book and the elder key stay, with the Dog's "It is done."
+    /// and the karma line as the only words. The gate that turns PC subpaths away must not turn this player
+    /// away.</summary>
     [Fact]
     public void TheDogsCleanseLeavesABaseClassAsItWas()
     {
@@ -459,7 +485,7 @@ public sealed class NpcSubpathQuestTests
         Assert.Equal(new[] { "Your karma has decreased." }, SystemLines(o).Select(l => l.Text));
     }
 
-    /// <summary>Say "cleanse" to the named Dog and answer its prompt "Yes, clear my mind.". True if it took the
+    /// <summary>Say "cleanse" to the named Dog and, if it prompts, answer "Yes, clear my mind.". True if it took the
     /// word.</summary>
     private bool Cleanse(Session s, string dogName)
     {

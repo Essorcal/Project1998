@@ -165,10 +165,8 @@ public sealed partial class Session
     /// <summary>Leave the PC subpath this character is in: its own spells out of the book, then back to the base
     /// path with the rank kept — RTK's leave (the Dog's cleanse, dog_linguist.lua: <c>removeSpell</c> for each,
     /// then <c>updatePath(player.baseClass, player.mark)</c>). Returns how many spells were taken. Called inside
-    /// this character's own monitor; the caller has checked that they ARE in a PC subpath. The one leave:
-    /// <c>@subpath leave</c>, <c>@subpath expel</c> and the Dog's cleanse (<see cref="NpcContext.LeaveSubpath"/>)
-    /// all come through here, and each says its own words, if any, after it.</summary>
-    internal int LeavePcSubpath()
+    /// this character's own monitor; the caller has checked that they ARE in a PC subpath.</summary>
+    private int LeavePcSubpath()
     {
         int path = CharClassId;
         int old = _char.Spells.Count;

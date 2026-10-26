@@ -8,7 +8,7 @@
 --   input (returns the typed string, or nil if cancelled).
 -- Immediate ops (no wait): giveItem/takeItem/hasItem/countItem/itemName, learnSpell/hasSpell/forgetSpell,
 --   awardExp/awardGold, stage/setStage, reg/setReg, hasLegend/addLegend/removeLegend, warp,
---   level/maxHp/maxMp/sex/nation/setNation/map/coins/spendGold, classId/basePathId/canLearnDogSpells/leaveSubpath,
+--   level/maxHp/maxMp/sex/nation/setNation/map/coins/spendGold, classId/basePathId/canLearnDogSpells/leaveNpcSubpath,
 --   npcName, killCount/totalKills/mounted, eraHas, bubble/notify, gameDate, now,
 --   karma/karmaLevel/karmaCheck/addKarma/removeKarma/karmaTooLow.
 -- To expose a new primitive: add a stub here AND a case in Server/NpcScript.cs Dispatch. Edit this file and run
@@ -68,10 +68,9 @@ function __make_ctx()
   function ctx:classId()                return coroutine.yield({op="classId"}) end
   function ctx:basePathId()             return coroutine.yield({op="basePathId"}) end
   function ctx:canLearnDogSpells()      return coroutine.yield({op="canLearnDogSpells"}) end
-  -- the Dog's cleanse: an NPC or PC subpath goes back to its base class, rank kept (true if it moved); a PC
-  -- subpath leaves as @subpath leave does, its own spells and elder mark with it. A base class stays as it
-  -- is; C# owns which paths move and how (NpcContext.LeaveSubpath).
-  function ctx:leaveSubpath()           return coroutine.yield({op="leaveSubpath"}) end
+  -- the Dog's cleanse: an NPC subpath goes back to its base class, rank kept (true if it moved). Anyone else
+  -- stays as they are; C# owns which paths move (NpcContext.LeaveNpcSubpath).
+  function ctx:leaveNpcSubpath()        return coroutine.yield({op="leaveNpcSubpath"}) end
   -- this NPC's display name -- needed when several NPCs share one identifier (the four Dogs).
   function ctx:npcName()                return coroutine.yield({op="npcName"}) end
   function ctx:killCount(key)           return coroutine.yield({op="killCount", key=key}) end
@@ -1184,11 +1183,9 @@ end
 -- you have just given the secrets back. And as RTK's does, it is how a player LEAVES an NPC subpath: a
 -- Chung ryong, Baekho, Ju jak or Hyun moo goes back to the base class, rank kept (RTK updatePath(baseClass,
 -- mark); tswolf 2001's "Leaving an NPC Subpath": say Cleanse to your path's dog, and it takes "ALL your NPC
--- Subpath and Dog Spells"). Joining is Baek's (Server/NpcSubpathQuest.cs). A PC-subpath member (Barbarian ...
--- Muse) who cleanses at their base class's dog leaves the PC subpath the same way, rank kept, through the
--- one leave @subpath leave uses (its own spells and the elder mark go with it). RTK's dog never offers a
--- PC-subpath member the cleanse (its handler offers it only to the base class and that class's NPC subpath);
--- ours does, so it returns them to the base class rather than taking the karma for nothing.
+-- Subpath and Dog Spells"). Joining is Baek's (Server/NpcSubpathQuest.cs). Also as RTK's does, each dog
+-- answers "cleanse" only from its own base class and that class's NPC subpath: a PC-subpath member (Barbarian
+-- ... Muse) gets no prompt and pays no karma, and leaves their subpath with @subpath leave instead.
 
 local DOG_LEGEND = "dog_linguist"          -- legend id, also the chain-progress registry key
 local DOG_FLAG   = "dog_flag"              -- Content.DogFlagReg -- set once the chain is finished
@@ -1390,8 +1387,12 @@ local function dog_secret(ctx, dog)
 end
 
 local function dog_cleanse(ctx, dog)
-  if ctx:karmaTooLow() then return end
-  if ctx:basePathId() ~= dog.path then return end
+  if ctx:karmaTooLow() then return end                      -- RTK Tools.checkKarma
+  -- RTK's class gate, in silence: each dog answers only its own base class and that class's NPC subpath
+  -- (Mutt 3/8, Jindo dog 2/7, Hunting dog 1/6, Spotted dog 4/9). A PC-subpath member of the same base gets
+  -- no prompt and keeps their karma; they leave with @subpath leave. canLearnDogSpells is that same pair of
+  -- classes, the one RTK's "secret" branches gate on too.
+  if ctx:basePathId() ~= dog.path or not ctx:canLearnDogSpells() then return end
 
   local confirm = ctx:menu("Do you wish to clear your mind, giving back what we taught you? It will cost much karma to do so.",
     { "Yes, clear my mind.", "Nevermind." })
@@ -1403,7 +1404,7 @@ local function dog_cleanse(ctx, dog)
   end
   for _, key in ipairs(CLEANSE_ALSO) do ctx:forgetSpell(key) end
   ctx:removeKarma(CLEANSE_KARMA)
-  ctx:leaveSubpath()                 -- RTK updatePath(player.baseClass, player.mark): an NPC or PC subpath leaves here
+  ctx:leaveNpcSubpath()              -- RTK updatePath(player.baseClass, player.mark): an NPC subpath leaves here
   ctx:say("It is done.")
 end
 

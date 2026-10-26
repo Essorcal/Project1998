@@ -8,7 +8,7 @@ namespace Server;
 /// <c>onScriptedTiles/onScriptedTilesQuest.lua</c>; see <c>Session.TryWatcherBlessing</c>), and the joining at
 /// Baek in Kugnae (the subpath branch of <c>NPCs/kugnae/baek.lua</c>'s <c>onSayClick</c>, here
 /// <see cref="NpcSubpathAbility"/>). The way out is the Dog's cleanse in <c>game-data/npc_dialog.lua</c>
-/// (<see cref="NpcContext.LeaveSubpath"/>).
+/// (<see cref="NpcContext.LeaveNpcSubpath"/>).
 ///
 /// <para>The chain, as a player walks it:</para>
 /// <list type="number">
