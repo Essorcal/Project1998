@@ -547,6 +547,40 @@ public sealed class SubpathDamageSpellTests
         }
     }
 
+    /// <summary>An id for a player on another map never rolls that player's Will. The caster, on a PvP map, aims by id at
+    /// a player on another map whose Will far beats theirs (a Will buff of 1,000, a certain deflect were it rolled), while
+    /// facing a creature that never deflects. The damage resolver answers the faced creature and the sweep centres on it,
+    /// so the roll is the faced creature's: "You cast X." only, the creature struck for the spell's amount, the far player
+    /// untouched and told nothing. PR #397's review, F1 (its probe P1). Red with LuaDeflected's same-map test removed:
+    /// the cast is deflected by the absent player and the faced creature is untouched.</summary>
+    [Theory]
+    [InlineData("ki_strike", KiStrike)]
+    [InlineData("ice_bombardment", Hailstorm)]
+    public void AnIdForAPlayerOnAnotherMapNeverRollsThatPlayersWill(string key, int amount)
+    {
+        var sp = Spell(key);
+        var (far, farOut, farC) = Player(NumbersMap, CX + 4, CY);
+        far.WithState(() => far.LuaBuff("will", 1_000, 600_000, sp));
+        var faced = AddCreature(PvpArena, CX + 1, CY);
+        var (caster, outbound, _) = Caster(sp, PvpArena, dir: 1);
+        try
+        {
+            farOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0, far.PlayerId));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], faced creature lost " +
+                          $"{Lost(faced)} (want {amount}), far player lost {TargetHp - farC.Hp} and read " +
+                          $"{SpellCastSupport.MiniTexts(farOut).Count} line(s)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && Lost(faced) == amount && farC.Hp == TargetHp && SpellCastSupport.MiniTexts(farOut).Count == 0, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(far, NumbersMap);
+            _fx.World.DespawnMob(PvpArena, faced);
+        }
+    }
+
     /// <summary>Lightning storm takes 1,200 mana and an 87 s wait, and gives each creature within 10 tiles (on the
     /// larger axis) a coin flip for 3,600; creatures 11 tiles off are untouched. Thirty creatures in range: each lost
     /// 3,600 or nothing, and both happened (the chance all thirty land the same way is 2 in 2^30). The 10-tile edge
