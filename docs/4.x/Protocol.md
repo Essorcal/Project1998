@@ -4379,17 +4379,27 @@ per value (`type = 3`, used elsewhere for look-at/item names, renders in the min
 modelled: per-player whisper-on/off, silence/mute, ignore lists — none of those systems exist yet.
 
 **Spell resist / deflect** (RTK `clif_parsemagic`'s deflect roll, clif.c:8910-8934). Only spells flagged
-`SplCanFail` (317/905) roll it. `Session.RollDeflect`: `willDiff = max(0, target.Will - caster.Will)`,
-`prot = round(willDiff / 10)`, `failChance = 100 - 0.9^prot * 100` — an exponential curve, not a flat
-percent. `Mob.Will` is now populated from `MobDef.Will` (the RTK `Will` column, real but previously
-unwired — mobs had no Will at all before this). RTK's mob struct also carries a separate per-mob
-`protection` stat; our mob registry has no source column for it, so it's treated as 0 for every mob — a
-real but incomplete port, not an invented number, and it means our mobs resist somewhat less than genuine
-RTK ones with nonzero protection would. Wired into `CastDamage` and `CastDebuff` (the only two PvE-target
-archetypes we have — there is still no PvP cast path at all) right after target resolution and BEFORE the
-mana debit, matching RTK: a deflected cast spends no mana (RTK returns before ever calling into the Lua
-"cast" script that would debit it). Message is RTK's exact line, caster-facing only: "The magic has been
-deflected." — RTK sends nothing to the target on a resist.
+`SplCanFail` roll it. `Session.RollDeflect` (a creature target): `willDiff = max(0, target.Will - caster.Will)`,
+`prot = target.Protection + round(willDiff / 10)`, `failChance = 100 - 0.9^prot * 100` — an exponential curve,
+not a flat percent. The caster's Will is the effective one (base plus gear and buffs). `Mob.Will` comes from
+`MobDef.Will` (the RTK `Will` column), and `target.Protection` from `mobs.csv`'s `MobProtection` (RTK's per-mob
+`protection`). A player target rolls `Session.RollDeflectPvp`: the same curve on the target's effective Will
+over the caster's, with no protection term (RTK also reads a player target's `protection`, clif.c:8915; that
+term is not ported), so a caster whose Will is at least the target's is never deflected. A self-cast never
+rolls.
+
+The roll lives in the cast primitives the spell verbs call: `ctx:magicDamage` (`arch_damage`), `ctx:damage`,
+`ctx:areaZap` (each creature or player it reaches rolls on its own) and `ctx:deflected` (`arch_debuff`, a
+creature target only). The player branches of the first two go through `HitPlayerWithSpell`, so PvP casts roll
+it too. **A deflected cast still costs its mana**, on every path:
+- `ctx:magicDamage` and `HitPlayerWithSpell` debit before they roll.
+- Every verb that calls `ctx:damage` or `ctx:areaZap` spends the mana first.
+- `arch_debuff` debits on a deflect.
+
+RTK differs: its deflect returns before the Lua "cast" script that would debit the mana, so a deflect is free
+there. This server keeps "a deflect still costs its mana" for every spell (2026-10-24), since a free deflect
+makes a resistant target free to keep hammering. The caster reads "Your magic has been deflected." (RTK's line is
+"The magic has been deflected.", clif.c:8934); the target is told nothing, as in RTK.
 
 ---
 
