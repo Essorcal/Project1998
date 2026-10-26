@@ -65,6 +65,16 @@ catch (ArgumentException e)
 // The effective configuration, every knob with its value and its source. After AttachFile so it reaches
 // logs/login.log as well as the console window.
 ServerConfig.LogEffective();
+// P1998_START_POINT is the one knob refused rather than defaulted. This process creates every character, so a start
+// point it cannot use (not map,x,y, a map map_index.csv does not list, a tile off that map) stops it here, before
+// it listens, rather than placing new characters at the era's start the operator set it to move away from. Blank
+// keeps the era's start and reads no file.
+if (CharacterFactory.UseStartPoint(ServerConfig.Current) is { } startRefusal)
+{
+    Log.Error($"not starting: {startRefusal}");
+    Environment.ExitCode = 1;
+    return;
+}
 Log.Info($"=== channel pairing: login {ports[0]}/{ports[1]} -> " +
          $"game {ChannelPorts.GameFor(ports[0])}/{ChannelPorts.GameFor(ports[1])} ===");
 var store = new CharacterStore(RepoPaths.CharsDir());

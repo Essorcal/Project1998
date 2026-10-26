@@ -18,6 +18,9 @@ public enum ConfigArea
     Abuse,
     /// <summary>The handoff gate and the addresses a redirect names.</summary>
     Login,
+    /// <summary>Where a brand-new character is placed. Read by the login server, the one process that creates
+    /// characters.</summary>
+    NewCharacters,
     /// <summary>Per-session behaviour the operator may retune without a rebuild.</summary>
     Session,
     /// <summary>The world heartbeat and the watchdog that reports a slow one.</summary>
@@ -285,6 +288,20 @@ public sealed class ServerConfig
             "claims the character. It never applies to a name with no character at all, so it cannot create " +
             "an account.");
 
+        // --- new characters ---
+        public static readonly StartPointKnob StartPoint = new(
+            "P1998_START_POINT", ConfigArea.NewCharacters,
+            "Where every new character starts, as `map,x,y`: a map id and a tile on that map, three whole " +
+            "numbers (spaces around each are ignored). Meant for a content set that has no Welcome (4711) or " +
+            "home cities. Blank keeps the start the era gives: Welcome (4711) at (3,5) while the newbie area is " +
+            "in era, else the nation's home. Set, it applies whatever the era or the nation, and only when a " +
+            "character is created: an existing character, a revive and a nation's home are unchanged. The " +
+            "map's size comes from that map's row in `map_index.csv` under P1998_GAME_DATA, not from this " +
+            "value. Unlike every other knob here, a value that cannot be used is never replaced by the " +
+            "default: the login server refuses to start on one that is not three whole numbers, that names a " +
+            "map `map_index.csv` does not list, or that puts the tile outside that map. Whether the tile can " +
+            "be walked on is not checked.");
+
         // --- session ---
         public static readonly IntKnob AutoSaveMs = new(
             "P1998_AUTOSAVE_MS", ConfigArea.Session, 15_000,
@@ -484,6 +501,7 @@ public sealed class ServerConfig
             GameMaxConn, GamePerIp, GameRate, GameRateWindowMs, GameExemptLoopback,
             LoginFails, LoginFailWindowMs,
             GameHost, LoginHost, LoginPort, EnforceHandoff, AllowTofu,
+            StartPoint,
             AutoSaveMs, CastQueue, PassEnforce, GatePeerMoves,
             TickSweepSkip, TickMs, SlowTickMs,
             PoolLagMs, SilentMs,
@@ -655,6 +673,14 @@ public sealed class ServerConfig
     public bool LoginExemptLoopback => Get<bool>(Knobs.LoginExemptLoopback);
     /// <summary>Adopt a password for a legacy character that has no accounts row. A trust switch.</summary>
     public bool AllowTofu => Get<bool>(Knobs.AllowTofu);
+
+    /// <summary>The map and tile every new character starts on, or null for the era's own start. A value that
+    /// is set but is not <c>map,x,y</c> is null here too; <see cref="StartPointRefusal"/> says why, and the
+    /// login server refuses to start on it (<see cref="CharacterFactory.UseStartPoint(ServerConfig)"/>).</summary>
+    public MapTile? StartPoint => GetOrNull<MapTile>(Knobs.StartPoint);
+    /// <summary>Why <c>P1998_START_POINT</c> was refused as written, or null when it is blank or well formed.
+    /// Whether the map and the tile exist is checked against the map table by the login server, not here.</summary>
+    public string? StartPointRefusal => Of(Knobs.StartPoint).Warning;
 
     /// <summary>Dirty-character flush cadence in milliseconds.</summary>
     public int AutoSaveMs => Get<int>(Knobs.AutoSaveMs);
@@ -841,6 +867,7 @@ public sealed class ServerConfig
         ConfigArea.Transport => "Transport and the accept path",
         ConfigArea.Abuse => "Abuse control — connection admission and login throttling",
         ConfigArea.Login => "Login, handoff and redirects",
+        ConfigArea.NewCharacters => "New characters",
         ConfigArea.Session => "Session behaviour",
         ConfigArea.World => "World heartbeat",
         ConfigArea.Diagnostics => "Process-health probes",
@@ -1217,6 +1244,58 @@ public sealed class OptionalLongKnob : ConfigKnob
             return (null, fallback, Rejected(raw, $"is below the minimum {lo}", "this process's own default"));
         return (value, value.ToString(CultureInfo.InvariantCulture), null);
     }
+}
+
+/// <summary>A map and a tile on it, as <c>P1998_START_POINT</c> names them.</summary>
+/// <param name="Map">The map id.</param>
+/// <param name="X">The tile's column.</param>
+/// <param name="Y">The tile's row.</param>
+public readonly record struct MapTile(ushort Map, ushort X, ushort Y)
+{
+    /// <summary>The <c>map,x,y</c> form the knob is written in.</summary>
+    public override string ToString() => FormattableString.Invariant($"{Map},{X},{Y}");
+}
+
+/// <summary>An optional <c>map,x,y</c> tile, null when unset. It is the one knob type that never falls back to a
+/// default for a value it cannot read: such a value resolves to null AND warns, and the login server refuses to
+/// start on that warning (<see cref="CharacterFactory.UseStartPoint(ServerConfig)"/>). Its default is the very
+/// start the operator set it to move away from, so taking that default would place every new character where the
+/// operator said they must not be, with only a log line to say so.
+/// <para>Only the form is checked here. Whether the map exists and the tile is on it needs the map table, which
+/// a configuration that reads nothing but the environment does not have; the login server checks that.</para></summary>
+public sealed class StartPointKnob : ConfigKnob
+{
+    private const string Unset = "(blank — the era's own start)";
+
+    /// <param name="name">The variable name.</param>
+    /// <param name="area">Reference section.</param>
+    /// <param name="doc">What it does.</param>
+    public StartPointKnob(string name, ConfigArea area, string doc) : base(name, area, doc) { }
+
+    /// <inheritdoc/>
+    public override string TypeName => "`map,x,y`";
+    /// <inheritdoc/>
+    public override string DefaultText => "*" + Unset + "*";
+
+    internal override (object?, string, string?) Resolve(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return (null, Unset, null);
+        string[] parts = raw.Split(',');
+        if (parts.Length == 3
+            && Part(parts[0], out ushort map) && Part(parts[1], out ushort x) && Part(parts[2], out ushort y))
+        {
+            var tile = new MapTile(map, x, y);
+            return (tile, tile.ToString(), null);
+        }
+        return (null, "(refused — not map,x,y)",
+                $"{Name}='{raw}' is not map,x,y (three whole numbers from 0 to 65535, separated by commas) — " +
+                "refused; the login server will not start with it.");
+    }
+
+    // Digits only: no sign, no decimal point, no thousands separator, so "-1", "+5" and "5.0" are refused rather
+    // than read as something the operator may not have meant.
+    private static bool Part(string text, out ushort value) =>
+        ushort.TryParse(text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out value);
 }
 
 /// <summary>A gameplay value that USED to be an environment variable and is now a row in

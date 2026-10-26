@@ -76,6 +76,9 @@ public class ServerConfigTests
 
         Assert.True(config.MapsInstallFallback);       // the terrain search still ends at the client installs
 
+        Assert.Null(config.StartPoint);                // new characters start where the era puts them
+        Assert.Null(config.StartPointRefusal);
+
         Assert.Empty(config.Warnings);
     }
 
@@ -547,6 +550,71 @@ public class ServerConfigTests
         Assert.Equal("192.168.1.50", With(("P1998_BIND", "192.168.1.50")).BindAddress);
         Assert.Equal("not-an-address", With(("P1998_BIND", "not-an-address")).BindAddress);
         Assert.Empty(With(("P1998_BIND", "not-an-address")).Warnings);
+    }
+
+    // ---- the start point ----------------------------------------------------------------------------------
+
+    /// <summary><c>P1998_START_POINT</c> is <c>map,x,y</c>: three whole numbers from 0 to 65535, with spaces
+    /// around each ignored. Blank is unset and says nothing; a well-formed value is reported as set.
+    /// <para>Falsification: make the knob accept any number of parts, or read with <c>NumberStyles.Integer</c>
+    /// (which takes a sign), and the refused rows of the next fact pass as values; stop trimming and the padded
+    /// row here is refused.</para></summary>
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    [InlineData("4711,3,5", "4711,3,5")]
+    [InlineData(" 4711 , 3 , 5 ", "4711,3,5")]
+    [InlineData("0,0,0", "0,0,0")]
+    [InlineData("65535,65535,65535", "65535,65535,65535")]
+    [InlineData("0064,007,9", "64,7,9")]
+    public void A_start_point_is_three_whole_numbers(string? raw, string? expected)
+    {
+        var config = With(("P1998_START_POINT", raw));
+
+        Assert.Equal(expected, config.StartPoint?.ToString());
+        Assert.Null(config.StartPointRefusal);
+        Assert.Empty(config.Warnings);
+        var entry = Assert.Single(config.Entries, e => e.Knob.Name == "P1998_START_POINT");
+        Assert.Equal(expected is not null, entry.FromEnvironment);
+        if (expected is not null)
+            Assert.EndsWith($"= {expected}   (environment)",
+                Assert.Single(config.Describe(), line => line.Contains("P1998_START_POINT")), StringComparison.Ordinal);
+    }
+
+    /// <summary>A start point that is not <c>map,x,y</c> resolves to no start AND warns, the one knob whose bad
+    /// value is not replaced by its default: the warning says it is refused and that the login server will not start
+    /// with it, never "ignored; using" the era's start, and <see cref="ServerConfig.StartPointRefusal"/> carries that
+    /// same line to the login server's start-up check.
+    /// <para>Falsification: let the knob take the default for a bad value without a warning (the way a word-list
+    /// knob would, minus its line) and every row fails on the refusal.</para></summary>
+    [Theory]
+    [InlineData("4711")]
+    [InlineData("4711,3")]
+    [InlineData("4711,3,5,0")]
+    [InlineData("4711,3,")]
+    [InlineData(",3,5")]
+    [InlineData("4711,,5")]
+    [InlineData("a,3,5")]
+    [InlineData("4711,-1,5")]
+    [InlineData("4711,+3,5")]
+    [InlineData("4711,3.0,5")]
+    [InlineData("4711,1 000,5")]
+    [InlineData("65536,3,5")]
+    [InlineData("4711,3,65536")]
+    [InlineData("4711;3;5")]
+    [InlineData("4711 3 5")]
+    public void A_malformed_start_point_is_refused_not_defaulted(string raw)
+    {
+        var config = With(("P1998_START_POINT", raw));
+
+        Assert.Null(config.StartPoint);
+        string warning = Assert.Single(config.Warnings);
+        Assert.Equal(warning, config.StartPointRefusal);
+        Assert.Equal($"P1998_START_POINT='{raw}' is not map,x,y (three whole numbers from 0 to 65535, separated by " +
+                     "commas) — refused; the login server will not start with it.", warning);
+        Assert.Contains("= (refused — not map,x,y)",
+            Assert.Single(config.Describe(), line => line.Contains("P1998_START_POINT")), StringComparison.Ordinal);
     }
 
     // ---- retired gameplay variables -----------------------------------------------------------------------

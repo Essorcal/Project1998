@@ -33,6 +33,13 @@ default and logs a `!!` line naming the variable, the value you set and what is 
   values, so they are rows in `game-data/ServerTuning.csv` now. The variable is ignored, and the warning
   tells you the key to set instead.
 
+One knob is the exception: `P1998_START_POINT`, where new characters start. Its default is the very start
+an operator sets it to move away from, so a value it cannot use is never replaced by that default. The login
+server, which creates every character, refuses to start instead, with an error line naming the value and the
+reason: not three whole numbers `map,x,y`, a map that `map_index.csv` under `P1998_GAME_DATA` does not list,
+or a tile outside that map (the map's size is taken from that row). A value that is not `map,x,y` also gets
+the usual `!!` line in both processes; the game server, which never creates a character, starts anyway.
+
 Nothing in this set is a secret — it is addresses, sizes, timeouts, paths and diagnostic toggles — so the
 startup banner prints values verbatim. A future knob that IS a secret must not be printed there.
 
@@ -110,6 +117,12 @@ ignored with one startup warning.
 | `P1998_LOGIN_PORT` | integer ≥ 1 | paired with the arrival channel | Login port the exit-to-select bounce names. Unset derives it from the port the session arrived on, because the channels are PAIRED by client version — bouncing a 5.33 player onto the 4.95 login would round-trip them straight back. |
 | `P1998_ENFORCE_HANDOFF` | `0` / `1` | `1` (on) | Refuse a game connection whose single-use handoff token does not verify. 0 downgrades the failure to a warning and lets the connection in — a fallback for a deployment with a token problem, and the only thing standing between the game port and a client claiming any username. |
 | `P1998_ALLOW_TOFU` | `0` / `1` | `0` (off) | TRUST SWITCH — leave it off. On, a login for a name that exists in `characters` with NO `accounts` row adopts whatever password was sent as that character's password, permanently. It is the escape hatch for the handful of characters that predate the accounts table: set it, log in once as that character, turn it back off. While it is on, anyone who guesses such a name claims the character. It never applies to a name with no character at all, so it cannot create an account. |
+
+### New characters
+
+| Variable | Type | Default | What it does |
+|---|---|---|---|
+| `P1998_START_POINT` | `map,x,y` | *(blank — the era's own start)* | Where every new character starts, as `map,x,y`: a map id and a tile on that map, three whole numbers (spaces around each are ignored). Meant for a content set that has no Welcome (4711) or home cities. Blank keeps the start the era gives: Welcome (4711) at (3,5) while the newbie area is in era, else the nation's home. Set, it applies whatever the era or the nation, and only when a character is created: an existing character, a revive and a nation's home are unchanged. The map's size comes from that map's row in `map_index.csv` under P1998_GAME_DATA, not from this value. Unlike every other knob here, a value that cannot be used is never replaced by the default: the login server refuses to start on one that is not three whole numbers, that names a map `map_index.csv` does not list, or that puts the tile outside that map. Whether the tile can be walked on is not checked. |
 
 ### Session behaviour
 
