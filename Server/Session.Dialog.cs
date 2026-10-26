@@ -631,7 +631,10 @@ public sealed partial class Session
     }
 
     // ---- async dialog primitives (used by NpcContext, which abilities call) ---------------------
-    // Each sends a 0x30 and awaits the client's 0x3A. A menu returns the 1-based pick (0 = cancelled).
+    // Each sends a 0x30 and awaits the client's 0x3A. A menu returns the 1-based pick, or 0 for a reply that is
+    // not a menu pick. The 4.95 client never sends a pick of 0, and closing a menu sends nothing, so a player
+    // who closes one leaves this await pending rather than getting 0 (briefs/reports/server-close-box-read-opus.md
+    // §3.3-§3.5).
     internal async Task<int> DlgMenu(Mob npc, string prompt, IReadOnlyList<string> options)
     {
         var r = await AwaitReply(() => SendNpcMenu(npc, prompt, options));
@@ -656,9 +659,10 @@ public sealed partial class Session
         await AwaitReply(() => SendScriptMessage(npc.Id, text, NpcPortrait(npc), npc.Color, next: true));
     }
 
-    // Free-text input box. Returns the typed string, or null if the player cancelled. The client confirms a
-    // real submit with kind 4 + step 2 (RTK clif_parsenpcdialog requires RFIFOB(fd,13)==2); anything else is
-    // a cancel/close.
+    // Free-text input box. Returns the typed string, or null for any reply that is not a submit. The client
+    // confirms a real submit with kind 4 + step 2 (RTK clif_parsenpcdialog requires RFIFOB(fd,13)==2). Closing
+    // the box sends nothing, so a player who closes it leaves this await pending rather than getting null
+    // (briefs/reports/server-close-box-read-opus.md §3.3-§3.5).
     internal async Task<string?> DlgInput(Mob npc, string prompt)
     {
         var r = await AwaitReply(() => SendInputBox(npc, prompt));
@@ -1528,7 +1532,9 @@ public sealed partial class Session
     //   body[0..1] u16=1   [2..5] npc id(u32BE)   [6] head kind(0 none/1 npc gfx/2 item gfx)   [7]=1
     //   [8..9] gfx(u16BE)   [10] color   [11]=1   [12..13] gfx   [14] color   [15..18] u32=1
     //   [19] prev-button    [20] next-button   [21..22] msg len(u16BE)   [23..] msg (ASCII)
-    // prev/next 0 => a single OK/close box; the client answers a close with 0x3A kind 1 (HandleNpcDialog).
+    // prev/next 0 => a box whose only control is close. A close sends NOTHING: the 4.95 client has no 0x3A for
+    // the close button or Esc, so HandleNpcDialog never sees it and an awaited prompt stays pending (a static
+    // read of the exe, not a live capture: briefs/reports/server-close-box-read-opus.md §3.4-§3.5, §4).
     private void SendScriptMessage(uint npcId, string msg, ushort gfx, byte color,
                                    bool prev = false, bool next = false)
     {
@@ -1636,8 +1642,11 @@ public sealed partial class Session
                                        : DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0), pages);
     }
 
-    // 0x3A = the client's reply to a 0x30 we sent (RTK clif_parsenpcdialog). body[0]=kind (01 text/close,
-    // 02 menu pick, 04 input), [8]=step, [10]=menu index (1-based) or input length, [11..]=input text. We
+    // 0x3A = the client's reply to a 0x30 we sent (RTK clif_parsenpcdialog). body[0]=kind, echoed from the 0x30
+    // (01 text box, 02 menu, 04 input), [8]=step (2 for next, a pick or a submit; 0 for prev), [10]=menu index
+    // (1-based, never 0) or input length, [11..]=input text. Closing a box sends no 0x3A at all, so no reply
+    // here ever means "closed" (a static read of the 4.95 exe, not a live capture:
+    // briefs/reports/server-close-box-read-opus.md §3.2-§3.5). We
     // just complete the prompt that's awaiting a reply; the suspended behaviour resumes and drives what's
     // next (nested menu, purchase, loop back). No routing table here — the await IS the continuation.
     private void HandleNpcDialog(byte[] dec)

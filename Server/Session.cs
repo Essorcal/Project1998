@@ -748,9 +748,10 @@ public sealed partial class Session
             case ClientOp.Attack:                    BumpActionTime(); HandleAttack(dec); break;  // client attack (spacebar) -> echo 0x13 anim
             case ClientOp.ProfileRequest:                    HandleProfileRequest(dec); break;  // profile key -> self-profile (0x39)
             case ClientOp.ClickInfo:                    HandleClickInfo(dec); break;       // click entity -> profile / NPC dialog
-            // 0x3A = NPC dialog response (RTK clif_parsenpcdialog): the client sends this after the player
-            // acts on a dialog we opened via 0x30. body[0] = kind (01 text next/close, 02 menu pick, 04 input
-            // text). See HandleNpcDialog — a logging stub until the 0x30 send format is confirmed live.
+            // 0x3A = NPC dialog response (RTK clif_parsenpcdialog): the client sends this when the player
+            // presses next or prev, picks from a menu or submits an input on a dialog we opened via 0x30, and
+            // sends nothing when the box is closed. body[0] = kind (01 text box, 02 menu, 04 input). See
+            // HandleNpcDialog, which completes the prompt awaiting the reply.
             case ClientOp.NpcDialog:                    HandleNpcDialog(dec); break;
             case ClientOp.ChangeProfile:                    HandleChangeProfile(dec); break;   // edit profile -> save pic + blurb
             // ---- items (opcode numbers from RTK 7.x recv dispatch; confirmed to align with 4.95 by the

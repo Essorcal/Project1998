@@ -556,7 +556,7 @@ Bodies below are **decrypted** payloads (what you build before encrypting). `u16
 | `0x13` | Attack | `13 00` (bare trigger) | Spacebar. (see §11). |
 | `0x1d` | Emote | `idx(u8) 00` | The `:` emote wheel. Reply with a `0x1A` action, `type = idx + 11` **in byte arithmetic — two of the sixteen keys wrap**. The client's key handler `0x491560` maps `a`..`l` → 11..22, `m`/`n` → **9**/**10**, `o`/`p` → 23/24, and its sender `0x491810` transmits `action - 11` in one unsigned byte. So `m`/`n` arrive as **`0xFE`/`0xFF`** and only wraparound recovers Respect/Triumph. Do not clamp or range-check `idx`. It is action-budget gated: it pays into the shared per-second action budget and is dropped once that is spent (`Server/Session.cs:739`, `ActionAllowed` `:550-555`). (see §11). |
 | `0x43` | Click/inspect entity | `01 entityId(u32) 00` | **Left-click only** — live-confirmed 2026-07-26: right-click in this client is pure client-local walk-to-click (never reaches the server as anything but movement/`0x69` obstruction; see §10). If the id is an **NPC** → open its dialog (`0x30`, §11e); id 0/self → own click-profile `0x34` (§9.5); a real **mob** → name-only mini-text reply (deliberate divergence from stock RTK's GM-only `onLook`, see §11e); another connected **player** → that player's `0x34` (`Server/Session.Dialog.cs:352-353`). Two sentinel ids are not entities: `0xFFFFFFFE` (F2) toggles subpath chat (§11i) and `0xFFFFFFFF` opens the F1 Central Functions menu (§11k), both checked before any lookup (`:317-318`). |
-| `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent. `kind`: `01` text next/close · `02` menu pick (`@10` = 1-based index) · `04` input (`step@8`==2 = submit, `len@10`, text `@11`). See §11e. |
+| `0x3a` | NPC dialog reply | `kind(u8) … step(u8@8) menu/len(u8@10) [text@11]` | Answer to a `0x30` we sent: next, prev, a menu pick or an input submit. **Closing a box sends nothing** (a static read of the 4.95 exe, §11e). `kind` is echoed from the `0x30`: `01` text box, next (`step@8` = 2) or prev (`step@8` = 0) · `02` menu pick (`step@8` = 2, `@10` = 1-based index, never 0) · `04` input submit (`step@8` = 2, `len@10`, text `@11`). A menu or input box's prev sends its own kind with `step@8` = 0. See §11e. |
 | `0x2d` | Profile key | `2d 00` (byte 0 = self) | Pressing the profile key. Reply with the self-profile `0x39` (see §9.5). |
 | `0x4f` | Change profile | `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` | Player saved their profile edit, **or** answered a `0x49` (§13a) — byte-identical either way. Persist the picture + blurb; reply with a `0x02` message. `picSize = 0` is the normal case and does **not** mean the packet or the server is broken: the picture is a file the PLAYER supplies, and every client-side failure still replies with 0 (see §9.5a). |
 | `0x18` | User-list request | *(empty body)* | "Send me the user list." Preceded by a `0x66` sub-1 town-table request the first time. Reply `0x36` — §13c. The server answers every request with the `0x59` sub-1 town table first, then the `0x36` (`Server/Session.UserList.cs:145-149`). |
@@ -3548,9 +3548,23 @@ touching the character (§11e) — the same thing RTK does with a throwaway `clo
 
 ### `0x3a` client → server — the reply
 
-`body[0]` kind (`01` text next/close · `02` menu · `04` input) · `[8]` step · `[10]` menu index (**1-based**;
-0 = cancel) **or** input length · `[11..]` input text. For input, RTK requires `step==2` to count as a real
-submit (else it's a cancel). `HandleNpcDialog` just completes the awaited `TaskCompletionSource` — see below.
+`body[0]` kind, echoed from the `0x30`'s `body[1]` (`01` text box · `02` menu · `04` input) · `[8]` step ·
+`[10]` menu index (**1-based**) **or** input length · `[11..]` input text. For input, RTK requires `step==2` to
+count as a real submit (else it's a cancel). `HandleNpcDialog` just completes the awaited `TaskCompletionSource`
+— see below.
+
+**What the 4.95 client sends, and when it sends nothing.** This is a static read of the exe (2026-10-26), not a
+live capture (`briefs/reports/server-close-box-read-opus.md` §3.2-§3.5).
+- **Senders.** Exactly four routines write `0x3a`: prev `0x46c4b0`, next `0x46c550`, menu pick `0x46d570` and
+  input submit `0x46e0d0`. Only the three box classes' command handlers call them.
+- **Step.** `[8]` is the `0x30`'s `body[17..18]` (1, from RTK and from us) minus 1 for prev, and plus 1 for next, a
+  pick or a submit. So it is 0 or 2, never RTK's step 1.
+- **Kind.** `01` is next or prev on a text box, never a close.
+- **Menu pick.** It is always 1 or more: the menu numbers its rows `1, 2, …`, and no control sends a 0 "cancel".
+- **Close.** Closing any of the three boxes sends **nothing**, whether by the close button or by Esc (the boxes'
+  cancel). That command only removes the window: text box command 3 at `0x46cc90`, menu and input command 4 at
+  `0x46d4a0`/`0x46e030`, each calling `0x417780`. An awaited prompt therefore stays pending until something else
+  replaces or clears it.
 
 ### Server-side design — async dialog + composable abilities
 
@@ -6035,10 +6049,14 @@ magnitude faster for "what does this byte mean" questions.
 - **A client packet you don't answer looks like a client bug.** `0x66` arrived in bursts of 5–8 identical
   packets and read as spam until the builder was traced: it's one right-click, **retried** because nothing
   came back. When a request repeats with an unchanging body, suspect a missing reply before a misparse.
-- **To find who BUILDS a client packet, don't grep for the opcode as an immediate** — this client never
-  stores one with `mov byte [buf], op`. It calls a write-byte helper `0x475bf0(value, dst)`, so the opcode
-  is a `push` operand: search for `6a <op>` (push imm8) followed by `call 0x475bf0`, and the whole body
-  falls out in order at the matching stack offsets. `0x475c10` is the matching u16 writer (**big-endian**),
+- **To find who BUILDS a client packet, search for the opcode as a `push` and as a `mov`, or walk the sends.**
+  Most builders call a write-byte helper `0x475bf0(value, dst)`, so the opcode is a `push` operand: search for
+  `6a <op>` (push imm8) followed by `call 0x475bf0`, and the whole body falls out in order at the matching stack
+  offsets. Some short packets are built with `mov` straight into a stack buffer and sent with `0x475ab0`, so
+  the push search alone misses them. For example, `0x44ed90` does `mov byte [ebp-0xc], 0x18`, `0x4651a0`
+  writes `0x1b`, `0x469760` writes `0x41`, and `0x490d70`-`0x490e1b` write `0x11`, `0x13`, `0x1d` and `0x18`.
+  The sure way is every call to the send routine `0x475ab0` (a static read of the 4.95 exe:
+  `briefs/reports/server-close-box-read-opus.md` §3.2). `0x475c10` is the matching u16 writer (**big-endian**),
   `0x475c90`/`0x475ca0`/`0x475ce0` the u8/u16/u32 readers.
 - **Handler arg0 points at the OPCODE, not the body.** Every `0x4xxxxx` handler reads its first body byte at
   `[esi+1]`. Calibrated against `0x29`, whose layout is known (`0x4504b0`: `esi+1` = the u32 entity id).
