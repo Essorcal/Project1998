@@ -485,6 +485,41 @@ public sealed class NpcSubpathQuestTests
         Assert.Equal(new[] { "Your karma has decreased." }, SystemLines(o).Select(l => l.Text));
     }
 
+    /// <summary>Every Dog still answers the two classes RTK's gate admits (dog_linguist.lua's "cleanse" branch): its
+    /// own base class and that class's NPC subpath. Each is prompted, takes the cleanse as today (the Dog's "It is
+    /// done." and 4 karma), and ends on the base class at the same rank, so an NPC subpath leaves and a base class stays
+    /// what it is. Without these rows a gate that turned one of these away at the Mutt, the Hunting dog or the Spotted
+    /// dog, for example a mistyped pair, left every fact green, and the Dog is the only way out of an NPC
+    /// subpath.</summary>
+    [Theory]
+    [InlineData("Mage", "Mutt", "Mage")]
+    [InlineData("Ju jak", "Mutt", "Mage")]
+    [InlineData("Rogue", "Jindo dog", "Rogue")]
+    [InlineData("Baekho", "Jindo dog", "Rogue")]
+    [InlineData("Warrior", "Hunting dog", "Warrior")]
+    [InlineData("Chung ryong", "Hunting dog", "Warrior")]
+    [InlineData("Poet", "Spotted dog", "Poet")]
+    [InlineData("Hyun moo", "Spotted dog", "Poet")]
+    public void EachDogPromptsAndCleansItsOwnBaseClassAndNpcSubpath(string cls, string dogName, string after)
+    {
+        int path = Content.PathIdForClass(cls);
+        Assert.True(Content.CanLearnDogSpells(path));
+        var (s, o, c) = Unplaced("OwnDog", ch =>
+        {
+            Joiner(ch, cls);
+            ch.Mark = 2;
+        });
+        double karma = c.Karma;
+
+        Assert.True(Cleanse(s, dogName));
+        Assert.Contains(o.BodiesOf(ServerOp.NpcDialog),
+                        b => Encoding.ASCII.GetString(b).Contains("Do you wish to clear your mind", StringComparison.Ordinal));
+        Assert.Equal(new[] { "It is done." }, Boxes(o).Select(b => b.Text));
+        Assert.Equal(karma - 4.0, c.Karma);
+        Assert.Equal(after, c.ClassName);
+        Assert.Equal(2, c.Mark);
+    }
+
     /// <summary>Say "cleanse" to the named Dog and, if it prompts, answer "Yes, clear my mind.". True if it took the
     /// word.</summary>
     private bool Cleanse(Session s, string dogName)
