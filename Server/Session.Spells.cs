@@ -1796,10 +1796,29 @@ public sealed partial class Session
     // LuaApplyDeduction — since both archetypes now share one resolved target.)
 
     // Debuff pieces (mirror CastDebuff): deflect roll, chance-to-hold, freeze.
+    /// <summary><c>ctx:deflected()</c>: RTK's deflect roll (clif_parsemagic) for a SplCanFail spell at what the cast
+    /// is aimed at, <see cref="RollDeflect"/> at a creature and <see cref="RollDeflectPvp"/> at another player, as RTK
+    /// rolls it for both. Never at the caster, and never for a spell without SplCanFail, which rolls nothing.
+    /// <para>An id that names a creature on the caster's map is that creature, and one that names a player on the
+    /// caster's map is that player. Anything else (no id, or an id for nobody on this map) is the faced tile,
+    /// creature first and then a player, the order <see cref="ResolveDamageTarget"/> reads a faced tile in. An id
+    /// for nobody reaches neither verb's roll: both refuse it first. An id that named a player used to
+    /// fall through to the creature on the faced tile, so a cast aimed at a player rolled against whatever creature
+    /// the caster faced, and a player was never rolled for at all.</para>
+    /// <para>The player's Will is read as the PvP blow's roll reads it (<see cref="HitPlayerWithSpell(Session, double, int, SpellDef, out int)"/>),
+    /// from the caster's thread and under no lock of the target's; the map test is the bare read the damage
+    /// resolver makes.</para></summary>
     internal bool LuaDeflected(SpellDef sp, uint? targetId)
     {
+        if (!sp.CanFail) return false;
+        if (targetId is uint id && id != 0 && _world.MobById(_char.Map, id) is null
+            && _world.Online.ById(id) is { } aimed && aimed.CharMap == CharMap)
+            return !ReferenceEquals(aimed, this) && RollDeflectPvp(aimed);
         var mob = ResolveCastTarget(targetId);
-        return mob is not null && sp.CanFail && RollDeflect(mob);
+        if (mob is not null) return RollDeflect(mob);
+        var (fx, fy) = FrontTile();
+        var peer = _world.PeerAt(_char.Map, fx, fy);
+        return peer is not null && !ReferenceEquals(peer, this) && RollDeflectPvp(peer);
     }
     internal bool LuaRoll(double pct) => Random.Shared.Next(100) < pct;
     /// <summary>Uniform integer in [lo, hi] INCLUSIVE. Same Random.Shared stream as LuaRoll so all spell
