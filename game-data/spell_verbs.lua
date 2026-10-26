@@ -1484,9 +1484,12 @@ end
 --   * Deflect. RTK's engine rolls it only for a cast with a target, free, before the script (clif_parsemagic), and
 --     never for a self-cast (type 5) spell, though its table gives canfail 1 to most of these. So Assassinate's and
 --     Phoenix flames' Spells.csv rows carry SplCanFail 0, which every deflect roll here reads first. The aimed spells
---     take their primitive's rule: Earth strike and Nature's smite deflect inside ctx:damage after the 600 is spent
---     (the server's rule for every blow), and Ki strike and Ice bombardment are never deflected, as targetAreaZap
---     rolls none. Lightning storm's sweep rolls none either.
+--     roll it at the blow, after the spend, so a deflect costs what a cast that lands costs (the server's rule for
+--     every spell, kept by Caleb on 2026-10-24): Earth strike and Nature's smite inside ctx:damage after the 600, and
+--     Ki strike and Ice bombardment through ctx:deflected() after the mana and Ki strike's wait, then strike nothing,
+--     neither the target nor its four sides. Theirs is RTK's roll at a creature target only (ctx.hasTarget): a player
+--     target is never deflected, where RTK rolls the player's Will and protection too. Hailstorm shares their verb
+--     but carries SplCanFail 0, as RTK's table does, so it is never deflected. Lightning storm's sweep rolls none.
 -- Control flames (Druid) is not here: its acorn-drop hook needs C# in the item-drop path (Session.HandleDropItem),
 -- so it stays on `generic` until that hook exists.
 -- =========================================================================================================
@@ -1537,7 +1540,9 @@ end
 -- Subpaths/Geomancer/hailstorm.lua and ice_bombardment.lua, one body): the target and whatever stands on its four
 -- sides take subpath_amount each, a player only on a PvP map. An id that names nobody, or an NPC, casts nothing,
 -- silently and for free: RTK's engine runs the script only for a target it found (clif_parsemagic). The sweep is
--- the 5-way primitive the dog fire and the Inferno ladder share (ctx:targetAreaZap), with its 10-tile reach.
+-- the 5-way primitive the dog fire and the Inferno ladder share (ctx:targetAreaZap), with its 10-tile reach. The
+-- sweep rolls no deflect, so the verb rolls RTK's (ctx:deflected(), SplCanFail rows only: Ki strike and Ice
+-- bombardment) once, at a creature target, after the spend: deflected, the cast keeps its cost and strikes nothing.
 -- Row: mana, base, coeff, willcoeff, and duration for Ki strike's 7 s wait (the Geomancer pair has none).
 function verbs.splash_strike(ctx, row)
   if subpath_waiting(ctx, row) then return false end
@@ -1547,6 +1552,9 @@ function verbs.splash_strike(ctx, row)
   if not ctx:canStrike() then return false end                     -- a player it may not strike: free, with its line
   ctx:debitMana(mana)
   if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  -- hasTarget first: deflected() resolves a creature only, and for an id that names a player it would roll against
+  -- whatever creature the caster faces instead.
+  if ctx.hasTarget and ctx:deflected() then ctx:say("Your magic has been deflected."); return true end
   ctx:targetAreaZap(subpath_amount(ctx, row))                      -- 0 struck is still a cast
   return true
 end

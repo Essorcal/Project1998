@@ -22,6 +22,9 @@ namespace Tests;
 /// within 10 tiles; Lightning storm 1,200 and 87 s, 3,600 to each creature within 10 tiles on a coin flip, the 10-tile
 /// edge included);</item>
 /// <item>Assassinate and Phoenix flames never deflected, as RTK's engine never deflects a self-cast spell;</item>
+/// <item>Ki strike and Ice bombardment deflected at a creature target, as RTK's engine deflects them, keeping their mana and
+/// Ki strike's wait (the server's rule for every deflect) and striking nothing; never at a player target; and Hailstorm,
+/// the third spell on their verb, never;</item>
 /// <item>the free refusal at a player the caster may not attack (the #351/#356 rule), and the spell landing on one on a
 /// PvP map;</item>
 /// <item>RTK's slips fixed: Phoenix flames' wait under its own key (the script arms <c>phoenix_flame</c>) and its
@@ -308,6 +311,151 @@ public sealed class SubpathDamageSpellTests
         {
             _fx.World.LeaveMap(caster, NumbersMap);
             foreach (var m in sides) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    // ===== Ki strike and Ice bombardment deflect ==============================================================
+    // RTK rolls their deflect in its engine, at the target, before the script (clif_parsemagic), and its table gives
+    // both canfail 1, as ours does; Hailstorm, on the same verb, carries canfail 0 in both. The 5-way sweep rolls no
+    // deflect, so the verb rolls it once through ctx:deflected(), at a creature target, after the spend: a deflected
+    // cast keeps its mana and Ki strike's wait, the server's rule for every deflect (RTK's deflect is free), and
+    // strikes nothing.
+
+    /// <summary>Ki strike and Ice bombardment with their mana and wait, aimed by id from four tiles off or by the slot
+    /// alone at the faced creature.</summary>
+    public static TheoryData<string, uint, long, bool> DeflectCases
+    {
+        get
+        {
+            var data = new TheoryData<string, uint, long, bool>();
+            foreach (var byId in new[] { true, false })
+            {
+                data.Add("ki_strike", 250, 7_000, byId);
+                data.Add("ice_bombardment", 190, 0, byId);
+            }
+            return data;
+        }
+    }
+
+    /// <summary>At a creature with Protection 255 the cast is deflected: "Your magic has been deflected." then "You cast
+    /// X.", the pose, the spell's mana and Ki strike's 7 s wait, and nothing struck, neither the target nor the creatures
+    /// on its sides. Red on e67cd9d: never deflected, the target and its sides each lost the spell's amount.</summary>
+    [Theory]
+    [MemberData(nameof(DeflectCases))]
+    public void KiStrikeAndIceBombardmentAreDeflectedAndKeepTheirCost(string key, uint mana, long waitMs, bool byId)
+    {
+        var sp = Spell(key);
+        int tx = CX + (byId ? 4 : 1);
+        var target = AddCreature(NumbersMap, tx, CY, protection: 255);
+        var sides = new[] { AddCreature(NumbersMap, tx + 1, CY), AddCreature(NumbersMap, tx, CY - 1),
+                            AddCreature(NumbersMap, tx, CY + 1) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, byId ? target.Id : null));
+            long wait = SpellCastSupport.AetherLeft(caster, key);
+            int pose = outbound.BodiesOf(ServerOp.Action).Count;
+            string what = $"{sp.Name}{(byId ? " by id" : " faced")}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], " +
+                          $"target lost {Lost(target)}, sides lost {string.Join("/", sides.Select(Lost))} (want 0 each), spent " +
+                          $"{Mana - c.Mp} (want {mana}), wait {wait} ms (want {waitMs}), pose {pose}";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "Your magic has been deflected.", $"You cast {sp.Name}." })
+                        && Lost(target) == 0 && sides.All(s => Lost(s) == 0) && c.Mp == Mana - mana
+                        && (waitMs == 0 ? wait == 0 : wait > waitMs - SlackMs && wait <= waitMs) && pose == 1, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>The roll is the target's alone. At a creature that never deflects (Protection 0, Will 0), with a
+    /// Protection-255 creature on each of its four sides, the cast lands as it did before: the target and all four
+    /// struck for the spell's amount, its mana and only "You cast X.". A guard, green on e67cd9d too; red if the sides
+    /// rolled as well.</summary>
+    [Theory]
+    [InlineData("ki_strike", KiStrike, 250u)]
+    [InlineData("ice_bombardment", Hailstorm, 190u)]
+    public void WhenTheTargetsRollPassesTheSplashLandsAsBefore(string key, int amount, uint mana)
+    {
+        var sp = Spell(key);
+        var target = AddCreature(NumbersMap, CX + 4, CY);
+        var sides = new[] { AddCreature(NumbersMap, CX + 5, CY, protection: 255), AddCreature(NumbersMap, CX + 3, CY, protection: 255),
+                            AddCreature(NumbersMap, CX + 4, CY - 1, protection: 255), AddCreature(NumbersMap, CX + 4, CY + 1, protection: 255) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.Id));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], target lost {Lost(target)}, " +
+                          $"sides lost {string.Join("/", sides.Select(Lost))} (want {amount} each), spent {Mana - c.Mp} (want {mana})";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && Lost(target) == amount && sides.All(s => Lost(s) == amount) && c.Mp == Mana - mana, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>Hailstorm, the third spell on the verb, is never deflected: its row carries SplCanFail 0, as RTK's table
+    /// does (its script is Ice bombardment's but for the name and level; the table is the difference). At a Protection-255 creature with Protection-255 creatures on its
+    /// sides, all five are struck for its amount, for 190 mana and only "You cast Hailstorm.". A guard, green on e67cd9d
+    /// too; red if its row carried SplCanFail 1.</summary>
+    [Fact]
+    public void HailstormIsNeverDeflected()
+    {
+        var sp = Spell("hailstorm");
+        var target = AddCreature(NumbersMap, CX + 4, CY, protection: 255);
+        var sides = new[] { AddCreature(NumbersMap, CX + 5, CY, protection: 255), AddCreature(NumbersMap, CX + 3, CY, protection: 255),
+                            AddCreature(NumbersMap, CX + 4, CY - 1, protection: 255), AddCreature(NumbersMap, CX + 4, CY + 1, protection: 255) };
+        var (caster, outbound, c) = Caster(sp, NumbersMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.Id));
+            string what = $"lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], target lost {Lost(target)}, sides lost " +
+                          $"{string.Join("/", sides.Select(Lost))} (want {Hailstorm} each), spent {Mana - c.Mp} (want 190)";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { "You cast Hailstorm." })
+                        && Lost(target) == Hailstorm && sides.All(s => Lost(s) == Hailstorm) && c.Mp == Mana - 190, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, NumbersMap);
+            foreach (var m in sides.Append(target)) _fx.World.DespawnMob(NumbersMap, m);
+        }
+    }
+
+    /// <summary>A player target is never deflected. Aimed by id at a player on a PvP map while the caster faces a
+    /// Protection-255 creature, the cast lands on the player: "You cast X.", its mana, the player struck and told
+    /// "&lt;caster&gt; hits you with X.", and the faced creature, outside the blast, untouched. ctx:deflected() resolves
+    /// creatures only, and for an id that names a player it takes the faced creature, so the verb asks ctx.hasTarget
+    /// first. A guard on that test, green on e67cd9d too (nothing was deflected there); red without it: "Your magic has
+    /// been deflected." and the player untouched.</summary>
+    [Theory]
+    [InlineData("ki_strike", 250u)]
+    [InlineData("ice_bombardment", 190u)]
+    public void APlayerTargetIsNeverDeflectedByTheCreatureFaced(string key, uint mana)
+    {
+        var sp = Spell(key);
+        var faced = AddCreature(PvpArena, CX + 1, CY, protection: 255);
+        var (target, tOut, tc) = Player(PvpArena, CX + 4, CY);
+        var (caster, outbound, c) = Caster(sp, PvpArena, dir: 1);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0, target.PlayerId));
+            string N(string s) => s.Replace(caster.CharName, "<caster>", StringComparison.Ordinal);
+            string told = string.Join(" | ", SpellCastSupport.MiniTexts(tOut).Select(N));
+            string what = $"{sp.Name}: lines [{string.Join(" | ", SpellCastSupport.MiniTexts(outbound))}], player lost " +
+                          $"{TargetHp - tc.Hp} and read [{told}], faced creature lost {Lost(faced)}, spent {Mana - c.Mp} (want {mana})";
+            Assert.True(SpellCastSupport.MiniTexts(outbound).SequenceEqual(new[] { $"You cast {sp.Name}." })
+                        && tc.Hp < TargetHp && told == $"<caster> hits you with {sp.Name}." && Lost(faced) == 0
+                        && c.Mp == Mana - mana, what);
+        }
+        finally
+        {
+            _fx.World.LeaveMap(caster, PvpArena);
+            _fx.World.LeaveMap(target, PvpArena);
+            _fx.World.DespawnMob(PvpArena, faced);
         }
     }
 
