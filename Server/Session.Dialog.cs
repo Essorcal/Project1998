@@ -2033,6 +2033,9 @@ public sealed partial class Session
         // Stealth (Invisible/Spirit's Form/Life's Cloak/Glass Form) is a scalar timer outside _buffs too, so it
         // never showed a duration before — surface it here (works whether or not you're also morphed).
         if (Stealthed)                            lines.Add($"{_stealthName} {Secs(_stealthUntil, now)}s");
+        // A periodic run on the caster themselves (Hear footstep; Session.Spells.cs's spell ticks) is RTK's duration on
+        // the player, which RTK's client lists by name and seconds. It lives outside _buffs too, so it is surfaced here.
+        foreach (var (name, until) in RunningSelfTicks(now)) lines.Add($"{name} {Secs(until, now)}s");
 
         return BuffBoxJoin(lines);
     }

@@ -2243,15 +2243,17 @@ public sealed partial class World
     /// <c>distanceSquare(player, pc, 9)</c> and <c>state == 2</c>). Under <c>_lock</c>, the lock every writer of a
     /// player's tile holds. <see cref="Session.IsInvisible"/> is the unsynchronised scalar read the tick makes
     /// here of <c>IsStealthExpired</c>, and the name is one reference read of a string set at arrival. The
-    /// caller holds its own state monitor, which comes before this lock (docs/common/Locking.md).</summary>
-    public List<string> HiddenPlayersNear(ushort mapId, int x, int y, int range)
+    /// caller holds its own state monitor, which comes before this lock (docs/common/Locking.md).
+    /// <para><paramref name="except"/> is left out of the answer: Hear footstep's beat names the others only (RTK
+    /// Spells/Subpaths/Do/hear_footstep.lua's <c>pcs[i].ID ~= player.ID</c>). Second Sight passes none.</para></summary>
+    public List<string> HiddenPlayersNear(ushort mapId, int x, int y, int range, Session? except = null)
     {
         var names = new List<string>();
         lock (_lock)
         {
             if (!_maps.TryGetValue(mapId, out var m)) return names;
             foreach (var p in m.Players)
-                if (!p.IsReplaced && p.IsInvisible
+                if (!p.IsReplaced && p.IsInvisible && !ReferenceEquals(p, except)
                     && Math.Abs(p.PlayerX - x) <= range && Math.Abs(p.PlayerY - y) <= range)
                     names.Add(p.CharName);
         }

@@ -1167,7 +1167,8 @@ public sealed partial class Session
         double classFactor = ClassFactor(pathId, _char.Level);
         bool wasStealthed = Stealthed;   // read once — landing the hit clears it below
 
-        double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? 5 : 1) * (crit ? 3 : 1);
+        // The sneak multiplier is the stealth's own: x5 for the rogue's four, Blend's x9 (Session.LuaHide).
+        double swing = (s / 2.0 * EffEnchant + dam * 2.5 + MightTerm(might) + classFactor) * EffRage * (wasStealthed ? _stealthTimes : 1) * (crit ? 3 : 1);
         // Keep the RAW DOUBLE through armor — do NOT truncate here. Flooring twice (once to int, once in the
         // armor step) is disproven live; see the ApplyArmor doc comment for the n=178 evidence. The reach scale
         // below multiplies into the same figure, and it is floored ONCE: by World.TryDamage for a world creature,

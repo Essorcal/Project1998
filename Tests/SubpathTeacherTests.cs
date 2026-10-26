@@ -107,11 +107,21 @@ public sealed class SubpathTeacherTests
     /// and nothing at all for the other seven. Each item named is one Items.csv has. Red without the nine rows: every
     /// list is empty. The Shaman spells slice then put Shaman's solace, Reincarnate and Shaman's torment on sale beside
     /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
-    /// row's level, 0, for nothing (Caleb's P3).</summary>
+    /// row's level, 0, for nothing (Caleb's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
+    /// and Spirit blade, each at its script's price, the borrowed ones as written (Hear footstep asks Blend's, Crossing
+    /// swords Chung ryong rage's).</summary>
     [Theory]
     [InlineData("Barbarian", "")]
     [InlineData("Chongun",   "")]
-    [InlineData("Do",        "ki_strike 99 500 [1 amber, 70 acorn]; spirit_blade 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]")]
+    [InlineData("Do",        "assess_opponent_do 99 5000 [3 fox_blade, 5 fine_rabbit_meat, 80 red_fox_fur]; " +
+                             "balance_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
+                             "blend 99 0 [1 fox_tail, 1 topaz]; " +
+                             "crossing_swords 99 50000 [1 chung_ryong_key, 1 dragons_liver, 1 spike]; " +
+                             "dash_do 99 25000 [1 blood, 1 splendid_tiger_pelt]; " +
+                             "hear_footstep_do 99 0 [1 fox_tail, 1 topaz]; " +
+                             "ki_strike 99 500 [1 amber, 70 acorn]; " +
+                             "master_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
+                             "spirit_blade 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]")]
     [InlineData("Merchant",  "")]
     [InlineData("Ranger",    "")]
     [InlineData("Spy",       "assassinate 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]")]
@@ -153,9 +163,10 @@ public sealed class SubpathTeacherTests
         Assert.Empty(Content.SubpathTeacherSpells(4, Content.MarkSpellLevel, Content.MaxMark));   // a base class has no teacher list
     }
 
-    /// <summary>A marked row is offered only from its rank, as at every trainer. No row sold today carries a mark, so
+    /// <summary>A marked row is offered only from its rank, as at every trainer. Written before any marked row was sold,
     /// this prices Balance weapon (Do, mark 1) through the list's price seam: not at mark 0, offered at mark 1. Red
-    /// with the mark gate taken out of <see cref="Content.SubpathTeacherSpells"/>.</summary>
+    /// with the mark gate taken out of <see cref="Content.SubpathTeacherSpells"/>. Its real price row is the Do spells
+    /// slice's (<c>DoSpellTests.TheDoTeacherSellsByRank</c>).</summary>
     [Fact]
     public void AMarkedRowNeedsItsRank()
     {
@@ -185,7 +196,8 @@ public sealed class SubpathTeacherTests
 
     /// <summary>A Do buys Ki strike: the trainer's lines word for word, the fee priced on the Do's own path, and the
     /// items and coins taken. Red without the price row (the fee reads FREE and nothing is taken, or the spell is not
-    /// offered at all).</summary>
+    /// offered at all). The list is the Do's unmarked seven at level 99, by name (the Do spells slice); Ki strike is the
+    /// sixth.</summary>
     [Fact]
     public void ASaleTakesTheItemsAndCoins()
     {
@@ -198,11 +210,11 @@ public sealed class SubpathTeacherTests
         var def = Teacher("Do");
         Assert.Equal(new[] { "Learn Secret", "Forget Secret" }, Labels(s, def));
 
-        Converse(s, def, "Learn Secret", Pick(1), Pick(1), Pick(1));
+        Converse(s, def, "Learn Secret", Pick(6), Pick(1), Pick(1));
 
         Assert.Equal(new[]
         {
-            "Which secret shall I teach you?|Ki strike|Spirit blade",
+            "Which secret shall I teach you?|Assess opponent|Blend|Crossing swords|Dash|Hear footstep|Ki strike|Spirit blade",
             "You are ready to learn Ki strike. Do you swear you will use this secret only for good causes?|Yes|No",
             "The fee to learn Ki strike is: Acorn (70), Amber (1), 500 gold, All must be in good condition.|Yes|No",
         }, Menus(o));

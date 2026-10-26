@@ -733,15 +733,15 @@ SplId,SplIdentifier,SplDescription,SplType,SplPthId,SplAlignment,SplMark,SplLeve
 30314,spirit_of_war,Spirit of war,5,14,-1,0,99,,0,0,0,1,1,1
 30315,protectors_bulwark,Protector\'s Bulwark,5,99,-1,0,0,,0,0,0,1,1,1
 30400,====Do==========,====Do======,5,18,0,0,0,,0,0,0,0,1,1
-30401,dash_do,Dash,5,18,-1,0,0,,0,0,0,1,1,1
-30402,spirit_blade,Spirit blade,5,18,-1,0,0,,0,0,0,1,1,1
-30403,blend,Blend,5,18,-1,0,0,,0,0,0,1,1,1
-30404,hear_footstep_do,Hear footstep,5,18,-1,0,0,,0,0,0,1,1,1
-30405,assess_opponent_do,Assess opponent,2,18,-1,0,0,Which target? >,0,0,0,1,1,1
-30406,balance_weapon,Balance weapon,5,18,-1,1,0,,0,0,0,1,1,1
-30407,master_weapon,Master weapon,5,18,-1,2,0,,0,0,0,1,1,1
+30401,dash_do,Dash,5,18,-1,0,99,,0,0,0,1,1,1
+30402,spirit_blade,Spirit blade,5,18,-1,0,99,,0,0,0,1,1,1
+30403,blend,Blend,5,18,-1,0,99,,0,0,0,1,1,1
+30404,hear_footstep_do,Hear footstep,5,18,-1,0,99,,0,0,0,1,1,1
+30405,assess_opponent_do,Assess opponent,2,18,-1,0,99,Which target? >,0,0,0,1,1,1
+30406,balance_weapon,Balance weapon,5,18,-1,1,99,,0,0,0,1,1,1
+30407,master_weapon,Master weapon,5,18,-1,2,99,,0,0,0,1,1,1
 30408,ki_strike,Ki strike,2,18,-1,0,99,Which target? >,0,0,0,1,1,1
-30409,crossing_swords,Crossing swords,5,18,-1,0,0,,0,0,0,1,1,1
+30409,crossing_swords,Crossing swords,5,18,-1,0,99,,0,0,0,1,1,1
 30410,,,5,5,-1,0,0,,0,0,0,1,1,1
 30500,====Baekho======,====Baekho====,5,7,0,0,0,,0,0,0,0,1,1
 30501,baekhos_cunning,Baekho\'s cunning,5,7,-1,0,0,,1,0,0,1,0,1

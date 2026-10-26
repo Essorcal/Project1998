@@ -1488,7 +1488,7 @@ public sealed partial class Session
     // (above) cover rage + backstab/flank; these add the "already active" guards + the stealth/enchant setters.
     internal bool LuaRageActive    => EffRage > 1;      // RTK blocks casting a fury while one is up (checkIfCast(lesserFuries))
     internal bool LuaEnchantActive => EffEnchant > 1;   // RTK blocks re-casting an enchant while one is up
-    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthShown = true; SendStats(); RefreshAppearance(); }
+    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthTimes = InvisibleTimes; _stealthKey = ""; _stealthShown = true; SendStats(); RefreshAppearance(); }
     internal void LuaSetEnchant(double amount)  { _enchantAmount = amount; SendStats(); }
 
     // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
@@ -2492,11 +2492,23 @@ public sealed partial class Session
     // once a cycle, every 1.5 s, so RTK's "5-20 s" lasts 7.5-30 s and beats 4-20 times; here it lasts 5-20 s and
     // beats 3-13 times.
     //
-    // The Do slice's Hear footstep runs on the caster themselves, with no creature: a start that records none and a
-    // beat that looks none up are what it adds to this.
+    // A RUN ON THE CASTER THEMSELVES (the Do slice's Hear footstep, RTK Spells/Subpaths/Do/hear_footstep.lua: a
+    // player:setDuration whose while_cast runs with the player). It needs three things a creature's run does not:
+    //   * a start that records no creature (LuaStartSelfTick), and a beat that looks none up: its verb runs with a
+    //     context bound to the caster alone, on whatever map the caster stands now, as RTK's while_cast reads the
+    //     player's own map on every beat;
+    //   * an end where the caster's own durations end. RTK's pc_diescript and flushDuration end every duration whose
+    //     spell lets it be dispelled (SplDispel 0, Hear footstep's), so death, @dispel and a won Dispell end a self
+    //     run here (EndSelfTicks, from ClearAllTimedEffects and FlushDurations). A creature's run is the creature's,
+    //     and goes on through its caster's death, as before;
+    //   * a line in the caster's buff box (RunningSelfTicks), as RTK's client lists a duration on the player.
+    // It ends at logout like every run here, through EndSpellTicksIfLeaving, and its verb's one read of the world
+    // (LuaHiddenNear) names nobody once the caster is leaving, so nothing is said to a player who has gone. RTK saves
+    // a player's durations and would resume one after a relog; this server saves no run (no new persistence).
 
     /// <summary>One running periodic tick: <see cref="Verb"/> runs every <see cref="EveryMs"/> while
-    /// <see cref="Next"/> is before <see cref="Until"/>, against the creature <see cref="MobId"/> on <see cref="Map"/>.
+    /// <see cref="Next"/> is before <see cref="Until"/>, against the creature <see cref="MobId"/> on <see cref="Map"/>,
+    /// or, for a <see cref="Self"/> run, on the caster (no creature, no map of its own).
     /// Written only under this session's monitor.</summary>
     private sealed class SpellTick
     {
@@ -2504,6 +2516,7 @@ public sealed partial class Session
         public string Verb = "";
         public uint MobId;
         public ushort Map;
+        public bool Self;
         public int EveryMs;
         public long Next;
         public long Until;
@@ -2521,8 +2534,12 @@ public sealed partial class Session
     /// <summary>A tick of <paramref name="key"/> on the creature <paramref name="mobId"/> that is still running, or null.
     /// Running is RTK's <c>hasDurationID</c>: the duration has time left, whether or not another beat falls in it.</summary>
     private SpellTick? LiveTick(string key, uint mobId, ushort map, long now) =>
-        _spellTicks.Find(t => !t.Ended && now < t.Until && t.MobId == mobId && t.Map == map
+        _spellTicks.Find(t => !t.Ended && !t.Self && now < t.Until && t.MobId == mobId && t.Map == map
                               && t.SpellKey.Equals(key, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>This caster's run of <paramref name="key"/> on themselves that is still running, or null.</summary>
+    private SpellTick? LiveSelfTick(string key, long now) =>
+        _spellTicks.Find(t => !t.Ended && t.Self && now < t.Until && t.SpellKey.Equals(key, StringComparison.OrdinalIgnoreCase));
 
     private void PublishSpellTickDue()
     {
@@ -2545,26 +2562,74 @@ public sealed partial class Session
         AssertStateHeld("a spell tick's start");
         if (victim is not { IsNpc: false } mob || everyMs <= 0 || durMs <= 0 || string.IsNullOrEmpty(verb)) return false;
         long now = Environment.TickCount64;
-        var tick = LiveTick(sp.Key, mob.Id, map, now);
-        if (tick is null)
+        bool fresh = StartOrRefreshTick(LiveTick(sp.Key, mob.Id, map, now), new SpellTick
         {
+            SpellKey = sp.Key, Verb = verb, MobId = mob.Id, Map = map, EveryMs = everyMs,
+            Next = now + everyMs, Until = now + durMs,
+        });
+        Log.Info($"      (lua) {sp.Name} -> tick '{verb}' every {everyMs}ms for {durMs}ms on mob {mob.Id} " +
+                 $"({(fresh ? "started" : "refreshed")})");
+        return true;
+    }
+
+    /// <summary>Start, or refresh, this caster's run of <paramref name="sp"/> on themselves (Hear footstep):
+    /// <paramref name="verb"/> runs every <paramref name="everyMs"/> for <paramref name="durMs"/>, with no creature. A run
+    /// already going takes the new length from now and keeps its beat, as <see cref="LuaStartTick"/>'s does. False,
+    /// starting nothing, for a beat or length that is not positive.</summary>
+    internal bool LuaStartSelfTick(SpellDef sp, string verb, int everyMs, int durMs)
+    {
+        AssertStateHeld("a spell tick's start");
+        if (everyMs <= 0 || durMs <= 0 || string.IsNullOrEmpty(verb)) return false;
+        long now = Environment.TickCount64;
+        bool fresh = StartOrRefreshTick(LiveSelfTick(sp.Key, now), new SpellTick
+        {
+            SpellKey = sp.Key, Verb = verb, Self = true, EveryMs = everyMs, Next = now + everyMs, Until = now + durMs,
+        });
+        Log.Info($"      (lua) {sp.Name} -> tick '{verb}' every {everyMs}ms for {durMs}ms on its caster " +
+                 $"({(fresh ? "started" : "refreshed")})");
+        return true;
+    }
+
+    /// <summary>The two starts' shared step: with no <paramref name="live"/> run, add <paramref name="run"/> (dropping
+    /// spent runs as the beat does); with one, give it <paramref name="run"/>'s length from now, verb and interval and
+    /// keep its beat (RTK's <c>setDuration(..., 1)</c> sets the time again and nothing else). True when it started.</summary>
+    private bool StartOrRefreshTick(SpellTick? live, SpellTick run)
+    {
+        if (live is null)
+        {
+            long now = Environment.TickCount64;
             _spellTicks.RemoveAll(t => t.Ended || now >= t.Until);   // spent runs go here as well as on the beat
-            _spellTicks.Add(new SpellTick
-            {
-                SpellKey = sp.Key, Verb = verb, MobId = mob.Id, Map = map, EveryMs = everyMs,
-                Next = now + everyMs, Until = now + durMs,
-            });
+            _spellTicks.Add(run);
         }
         else
         {
-            tick.Until = now + durMs;
-            tick.Verb = verb;
-            tick.EveryMs = everyMs;
+            live.Until = run.Until;
+            live.Verb = run.Verb;
+            live.EveryMs = run.EveryMs;
         }
         PublishSpellTickDue();
-        Log.Info($"      (lua) {sp.Name} -> tick '{verb}' every {everyMs}ms for {durMs}ms on mob {mob.Id} " +
-                 $"({(tick is null ? "started" : "refreshed")})");
-        return true;
+        return live is null;
+    }
+
+    /// <summary>End every run this caster holds on themselves: death and <c>@dispel</c> (<see cref="ClearAllTimedEffects"/>)
+    /// and a won Dispell (<see cref="FlushDurations"/>), as RTK's pc_diescript and flushDuration end a duration whose
+    /// spell lets it be dispelled (Hear footstep's SplDispel is 0). Under this session's monitor, as every writer of the
+    /// list is. A creature's run goes on.</summary>
+    private void EndSelfTicks()
+    {
+        bool any = false;
+        foreach (var t in _spellTicks)
+            if (t.Self && !t.Ended) { t.Ended = true; any = true; }
+        if (any) PublishSpellTickDue();
+    }
+
+    /// <summary>The caster's own runs with time left, by spell name and end, for the buff box (Session.Dialog's
+    /// <c>BuffBoxText</c>): RTK's client lists a duration on the player with its seconds.</summary>
+    private IEnumerable<(string Name, long Until)> RunningSelfTicks(long now)
+    {
+        foreach (var t in _spellTicks)
+            if (t.Self && !t.Ended && now < t.Until)
+                yield return (Content.SpellByKey(t.SpellKey)?.Name ?? t.SpellKey, t.Until);
     }
 
     /// <summary>Does this caster's tick of <paramref name="sp"/> run on the creature <paramref name="victim"/>? RTK's
@@ -2579,7 +2644,7 @@ public sealed partial class Session
         AssertStateHeld("a spell tick's end");
         if (victim is null) return;
         foreach (var t in _spellTicks)
-            if (t.MobId == victim.Id && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            if (!t.Self && t.MobId == victim.Id && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
                 t.Ended = true;
         PublishSpellTickDue();
     }
@@ -2592,7 +2657,7 @@ public sealed partial class Session
         long now = Environment.TickCount64;
         var ids = new HashSet<uint>();
         foreach (var t in _spellTicks)
-            if (!t.Ended && now < t.Until && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            if (!t.Ended && !t.Self && now < t.Until && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
                 ids.Add(t.MobId);
         if (ids.Count == 0) return 0;
         var (_, mobs) = _world.View(this, map);
@@ -2668,13 +2733,21 @@ public sealed partial class Session
             t.Next += t.EveryMs;
             if (t.Next <= now) t.Next = now + t.EveryMs;
             var sp = Content.SpellByKey(t.SpellKey);
-            var mob = _world.MobById(t.Map, t.MobId);   // living, on the map it was struck on; null once it died or left
-            if (sp is null || mob is null || mob.IsNpc) { t.Ended = true; continue; }
+            if (sp is null) { t.Ended = true; continue; }
+            SpellContext ctx;
+            if (t.Self) ctx = new SpellContext(this, sp, null, null);   // the caster alone: a self run has no creature
+            else
+            {
+                var mob = _world.MobById(t.Map, t.MobId);   // living, on the map it was struck on; null once it died or left
+                if (mob is null || mob.IsNpc) { t.Ended = true; continue; }
+                ctx = new SpellContext(this, sp, mob, t.Map);
+            }
             var row = Content.SpellParams.TryGetValue(sp.Key, out var r) ? r : SpellScript.NoRow;   // the spell's own row
-            if (SpellScript.Run(t.Verb, new SpellContext(this, sp, mob, t.Map), row) != true)
+            if (SpellScript.Run(t.Verb, ctx, row) != true)
             {
                 t.Ended = true;
-                Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on mob {t.MobId} did not run to completion — the tick ends");
+                Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on {(t.Self ? "its caster" : $"mob {t.MobId}")} " +
+                         "did not run to completion — the tick ends");
             }
             if (EndSpellTicksIfLeaving()) return;   // a logout that got in while the beat waited for the Lua gate
         }
@@ -2706,6 +2779,41 @@ public sealed partial class Session
         AssertStateHeld("a login-only registry value");
         _tempReg[key] = value;
     }
+
+    /// <summary>Hear footstep's beat (<c>ctx:hiddenNear</c>): the names of the other players invisible within
+    /// <paramref name="range"/> tiles of this caster on both axes, on the caster's map now, "\n" between them. One
+    /// <see cref="World.HiddenPlayersNear"/> read, under <c>World._lock</c> taken inside this session's monitor, the order
+    /// Second Sight's scan takes; it writes nobody's state.
+    /// <para>Nobody, for a caster who is logging out. The beat asks <see cref="EndSpellTicksIfLeaving"/> before it runs
+    /// a verb and after, but the verb enters the Lua gate after the caster's monitor, and on the gate's slow path the
+    /// monitor is dropped while it waits: a logout can run to its end in that gap. Read again here, under the retaken
+    /// monitor, so a run on its caster names nobody to a player who has gone, as <see cref="LuaStrikeVictim"/> lands no
+    /// blow for one (#406 review, F1).</para>
+    /// <para>Nobody, too, once <paramref name="sp"/>'s run on the caster has ended. Death and a won Dispell end it
+    /// (<see cref="EndSelfTicks"/>), and either can land in the same gap while a beat waits at the gate; the beat would
+    /// then speak once for a run that is over (#407 review, optional). Asked under the retaken monitor, as
+    /// <c>_leaving</c> is.</para></summary>
+    internal string LuaHiddenNear(SpellDef sp, int range) =>
+        _leaving || !_spellTicks.Exists(t => t.Self && !t.Ended && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            ? ""
+            : string.Join("\n", _world.HiddenPlayersNear(_char.Map, _char.X, _char.Y, Math.Max(0, range), except: this));
+
+    /// <summary>The engine's magic deflect against a readout's victim (<c>ctx:victimDeflects</c>), for a spell whose row
+    /// can fail: RTK's clif_parsemagic rolls it before any script with a target, a creature or a player alike
+    /// (clif.c, the <c>magicdb_canfail</c> branch). The engine's two rolls: a creature's protection and Will
+    /// (<see cref="RollDeflect"/>), a player's Will (<see cref="RollDeflectPvp"/>, the roll a spell at another player
+    /// already makes). Never the caster, and no victim deflects nothing. Writes nothing.</summary>
+    internal bool LuaVictimDeflects(SpellDef sp, (Mob? mob, Session? pc) victim)
+    {
+        if (!sp.CanFail) return false;
+        if (victim.mob is { } mob) return RollDeflect(mob);
+        if (victim.pc is { } pc && !ReferenceEquals(pc, this)) return RollDeflectPvp(pc);
+        return false;
+    }
+
+    /// <summary>The name of the fury in the rage slot (<c>ctx.rageName</c>): what the buff box shows, and what a row
+    /// ladder's climb reads to continue only its own fury (spell_verbs.lua's <c>chungryong_rage</c>).</summary>
+    internal string LuaRageName => _rageName;
 
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
     // Unlike ReceiveTimedBuff this keeps a zero-amount entry (a curse's category slot matters even with no stat
@@ -3537,7 +3645,7 @@ public sealed partial class Session
             ["player.maxMagic"]   = EffMaxMp,
             ["player.health"]     = _char.Hp,
             ["player.maxHealth"]  = EffMaxHp,
-            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? 5 : 1,
+            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? _stealthTimes : 1,
             ["target.health"]     = target?.Hp ?? 0,
             ["target.baseHealth"] = target?.MaxHp ?? 0,
         };
@@ -3746,11 +3854,50 @@ public sealed partial class Session
     private const string CrRageAcKey = "chung_ryongs_rage_ac";
     private int _crRageTier;
 
+    // The other climbing furies (the PC-subpath plan's V-rage): a spell bound to the chungryong_rage verb by a
+    // SpellParams.csv row that names a ladder in `category` climbs that ladder (spell_verbs.lua's RAGE_LADDERS), and
+    // when its run lapses it keeps this share of its vita at the tier it reached. rtk_rage is RTK's copies of its own
+    // Chung ryong rage: Crossing swords (Spells/Subpaths/Do/crossing_swords.lua), Sonhi rage and Spirit of war, whose
+    // uncast keeps 0.8 of the vita at tiers 1-3, 0.6 at 4, 0.4 at 5 and 0.1 at 6, takes no mana and says nothing.
+    // The ladder is found by the running fury's name (RowRageLadder), which Session.TimedEffects already saves with the
+    // tier, so a run restored at login pays its own ladder's price and nothing new is saved.
+    private static readonly IReadOnlyDictionary<string, double[]> RageLadderVitaKept =
+        new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["rtk_rage"] = new[] { 0.8, 0.8, 0.8, 0.6, 0.4, 0.1 },
+        };
+
+    /// <summary>The ladder named by the SpellParams.csv row (<c>category</c>) of the spell called <paramref name="name"/>
+    /// that the chungryong_rage verb runs; null for Chung Ryong's own rage (its row names none) or for any other
+    /// fury.</summary>
+    private static string? RowRageLadder(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        foreach (var (key, row) in Content.SpellParams)
+        {
+            if (!string.Equals(row.GetValueOrDefault("verb", ""), "chungryong_rage", StringComparison.OrdinalIgnoreCase)) continue;
+            string ladder = row.GetValueOrDefault("category", "").Trim();
+            if (ladder.Length > 0 && Content.SpellByKey(key)?.Name == name) return ladder;
+        }
+        return null;
+    }
+
     // Called from RegenTick when the Chung Ryong fury lapses without being renewed: apply the tier's vita
     // price (tier 6 leaves you at 1 vita/mana), drop the AC buff, and reset the tier. Floors at 1 — the fury
     // wearing off guts you but never outright kills.
     private void ChungRyongRageWearOff()
     {
+        // A fury on a row ladder (spell_verbs.lua's RAGE_LADDERS, named by its SpellParams.csv row) pays its own
+        // ladder's price; Chung Ryong's own, with no ladder named, pays the table above as it always has.
+        if (RowRageLadder(_rageName) is { } ladder && RageLadderVitaKept.TryGetValue(ladder, out var kept))
+        {
+            int at = Math.Clamp(_crRageTier, 1, kept.Length);
+            _crRageTier = 0;
+            BuffRemoveAll(b => b.Key == CrRageAcKey);
+            _char.Hp = (uint)Math.Max(1, (long)(_char.Hp * kept[at - 1]));   // RTK truncates; never to 0 here
+            SendStats();
+            return;
+        }
         var tier = ChungRyongRageTiers[_crRageTier - 1];
         _crRageTier = 0;
         BuffRemoveAll(b => b.Key == CrRageAcKey);
@@ -3774,6 +3921,17 @@ public sealed partial class Session
     // ends by a hit (redrawn inline), a timer lapse, or a Cleanse/flush (both caught by World.Tick's IsStealthExpired).
     private bool _stealthShown;
     private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
+
+    // BLEND (Do; RTK Spells/Subpaths/Do/blend.lua), on Caleb's word (2026-10-26, Q15: "As RTK's script"): the same
+    // stealth state, armed by the `hide` verb (ctx:hide) with its own sneak multiplier, the script's `invis = 9`, and
+    // its own line when it ends, the script's uncast "You are no longer invisible." (its SpellText.csv fade line).
+    // The rogue's four stealths keep everything they had: x5 (InvisibleTimes, above) and no line, so a stealth armed by
+    // their stance_stealth verb resets both. A relog keeps Blend's from the stealth's saved name
+    // (RestoreHideRule): nothing new is saved.
+    private const int InvisibleTimes = 5;
+    private int _stealthTimes = InvisibleTimes;   // the next landed swing's multiplier while stealthed
+    private string _stealthKey = "";              // the hide spell's key, for its fade line; "" for the rogue's four
+
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
     /// <summary>Is this player invisible right now (RTK's <c>PC_INVIS</c>)? Read by
@@ -3781,19 +3939,64 @@ public sealed partial class Session
     /// this session's monitor: one 64-bit deadline, the same unsynchronised scalar read the tick makes of
     /// <see cref="IsStealthExpired"/>.</summary>
     public bool IsInvisible => Stealthed;
-    /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
-    public void RevertStealth()
+    /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).
+    /// <para>With <paramref name="tell"/>, a stealth that has a fade line says it as it ends (Blend's "You are no longer
+    /// invisible.", RTK blend.lua's uncast): at its time, a landed hit, a pickup and a won Dispell, every way RTK runs
+    /// that uncast with the player alive. Death and <c>@dispel</c> pass false: RTK's death sets the player dead before
+    /// the uncast, whose own check (<c>state ~= 1</c>) then says nothing, and <c>@dispel</c> shares that path here. The
+    /// rogue's four have no fade line and say nothing, as before.</para></summary>
+    public void RevertStealth(bool tell = true)
     {
         using var _ = EnterState();   // #29: World.Tick calls this on the stealth timer lapsing
         if (!_stealthShown) return;
         _stealthShown = false;
         RefreshAppearance();
+        if (tell && Content.FadeTextFor(_stealthKey) is { Length: > 0 } fade) SendMiniText(fade);
     }
 
-    /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
+    /// <summary>Fully drop Invisible — clears BOTH the timer (so the sneak multiplier stops) and the faded
     /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingRaw) and grabbing floor loot
-    /// (HandlePickup). No-op if not stealthed.</summary>
-    public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
+    /// (HandlePickup). No-op if not stealthed. <paramref name="tell"/> as for <see cref="RevertStealth"/>.</summary>
+    public void BreakStealth(bool tell = true) { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(tell); }
+
+    /// <summary>Arm the stealth for a <c>hide</c> spell (Blend; <c>ctx:hide</c>): invisible for <paramref name="durMs"/>,
+    /// the next landed swing x<paramref name="times"/>, the spell's name in the buff box and its fade line when it ends.
+    /// A cast while already invisible keeps the run's end, or brings it nearer: RTK's <c>setDuration</c> sets a running
+    /// duration again only to a shorter time (<c>pcl_setduration</c>, rtk/src/map/sl.c), so the script's recast never
+    /// lengthens it.</summary>
+    internal void LuaHide(SpellDef sp, int durMs, int times)
+    {
+        long until = Environment.TickCount64 + Math.Max(0, durMs);
+        _stealthUntil = Stealthed ? Math.Min(_stealthUntil, until) : until;
+        _stealthName  = sp.Name;
+        _stealthKey   = sp.Key;
+        _stealthTimes = Math.Max(1, times);
+        _stealthShown = true;
+        SendStats();
+        RefreshAppearance();
+    }
+
+    /// <summary>Give a restored stealth back its rule (<see cref="RestoreTimedEffects"/>): a stealth whose saved name is a
+    /// spell the <c>hide</c> verb casts (by its SpellParams.csv row) takes that spell's key and multiplier (the row's
+    /// <c>amount</c>); any other name, the rogue's four, takes theirs (x5, no line).</summary>
+    private void RestoreHideRule()
+    {
+        _stealthKey = "";
+        _stealthTimes = InvisibleTimes;
+        foreach (var (key, row) in Content.SpellParams)
+        {
+            if (!string.Equals(row.GetValueOrDefault("verb", ""), "hide", StringComparison.OrdinalIgnoreCase)) continue;
+            if (Content.SpellByKey(key)?.Name != _stealthName) continue;
+            _stealthKey = key;
+            if (double.TryParse(row.GetValueOrDefault("amount", ""), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out double times))
+                _stealthTimes = Math.Max(1, (int)times);
+            return;
+        }
+    }
+
+    /// <summary>Is the caster in a creature's form (a morph)? Blend refuses then, as its script's canCast(1, 1, 1).</summary>
+    internal bool LuaMorphed => IsMorphed;
 
     // Enchant tier (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua multiplies
     // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingRaw). Baseline
@@ -4041,6 +4244,7 @@ public sealed partial class Session
         _backstabUntil = 0;
         _flankUntil = 0;
         _fourWayUntil = 0;
+        EndSelfTicks();            // Hear footstep's run: RTK's flushDuration ends it (SplDispel 0)
     }
 
     /// <summary>Strip EVERY running timed effect on this session in one shot — stat buffs, curse/ward status
@@ -4051,7 +4255,7 @@ public sealed partial class Session
     private void ClearAllTimedEffects()
     {
         RevertMorph();      // restore the real look before we wipe the buff that named the disguise
-        BreakStealth();     // clears _stealthUntil + the faded (form-5) sprite
+        BreakStealth(tell: false);   // clears _stealthUntil + the faded (form-5) sprite; no fade line (see RevertStealth)
 
         BuffClear();
         ClearStatusFlags();
@@ -4065,6 +4269,7 @@ public sealed partial class Session
         _cunningDeductUntil = 0;   _cunningDeduct = 1.0;
         _backstabUntil = 0;        _flankUntil = 0;   _fourWayUntil = 0;
         _enchantAmount = 1;        // weapon-bound, not timed — but @dispel/death still strip it
+        EndSelfTicks();            // Hear footstep's run on the caster: RTK's pc_diescript ends it (SplDispel 0)
     }
 
     /// <summary>"@dispel" — strip EVERY timed effect on the caster, buff and debuff alike, and re-render.

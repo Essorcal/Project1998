@@ -96,12 +96,15 @@ public sealed partial class Session
 
         if (e.RageUntil > nowUnix)     { _rageUntil = UnixToTick(e.RageUntil); _rageAmount = e.RageAmount; _rageName = e.RageName ?? ""; _crRageTier = e.CrRageTier; }
         // A Chung Ryong fury whose deadline went by while we were logged off: re-arm the TIER and the (past)
-        // deadline and nothing else — no multiplier, no name, and no AC buff, because the fury is over and its
-        // buff was captured expired. That pair is exactly what RegenTick's `_crRageTier > 0` pre-check reads, so
+        // deadline and nothing else — no multiplier and no AC buff, because the fury is over and its buff was
+        // captured expired. That pair is exactly what RegenTick's `_crRageTier > 0` pre-check reads, so
         // the drain fires from the line it always fired from, on the first regen beat after the entry sequence
         // has drawn us. Calling ChungRyongRageWearOff here instead would push a mini-text and a stats packet
         // before the character exists on screen, on the arrival thread rather than the tick thread.
-        else if (e.CrRageTier > 0)     { _rageUntil = UnixToTick(e.RageUntil); _crRageTier = e.CrRageTier; }
+        // The NAME comes back too (the Do slice): it says which climbing fury this was, and so whose ladder prices
+        // the drain (Session.RowRageLadder: Crossing swords keeps a tenth of its vita at tier 6, Chung Ryong's own
+        // rage leaves 1). It is already saved; nothing shows it, since the buff box lists a fury only while it runs.
+        else if (e.CrRageTier > 0)     { _rageUntil = UnixToTick(e.RageUntil); _rageName = e.RageName ?? ""; _crRageTier = e.CrRageTier; }
         if (e.SancUntil > nowUnix)     { _sancDeductUntil = UnixToTick(e.SancUntil); _sancDeduct = e.SancMult; _sancDeductName = e.SancName ?? ""; }
         if (e.CunningUntil > nowUnix)  { _cunningDeductUntil = UnixToTick(e.CunningUntil); _cunningDeduct = e.CunningMult; }
         if (e.BackstabUntil > nowUnix) _backstabUntil = UnixToTick(e.BackstabUntil);
@@ -111,6 +114,7 @@ public sealed partial class Session
         {
             _stealthUntil = UnixToTick(e.StealthUntil);
             _stealthName  = string.IsNullOrEmpty(e.StealthName) ? "Invisible" : e.StealthName;
+            RestoreHideRule();      // Blend's x9 and fade line, from the saved name (nothing new is saved)
             _stealthShown = true;   // SendSelfLook/ShowPlayer draw the faded form-5 sprite from this
         }
         if (e.MorphLook != 0 && e.MorphUntil > nowUnix)

@@ -24,6 +24,13 @@
 # each bound by a SpellParams.csv row: shamans_solace to verb=ranged_heal row, reincarnate to verb=revive_around row
 # and shamans_torment to verb=torment row (Caleb's P5 and Q7: RTK's scripts, torment from its TESTING copy). No
 # other line changed.
+# The Do spells slice (2026-10-26) then moved seven PC-subpath spells off verb=generic (Caleb's P5: RTK's scripts):
+# dash_do to verb=dash row, hear_footstep_do to verb=hear_footstep row, assess_opponent_do to verb=assess row and
+# crossing_swords to verb=chungryong_rage row, each bound by a SpellParams.csv row; blend to verb=stance_stealth (the
+# stealth set); balance_weapon and master_weapon to verb=stance_enchant (their SpellMods.csv enchant rows). No other
+# line changed.
+# The Do slice's third round (2026-10-26, Caleb's Q15: Blend as its RTK script) then moved blend from
+# verb=stance_stealth to verb=hide row: a SpellParams.csv row binds it to its own verb. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -51,7 +58,7 @@ art_of_war	30303	verb=generic
 assassinate	30806	verb=assassinate row
 assault	50032	verb=generic
 assault_warrior	1085	verb=arch_damage
-assess_opponent_do	30405	verb=generic
+assess_opponent_do	30405	verb=assess row
 assess_opponent_spy	30808	verb=generic
 atone_poet	4081	verb=arch_cure
 augmentation_rogue	2044	verb=stance_rage
@@ -68,7 +75,7 @@ baekhos_cunning	30501	verb=baekhos_cunning row
 baekhos_rage_rogue	2097	verb=stance_rage
 balance_barrier_poet	4100	verb=arch_buff
 balance_recognition	31107	verb=generic
-balance_weapon	30406	verb=generic
+balance_weapon	30406	verb=stance_enchant
 balanced_touch_mage	3161	verb=arch_heal
 balm_warrior	1070	verb=arch_heal
 bandage_rogue	2088	verb=arch_heal
@@ -88,7 +95,7 @@ blade_crawl	11503	verb=mana_battery
 bladedance_warrior	1075	verb=sacrifice
 blades_charm_rogue	2125	verb=stance_enchant
 blazing_sands_mage	3059	verb=area_zap
-blend	30403	verb=generic
+blend	30403	verb=hide row
 bless_drink	31505	verb=generic
 bless_food	31504	verb=generic
 bless_muscles_mage	3042	verb=arch_targetbuff
@@ -157,7 +164,7 @@ create_green_potion	31104	verb=generic
 creative	12023	verb=generic
 creatures_guidance_warrior	1048	verb=spot_traps row
 crescendo_mage	3057	verb=area_zap
-crossing_swords	30409	verb=generic
+crossing_swords	30409	verb=chungryong_rage row
 cure_illness_mage	3053	verb=arch_cure
 cure_illness_poet	4018	verb=arch_cure
 cure_paralysis_mage	3064	verb=arch_cure
@@ -176,7 +183,7 @@ dark_fear_poet	4152	verb=curse row
 dark_veil_mage	3113	verb=arch_debuff
 darken_fate	31003	verb=generic
 dash_barbarian	30202	verb=generic
-dash_do	30401	verb=generic
+dash_do	30401	verb=dash row
 death_denied_mage	3159	verb=arch_heal
 death_save	8	verb=misc
 death_scream_mage	3101	verb=arch_damage
@@ -345,7 +352,7 @@ healing_waters_rogue	2108	verb=arch_heal
 health_shrine_spell	50037	verb=arch_buff
 healths_return_warrior	1095	verb=arch_heal
 hear_footstep_diviner	31002	verb=generic
-hear_footstep_do	30404	verb=generic
+hear_footstep_do	30404	verb=hear_footstep row
 hear_footstep_spy	30803	verb=generic
 hear_spirits_poet	4090	verb=arch_buff
 heavens_kiss_poet	4117	verb=area_heal
@@ -473,7 +480,7 @@ masos_remedy_rogue	2098	verb=arch_heal
 mass_res	11998	verb=misc
 mass_resurrect	31509	verb=generic
 mass_resurrect	50010	verb=generic
-master_weapon	30407	verb=generic
+master_weapon	30407	verb=stance_enchant
 meditation_rogue	2137	verb=arch_heal
 mend_equipment_warrior	1096	verb=mend_equipment
 mend_wounds_mage	3036	verb=heal row
