@@ -27,7 +27,8 @@ namespace Tests;
 [Collection("world")]
 public sealed class ShamanSpellTests
 {
-    private const ushort SolaceMap = 62960, ReviveMap = 62961, TormentMap = 62962, BeatMap = 62963, LeaveMap = 62964;
+    private const ushort SolaceMap = 62960, ReviveMap = 62961, TormentMap = 62962, BeatMap = 62963, LeaveMap = 62964,
+                         LogoutMap = 62965;
     private const ushort CX = 16, CY = 16;
     private const uint MaxMana = 20_000, Mana = 20_000, Hp = 9_001;
     private const int Creature = 10_000_000;
@@ -41,6 +42,13 @@ public sealed class ShamanSpellTests
         typeof(Session).GetMethod("PublishSpellTickDue", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo EnterMapMethod =
         typeof(Session).GetMethod("EnterMap", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo ActionCountField =
+        typeof(Session).GetField("_actionCount", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo TearDownMethod =
+        typeof(Session).GetMethod("TearDownWorldState", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    private static readonly FieldInfo StateField =
+        typeof(Session).GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -339,19 +347,27 @@ public sealed class ShamanSpellTests
     // ===== Shaman's torment: the beat ===========================================================================
 
     /// <summary>Each beat strikes each tormented creature for max mana x 0.1 x 2 / (1 + 2.71828^(-0.95 (n - 1))) / n,
-    /// rounded up, plus 1,000, where n is how many creatures on the map the caster torments: 3,000 for one, 2,443 for
-    /// two, 2,160 for three (worked out by hand from 2,000), and the siphon count becomes n. Red on be75e7e: no run.</summary>
+    /// rounded up, plus 1,000, where n is how many creatures on the map the caster torments, kept at 20 at most: 3,000 for
+    /// one, 2,443 for two, 2,160 for three, and 1,200 each for twenty-one, the n = 20 figure (1,191 without the cap)
+    /// (worked out by hand from 2,000). The siphon count becomes how many there are, 21 included: the script caps only the
+    /// figure it divides by. Red on be75e7e: no run; the 21 case red with the cap taken out (#406 review, F2).</summary>
     [Theory]
     [InlineData(1, 3_000)]
     [InlineData(2, 2_443)]
     [InlineData(3, 2_160)]
+    [InlineData(21, 1_200)]
     public void EachBeatStrikesForTheScriptsFigure(int creatures, int each)
     {
         var mobs = Enumerable.Range(0, creatures).Select(i => AddCreature(BeatMap, CX + 1 + i, CY - 5)).ToList();
         var (caster, _, _) = Caster("shamans_torment", BeatMap);
         try
         {
-            foreach (var m in mobs) caster.Receive(SpellCastSupport.CastFrame(0, m.Id));
+            foreach (var m in mobs)
+            {
+                // The action budget (RTK's three actions a second) would hold back a fourth cast inside the second.
+                caster.WithState(() => ActionCountField.SetValue(caster, 0));
+                caster.Receive(SpellCastSupport.CastFrame(0, m.Id));
+            }
             Assert.Equal(creatures, Ticks(caster).Count);
             Advance(caster, 1_500);
             int held = 0;
@@ -463,6 +479,86 @@ public sealed class ShamanSpellTests
                         $"alive {mob.Alive}, exp {exp} -> {cc.Exp}, ticks {Ticks(caster).Count}");
         }
         finally { _fx.World.LeaveMap(caster, BeatMap); if (mob.Alive) _fx.World.DespawnMob(BeatMap, mob); }
+    }
+
+    /// <summary>A logout ends the runs: no beat lands for a caster who has gone. The heartbeat takes its roster before it
+    /// reaches each player, so a logout can run to its end in between: here a beat is made due, the roster taken, the real
+    /// teardown run under the caster's monitor, and the heartbeat's call made from that roster. No blow, no graphic, and
+    /// the runs are gone. Red without the logout check at the top of the beat: the beat runs (#406 review, F1).</summary>
+    [Fact]
+    public void NoBeatRunsAfterTheCastersLogout()
+    {
+        var mob = AddCreature(LogoutMap, CX + 1, CY);
+        var (caster, cOut, _) = Caster("shamans_torment", LogoutMap);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Advance(caster, 1_500, beat: false);                           // a beat is due
+            var roster = _fx.World.Online.All();                           // the heartbeat's snapshot
+            Assert.Contains(caster, roster);
+            caster.WithState(() => TearDownMethod.Invoke(caster, null));   // the logout, run to its end
+            cOut.Clear();
+            foreach (var s in roster) if (ReferenceEquals(s, caster)) s.TickSpellTicks();
+            int drawn = cOut.BodiesOf(ServerOp.Effect).Count(b => Id(b) == mob.Id);
+            Assert.True(Lost(mob) == 0 && drawn == 0 && Ticks(caster).Count == 0,
+                        $"after the logout: lost {Lost(mob)}, graphics {drawn}, runs left {Ticks(caster).Count}");
+        }
+        finally { if (mob.Alive) _fx.World.DespawnMob(LogoutMap, mob); }
+    }
+
+    /// <summary>A logout that gets in while a beat waits for the Lua gate lands no blow either. The beat runs its verb in
+    /// the caster's monitor and enters the gate from there; on the gate's slow path the monitor is dropped while it waits,
+    /// and a logout can run to its end in that gap. Here another thread holds the gate, the beat starts, takes the
+    /// monitor, and waits at the gate; the teardown then runs on this thread (it needs the monitor the beat dropped), and
+    /// only then is the gate let go. The fact checks the order it meant: the beat is still waiting after the teardown,
+    /// which it would not be had the teardown come first (it would have returned at once, finding the caster gone). No
+    /// blow lands and the runs are gone. Red without the logout check in the strike: the blow lands (#406 review, F1).
+    /// <para>Deterministic but for one assumption: that the first wait the beat thread is seen in comes after it took the
+    /// caster's monitor. Nothing before that monitor waits (a volatile read, then <c>EnterState</c> on a monitor nobody
+    /// holds), and the after-teardown check would fail the fact, not pass it, if that ever did not hold.</para></summary>
+    [Fact]
+    public void ALogoutWhileTheBeatWaitsForTheLuaGateLandsNoBlow()
+    {
+        var mob = AddCreature(LogoutMap, CX + 1, CY);
+        var (caster, _, _) = Caster("shamans_torment", LogoutMap);
+        var gateHeld = new ManualResetEventSlim();
+        var releaseGate = new ManualResetEventSlim();
+        Thread? holder = null, beat = null;
+        Exception? beatFault = null;
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Advance(caster, 1_500, beat: false);                           // a beat is due
+
+            holder = new Thread(() => { using (Session.EnterScriptGate()) { gateHeld.Set(); releaseGate.Wait(Bound); } })
+                     { IsBackground = true, Name = "gate holder" };
+            holder.Start();
+            Assert.True(gateHeld.Wait(Bound), "the gate holder never took the gate");
+
+            beat = new Thread(() => { try { caster.TickSpellTicks(); } catch (Exception e) { beatFault = e; } })
+                   { IsBackground = true, Name = "heartbeat" };
+            beat.Start();
+            Assert.True(SpinWait.SpinUntil(() => (beat.ThreadState & ThreadState.WaitSleepJoin) != 0, Bound),
+                        "the beat never waited");
+
+            caster.WithState(() => TearDownMethod.Invoke(caster, null));   // the logout, in the gap the gate leaves
+            Assert.False(SpinWait.SpinUntil(() => !beat.IsAlive, 250),
+                         "the beat finished before the gate was let go: the teardown came first, not in the gate's gap");
+            Assert.False(Monitor.IsEntered(StateField.GetValue(caster)!));
+
+            releaseGate.Set();
+            Assert.True(beat.Join(Bound), "the beat never finished once the gate was let go");
+            Assert.Null(beatFault);
+            Assert.True(Lost(mob) == 0 && Ticks(caster).Count == 0,
+                        $"after the logout in the gate's gap: lost {Lost(mob)}, runs left {Ticks(caster).Count}");
+        }
+        finally
+        {
+            releaseGate.Set();
+            holder?.Join(Bound);
+            beat?.Join(Bound);
+            if (mob.Alive) _fx.World.DespawnMob(LogoutMap, mob);
+        }
     }
 
     // ===== the rows ============================================================================================
