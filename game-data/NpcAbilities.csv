@@ -10,10 +10,11 @@
 # and only Eldritch (39) tells the Sute story. An id that names no NPC of the identifier is logged at load,
 # and the entry then reaches nobody.
 #
-# Four abilities also carry data per NPC elsewhere, and their narrowing here must name exactly those keys
+# Five abilities also carry data per NPC elsewhere, and their narrowing here must name exactly those keys
 # (Tests/NpcAbilityNarrowingTests.cs checks it): armor_quest (ArmorQuest.GuildMasters, id -> path),
-# totem_worship (TotemWorship.Shrines, id -> totem), mythic_alliance (MythicAlliances.csv NpcId) and
-# alignment (AlignmentAbility's shrine maps, map -> alignment).
+# totem_worship (TotemWorship.Shrines, id -> totem), mythic_alliance (MythicAlliances.csv NpcId),
+# alignment (AlignmentAbility's shrine maps, map -> alignment) and subpath_teacher (SubpathCircles, the twelve
+# PC subpaths' Circle maps, map -> subpath).
 NpcKey,Abilities
 SmithNpc,shop|repair|nagnang_tall_shield@108|forgotten_past@142;196
 MessengerNpc,shop|messenger
@@ -48,3 +49,4 @@ BlackbirdNpc,dagger_uniform
 RotahNpc,shop|repair|bank|forgotten_past
 NpcSubpathGeomancerEarthsDragonNpc,shop|repair
 BaekNpc,shop|npc_subpath
+SubpathTeacherNpc,subpath_teacher@map:3510;3515;3520;3525;3530;3535;3605;3610;3615;3620;3625;3630

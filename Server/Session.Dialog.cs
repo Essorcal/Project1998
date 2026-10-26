@@ -700,6 +700,15 @@ public sealed partial class Session
         return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
     }
 
+    /// <summary>The menu twin of <see cref="DlgInputPush"/>: a menu with no NPC behind it (an item's own choice,
+    /// the Qui hyang's "Where do you wish to go?"), on the player's own entity id, under
+    /// <paramref name="portrait"/>. Returns the 1-based pick, 0 if the box was closed.</summary>
+    private async Task<int> DlgMenuPush(DialogPortrait portrait, string prompt, IReadOnlyList<string> options)
+    {
+        var r = await AwaitReply(() => SendNpcMenuP(_char.Id, portrait, prompt, options));
+        return r.Kind == 0x02 ? r.MenuIndex : 0;
+    }
+
     /// <summary>Open a prompt on THIS player: <paramref name="send"/> sends its 0x30, and the reply it waits for
     /// becomes the pending one. A new prompt orphans any previous pending one (it is GC'd and never resumes).
     /// <para>The two are one critical section inside this player's monitor, taken here at the definition (#29):
@@ -1474,13 +1483,16 @@ public sealed partial class Session
     // Menu with an EXPLICIT portrait (so a script can put the player's own paperdoll in the head — see
     // WriteHead). Offsets below are for the default 4-byte sprite head; a paperdoll head pushes everything
     // after it out by 4, which the client accounts for from the parser's return value.
-    private void SendNpcMenuP(Mob npc, DialogPortrait p, string prompt, IReadOnlyList<string> options)
+    private void SendNpcMenuP(Mob npc, DialogPortrait p, string prompt, IReadOnlyList<string> options) =>
+        SendNpcMenuP(npc.Id, p, prompt, options);
+
+    private void SendNpcMenuP(uint entityId, DialogPortrait p, string prompt, IReadOnlyList<string> options)
     {
         var pr = Encoding.ASCII.GetBytes(prompt);
 
         var d = new List<byte>();
         d.Add(0x02); d.Add(0x02);          // [0..1] kind = menu (RTK WFIFOB(5)=2, WFIFOB(6)=2)
-        d.AddRange(PacketWriter.U32BEBytes(npc.Id));          // [2..5] npc entity id
+        d.AddRange(PacketWriter.U32BEBytes(entityId));        // [2..5] npc entity id
         WriteHead(d, p);                   // [6..14] head kind + portrait descriptor + trailing descriptor
         d.AddRange(PacketWriter.U32BEBytes(1));               // [15..18]
         d.Add(0);                          // [19] prev button
@@ -1494,7 +1506,7 @@ public sealed partial class Session
             d.Add((byte)ob.Length);
             d.AddRange(ob);
         }
-        SendMap(ServerOp.NpcDialog, _gameInc++, d.ToArray(), $"npc-menu(0x30) id={npc.Id} x{options.Count}");
+        SendMap(ServerOp.NpcDialog, _gameInc++, d.ToArray(), $"npc-menu(0x30) id={entityId} x{options.Count}");
     }
 
     // 0x30 clif_inputseq (type-0, graphic head): a free-text entry box. Same head as the menu; kind bytes

@@ -705,6 +705,77 @@ public sealed class ForgetSecretAbility : INpcAbility
     }
 }
 
+/// <summary>The half of a trainer's "Learn Secret" that does not depend on which list is offered or on which path's
+/// prices are read: the picker, the oath, the fee line, the check-then-pay and the learn. Two callers, each bringing
+/// its own list and the path its <c>SpellLearnCosts.csv</c> rows are keyed to: <see cref="ClassTrainerAbility"/> (its
+/// class's list, priced on the base path) and <see cref="SubpathTeacherAbility"/> (a PC subpath's own priced rows,
+/// priced on the subpath's own path). Every line is the trainer's, word for word, so a teacher talks like every
+/// trainer here.</summary>
+internal static class SecretLessons
+{
+    /// <summary>The trainer's answer when the list is empty for now: everything learned, or the next secret is
+    /// above the player's level.</summary>
+    internal const string NothingMoreForNow = "You have learned every secret I can teach you for now. Grow stronger, then return.";
+
+    private const string Humble = "The potential for learning is endless, be always humble and ready to learn.";
+
+    // The fee line both trainer flows show before anything is spent (RTK learnSpell/futureSpells build the
+    // identical string): "The fee to learn X is: <item> (n), <item> (n), <gold> gold, All must be in good
+    // condition." — or "FREE" when the spell has no Content.SpellCosts row for this path. RTK carries gold as
+    // an item with id 0 inside the same list; our LearnCost keeps it in its own field, so it's appended last.
+    // RTK breaks the line after "is:"; we keep it on one line because nothing else in this server's 4.95
+    // dialog text relies on \n rendering and it has never been confirmed on this client.
+    /// <summary>The fee line for <paramref name="sp"/> as priced on <paramref name="costPath"/>.</summary>
+    internal static string FeeText(NpcContext ctx, SpellDef sp, int costPath)
+    {
+        var cost = Content.LearnCostFor(sp, costPath);
+        var parts = new List<string>();
+        if (cost is not null)
+        {
+            foreach (var (item, amount) in cost.Items) parts.Add($"{ctx.ItemName(item)} ({amount})");
+            if (cost.Gold > 0) parts.Add($"{cost.Gold} gold");
+        }
+        return parts.Count == 0
+            ? $"The fee to learn {sp.Name} is: FREE"
+            : $"The fee to learn {sp.Name} is: {string.Join(", ", parts)}, All must be in good condition.";
+    }
+
+    /// <summary>Pick one of <paramref name="learn"/> (not empty), swear the oath, read the fee priced on
+    /// <paramref name="costPath"/>, then pay it and learn. The menu lists BARE names — RTK builds a
+    /// "&lt;name&gt; Lvl: &lt;n&gt;" display string but never actually shows it in the picker.</summary>
+    internal static async Task Teach(NpcContext ctx, IReadOnlyList<SpellDef> learn, int costPath)
+    {
+        int pick = await ctx.Menu("Which secret shall I teach you?", learn.Select(s => s.Name).ToList());
+        if (pick < 1 || pick > learn.Count) return;
+
+        var sp = learn[pick - 1];
+
+        int swear = await ctx.Menu(
+            $"You are ready to learn {sp.Name}. Do you swear you will use this secret only for good causes?",
+            new[] { "Yes", "No" });
+        if (swear != 1) { await ctx.Say(Humble); return; }
+
+        if (await ctx.Menu(FeeText(ctx, sp, costPath), new[] { "Yes", "No" }) != 1) { await ctx.Say(Humble); return; }
+
+        // Real item/gold cost (Content.SpellCosts); a spell with no row for this path stays free.
+        // Everything is checked BEFORE anything is consumed, so a short fee costs the player nothing.
+        if (Content.LearnCostFor(sp, costPath) is { } cost)
+        {
+            bool short_ = cost.Items.Any(i => !ctx.HasItem(i.Item, i.Amount)) || ctx.Coins < (uint)cost.Gold;
+            if (short_)
+            {
+                await ctx.Say("Paying for what you want is a sign of devotion. Return when you have what is required for this.");
+                return;
+            }
+            foreach (var (item, amount) in cost.Items) ctx.TakeItem(item, amount);
+            if (cost.Gold > 0) ctx.SpendGold((uint)cost.Gold);
+        }
+
+        if (!ctx.LearnSpell(sp)) { await ctx.Say("Your mind cannot hold any more secrets right now."); return; }
+        await ctx.Say($"You have learned {sp.Name}.");
+    }
+}
+
 /// <summary>A class-path trainer (RTK warrior_trainer.lua / rogue_trainer / mage_trainer / poet_trainer).
 /// Ports the new-player core: <b>Become a &lt;Class&gt;</b> at level 5 (sex-specific starter kit + 500 gold +
 /// path change), <b>Learn / Divine / Forget Secret</b> (the trainer's spell-teaching), and <b>Become Noble</b>
@@ -776,8 +847,8 @@ public sealed class ClassTrainerAbility : INpcAbility
         // Your own class's trainer -> teach/foresee its secrets. A PC-subpath member's own class here is its
         // BASE class: RTK's learnSpell gives "regular path and pc subpaths" getUnknownSpells(player.baseClass)
         // (rtklua/Accepted/Scripts/Spells.lua), so a member admitted at 50 can still learn 51-99. Their
-        // subpath's own spells are not in that list (Content.IsPcSubpathSpell) until the hall teachers exist.
-        // An NPC subpath is left as it was.
+        // subpath's own spells are not in that list (Content.IsPcSubpathSpell): the subpath's teacher on its
+        // Circle sells them (SubpathTeacherAbility). An NPC subpath is left as it was.
         else if (cls == _path || (Content.IsPcSubpath(cls) && ctx.BasePathId == _path))
         {
             yield return ("Learn Secret", LearnSecret);
@@ -828,29 +899,9 @@ public sealed class ClassTrainerAbility : INpcAbility
             "If you wish to learn some skills let me know, I can teach you many things to help you in battle.");
     }
 
-    // The fee line both trainer flows show before anything is spent (RTK learnSpell/futureSpells build the
-    // identical string): "The fee to learn X is: <item> (n), <item> (n), <gold> gold, All must be in good
-    // condition." — or "FREE" when the spell has no Content.SpellCosts row for this class. RTK carries gold as
-    // an item with id 0 inside the same list; our LearnCost keeps it in its own field, so it's appended last.
-    // RTK breaks the line after "is:"; we keep it on one line because nothing else in this server's 4.95
-    // dialog text relies on \n rendering and it has never been confirmed on this client.
-    private static string FeeText(NpcContext ctx, SpellDef sp)
-    {
-        var cost = Content.LearnCostFor(sp, ctx.BasePathId);
-        var parts = new List<string>();
-        if (cost is not null)
-        {
-            foreach (var (item, amount) in cost.Items) parts.Add($"{ctx.ItemName(item)} ({amount})");
-            if (cost.Gold > 0) parts.Add($"{cost.Gold} gold");
-        }
-        return parts.Count == 0
-            ? $"The fee to learn {sp.Name} is: FREE"
-            : $"The fee to learn {sp.Name} is: {string.Join(", ", parts)}, All must be in good condition.";
-    }
-
     // "Learn Secret" (RTK learnSpell): pick from the spells this class can learn at or below your level, swear
-    // the oath, see the full fee, then pay it. The menu lists BARE names — RTK builds a "<name> Lvl: <n>"
-    // display string but never actually shows it in the picker.
+    // the oath, see the full fee, then pay it (SecretLessons.Teach, shared with the PC-subpath teachers). The
+    // list is the base class's (ctx.LearnableSpells) and the fee is read on the base path.
     private static async Task LearnSecret(NpcContext ctx)
     {
         var learn = ctx.LearnableSpells();
@@ -867,39 +918,11 @@ public sealed class ClassTrainerAbility : INpcAbility
                     .ToArray());
                 return;
             }
-            await ctx.Say("You have learned every secret I can teach you for now. Grow stronger, then return.");
+            await ctx.Say(SecretLessons.NothingMoreForNow);
             return;
         }
 
-        int pick = await ctx.Menu("Which secret shall I teach you?", learn.Select(s => s.Name).ToList());
-        if (pick < 1 || pick > learn.Count) return;
-
-        var sp = learn[pick - 1];
-        const string Humble = "The potential for learning is endless, be always humble and ready to learn.";
-
-        int swear = await ctx.Menu(
-            $"You are ready to learn {sp.Name}. Do you swear you will use this secret only for good causes?",
-            new[] { "Yes", "No" });
-        if (swear != 1) { await ctx.Say(Humble); return; }
-
-        if (await ctx.Menu(FeeText(ctx, sp), new[] { "Yes", "No" }) != 1) { await ctx.Say(Humble); return; }
-
-        // Real per-class item/gold cost (Content.SpellCosts); a spell with no row for this class stays free.
-        // Everything is checked BEFORE anything is consumed, so a short fee costs the player nothing.
-        if (Content.LearnCostFor(sp, ctx.BasePathId) is { } cost)
-        {
-            bool short_ = cost.Items.Any(i => !ctx.HasItem(i.Item, i.Amount)) || ctx.Coins < (uint)cost.Gold;
-            if (short_)
-            {
-                await ctx.Say("Paying for what you want is a sign of devotion. Return when you have what is required for this.");
-                return;
-            }
-            foreach (var (item, amount) in cost.Items) ctx.TakeItem(item, amount);
-            if (cost.Gold > 0) ctx.SpendGold((uint)cost.Gold);
-        }
-
-        if (!ctx.LearnSpell(sp)) { await ctx.Say("Your mind cannot hold any more secrets right now."); return; }
-        await ctx.Say($"You have learned {sp.Name}.");
+        await SecretLessons.Teach(ctx, learn, ctx.BasePathId);
     }
 
     // "Divine Secret" (RTK futureSpells): the SAME shape as Learn Secret — pick a secret from the next few
@@ -927,7 +950,7 @@ public sealed class ClassTrainerAbility : INpcAbility
         if (pick < 1 || pick > fut.Count) return;
 
         var sp = fut[pick - 1];
-        await ctx.Say($"{sp.Name} can be learned at insight {sp.Level}.", FeeText(ctx, sp));
+        await ctx.Say($"{sp.Name} can be learned at insight {sp.Level}.", SecretLessons.FeeText(ctx, sp, ctx.BasePathId));
     }
 
     // "Forget Secret" (RTK forgetSpell) lives in ForgetSecretAbility.Forget — shared so Blood and the trainers

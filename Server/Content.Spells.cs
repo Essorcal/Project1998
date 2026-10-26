@@ -265,7 +265,10 @@ public static partial class Content
     /// 0-4 are modeled), and the Il/Ee/Sam/Sa-san alignment-tier spells (gated by a rank-progression system
     /// this server doesn't implement, not a character level — would need a fake level to force into this
     /// table, which was deliberately avoided rather than guessed). Any spell with no entry here still teaches
-    /// free at its CSV <c>SplLevel</c>/<c>PathId</c>, the pre-existing behavior.</summary>
+    /// free at its CSV <c>SplLevel</c>/<c>PathId</c>, the pre-existing behavior.
+    /// <para>Rows added by hand since then include the PC subpaths' own spells, keyed to the subpath's own path id
+    /// (10-21) rather than a base class: no trainer reads those, and the row is what puts a spell on sale at its
+    /// subpath's teacher (<see cref="SubpathTeacherSpells"/>).</para></summary>
     public static IReadOnlyDictionary<string, Dictionary<int, LearnCost>> SpellCosts
     {
         get => _snapshotBuilder?.SpellCosts ?? Snapshot.SpellCosts;
@@ -436,7 +439,8 @@ public static partial class Content
     /// without this guard that row would also offer the spell to every player of the base class. RTK draws the same
     /// line: an NPC subpath learns its base class's list plus its own spells, everyone else the base list
     /// (<c>Scripts/Spells.lua</c>, <c>Player.learnSpell</c>). PC-subpath spells (<c>SplPthId</c> 10-21) are not
-    /// this guard's: none has a learn row, and who teaches them is a separate rule.</para></summary>
+    /// this guard's: their learn rows are keyed to the subpath's own path, which no class trainer reads, and the
+    /// subpath's teacher sells them (<see cref="SubpathTeacherSpells"/>).</para></summary>
     public static List<SpellDef> SpellsForClass(int pathId, int maxLevel, int alignment, int mark = 0)
     {
         // An NPC subpath IS its base class plus a little: a Chung ryong learns the whole Warrior list (the
@@ -455,13 +459,41 @@ public static partial class Content
                   : SpellCosts.TryGetValue(s.Key, out var perClass)
                       ? (perClass.TryGetValue(basePath, out var cost) ? s with { Level = cost.Level } : null)
                       : (s.PathId == basePath || s.PathId == 0 ? s : null))
-              // A PC subpath's own spells are nobody's to teach yet (IsPcSubpathSpell): without this a level-99
-              // member would be offered all of them, free, and every rebuild would hand them over.
+              // A PC subpath's own spells are its teacher's to sell (SubpathTeacherSpells), never a trainer's
+              // (IsPcSubpathSpell): without this a level-99 member would be offered all of them at the base
+              // trainer, free, and every rebuild would hand them over.
               .Where(s => s is not null && s.Level <= maxLevel && !IsOutOfEraSplitTrap(s) && !IsNpcGrantedOnly(s)
                           && !IsPcSubpathSpell(s))
               .Select(s => s!)
               .GroupBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .Select(g => g.OrderByDescending(s => s.Alignment == alignment).ThenBy(s => s.Level).First())
+              .OrderBy(s => s.Level).ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
+              .ToList();
+    }
+
+    /// <summary>What a PC subpath's teacher sells (<see cref="SubpathTeacherAbility"/>, one on each subpath's
+    /// Circle): the subpath's own <c>Spells.csv</c> rows that have a <see cref="SpellCosts"/> row keyed to the
+    /// subpath's OWN path id (10-21), each at that row's level, up to <paramref name="maxLevel"/>. A row with a
+    /// mark needs that rank, as at every trainer here (<see cref="SpellsForClass"/>'s <c>s.Mark &lt;= mark</c>).
+    /// Ordered by level, then name. Not <see cref="SpellsForClass"/>: that one drops these rows and would pin their
+    /// level to <see cref="MarkSpellLevel"/>.
+    /// <para>The price row is the gate (Caleb, 2026-10-26, "Only working spells"): a subpath's spells go on sale
+    /// one spell slice at a time, as each slice gives them real behaviour and adds their rows at RTK's script
+    /// prices. A subpath with no rows yet sells nothing, and its teacher says so. Empty for any path that is not a
+    /// PC subpath.</para>
+    /// <para><paramref name="priceOf"/> replaces the price lookup (a test proving the mark gate on a row no slice
+    /// prices yet); null reads <see cref="LearnCostFor"/> on the subpath's own path.</para></summary>
+    public static List<SpellDef> SubpathTeacherSpells(int subpathId, int maxLevel, int mark,
+                                                      Func<SpellDef, LearnCost?>? priceOf = null)
+    {
+        if (!IsPcSubpath(subpathId)) return new();
+        priceOf ??= s => LearnCostFor(s, subpathId);
+        return Spells.Where(s => s.PathId == subpathId && s.Mark <= mark)
+              .Select(s => priceOf(s) is { } cost ? s with { Level = cost.Level } : null)
+              .Where(s => s is not null && s.Level <= maxLevel)
+              .Select(s => s!)
+              .GroupBy(s => s.Key, StringComparer.OrdinalIgnoreCase)   // Spy's two Apply stealth rows share a key
+              .Select(g => g.OrderBy(s => s.Id).First())
               .OrderBy(s => s.Level).ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase)
               .ToList();
     }
@@ -691,9 +723,18 @@ public static partial class Content
     /// <para><paramref name="dogFlag"/> is the character's finished-the-linguist-chain flag
     /// (<see cref="DogFlagReg"/>). When it is set, the class's Dog spells are merged in as well — see
     /// <see cref="DogSpellsFor"/>. They cannot arrive through <see cref="SpellsForClass"/>, which is also the
-    /// tutor menu and must never show one, so this is the single place a rebuild can pick them up.</para></summary>
+    /// tutor menu and must never show one, so this is the single place a rebuild can pick them up.</para>
+    /// <para><paramref name="held"/> is the book being rebuilt, as it stands before the rebuild clears it. Every
+    /// entry of it that is one of <paramref name="pathId"/>'s own PC-subpath spells is kept (Caleb, 2026-10-26,
+    /// "Keep what the book holds"): a member bought those at their teacher, and no trainer list or rebuild can
+    /// hand them back (<see cref="IsPcSubpathSpell"/>). Nothing is saved for them, so one the member forgot stays
+    /// forgotten until bought again, and a rebuild into another path (<c>@class</c>) drops them, since their path
+    /// no longer matches. RTK has no rebuild; its alignment swap exchanges a fixed list of base spells and leaves
+    /// these alone (<c>Scripts/swapAlignment.lua</c>). See <see cref="KeepHeldSubpathSpells"/> for where they
+    /// sit.</para></summary>
     public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark,
-                                               bool dogFlag = false, int sageRung = 0)
+                                               bool dogFlag = false, int sageRung = 0,
+                                               IEnumerable<SpellDef>? held = null)
     {
         var all = SpellsForClass(pathId, maxLevel, alignment, mark);
 
@@ -732,7 +773,7 @@ public static partial class Content
         // it inherits the ladders with it. The two Dog spells are deliberately not on any ladder: Fissure ->
         // Lava Surge is a tier pair, but it is two spells from a separate trainer, and collapsing it would
         // erase half of the only reward the subpath grants outright.
-        if (!LadderOf.TryGetValue(PathBaseOf(pathId), out var ladders)) return all;
+        if (!LadderOf.TryGetValue(PathBaseOf(pathId), out var ladders)) return KeepHeldSubpathSpells(all, pathId, held);
 
         var top = new Dictionary<string, (SpellDef Spell, int Rung)>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in all)
@@ -748,9 +789,27 @@ public static partial class Content
         // the same way an aether-bearing rung is. (Poet's heal_self ladder has no soothe rung — LadderRungs[4]
         // — so Poet's Soothe, granted as a universal base spell, was already passing through untouched; this
         // clause is a no-op there.)
-        return all.Where(s => s.Key.Equals("soothe", StringComparison.OrdinalIgnoreCase)
-                              || !ladders.TryGetValue(s.Key, out var rung)
-                              || ReferenceEquals(top[rung.Ladder].Spell, s)).ToList();
+        return KeepHeldSubpathSpells(
+            all.Where(s => s.Key.Equals("soothe", StringComparison.OrdinalIgnoreCase)
+                           || !ladders.TryGetValue(s.Key, out var rung)
+                           || ReferenceEquals(top[rung.Ladder].Spell, s)).ToList(),
+            pathId, held);
+    }
+
+    /// <summary><see cref="RespecSpellSet"/>'s last step: the <paramref name="held"/> spells of
+    /// <paramref name="pathId"/>'s own PC subpath, appended after the rebuilt set in the order the book held them,
+    /// each once. Nothing for any other path, or with no book given.
+    /// <para>Last is a position, not a priority. <c>Session.SyncSpellbook</c> keeps the first
+    /// <see cref="SpellBookCap"/> entries, so a set past the cap would lose these first; the most a member can hold
+    /// today stays inside it (<c>Tests/SubpathTeacherTests.cs</c> measures it). Which entries should give way
+    /// once a later spell slice can pass the cap is not decided here.</para></summary>
+    private static List<SpellDef> KeepHeldSubpathSpells(List<SpellDef> rebuilt, int pathId, IEnumerable<SpellDef>? held)
+    {
+        if (held is null || !IsPcSubpath(pathId)) return rebuilt;
+        var ids = rebuilt.Select(s => s.Id).ToHashSet();
+        foreach (var s in held)
+            if (s.PathId == pathId && ids.Add(s.Id)) rebuilt.Add(s);
+        return rebuilt;
     }
 
     public static SpellDef? SpellById(int id) => SpellByIdIndex.TryGetValue(id, out var v) ? v : null;
@@ -893,9 +952,10 @@ public static partial class Content
     /// <para>The PC subpaths joined this set with their foundation: a GM or one of the subpath's elders admits a
     /// member (<c>@subpath</c>, Session.Subpaths.cs). In 2001 these were "Player Run Subpaths"
     /// (tswolf.com/spells/pc.shtml, Wayback capture 2001-07-24) and RTK's NPC trial quests exist for only one
-    /// of the twelve, so membership is a grant, as the 2026-10-24 decision sheet settled (item 12). What a
-    /// member does NOT get yet is their subpath's own spells: no trainer teaches them and no rebuild hands them
-    /// over (<see cref="IsPcSubpathSpell"/>) until each subpath's hall teacher exists.</para>
+    /// of the twelve, so membership is a grant, as the 2026-10-24 decision sheet settled (item 12). A member's
+    /// subpath's own spells come from that subpath's teacher on its Circle (<see cref="SubpathTeacherSpells"/>),
+    /// never from a trainer or a rebuild (<see cref="IsPcSubpathSpell"/>); a rebuild keeps those the book
+    /// holds (<see cref="RespecSpellSet"/>).</para>
     /// <para>A member's rank titles are Paths.csv's own PthMark1-4, which the live Nexus Atlas subpath pages pair
     /// with the Il/Ee/Sam/Sa san icons. Of the ten of those pages read on 2026-10-24 (Do and Muse did not
     /// answer), eight match (Shaman's "Mog-Ur" only in letter case); Chongun spells mark 2 "Kysh'itra" (ours
@@ -932,10 +992,11 @@ public static partial class Content
     /// subpath's, 0 everything else.</summary>
     public static bool IsPcSubpath(int pathId) => PathIconOf(pathId) is >= 1 and < NpcSubpathIcon;
 
-    /// <summary>Is this spell one of a PC subpath's own (its <c>SplPthId</c> is one of the twelve)? Nobody
-    /// teaches these yet — the subpath halls are a later slice — so <see cref="SpellsForClass"/> drops them,
-    /// which keeps them out of every trainer's Learn Secret and Divine Secret lists and out of the character
-    /// rebuild. Testers use <c>@spell</c>.</summary>
+    /// <summary>Is this spell one of a PC subpath's own (its <c>SplPthId</c> is one of the twelve)? Only the
+    /// subpath's teacher sells these (<see cref="SubpathTeacherSpells"/>), so <see cref="SpellsForClass"/> drops
+    /// them, which keeps them out of every trainer's Learn Secret and Divine Secret lists, and the character
+    /// rebuild grants none (it keeps those the book already holds, <see cref="RespecSpellSet"/>). Testers use
+    /// <c>@spell</c>.</summary>
     public static bool IsPcSubpathSpell(SpellDef sp) => IsPcSubpath(sp.PathId);
 
     /// <summary>The level a character must have reached before a GM or an elder may admit them to a PC

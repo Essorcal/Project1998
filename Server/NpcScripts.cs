@@ -55,6 +55,7 @@ public static class NpcScripts
         ["alignment"] = AlignmentAbility.Instance,
         ["summit"] = SummitAbility.Instance,
         ["npc_subpath"] = NpcSubpathAbility.Instance,
+        ["subpath_teacher"] = SubpathTeacherAbility.Instance,
         // A single-giver quest is one QuestAbility per QuestDef; its giver lists it first in its row.
         ["tutorial_quest"] = new QuestAbility(TutorialQuest.Def),
     };

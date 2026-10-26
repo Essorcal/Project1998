@@ -79,8 +79,19 @@ function verbs.cure(ctx, row)
   return true
 end
 
--- yellow_scroll / qui_hyang: warp to a random tavern in your nation (RTK returnFunc -> returnToInn).
+-- yellow_scroll: warp to a random tavern in your nation (RTK returnFunc -> returnToInn). qui_hyang does the same
+-- for anyone outside the PC subpaths (quihyang, below).
 function verbs.warphome(ctx, row)
+  ctx:warpHome()
+  return true
+end
+
+-- qui_hyang (RTK qui_hyang.lua): a member of one of the twelve PC subpaths is asked "Where do you wish to go?",
+-- RTK's "Subpath Circle" (a walkable tile of their subpath's Circle) or "Main Inn" (the tavern warphome picks).
+-- The answer spends the scroll and warps; closing the box spends nothing, so the use itself declines here.
+-- For everyone else it does what warphome does, unchanged: no menu, a tavern, one scroll spent.
+function verbs.quihyang(ctx, row)
+  if ctx:askSubpathCircle() then return false end
   ctx:warpHome()
   return true
 end

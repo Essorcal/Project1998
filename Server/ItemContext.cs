@@ -16,8 +16,9 @@ namespace Server;
 public sealed class ItemContext
 {
     private readonly Session _s;
+    private readonly ItemDef? _item;   // the item being used, for a primitive that spends it later (askSubpathCircle)
 
-    internal ItemContext(Session s) => _s = s;
+    internal ItemContext(Session s, ItemDef? item = null) { _s = s; _item = item; }
 
     // ---- read-only eater stats (Lua: ctx.maxHp, ctx.armor, ...) ----
     public double level => _s.LuaLevel;
@@ -61,6 +62,12 @@ public sealed class ItemContext
     public bool chance(double pct)           => _s.ItemChance((int)System.Math.Round(pct));
     /// <summary>Warp the eater to a random tavern in their nation (RTK returnToInn).</summary>
     public void warpHome()                   => _s.ItemWarpHome();
+    /// <summary>A PC-subpath member's Qui hyang choice (RTK <c>qui_hyang.lua</c>): asks "Where do you wish to go?"
+    /// with RTK's "Subpath Circle" (a walkable tile of RTK's box on the member's Circle) and "Main Inn" (the tavern
+    /// <see cref="warpHome"/> picks). True when the menu went up: the answer, later, spends one of the item being used
+    /// and warps, and a closed box spends nothing, so the verb declines the use itself. False, with nothing sent,
+    /// for anyone who is not in one of the twelve PC subpaths.</summary>
+    public bool askSubpathCircle()           => _s.ItemSubpathScroll(_item);
     /// <summary>Status-box text (RTK sendminitext).</summary>
     public void say(string msg)              => _s.LuaSay(msg);
     /// <summary>Chat-log message.</summary>
