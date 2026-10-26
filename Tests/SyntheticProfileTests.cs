@@ -66,10 +66,10 @@ public class SyntheticProfileTests
         }
     }
 
-    /// <summary>No profile file has the bytes of a game-data file; no profile data row is a game-data row; no
-    /// map name or NPC identifier or description appears anywhere in game-data's text; no map id or NPC id is
-    /// one game-data uses. File names and CSV header lines are schema the loader fixes, so they are not
-    /// compared.</summary>
+    /// <summary>No profile file has the bytes of a game-data file; no profile data row is a row of game-data's
+    /// table of the same name, read through the profile's columns; no map name or NPC identifier or description
+    /// appears anywhere in game-data's text; no map id or NPC id is one game-data uses. File names and CSV header
+    /// lines are schema the loader fixes, so they are not compared.</summary>
     [Fact]
     public void Nothing_in_the_profile_is_shared_with_game_data()
     {
@@ -86,21 +86,38 @@ public class SyntheticProfileTests
             if (gameHashes.TryGetValue(Sha256(f), out var twin))
                 shared.Add($"{Rel(ProfileDir, f)} has the bytes of game-data/{twin}");
 
-        // Data rows. Every non-comment line of every game-data CSV goes in (its header too, which no data row can
-        // equal); on the profile side the header line is left out.
-        var gameRows = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (string f in gameFiles.Where(IsCsv))
-            foreach (string line in File.ReadLines(f))
-                if (!Csv.IsSkippable(line)) gameRows.TryAdd(NormalizeRow(line), Rel(GameDataDir, f));
-        int profileRows = 0;
+        // Data rows. The profile writes only the columns the server reads, so most of its headers are narrower than
+        // game-data's and a whole-line comparison could never match. Each game-data row is read through the
+        // profile header's column names instead, and then compared, so a retail row copied into the profile's
+        // narrower header is still caught. Every profile CSV must have a game-data table of the same name holding all
+        // of its columns, so no profile row escapes the comparison.
+        int comparedRows = 0;
         foreach (string f in profileFiles.Where(IsCsv))
-            foreach (string row in DataRows(f))
+        {
+            string name = Path.GetFileName(f);
+            Assert.True(File.Exists(GamePath(name)), $"{name} has no game-data table of that name to compare with");
+            var profile = ReadTable(f);
+            var game = ReadTable(GamePath(name));
+            var at = profile.Header
+                .Select(column => game.Header.FindIndex(g => string.Equals(g, column, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            var absent = profile.Header.Where((_, i) => at[i] < 0).ToList();
+            Assert.True(absent.Count == 0,
+                        $"game-data/{name} has no column {string.Join(", ", absent)}, so {name}'s rows cannot be compared");
+
+            var gameRows = game.Rows
+                .Select(row => RowKey(at.Select(i => i < row.Count ? row[i] : "")))
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var row in profile.Rows)
             {
-                profileRows++;
-                if (gameRows.TryGetValue(NormalizeRow(row), out var where))
-                    shared.Add($"{Rel(ProfileDir, f)} row '{row}' is a row of game-data/{where}");
+                comparedRows++;
+                var cells = profile.Header.Select((_, i) => i < row.Count ? row[i] : "").ToList();
+                if (gameRows.Contains(RowKey(cells)))
+                    shared.Add($"{name} row '{string.Join(",", cells)}' is a row of game-data/{name}, read through " +
+                               "the profile's columns");
             }
-        Assert.True(profileRows >= 7, $"read only {profileRows} profile data rows");
+        }
+        Assert.True(comparedRows >= 8, $"compared only {comparedRows} profile data rows");
 
         // Content names, from the CSVs and the manifest, against every text file game-data has.
         var names = new SortedSet<string>(StringComparer.Ordinal);
@@ -180,16 +197,23 @@ public class SyntheticProfileTests
     private static bool IsText(string file) =>
         new[] { ".csv", ".lua", ".json", ".md", ".txt" }.Contains(Path.GetExtension(file), StringComparer.OrdinalIgnoreCase);
 
-    private static string NormalizeRow(string line) => string.Join(",", Csv.Split(line).Select(f => f.Trim()));
-
-    /// <summary>A profile CSV's data rows: its non-comment lines after the header, or all of them for a table
-    /// whose header the server supplies (<c>ObjectFlagOverrides.csv</c>).</summary>
-    private static IEnumerable<string> DataRows(string file)
+    /// <summary>A CSV's header and data rows, fields trimmed, comment and blank lines left out. A table whose
+    /// header the server supplies (<c>ObjectFlagOverrides.csv</c>) takes it from the table spec, and every line
+    /// of it is a row.</summary>
+    private static (List<string> Header, List<List<string>> Rows) ReadTable(string file)
     {
         string name = Path.GetFileName(file);
-        bool headerless = Content.TableSpecifications.Any(s => s.File == name && s.Header is not null);
-        return File.ReadLines(file).Where(l => !Csv.IsSkippable(l)).Skip(headerless ? 0 : 1);
+        var supplied = Content.TableSpecifications.FirstOrDefault(s => s.File == name && s.Header is not null)?.Header;
+        var lines = File.ReadLines(file).Where(l => !Csv.IsSkippable(l))
+            .Select(l => Csv.Split(l).Select(field => field.Trim()).ToList())
+            .ToList();
+        if (supplied is not null) return (supplied.ToList(), lines);
+        Assert.True(lines.Count > 0, $"{file} has no header line");
+        return (lines[0], lines.Skip(1).ToList());
     }
+
+    // Unit separator between fields, so no field's own text can make two different rows look alike.
+    private static string RowKey(IEnumerable<string> fields) => string.Join('\u001F', fields);
 
     /// <summary>The named column's values from a CSV with a header line.</summary>
     private static List<string> Column(string file, string column)
