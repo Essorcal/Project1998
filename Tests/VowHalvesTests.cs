@@ -819,19 +819,25 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// engaged to B, holds 4,294,967,295 experience. At 4,294,967 base Mana the penalty is 4,294,967,000 and A keeps
     /// 295; at 4,294,968, the first past the top of a uint, the penalty is more than A holds and takes everything, as RTK
     /// clamps it at 4294967295 and zeroes a smaller balance (<c>chapel_npc.lua</c>, the break's penalty).
+    /// <para>The third row banks only 1,000,000,000, below that clamp, so it tells the two halves of RTK's rule apart: a
+    /// penalty clamped at 4294967295 but not held to the balance (<c>Math.Min(uint.MaxValue, penalty)</c>) is more than A
+    /// holds, <c>SpendExp</c> refuses it, and the engagement would end for free. The first two rows bank exactly the
+    /// clamp value, where the two halves take the same (PR #400's review, F1).</para>
     /// <para>Red on e67cd9d for 4,294,968 only: the penalty wrapped to 704, and A kept 4,294,966,591. The 4,294,967 row
     /// is the control, green on both.</para>
     /// </summary>
     [Theory]
-    [InlineData(4_294_967u, 295u)]
-    [InlineData(4_294_968u, 0u)]
-    public void BreakingAnEngagementPastTheWrapTakesAllBankedExperience(uint mana, uint expLeft)
+    [InlineData(4_294_967u, uint.MaxValue, 295u)]
+    [InlineData(4_294_968u, uint.MaxValue, 0u)]
+    [InlineData(4_294_969u, 1_000_000_000u, 0u)]
+    public void BreakingAnEngagementPastTheWrapTakesAllBankedExperience(uint mana, uint banked, uint expLeft)
     {
         using var db = new IsolatedDatabase();
         var (npc, def) = ChapelNpc();
         string a = Name("A"), b = Name("B");
         var aRow = TopOfExperience(NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y));
         aRow.MaxMp = mana; aRow.Mp = mana;
+        aRow.Exp = banked;
         Seed(db, aRow, NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y));
 
         Session? aHeld = null, bHeld = null;
