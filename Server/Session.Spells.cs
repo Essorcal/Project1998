@@ -2751,14 +2751,14 @@ public sealed partial class Session
 
     /// <summary>The engine's magic deflect against a readout's victim (<c>ctx:victimDeflects</c>), for a spell whose row
     /// can fail: RTK's clif_parsemagic rolls it before any script with a target, a creature or a player alike
-    /// (clif.c, the <c>magicdb_canfail</c> branch). A creature's protection and Will (<see cref="RollDeflect"/>); a
-    /// player's Will, read as another session reads it (<see cref="PeerTotals"/>), with no protection, as
-    /// <see cref="RollDeflectPvp"/> has none. Never the caster, and no victim deflects nothing. Writes nothing.</summary>
+    /// (clif.c, the <c>magicdb_canfail</c> branch). The engine's two rolls: a creature's protection and Will
+    /// (<see cref="RollDeflect"/>), a player's Will (<see cref="RollDeflectPvp"/>, the roll a spell at another player
+    /// already makes). Never the caster, and no victim deflects nothing. Writes nothing.</summary>
     internal bool LuaVictimDeflects(SpellDef sp, (Mob? mob, Session? pc) victim)
     {
         if (!sp.CanFail) return false;
         if (victim.mob is { } mob) return RollDeflect(mob);
-        if (victim.pc is { } pc && !ReferenceEquals(pc, this)) return DeflectsAgainst(pc._char.Will + pc.PeerTotals().will, 0);
+        if (victim.pc is { } pc && !ReferenceEquals(pc, this)) return RollDeflectPvp(pc);
         return false;
     }
 
@@ -3608,16 +3608,11 @@ public sealed partial class Session
     // merged-in CTK `MobProtection` column (Content.cs) — previously always 0 for lack of a source column.
     // No mana is spent on a deflected cast (RTK returns before the Lua "cast" script — which is where mana is
     // actually debited — ever runs).
-    private bool RollDeflect(Mob target) => DeflectsAgainst(target.Will, target.Protection);
-
-    /// <summary>The RTK deflect roll itself, for a defender of <paramref name="targetWill"/> and
-    /// <paramref name="protection"/>: <see cref="RollDeflect"/>'s formula, shared by <see cref="RollDeflectPvp"/> and
-    /// the readout's <see cref="LuaVictimDeflects"/>.</summary>
-    private bool DeflectsAgainst(int targetWill, int protection)
+    private bool RollDeflect(Mob target)
     {
         int casterWill = _char.Will + Totals().will;
-        int willDiff = Math.Max(0, targetWill - casterWill);
-        int prot = Math.Max(0, protection + (int)(willDiff / 10.0 + 0.5));
+        int willDiff = Math.Max(0, target.Will - casterWill);
+        int prot = Math.Max(0, target.Protection + (int)(willDiff / 10.0 + 0.5));
         int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
         return Random.Shared.Next(100) < failChance;
     }
@@ -4660,7 +4655,14 @@ public sealed partial class Session
     // with the target's effective-Will advantage over the caster (PCs carry no innate Protection stat, so that
     // term is 0 and a caster whose Will >= the target's can never be deflected). No mana is spent on a deflect
     // (the caller rolls this BEFORE debiting). A self-cast never deflects (willDiff 0), so callers skip it there.
-    private bool RollDeflectPvp(Session target) => DeflectsAgainst(target.LuaWill, 0);
+    private bool RollDeflectPvp(Session target)
+    {
+        int casterWill = _char.Will + Totals().will;
+        int willDiff = Math.Max(0, target.LuaWill - casterWill);
+        int prot = Math.Max(0, (int)(willDiff / 10.0 + 0.5));
+        int failChance = (int)(100 - Math.Pow(0.9, prot) * 100 + 0.5);
+        return Random.Shared.Next(100) < failChance;
+    }
 
     // Apply a damage spell to a PC target — the PvP / self path. Self-cast is allowed anywhere (it only hurts
     // you); hitting ANOTHER player requires a PvP map (Content.IsPvpMap, RTK canPK approximation). Spends `mana`
