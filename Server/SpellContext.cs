@@ -724,8 +724,8 @@ public sealed class SpellContext
     /// <summary>The names of the other players standing invisible within <paramref name="range"/> tiles of the caster on
     /// both axes, on the caster's map, one a line ("\n" between them; "" for nobody): RTK's
     /// <c>getObjectsInSameMap(BL_PC)</c> filtered by <c>state == 2</c> and <c>distanceSquare</c>, the caster left out
-    /// (Hear footstep's beat).</summary>
-    public string hiddenNear(double range) => _s.LuaHiddenNear((int)range);
+    /// (Hear footstep's beat). Nobody once the caster is logging out or this spell's run on them has ended.</summary>
+    public string hiddenNear(double range) => _s.LuaHiddenNear(_sp, (int)range);
     /// <summary>Turn the caster invisible for <paramref name="durationMs"/> with the next landed swing
     /// x<paramref name="times"/>, under this spell's name and with its SpellText.csv fade line when it ends (the
     /// <c>hide</c> verb; Blend). A cast while already invisible never lengthens the run. See <c>Session.LuaHide</c>.</summary>

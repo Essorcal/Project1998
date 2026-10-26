@@ -1420,9 +1420,12 @@ local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration
 -- Chongun/spirit_of_war.lua). A SpellParams.csv row binds each to chungryong_rage and names its ladder in `category`;
 -- a row with none (Chung Ryong's own) climbs CHUNG_RYONG_RAGE above exactly as it always has. The row's `duration` is
 -- the run, armed by the first cast only; the wait is the spell's spell_effects.csv aether, as Chung Ryong's is.
---   * tiers: mult (the whole-swing rage), mana, and ac (an AC delta: negative is harder). The scripts' recast adds
---     armor 5 a tier from tier 2, and RTK's calcStat runs recast every time it recomputes (rtk/src/map/pc.c), so the
---     armour holds while the tier does; the AC buff here is the same.
+--   * tiers: mult (the whole-swing rage), mana, and ac (an AC delta, RTK's sign: more AC is more damage taken, as
+--     Session.Items.cs's ARMOR SIGN note keeps it). rtk_rage's climb costs defence: the scripts' recast adds armor 5 a
+--     tier from tier 2 (crossing_swords.lua's `player.armor + armor`), RTK multiplies a blow by 1 + armor / 100
+--     (Scripts/magicDamage.lua), and its calcStat runs recast every time it recomputes (rtk/src/map/pc.c), so a
+--     tier-6 caster takes 25 AC more damage, as the script has it (#407's review, F1). Chung Ryong's own table keeps
+--     its tutor-sourced hardening (negative), which predates this ladder.
 --   * gated: a cast inside the wait is refused ("<name> isn't ready yet."), as RTK's engine refuses one inside its
 --     aethers before the script runs. Both ladders are gated. Chung Ryong's was not until Caleb's word of 2026-10-26
 --     (Q16, "As RTK"): it armed its 120 s wait and nothing checked it, so a climb could run 1 to 6 back to back.
@@ -1440,11 +1443,11 @@ local RAGE_LADDERS = {
     gated = true, weak = "Your will is too weak.", top = "hold",
     tiers = {
       { mult = 6,  mana =   3000, ac =   0 },
-      { mult = 9,  mana =  10000, ac =  -5 },
-      { mult = 12, mana =  22000, ac = -10 },
-      { mult = 18, mana =  38000, ac = -15 },
-      { mult = 27, mana =  78000, ac = -20 },
-      { mult = 50, mana = 150000, ac = -25 },
+      { mult = 9,  mana =  10000, ac =   5 },
+      { mult = 12, mana =  22000, ac =  10 },
+      { mult = 18, mana =  38000, ac =  15 },
+      { mult = 27, mana =  78000, ac =  20 },
+      { mult = 50, mana = 150000, ac =  25 },
     },
   },
 }

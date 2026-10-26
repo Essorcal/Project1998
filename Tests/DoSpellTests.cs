@@ -38,6 +38,10 @@ public sealed class DoSpellTests
     /// <summary>Slack on a wait read straight after the cast.</summary>
     private const long SlackMs = 5_000;
 
+    /// <summary>Blend's sneak multiplier, its script's <c>invis = 9</c> (Caleb's Q15), which its SpellParams.csv row carries
+    /// as <c>amount</c>: the one figure these facts expect of it.</summary>
+    private const int BlendTimes = 9;
+
     private static readonly FieldInfo TicksField =
         typeof(Session).GetField("_spellTicks", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo PublishTickDue =
@@ -202,7 +206,7 @@ public sealed class DoSpellTests
             long slot = caster.ActionSlotLeft;
             Assert.True(caster.IsInvisible && hidden > 120_000 - SlackMs && hidden <= 120_000 && cc.Mp == Mana - 4_000
                         && wait > 30_000 - SlackMs && wait <= 30_000 && lines == "You cast Blend." && drawn.SequenceEqual(new[] { 16 })
-                        && StealthTimes(caster) == 9 && slot == 0,
+                        && StealthTimes(caster) == BlendTimes && slot == 0,
                         $"invisible {caster.IsInvisible} for {hidden} ms, spent {Mana - cc.Mp}, wait {wait} ms, lines [{lines}], " +
                         $"graphics [{string.Join(",", drawn)}], x{StealthTimes(caster)}, cast slot {slot} ms");
         }
@@ -260,7 +264,7 @@ public sealed class DoSpellTests
             string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
             long hidden = StealthLeft(caster), wait = SpellCastSupport.AetherLeft(caster, "blend");
             Assert.True(lines == "You cast Blend." && before - cc.Mp == 4_000 && caster.IsInvisible
-                        && hidden > 60_000 - SlackMs && hidden <= 60_000 && wait > 30_000 - SlackMs && StealthTimes(caster) == 9,
+                        && hidden > 60_000 - SlackMs && hidden <= 60_000 && wait > 30_000 - SlackMs && StealthTimes(caster) == BlendTimes,
                         $"again: [{lines}], spent {before - cc.Mp}, invisible {caster.IsInvisible} for {hidden} ms (want 60 s), " +
                         $"wait {wait} ms, x{StealthTimes(caster)}");
         }
@@ -286,8 +290,8 @@ public sealed class DoSpellTests
             var blend = StealthSwings(caster, 0);
             var their = StealthSwings(caster, 1);
             Assert.True(blend.Count > 0 && their.Count > 0
-                        && blend.All(r => plain.Contains(Math.Round(r / 9, 6))) && their.All(r => plain.Contains(Math.Round(r / 5, 6))),
-                        $"plain [{string.Join(", ", plain)}]; after Blend [{string.Join(", ", blend)}] (want x9); " +
+                        && blend.All(r => plain.Contains(Math.Round(r / BlendTimes, 6))) && their.All(r => plain.Contains(Math.Round(r / 5, 6))),
+                        $"plain [{string.Join(", ", plain)}]; after Blend [{string.Join(", ", blend)}] (want x{BlendTimes}); " +
                         $"after {rogue} [{string.Join(", ", their)}] (want x5)");
         }
         finally { _fx.World.LeaveMap(caster, SneakMap); }
@@ -364,7 +368,7 @@ public sealed class DoSpellTests
         try
         {
             after.WithState(() => RestoreMi.Invoke(after, null));
-            Assert.True(after.IsInvisible && StealthTimes(after) == 9, $"restored: invisible {after.IsInvisible}, x{StealthTimes(after)}");
+            Assert.True(after.IsInvisible && StealthTimes(after) == BlendTimes, $"restored: invisible {after.IsInvisible}, x{StealthTimes(after)}");
             double? clean = null;
             int landed = 0;
             for (int i = 0; i < 200 && after.IsInvisible; i++)
@@ -374,8 +378,8 @@ public sealed class DoSpellTests
             }
             var plain = PlainSwings(after);   // the same swinger, the stealth now ended by that swing
             int said = SpellCastSupport.MiniTexts(aOut).Count(l => l == "You are no longer invisible.");
-            Assert.True(landed == 1 && clean is double c && plain.Contains(Math.Round(c / 9, 6)) && said == 1,
-                        $"after the relog: landed {landed}, clean swing {clean} against plain [{string.Join(", ", plain)}] (want x9), " +
+            Assert.True(landed == 1 && clean is double c && plain.Contains(Math.Round(c / BlendTimes, 6)) && said == 1,
+                        $"after the relog: landed {landed}, clean swing {clean} against plain [{string.Join(", ", plain)}] (want x{BlendTimes}), " +
                         $"end line said {said}");
         }
         finally { _fx.World.LeaveMap(after, EndMap); }
@@ -603,6 +607,61 @@ public sealed class DoSpellTests
         }
     }
 
+    /// <summary>A death or a won Dispell that gets in while a self beat waits for the Lua gate ends the run, and the
+    /// beat, let through afterwards, says nothing: the order is checked as the logout's twin fact checks it. Red without
+    /// the run check in <c>Session.LuaHiddenNear</c> (#407's review, optional): the beat names the hider once.</summary>
+    [Theory]
+    [InlineData("death")]
+    [InlineData("dispell")]
+    public void AnEndWhileTheSelfBeatWaitsForTheLuaGateSaysNothing(string how)
+    {
+        int at = how == "death" ? 0 : 8;
+        var (hider, _, _) = Player(LogoutMap, CX + 21, CY + at);
+        var (caster, cOut, _) = Caster("hear_footstep_do", LogoutMap, CX + 20, CY + at);
+        var gateHeld = new ManualResetEventSlim();
+        var releaseGate = new ManualResetEventSlim();
+        Thread? holder = null, beat = null;
+        Exception? beatFault = null;
+        try
+        {
+            hider.WithState(() => hider.LuaSetStealth(600_000));
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Advance(caster, 5_000, beat: false);                           // a beat is due
+
+            holder = new Thread(() => { using (Session.EnterScriptGate()) { gateHeld.Set(); releaseGate.Wait(Bound); } })
+                     { IsBackground = true, Name = "gate holder" };
+            holder.Start();
+            Assert.True(gateHeld.Wait(Bound), "the gate holder never took the gate");
+
+            beat = new Thread(() => { try { caster.TickSpellTicks(); } catch (Exception e) { beatFault = e; } })
+                   { IsBackground = true, Name = "heartbeat" };
+            beat.Start();
+            Assert.True(SpinWait.SpinUntil(() => (beat.ThreadState & ThreadState.WaitSleepJoin) != 0, Bound),
+                        "the beat never waited");
+
+            if (how == "death") caster.WithState(() => DieMethod.Invoke(caster, null));   // in the gap the gate leaves
+            else caster.ReceiveFlush(endHolds: true);
+            Assert.False(SpinWait.SpinUntil(() => !beat.IsAlive, 250),
+                         $"the beat finished before the gate was let go: the {how} came first, not in the gate's gap");
+            cOut.Clear();
+
+            releaseGate.Set();
+            Assert.True(beat.Join(Bound), "the beat never finished once the gate was let go");
+            Assert.Null(beatFault);
+            var lines = SpellCastSupport.MiniTexts(cOut).Where(l => l.EndsWith("is hidden in the area.", StringComparison.Ordinal)).ToList();
+            Assert.True(lines.Count == 0 && Ticks(caster).Count == 0 && Due(caster) == 0,
+                        $"after a {how} in the gate's gap: lines [{string.Join(" | ", lines)}], runs left {Ticks(caster).Count}, " +
+                        $"the beat's hint {Due(caster)} (want 0)");
+        }
+        finally
+        {
+            releaseGate.Set();
+            holder?.Join(Bound);
+            beat?.Join(Bound);
+            Leave(LogoutMap, caster, hider);
+        }
+    }
+
     // ===== Assess opponent ======================================================================================
 
     /// <summary>At a creature: "[&lt;name&gt;] VIT: &lt;max vita&gt;" and nothing else (the readout replaces "You cast"),
@@ -691,7 +750,8 @@ public sealed class DoSpellTests
     // ===== Crossing swords ======================================================================================
 
     /// <summary>Six casts climb RTK's copy of Chung ryong rage: rage 6/9/12/18/27/50 for 3,000/10,000/22,000/38,000/
-    /// 78,000/150,000 mana, AC 0 then 5 harder a tier, each tier's own line (the first names Chung Ryong's rage, as the
+    /// 78,000/150,000 mana, AC 0 then 5 worse a tier (the caster takes more damage, as the script's recast adds armor; #407's
+    /// review, F1), each tier's own line (the first names Chung Ryong's rage, as the
     /// script does), one 938 s run armed by the first cast, a 115 s wait; a seventh cast at the top does nothing,
     /// silently and for free. The wait is cleared between casts. Red on 0fadbfc: generic's 5 mana a cast and no rage.</summary>
     [Fact]
@@ -722,7 +782,7 @@ public sealed class DoSpellTests
                 if (tier == 1) firstEnd = Environment.TickCount64 + left;
                 long end = Environment.TickCount64 + left;
                 Assert.True(lines.SequenceEqual(new[] { said[tier - 1] }) && amount == mults[tier - 1] && before - cc.Mp == mana[tier - 1]
-                            && armor == -5 * (tier - 1) && wait > 115_000 - SlackMs && wait <= 115_000
+                            && armor == 5 * (tier - 1) && wait > 115_000 - SlackMs && wait <= 115_000
                             && left > 938_000 - SlackMs * 2 && Math.Abs(end - firstEnd) < SlackMs,
                             $"tier {tier}: [{string.Join(" | ", lines)}], rage {amount}, spent {before - cc.Mp}, armor {armor}, " +
                             $"wait {wait} ms, run left {left} ms");
@@ -849,21 +909,23 @@ public sealed class DoSpellTests
         finally { _fx.World.LeaveMap(caster, RageMap); }
     }
 
-    /// <summary>Chung Ryong's own rage, on the same verb, climbs its own table as before: tier 1 for 2,000 with its line,
-    /// tier 2 for 7,200 with "Chung Ryong's power grows in you.". A guard on the row-driven verb, green on 0fadbfc too.</summary>
+    /// <summary>Chung Ryong's own rage, on the same verb, keeps its own table: tier 1 for 2,000 with its line, rage x6.
+    /// The second cast, straight after with nothing cleared, meets its 120 s wait (Q16) and is refused for free. A guard on
+    /// the row-driven verb; red with Chung Ryong's gate taken out (#407's review, F2: the cast climbed to tier 2).</summary>
     [Fact]
     public void ChungRyongsRageClimbsItsOwnTable()
     {
         var (caster, cOut, cc) = Caster("chung_ryongs_rage", RageMap, CX + 6, CY + 8, cls: "Chung ryong");
+        string name = Content.SpellByKey("chung_ryongs_rage")!.Name;
         try
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
-            SpellCastSupport.ClearAether(caster, "chung_ryongs_rage");
             caster.Receive(SpellCastSupport.CastFrame(0));
             var lines = SpellCastSupport.MiniTexts(cOut);
-            Assert.True(lines.SequenceEqual(new[] { "[Rage 1] You cast Chung Ryong's rage.", "[Rage 2] Chung Ryong's power grows in you." })
-                        && cc.Mp == Mana - 9_200 && SpellCastSupport.Rage(caster).Amount == 9,
-                        $"lines [{string.Join(" | ", lines)}], spent {Mana - cc.Mp}, rage {SpellCastSupport.Rage(caster).Amount}");
+            Assert.True(lines.SequenceEqual(new[] { "[Rage 1] You cast Chung Ryong's rage.", $"{name} isn't ready yet." })
+                        && cc.Mp == Mana - 2_000 && SpellCastSupport.Rage(caster).Amount == 6 && caster.LuaCrRageTier == 1,
+                        $"lines [{string.Join(" | ", lines)}], spent {Mana - cc.Mp}, rage {SpellCastSupport.Rage(caster).Amount}, " +
+                        $"tier {caster.LuaCrRageTier}");
         }
         finally { _fx.World.LeaveMap(caster, RageMap); }
     }

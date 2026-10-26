@@ -2768,10 +2768,15 @@ public sealed partial class Session
     /// a verb and after, but the verb enters the Lua gate after the caster's monitor, and on the gate's slow path the
     /// monitor is dropped while it waits: a logout can run to its end in that gap. Read again here, under the retaken
     /// monitor, so a run on its caster names nobody to a player who has gone, as <see cref="LuaStrikeVictim"/> lands no
-    /// blow for one (#406 review, F1).</para></summary>
-    internal string LuaHiddenNear(int range) =>
-        _leaving ? ""
-                 : string.Join("\n", _world.HiddenPlayersNear(_char.Map, _char.X, _char.Y, Math.Max(0, range), except: this));
+    /// blow for one (#406 review, F1).</para>
+    /// <para>Nobody, too, once <paramref name="sp"/>'s run on the caster has ended. Death and a won Dispell end it
+    /// (<see cref="EndSelfTicks"/>), and either can land in the same gap while a beat waits at the gate; the beat would
+    /// then speak once for a run that is over (#407 review, optional). Asked under the retaken monitor, as
+    /// <c>_leaving</c> is.</para></summary>
+    internal string LuaHiddenNear(SpellDef sp, int range) =>
+        _leaving || !_spellTicks.Exists(t => t.Self && !t.Ended && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            ? ""
+            : string.Join("\n", _world.HiddenPlayersNear(_char.Map, _char.X, _char.Y, Math.Max(0, range), except: this));
 
     /// <summary>The engine's magic deflect against a readout's victim (<c>ctx:victimDeflects</c>), for a spell whose row
     /// can fail: RTK's clif_parsemagic rolls it before any script with a target, a creature or a player alike
