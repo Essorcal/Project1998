@@ -873,8 +873,9 @@ public sealed partial class Session
     // Full magic-attack sequence for the archetype Lua path (arch_damage) — a faithful port of CastDamage's body:
     // mana check FIRST, then the target, then debit mana, then the deflect roll (a deflect still costs the mana;
     // see the note in the body), then apply. Takes a pre-evaluated amount (the engine already ran the
-    // spell_effects.csv formula) so the verb stays pure logic. Returns false only when the cast can't happen (no mana / no target); a deflect still
-    // returns true (the cast "happened", just resisted). Byte-identical to CastDamage so the Lua route can't drift.
+    // spell_effects.csv formula) so the verb stays pure logic. Returns false only when the cast can't happen (no
+    // mana / no target); a deflect still returns true (the cast "happened", just resisted). Byte-identical to
+    // CastDamage so the Lua route can't drift.
     // The target is this cast's victim (LuaDamageVictim, through SpellContext), not a resolution of its own: an NPC
     // is no victim, so a cast at one is refused here as a cast at nothing is, before the debit and the archetype's
     // tail (ApplyCast: the pool drain, the vita cost, the shout, the aether), which all wait on this returning true.
