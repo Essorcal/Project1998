@@ -294,10 +294,16 @@ public static class SyntheticProfile
         return bytes;
     }
 
-    /// <summary><c>SObj.tbl</c> as the server parses it (<c>Server/ObjectFlags.cs</c> <c>Load</c>): u32 count,
-    /// one lead byte (object 0, never read), then per object 1..count a u8 frame count, the u16 frame ids, the
-    /// separator FF FF FF FF 00 and the object's u8 flag. The server reads only the count and the flags; each
-    /// record's single frame id is a placeholder equal to the object id.</summary>
+    /// <summary><c>SObj.tbl</c> in the layout <c>Server/ObjectFlags.cs</c> documents. The bytes: u32 count (17),
+    /// then u8 0 (object 0's flag, never read), then 17 records, each a u8 frame count (1), one u16 frame id, the
+    /// separator FF FF FF FF 00 and a u8 flag.
+    /// <para>A record is NOT one object's frames followed by that object's flag (the misreading
+    /// <c>ObjectFlags.cs</c> calls "the trap"). A record's frames belong to one object and its trailing flag to
+    /// the NEXT: record r (1-based) carries object r-1's frames and object r's flag. So the flags of objects 1..17
+    /// land where the server reads them, and the frame ids, which are placeholders (record r writes frame id r),
+    /// give object k frame k+1 and leave object 17 with no frame record.</para>
+    /// <para>The server reads only the count and the flags, never these frames. The manifest, not this table,
+    /// says what each object is.</para></summary>
     private static byte[] ObjectTable()
     {
         int count = Objects.Max(o => o.Id);
@@ -309,11 +315,11 @@ public static class SyntheticProfile
         for (int id = 1; id <= count; id++)
         {
             var o = Objects.Single(o => o.Id == id);
-            bytes.Add(1);
-            bytes.Add((byte)(id & 0xFF));
+            bytes.Add(1);                                                // object id-1's frame count
+            bytes.Add((byte)(id & 0xFF));                                // ...and its one frame: placeholder id
             bytes.Add((byte)(id >> 8));
             bytes.AddRange(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF, 0x00 });
-            bytes.Add(o.FileFlag);
+            bytes.Add(o.FileFlag);                                       // object id's flag
         }
         return bytes.ToArray();
     }
