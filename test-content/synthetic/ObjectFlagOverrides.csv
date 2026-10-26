@@ -1,0 +1,3 @@
+# Synthetic test profile: invented content written by `dotnet run --project Tools -- synthetic-profile`. Edit the generator, not this file.
+# No header line: the server supplies Obj,Flag,Note.
+17,0x00,Synthetic gate: 0x0F in SObj.tbl and walkable on the server

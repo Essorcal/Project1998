@@ -1,0 +1,5 @@
+# Synthetic test profile: invented content written by `dotnet run --project Tools -- synthetic-profile`. Edit the generator, not this file.
+# MapIndoor=1 holds the weather clear. Requirement and cap columns 0: no gate on a warp in.
+MapId,MapPvP,MapSpells,MapChat,MapRegion,MapIndoor,MapWarpout,MapReqLvl,MapReqPath,MapReqMark,MapReqVita,MapReqMana,MapLvlMax,MapVitaMax,MapManaMax,MapRejectMsg,MapCanSummon
+7400,0,1,0,-1,1,1,0,0,0,0,0,0,0,0,,1
+7401,0,1,0,-1,1,1,0,0,0,0,0,0,0,0,,1
