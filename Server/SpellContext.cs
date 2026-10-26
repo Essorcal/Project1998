@@ -726,6 +726,12 @@ public sealed class SpellContext
     /// <c>getObjectsInSameMap(BL_PC)</c> filtered by <c>state == 2</c> and <c>distanceSquare</c>, the caster left out
     /// (Hear footstep's beat).</summary>
     public string hiddenNear(double range) => _s.LuaHiddenNear((int)range);
+    /// <summary>Turn the caster invisible for <paramref name="durationMs"/> with the next landed swing
+    /// x<paramref name="times"/>, under this spell's name and with its SpellText.csv fade line when it ends (the
+    /// <c>hide</c> verb; Blend). A cast while already invisible never lengthens the run. See <c>Session.LuaHide</c>.</summary>
+    public void hide(double durationMs, double times) => _s.LuaHide(_sp, (int)durationMs, (int)times);
+    /// <summary>Is the caster in a creature's form (a morph)?</summary>
+    public bool morphed => _s.LuaMorphed;
 
     // ---- the target readout (RTK's Evaluate opponent and Assess opponent) -----------------------------------------
     // Reads only. A player victim's name, class and rank, vita and mana are bare reads of that player's fields, as

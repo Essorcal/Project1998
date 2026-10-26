@@ -29,6 +29,8 @@
 # crossing_swords to verb=chungryong_rage row, each bound by a SpellParams.csv row; blend to verb=stance_stealth (the
 # stealth set); balance_weapon and master_weapon to verb=stance_enchant (their SpellMods.csv enchant rows). No other
 # line changed.
+# The Do slice's third round (2026-10-26, Caleb's Q15: Blend as its RTK script) then moved blend from
+# verb=stance_stealth to verb=hide row: a SpellParams.csv row binds it to its own verb. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -93,7 +95,7 @@ blade_crawl	11503	verb=mana_battery
 bladedance_warrior	1075	verb=sacrifice
 blades_charm_rogue	2125	verb=stance_enchant
 blazing_sands_mage	3059	verb=area_zap
-blend	30403	verb=stance_stealth
+blend	30403	verb=hide row
 bless_drink	31505	verb=generic
 bless_food	31504	verb=generic
 bless_muscles_mage	3042	verb=arch_targetbuff

@@ -31,7 +31,7 @@ public sealed class DoSpellTests
 {
     private const ushort DashMap = 3606;
     private const ushort BlendMap = 62970, HearMap = 62971, AssessMap = 62972, RageMap = 62973, EnchantMap = 62974,
-                         LogoutMap = 62975;
+                         LogoutMap = 62975, SneakMap = 62976, EndMap = 62977;
     private const ushort CX = 16, CY = 16;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -182,9 +182,13 @@ public sealed class DoSpellTests
     }
 
     // ===== Blend ================================================================================================
+    // As its RTK script (Caleb, 2026-10-26, Q15): its own `hide` verb on the rogue's stealth state, x9, its own lines.
+    // The rogue's four stealths keep x5 and the set's rules; the facts at the end of this section pin that.
 
     /// <summary>The caster turns invisible (RTK state 2) for 120 s for 4,000 mana, with a 30 s wait, "You cast Blend."
-    /// and the script's graphic 16 over them. Red on 0fadbfc: generic's 5 mana and nothing else.</summary>
+    /// and the script's graphic 16 over them, and the next swing x9. It arms no cast slot: RTK's script has none, and the
+    /// rogue's Invisible keeps its 1 s one (<c>Content.CastDelayMs</c>). Red on 0fadbfc: generic's 5 mana and nothing
+    /// else; red on 65cfc39 for the x9 and the slot.</summary>
     [Fact]
     public void BlendHidesItsCasterForTwoMinutes()
     {
@@ -195,23 +199,26 @@ public sealed class DoSpellTests
             string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
             long hidden = StealthLeft(caster), wait = SpellCastSupport.AetherLeft(caster, "blend");
             var drawn = Effects(cOut, caster.PlayerId);
+            long slot = caster.ActionSlotLeft;
             Assert.True(caster.IsInvisible && hidden > 120_000 - SlackMs && hidden <= 120_000 && cc.Mp == Mana - 4_000
-                        && wait > 30_000 - SlackMs && wait <= 30_000 && lines == "You cast Blend." && drawn.SequenceEqual(new[] { 16 }),
+                        && wait > 30_000 - SlackMs && wait <= 30_000 && lines == "You cast Blend." && drawn.SequenceEqual(new[] { 16 })
+                        && StealthTimes(caster) == 9 && slot == 0,
                         $"invisible {caster.IsInvisible} for {hidden} ms, spent {Mana - cc.Mp}, wait {wait} ms, lines [{lines}], " +
-                        $"graphics [{string.Join(",", drawn)}]");
+                        $"graphics [{string.Join(",", drawn)}], x{StealthTimes(caster)}, cast slot {slot} ms");
         }
         finally { _fx.World.LeaveMap(caster, BlendMap); }
     }
 
-    /// <summary>Blend takes its own wait and the stealth set's refusals: inside the 30 s, the engine's wait line (the
-    /// wait is asked first, as RTK's engine asks it before the script); past it but still invisible, the set's "You
-    /// already cast that spell."; short of 4,000, "You do not have enough mana.". Each is free. Red on 0fadbfc:
-    /// generic's 5 mana and "You cast Blend." each time.</summary>
+    /// <summary>Blend's refusals, each free and as its script: inside its 30 s wait, "Blend isn't ready yet."; short of
+    /// 4,000, "Your will is too weak."; in a creature's form, "You can't do that while transformed." (the script's
+    /// canCast(1, 1, 1)). Red on 65cfc39, where Blend rode the stealth set: "Blend isn't ready yet (29s).", "You do not
+    /// have enough mana." and "You can't cast that spell now.".</summary>
     [Fact]
-    public void BlendRefusesInsideItsWaitWhileHiddenAndShortOfMana()
+    public void BlendRefusesInsideItsWaitShortOfManaAndTransformed()
     {
         var (caster, cOut, cc) = Caster("blend", BlendMap, CX, CY);
         var (poor, pOut, pc) = Caster("blend", BlendMap, CX, CY + 2, mana: 3_999);
+        var (morphed, mOut, mc) = Caster("blend", BlendMap, CX, CY + 6);
         try
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
@@ -219,36 +226,178 @@ public sealed class DoSpellTests
             cOut.Clear();
             FreeSlot(caster);
             caster.Receive(SpellCastSupport.CastFrame(0));
-            string waiting = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
-
-            SpellCastSupport.ClearAether(caster, "blend");
-            cOut.Clear();
-            FreeSlot(caster);
-            caster.Receive(SpellCastSupport.CastFrame(0));
-            string hidden = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
-            Assert.True(waiting.StartsWith("Blend isn't ready yet (", StringComparison.Ordinal) && hidden == "You already cast that spell."
-                        && cc.Mp == after && caster.IsInvisible,
-                        $"waiting: [{waiting}], hidden: [{hidden}], spent {after - cc.Mp}, invisible {caster.IsInvisible}");
-
             poor.Receive(SpellCastSupport.CastFrame(0));
-            string poorLines = string.Join(" | ", SpellCastSupport.MiniTexts(pOut));
-            Assert.True(poorLines == "You do not have enough mana." && pc.Mp == 3_999 && !poor.IsInvisible,
-                        $"short: [{poorLines}], mana {pc.Mp}, invisible {poor.IsInvisible}");
+            Morph(morphed);
+            mOut.Clear();
+            morphed.Receive(SpellCastSupport.CastFrame(0));
+            string N(RecordingOutbound o) => string.Join(" | ", SpellCastSupport.MiniTexts(o));
+            Assert.True(N(cOut) == "Blend isn't ready yet." && cc.Mp == after
+                        && N(pOut) == "Your will is too weak." && pc.Mp == 3_999 && !poor.IsInvisible
+                        && N(mOut) == "You can't do that while transformed." && mc.Mp == Mana && !morphed.IsInvisible,
+                        $"waiting [{N(cOut)}] spent {after - cc.Mp}; short [{N(pOut)}] mana {pc.Mp}; transformed [{N(mOut)}] " +
+                        $"spent {Mana - mc.Mp}");
         }
-        finally { _fx.World.LeaveMap(caster, BlendMap); _fx.World.LeaveMap(poor, BlendMap); }
+        finally { Leave(BlendMap, caster, poor, morphed); }
     }
 
-    /// <summary>The rogue's Invisible still arms no wait: the stealth branch arms a row's wait only where the row carries
-    /// one, and the four rogue rows carry none. A guard, green on 0fadbfc too.</summary>
+    /// <summary>A cast while already invisible casts again, as the script does (it has no check): 4,000 more, the 30 s
+    /// wait again, "You cast Blend." again, still x9; but the run keeps its end, since RTK's setDuration sets a running
+    /// duration again only to a shorter time (rtk/src/map/sl.c, pcl_setduration). Here the first run has 60 s left and
+    /// still has 60 s after. Red on 65cfc39 ("You already cast that spell.", free); red with the run lengthened (120 s).</summary>
     [Fact]
-    public void InvisibleStillHasNoWait()
+    public void ABlendCastWhileInvisibleCastsAgainAndKeepsTheRunsEnd()
     {
-        var (caster, _, _) = Caster("invisible_rogue", BlendMap, CX, CY + 4);
+        var (caster, cOut, cc) = Caster("blend", BlendMap, CX, CY + 8);
         try
         {
             caster.Receive(SpellCastSupport.CastFrame(0));
-            Assert.True(caster.IsInvisible && SpellCastSupport.AetherLeft(caster, "invisible_rogue") == 0,
-                        $"invisible {caster.IsInvisible}, wait {SpellCastSupport.AetherLeft(caster, "invisible_rogue")} ms");
+            caster.WithState(() => StealthUntilField.SetValue(caster, Environment.TickCount64 + 60_000));
+            SpellCastSupport.ClearAether(caster, "blend");
+            uint before = cc.Mp;
+            cOut.Clear();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            long hidden = StealthLeft(caster), wait = SpellCastSupport.AetherLeft(caster, "blend");
+            Assert.True(lines == "You cast Blend." && before - cc.Mp == 4_000 && caster.IsInvisible
+                        && hidden > 60_000 - SlackMs && hidden <= 60_000 && wait > 30_000 - SlackMs && StealthTimes(caster) == 9,
+                        $"again: [{lines}], spent {before - cc.Mp}, invisible {caster.IsInvisible} for {hidden} ms (want 60 s), " +
+                        $"wait {wait} ms, x{StealthTimes(caster)}");
+        }
+        finally { _fx.World.LeaveMap(caster, BlendMap); }
+    }
+
+    /// <summary>The next landed swing after a stealth hits its stealth's multiplier, and ends it: Blend's x9, as its
+    /// script's invis = 9; the rogue's four x5, as they hit today. Each swing is measured against the same caster's swings
+    /// with no stealth (<c>Session.PlayerSwingRaw</c>, before the floor, crits left out). One caster holds Blend and the
+    /// rogue stealth and casts Blend first, so the rogue case is also where Blend's x9 would leak. Red on 65cfc39 for
+    /// Blend (x5); red for the rogue's four with the reset taken out of their arming (x9 leaks).</summary>
+    [Theory]
+    [InlineData("invisible_rogue")]
+    [InlineData("spirits_form_rogue")]
+    [InlineData("lifes_cloak_rogue")]
+    [InlineData("glass_form_rogue")]
+    public void TheNextLandedSwingHitsTheStealthsOwnMultiplier(string rogue)
+    {
+        var (caster, _, _) = Swinger(SneakMap, CX, CY + Array.IndexOf(RogueStealths, rogue) * 2, "blend", rogue);
+        try
+        {
+            var plain = PlainSwings(caster);
+            var blend = StealthSwings(caster, 0);
+            var their = StealthSwings(caster, 1);
+            Assert.True(blend.Count > 0 && their.Count > 0
+                        && blend.All(r => plain.Contains(Math.Round(r / 9, 6))) && their.All(r => plain.Contains(Math.Round(r / 5, 6))),
+                        $"plain [{string.Join(", ", plain)}]; after Blend [{string.Join(", ", blend)}] (want x9); " +
+                        $"after {rogue} [{string.Join(", ", their)}] (want x5)");
+        }
+        finally { _fx.World.LeaveMap(caster, SneakMap); }
+    }
+
+    /// <summary>Blend says "You are no longer invisible." when it ends, as its script's uncast does, every way RTK runs that
+    /// uncast with the player alive: its time (the world's tick), a landed hit, a pickup, a won Dispell. Not at death: RTK
+    /// sets the player dead before the uncast, whose own check then says nothing. The rogue's Invisible says nothing at
+    /// any of these, as today. Red on 65cfc39 for Blend (no line); red at death with the death path's quiet taken out.</summary>
+    [Theory]
+    [InlineData("blend", "time", true)]
+    [InlineData("blend", "hit", true)]
+    [InlineData("blend", "pickup", true)]
+    [InlineData("blend", "dispell", true)]
+    [InlineData("blend", "death", false)]
+    [InlineData("invisible_rogue", "time", false)]
+    [InlineData("invisible_rogue", "hit", false)]
+    [InlineData("invisible_rogue", "pickup", false)]
+    [InlineData("invisible_rogue", "dispell", false)]
+    public void BlendSaysItsEndLineWhereItsScriptDoes(string key, string how, bool says)
+    {
+        const string Line = "You are no longer invisible.";
+        var (caster, cOut, _) = Swinger(EndMap, CX + Interlocked.Increment(ref _serial) % 40, CY, key);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(caster.IsInvisible, $"{key} did not hide its caster");
+            cOut.Clear();
+            switch (how)
+            {
+                case "time":
+                    caster.WithState(() => StealthUntilField.SetValue(caster, Environment.TickCount64 - 1));
+                    _fx.World.TickOnceForTest();
+                    break;
+                case "hit":
+                    for (int i = 0; i < 200 && caster.IsInvisible; i++) SwingOnce(caster);
+                    break;
+                case "pickup":
+                    caster.Receive(SessionFixture.Frame(ClientOp.Pickup, new byte[] { 0, 0 }));
+                    break;
+                case "dispell":
+                    caster.ReceiveFlush(endHolds: true);
+                    _fx.World.TickOnceForTest();
+                    break;
+                default:
+                    caster.WithState(() => DieMethod.Invoke(caster, null));
+                    break;
+            }
+            int said = SpellCastSupport.MiniTexts(cOut).Count(l => l == Line);
+            Assert.True(!caster.IsInvisible && said == (says ? 1 : 0),
+                        $"{key} ended by {how}: invisible {caster.IsInvisible}, the end line said {said} times (want {(says ? 1 : 0)})");
+        }
+        finally { _fx.World.LeaveMap(caster, EndMap); }
+    }
+
+    /// <summary>A Blend that runs through a relog keeps its x9 and its end line, read back from the stealth's saved name
+    /// with nothing new saved: the saved effects hold the deadline and "Blend" only. Red without the restore's lookup
+    /// (<c>Session.RestoreHideRule</c>): x5 and no line, as the rogue's.</summary>
+    [Fact]
+    public void ABlendThatRunsThroughARelogKeepsItsRule()
+    {
+        var (before, _, c1) = Swinger(EndMap, CX + 1, CY + 6, "blend");
+        TimedEffects saved;
+        try
+        {
+            before.Receive(SpellCastSupport.CastFrame(0));
+            before.WithState(() => CaptureMi.Invoke(before, null));
+            saved = c1.Effects;
+            Assert.Equal("Blend", saved.StealthName);
+        }
+        finally { _fx.World.LeaveMap(before, EndMap); }
+
+        var (after, aOut, _) = Swinger(EndMap, CX + 1, CY + 8, "blend", configure: ch => ch.Effects = saved);
+        try
+        {
+            after.WithState(() => RestoreMi.Invoke(after, null));
+            Assert.True(after.IsInvisible && StealthTimes(after) == 9, $"restored: invisible {after.IsInvisible}, x{StealthTimes(after)}");
+            double? clean = null;
+            int landed = 0;
+            for (int i = 0; i < 200 && after.IsInvisible; i++)
+            {
+                var (hit, raw, crit) = SwingOnce(after);
+                if (hit) { landed++; if (!crit) clean = raw; }
+            }
+            var plain = PlainSwings(after);   // the same swinger, the stealth now ended by that swing
+            int said = SpellCastSupport.MiniTexts(aOut).Count(l => l == "You are no longer invisible.");
+            Assert.True(landed == 1 && clean is double c && plain.Contains(Math.Round(c / 9, 6)) && said == 1,
+                        $"after the relog: landed {landed}, clean swing {clean} against plain [{string.Join(", ", plain)}] (want x9), " +
+                        $"end line said {said}");
+        }
+        finally { _fx.World.LeaveMap(after, EndMap); }
+    }
+
+    /// <summary>The rogue's Invisible still arms no wait and keeps the set's own refusal, "You already cast that spell.",
+    /// for free. A guard on the stealth set, which Blend no longer rides, green on 0fadbfc too.</summary>
+    [Fact]
+    public void InvisibleStillHasNoWait()
+    {
+        var (caster, cOut, cc) = Caster("invisible_rogue", BlendMap, CX, CY + 4);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            uint after = cc.Mp;
+            cOut.Clear();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(caster.IsInvisible && SpellCastSupport.AetherLeft(caster, "invisible_rogue") == 0
+                        && lines == "You already cast that spell." && cc.Mp == after,
+                        $"invisible {caster.IsInvisible}, wait {SpellCastSupport.AetherLeft(caster, "invisible_rogue")} ms, again [{lines}]");
         }
         finally { _fx.World.LeaveMap(caster, BlendMap); }
     }
@@ -719,6 +868,38 @@ public sealed class DoSpellTests
         finally { _fx.World.LeaveMap(caster, RageMap); }
     }
 
+    /// <summary>Chung Ryong's rage refuses a climb inside its 120 s wait, with the same line as Crossing swords' wait and
+    /// for free, and the next climb after the wait lands (Caleb, 2026-10-26, Q16: "As RTK"). No staff waiver, as for
+    /// Crossing swords. Red on 65cfc39, where nothing checked the wait and the second cast climbed at once.</summary>
+    [Fact]
+    public void ChungRyongsRageRefusesAClimbInsideItsWait()
+    {
+        var (caster, cOut, cc) = Caster("chung_ryongs_rage", RageMap, CX + 6, CY + 12, cls: "Chung ryong");
+        string name = Content.SpellByKey("chung_ryongs_rage")!.Name;
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            uint after = cc.Mp;
+            cOut.Clear();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string refused = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            int tierThen = caster.LuaCrRageTier;
+            uint spentThen = after - cc.Mp;
+
+            SpellCastSupport.ClearAether(caster, "chung_ryongs_rage");
+            cOut.Clear();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            string climbed = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(refused == $"{name} isn't ready yet." && tierThen == 1 && spentThen == 0
+                        && climbed == "[Rage 2] Chung Ryong's power grows in you." && caster.LuaCrRageTier == 2 && after - cc.Mp == 7_200,
+                        $"inside the wait: [{refused}], tier {tierThen}, spent {spentThen}; after it: [{climbed}], tier " +
+                        $"{caster.LuaCrRageTier}, spent {after - cc.Mp}");
+        }
+        finally { _fx.World.LeaveMap(caster, RageMap); }
+    }
+
     // ===== the rows and the teacher ===========================================================================
 
     /// <summary>All nine are Do's path's rows at the level their scripts' <c>requirements()</c> ask, 99, as #406 set
@@ -883,6 +1064,127 @@ public sealed class DoSpellTests
             ch.MaxHp = 1_000; ch.Hp = 1_000;
             Wide(ch);
         }, map, (ushort)x, (ushort)y);
+
+    // ---- round 3: the stealth swings ----------------------------------------------------------------------------
+
+    private static readonly string[] RogueStealths = { "invisible_rogue", "spirits_form_rogue", "lifes_cloak_rogue", "glass_form_rogue" };
+
+    private static readonly FieldInfo StealthTimesField =
+        typeof(Session).GetField("_stealthTimes", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly Type SwingTargetType =
+        typeof(Session).GetNestedType("SwingTarget", BindingFlags.NonPublic)!;
+    private static readonly MethodInfo SwingRaw =
+        typeof(Session).GetMethod("PlayerSwingRaw", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    /// <summary>The armed stealth's sneak multiplier (<c>Session._stealthTimes</c>).</summary>
+    private static int StealthTimes(Session s)
+    {
+        int times = 0;
+        s.WithState(() => times = (int)StealthTimesField.GetValue(s)!);
+        return times;
+    }
+
+    /// <summary>One swing's raw figure (<c>Session.PlayerSwingRaw</c>, before the floor) at an AC-0, level-1 target, run in
+    /// the swinger's monitor as the swing handler runs it: whether it landed, the figure, and whether it was a crit. A
+    /// landed swing ends a stealth, as every landed swing does.</summary>
+    private static (bool Hit, double Raw, bool Crit) SwingOnce(Session s)
+    {
+        object target = Activator.CreateInstance(SwingTargetType, 0, -95, 0, 1, 11, 10, (byte)3)!;
+        (bool, double, bool) got = default;
+        s.WithState(() =>
+        {
+            var (hit, raw, crit, _) = ((bool, double, bool, bool))SwingRaw.Invoke(s, new[] { target, 1.0 })!;
+            got = (hit, raw, crit);
+        });
+        return got;
+    }
+
+    /// <summary>Every distinct landed non-crit figure, rounded to 6 places, of 600 swings with no stealth up. With the
+    /// novice sword's S 10-12 that is three figures.</summary>
+    private static SortedSet<double> PlainSwings(Session s)
+    {
+        Assert.False(s.IsInvisible, "plain swings measured while invisible");
+        var seen = new SortedSet<double>();
+        for (int i = 0; i < 600; i++)
+        {
+            var (hit, raw, crit) = SwingOnce(s);
+            if (hit && !crit) seen.Add(Math.Round(raw, 6));
+        }
+        return seen;
+    }
+
+    /// <summary>Up to five landed non-crit figures, each the first landed swing after casting the stealth in book slot
+    /// <paramref name="slot"/> (the real 0x0F frame; the slot, the action budget and the wait freed first, so it casts
+    /// at once). A swing that misses leaves the stealth up and the next swing tries again.</summary>
+    private static List<double> StealthSwings(Session s, int slot)
+    {
+        var key = Content.SpellById(CharSpells(s)[slot])!.Key;
+        var seen = new List<double>();
+        for (int i = 0; i < 300 && seen.Count < 5; i++)
+        {
+            if (!s.IsInvisible)
+            {
+                FreeSlot(s);
+                SpellCastSupport.ClearAether(s, key);
+                s.Receive(SpellCastSupport.CastFrame(slot));
+                Assert.True(s.IsInvisible, $"{key} did not hide its caster");
+            }
+            var (hit, raw, crit) = SwingOnce(s);
+            if (hit && !crit) seen.Add(raw);
+        }
+        return seen;
+    }
+
+    private static readonly FieldInfo CharField =
+        typeof(Session).GetField("_char", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+    private static List<int> CharSpells(Session s)
+    {
+        List<int> spells = new();
+        s.WithState(() => spells = new List<int>(((Character)CharField.GetValue(s)!).Spells));
+        return spells;
+    }
+
+    /// <summary>A level-99 Do with a novice sword, Might 50 and Grace 50, facing east, with <paramref name="keys"/> in its
+    /// book from slot 0 and lots of mana.</summary>
+    private (Session session, RecordingOutbound outbound, Character c) Swinger(ushort map, int x, int y, params string[] keys) =>
+        Swinger(map, x, y, keys, null);
+
+    private (Session session, RecordingOutbound outbound, Character c) Swinger(ushort map, int x, int y, string key,
+                                                                             Action<Character> configure) =>
+        Swinger(map, x, y, new[] { key }, configure);
+
+    private (Session session, RecordingOutbound outbound, Character c) Swinger(ushort map, int x, int y, string[] keys,
+                                                                             Action<Character>? configure) =>
+        _fx.PlayerWith($"DoSwing{Interlocked.Increment(ref _serial)}", ch =>
+        {
+            var sword = Content.ItemByKey("novice_sword")!;
+            ch.ClassName = "Do";
+            ch.Level = 99;
+            ch.Ac = 0;
+            ch.Might = 50; ch.Grace = 50;
+            ch.MaxHp = Hp; ch.Hp = Hp;
+            ch.MaxMp = MaxMana; ch.Mp = Mana;
+            ch.Dir = 1;
+            Wide(ch);
+            ch.Equipment.Add(new InvItem { Slot = sword.EquipSlot, ItemId = sword.Id, Dura = sword.Durability });
+            foreach (var k in keys) ch.Spells.Add(Content.SpellByKey(k)!.Id);
+            configure?.Invoke(ch);
+        }, map, (ushort)x, (ushort)y);
+
+    /// <summary>Transformed for a minute, through the same two steps the morph verb takes, with a real Morphs.csv row
+    /// (<c>EmotePickupStateTests</c>' helper).</summary>
+    private static void Morph(Session s)
+    {
+        var sp = Content.SpellByKey("kwisin_cloak_rogue")!;
+        var m = Content.MorphFor(sp)!.Value;
+        s.WithState(() =>
+        {
+            s.LuaSetPendingMorph(m.Look, m.LookFemale, 0, 60_000);
+            s.LuaApplyMorph(sp);
+        });
+        Assert.True(s.IsMorphed);
+    }
 
     /// <summary>Content-free maps have no size, and the cast handler needs one.</summary>
     private static void Wide(Character c) { c.MapXs = 100; c.MapYs = 100; }

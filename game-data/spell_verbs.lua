@@ -1424,7 +1424,8 @@ local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration
 --     armor 5 a tier from tier 2, and RTK's calcStat runs recast every time it recomputes (rtk/src/map/pc.c), so the
 --     armour holds while the tier does; the AC buff here is the same.
 --   * gated: a cast inside the wait is refused ("<name> isn't ready yet."), as RTK's engine refuses one inside its
---     aethers before the script runs. Chung Ryong's ladder has never checked its wait, and keeps that here.
+--     aethers before the script runs. Both ladders are gated. Chung Ryong's was not until Caleb's word of 2026-10-26
+--     (Q16, "As RTK"): it armed its 120 s wait and nothing checked it, so a climb could run 1 to 6 back to back.
 --   * weak: the line for too little mana. Chung Ryong's is ctx:enoughMana's "You do not have enough mana.".
 --   * top: what a cast at the top tier does. "hold": nothing, silently and for free (the scripts have no branch for
 --     it). Chung Ryong's ladder casts its top tier again, as it always has.
@@ -1434,7 +1435,7 @@ local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration
 --     (ctx.rageName), else the cast starts at tier 1, as the scripts' hasDuration(<own key>) reads it.
 -- What a lapsed climb costs in vita is the engine's, looked up by the same ladder name (Session.ChungRyongRageWearOff).
 local RAGE_LADDERS = {
-  chung_ryongs_rage = { tiers = CHUNG_RYONG_RAGE, gated = false, top = "again" },
+  chung_ryongs_rage = { tiers = CHUNG_RYONG_RAGE, gated = true, top = "again" },
   rtk_rage = {
     gated = true, weak = "Your will is too weak.", top = "hold",
     tiers = {
@@ -1764,11 +1765,11 @@ function verbs.torment_tick(ctx, row)
 end
 
 -- =========================================================================================================
--- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Hear footstep and Assess opponent. Caleb, 2026-10-26:
--- each spell as its RTK script (P5), and Spirit blade x10 as RTK's (Q8). The other six Do spells ride families that
--- already exist: Ki strike is splash_strike above; Spirit blade, Balance weapon and Master weapon are enchants (x10,
--- x15, x20 in game-data/SpellMods.csv, the stance_enchant verb); Blend is a stealth spell (Content.IsStealthSpell, the
--- stance_stealth verb); Crossing swords climbs chungryong_rage's rtk_rage ladder. Each verb here is bound by its
+-- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Blend, Hear footstep and Assess opponent. Caleb,
+-- 2026-10-26: each spell as its RTK script (P5), Spirit blade x10 as RTK's (Q8), Blend as its script rather than as the
+-- rogue's Invisible (Q15). The other five Do spells ride families that already exist: Ki strike is splash_strike above;
+-- Spirit blade, Balance weapon and Master weapon are enchants (x10, x15, x20 in game-data/SpellMods.csv, the
+-- stance_enchant verb); Crossing swords climbs chungryong_rage's rtk_rage ladder. Each verb here is bound by its
 -- SpellParams.csv row, which carries its numbers, and is the shape of its script, in that script's order. RTK is weight
 -- 0 for balance; these numbers are its scripts' by those decisions.
 --
@@ -1789,6 +1790,30 @@ function verbs.dash(ctx, row)
   if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
   if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
   ctx:leap(row.amount or 3)
+  return true
+end
+
+-- Blend (RTK Subpaths/Do/blend.lua; Spy's incognito.lua and Diviner's vanish.lua are its shape with other numbers and
+-- no lines, so their rows can bind here): the caster turns invisible (RTK state 2) for `durationMax` ms with the next
+-- landed swing x`amount` (the script's invis = 9), for `mana`, with a `duration` ms wait, on the stealth state the
+-- rogue's Invisible uses (the faded look; a landed hit or a pickup ends it; Hear footstep and Second Sight see it).
+-- "You cast Blend." is the engine's central line, which the script sends too. A cast while already invisible casts
+-- again, as the script does (it has no check): the mana, the wait and the line again, but the run is not lengthened,
+-- since RTK's setDuration sets a running duration again only to a shorter time (ctx:hide). Refused: inside the wait
+-- (this file's line); in a creature's form, "You can't do that while transformed." (the script's canCast(1, 1, 1));
+-- short of mana, "Your will is too weak.", for free. When it ends it says its SpellText.csv fade line, "You are no
+-- longer invisible.", as the script's uncast does: at its time, a landed hit, a pickup or a won Dispell; not at death,
+-- where RTK's uncast finds the player already dead (Session.RevertStealth). Row: mana 4000, amount 9, duration 30000,
+-- durationMax 120000.
+function verbs.hide(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.morphed then ctx:say("You can't do that while transformed."); return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  ctx:hide(row.durationMax or 0, row.amount or 1)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:fxSelf()
   return true
 end
 

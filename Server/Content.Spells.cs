@@ -1119,12 +1119,12 @@ public static partial class Content
     // see Session.PlayerSwingRaw). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
     // RTK's PC_INVIS state also hides the player's sprite from other clients (clif.c), which would need
     // viewport/ShowPlayer changes this pass doesn't touch.
-    // Blend (Do; RTK Spells/Subpaths/Do/blend.lua) joins them on Caleb's word (2026-10-26, P5, the Do slice): the
-    // script is Invisible's with its own numbers (state 2 for 120 s, 4,000 mana, a 30 s wait, all on its
-    // spell_effects.csv row), and RTK's `invis` table holds both (Spells/spellTables.lua). So it takes this family's
-    // rules, the sneak-attack x5 among them, where RTK's scripts set invis 9 for Blend and Invisible alike.
+    // Blend (Do; RTK Spells/Subpaths/Do/blend.lua) is NOT here: on Caleb's word (2026-10-26, Q15, "As RTK's script")
+    // it casts through its own `hide` verb (its SpellParams.csv row), on the same stealth state but with its script's
+    // rules: x9, "Your will is too weak.", a cast while invisible casts again, and "You are no longer invisible." when
+    // it ends (Session.LuaHide, Session.RevertStealth). This family keeps x5 and its rules.
     private static readonly HashSet<string> StealthSpells =
-        new(StringComparer.OrdinalIgnoreCase) { "invisible_rogue", "spirits_form_rogue", "lifes_cloak_rogue", "glass_form_rogue", "blend" };
+        new(StringComparer.OrdinalIgnoreCase) { "invisible_rogue", "spirits_form_rogue", "lifes_cloak_rogue", "glass_form_rogue" };
     public static bool IsStealthSpell(SpellDef sp) => StealthSpells.Contains(sp.Key);
 
     // RTK rogue/lethal_strike.lua + desperate_attack.lua, warrior/berserk.lua + whirlwind.lua: a facing-tile

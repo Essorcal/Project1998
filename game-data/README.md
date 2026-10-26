@@ -66,7 +66,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `SpellLevels.csv` | 143 | 143 | from file |
 | `Spells.csv` | 957 | 892 | from file |
 | `spell_effects.csv` | 683 | 683 | from file |
-| `SpellText.csv` | 4 | 4 | from file |
+| `SpellText.csv` | 5 | 5 | from file |
 | `SpellLearnCosts.csv` | 652 | 652 | from file |
 | `Mob5xPalettes.csv` | 16 | 16 | from file |
 | `ArmorDyeRamps.csv` | 11 | 11 | from file |
@@ -98,7 +98,7 @@ and `Sources.csv` are extractor output only and are not loaded by the server.
 | `AmbushConfig.csv` | 21 | 21 | from file |
 | `BoardLocations.csv` | 1 | 1 | from file |
 | `ShopCatalogues.csv` | 11 | 11 | from file |
-| `SpellParams.csv` | 120 | 120 | from file |
+| `SpellParams.csv` | 121 | 121 | from file |
 | `ItemParams.csv` | 60 | 60 | from file |
 | `Pets.csv` | 29 | 29 | from file |
 | `WeaponProcs.csv` | 25 | 25 | from file |

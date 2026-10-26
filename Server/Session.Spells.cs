@@ -503,12 +503,7 @@ public sealed partial class Session
             if (IsMorphed) { SendMiniText("You can't cast that spell now."); return false; }
             if (Stealthed) { SendMiniText("You already cast that spell."); return false; }
             _stealthName = sp.Name;
-            // A stealth row that carries a wait arms it here, on a cast that landed, as the fury branch above arms
-            // Serpent's Fury's; the gate above refuses a cast inside it. Blend (Do) is the one, 30 s (RTK
-            // Spells/Subpaths/Do/blend.lua's setAether); the four rogue rows carry none, so nothing changes for them.
-            bool hid = Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
-            if (hid && fx.Aether > 0) SetCooldown(sp.Key, fx.Aether);
-            return hid;
+            return Lua(CastStanceArch("stance_stealth", sp, fx, mana, 0), sp);
         }
         if (Content.EnchantFor(sp) is (double enchantAmt, int enchantMana)) return Lua(CastStanceArch("stance_enchant", sp, fx, enchantMana, enchantAmt), sp);
 
@@ -1492,7 +1487,7 @@ public sealed partial class Session
     // (above) cover rage + backstab/flank; these add the "already active" guards + the stealth/enchant setters.
     internal bool LuaRageActive    => EffRage > 1;      // RTK blocks casting a fury while one is up (checkIfCast(lesserFuries))
     internal bool LuaEnchantActive => EffEnchant > 1;   // RTK blocks re-casting an enchant while one is up
-    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthShown = true; SendStats(); RefreshAppearance(); }
+    internal void LuaSetStealth(int durMs)                 { _stealthUntil = Environment.TickCount64 + durMs; _stealthTimes = InvisibleTimes; _stealthKey = ""; _stealthShown = true; SendStats(); RefreshAppearance(); }
     internal void LuaSetEnchant(double amount)  { _enchantAmount = amount; SendStats(); }
 
     // Venom DoT (the `venom` verb): resolve the faced/targeted MOB (venoms are mob-only in RTK — a PC/no target
@@ -3625,7 +3620,7 @@ public sealed partial class Session
             ["player.maxMagic"]   = EffMaxMp,
             ["player.health"]     = _char.Hp,
             ["player.maxHealth"]  = EffMaxHp,
-            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? 5 : 1,
+            ["player.enchant"]    = EffEnchant, ["player.rage"] = EffRage, ["player.fury"] = 1, ["player.invis"] = Stealthed ? _stealthTimes : 1,
             ["target.health"]     = target?.Hp ?? 0,
             ["target.baseHealth"] = target?.MaxHp ?? 0,
         };
@@ -3900,6 +3895,17 @@ public sealed partial class Session
     // ends by a hit (redrawn inline), a timer lapse, or a Cleanse/flush (both caught by World.Tick's IsStealthExpired).
     private bool _stealthShown;
     private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
+
+    // BLEND (Do; RTK Spells/Subpaths/Do/blend.lua), on Caleb's word (2026-10-26, Q15: "As RTK's script"): the same
+    // stealth state, armed by the `hide` verb (ctx:hide) with its own sneak multiplier, the script's `invis = 9`, and
+    // its own line when it ends, the script's uncast "You are no longer invisible." (its SpellText.csv fade line).
+    // The rogue's four stealths keep everything they had: x5 (InvisibleTimes, above) and no line, so a stealth armed by
+    // their stance_stealth verb resets both. A relog keeps Blend's from the stealth's saved name
+    // (RestoreHideRule): nothing new is saved.
+    private const int InvisibleTimes = 5;
+    private int _stealthTimes = InvisibleTimes;   // the next landed swing's multiplier while stealthed
+    private string _stealthKey = "";              // the hide spell's key, for its fade line; "" for the rogue's four
+
     /// <summary>Read by World.Tick to fire the one-time revert when stealth ends without an inline redraw.</summary>
     public bool IsStealthExpired => _stealthShown && !Stealthed;
     /// <summary>Is this player invisible right now (RTK's <c>PC_INVIS</c>)? Read by
@@ -3907,19 +3913,64 @@ public sealed partial class Session
     /// this session's monitor: one 64-bit deadline, the same unsynchronised scalar read the tick makes of
     /// <see cref="IsStealthExpired"/>.</summary>
     public bool IsInvisible => Stealthed;
-    /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).</summary>
-    public void RevertStealth()
+    /// <summary>Restore the normal look after stealth lapses (World.Tick / the on-hit drop path).
+    /// <para>With <paramref name="tell"/>, a stealth that has a fade line says it as it ends (Blend's "You are no longer
+    /// invisible.", RTK blend.lua's uncast): at its time, a landed hit, a pickup and a won Dispell, every way RTK runs
+    /// that uncast with the player alive. Death and <c>@dispel</c> pass false: RTK's death sets the player dead before
+    /// the uncast, whose own check (<c>state ~= 1</c>) then says nothing, and <c>@dispel</c> shares that path here. The
+    /// rogue's four have no fade line and say nothing, as before.</para></summary>
+    public void RevertStealth(bool tell = true)
     {
         using var _ = EnterState();   // #29: World.Tick calls this on the stealth timer lapsing
         if (!_stealthShown) return;
         _stealthShown = false;
         RefreshAppearance();
+        if (tell && Content.FadeTextFor(_stealthKey) is { Length: > 0 } fade) SendMiniText(fade);
     }
 
-    /// <summary>Fully drop Invisible — clears BOTH the timer (so the 5x sneak multiplier stops) and the faded
+    /// <summary>Fully drop Invisible — clears BOTH the timer (so the sneak multiplier stops) and the faded
     /// look. Overt actions break stealth: landing a sneak hit (PlayerSwingRaw) and grabbing floor loot
-    /// (HandlePickup). No-op if not stealthed.</summary>
-    public void BreakStealth() { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(); }
+    /// (HandlePickup). No-op if not stealthed. <paramref name="tell"/> as for <see cref="RevertStealth"/>.</summary>
+    public void BreakStealth(bool tell = true) { if (_stealthUntil == 0 && !_stealthShown) return; _stealthUntil = 0; RevertStealth(tell); }
+
+    /// <summary>Arm the stealth for a <c>hide</c> spell (Blend; <c>ctx:hide</c>): invisible for <paramref name="durMs"/>,
+    /// the next landed swing x<paramref name="times"/>, the spell's name in the buff box and its fade line when it ends.
+    /// A cast while already invisible keeps the run's end, or brings it nearer: RTK's <c>setDuration</c> sets a running
+    /// duration again only to a shorter time (<c>pcl_setduration</c>, rtk/src/map/sl.c), so the script's recast never
+    /// lengthens it.</summary>
+    internal void LuaHide(SpellDef sp, int durMs, int times)
+    {
+        long until = Environment.TickCount64 + Math.Max(0, durMs);
+        _stealthUntil = Stealthed ? Math.Min(_stealthUntil, until) : until;
+        _stealthName  = sp.Name;
+        _stealthKey   = sp.Key;
+        _stealthTimes = Math.Max(1, times);
+        _stealthShown = true;
+        SendStats();
+        RefreshAppearance();
+    }
+
+    /// <summary>Give a restored stealth back its rule (<see cref="RestoreTimedEffects"/>): a stealth whose saved name is a
+    /// spell the <c>hide</c> verb casts (by its SpellParams.csv row) takes that spell's key and multiplier (the row's
+    /// <c>amount</c>); any other name, the rogue's four, takes theirs (x5, no line).</summary>
+    private void RestoreHideRule()
+    {
+        _stealthKey = "";
+        _stealthTimes = InvisibleTimes;
+        foreach (var (key, row) in Content.SpellParams)
+        {
+            if (!string.Equals(row.GetValueOrDefault("verb", ""), "hide", StringComparison.OrdinalIgnoreCase)) continue;
+            if (Content.SpellByKey(key)?.Name != _stealthName) continue;
+            _stealthKey = key;
+            if (double.TryParse(row.GetValueOrDefault("amount", ""), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out double times))
+                _stealthTimes = Math.Max(1, (int)times);
+            return;
+        }
+    }
+
+    /// <summary>Is the caster in a creature's form (a morph)? Blend refuses then, as its script's canCast(1, 1, 1).</summary>
+    internal bool LuaMorphed => IsMorphed;
 
     // Enchant tier (RTK player.enchant — see Content.EnchantFor): unlike rage, swingDamage.lua multiplies
     // ONLY the raw weapon-swing term (s/2) by this, not the whole swing (Session.PlayerSwingRaw). Baseline
@@ -4178,7 +4229,7 @@ public sealed partial class Session
     private void ClearAllTimedEffects()
     {
         RevertMorph();      // restore the real look before we wipe the buff that named the disguise
-        BreakStealth();     // clears _stealthUntil + the faded (form-5) sprite
+        BreakStealth(tell: false);   // clears _stealthUntil + the faded (form-5) sprite; no fade line (see RevertStealth)
 
         BuffClear();
         ClearStatusFlags();

@@ -114,6 +114,7 @@ public sealed partial class Session
         {
             _stealthUntil = UnixToTick(e.StealthUntil);
             _stealthName  = string.IsNullOrEmpty(e.StealthName) ? "Invisible" : e.StealthName;
+            RestoreHideRule();      // Blend's x9 and fade line, from the saved name (nothing new is saved)
             _stealthShown = true;   // SendSelfLook/ShowPlayer draw the faded form-5 sprite from this
         }
         if (e.MorphLook != 0 && e.MorphUntil > nowUnix)
