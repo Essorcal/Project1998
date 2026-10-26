@@ -3,6 +3,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Server\Server.csproj" />
     <ProjectReference Include="..\Shared\Shared.csproj" />
+    <!-- The synthetic-profile generator (Tools/SyntheticProfile.cs), which Tests/SyntheticProfileTests.cs runs
+         into a temp folder to compare with the committed test-content/synthetic/. -->
+    <ProjectReference Include="..\Tools\Tools.csproj" />
   </ItemGroup>
 
   <ItemGroup>

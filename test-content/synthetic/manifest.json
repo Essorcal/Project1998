@@ -1,0 +1,365 @@
+{
+  "profile": "synthetic",
+  "manifestVersion": 1,
+  "generatedBy": "dotnet run --project Tools -- synthetic-profile",
+  "about": "Invented test content. No map cell, object id or flag, name or tile here comes from game-data or a client install.",
+  "start": {
+    "map": 7400,
+    "x": 32,
+    "y": 32
+  },
+  "maps": [
+    {
+      "id": 7400,
+      "name": "Synthetic Start",
+      "width": 64,
+      "height": 64,
+      "file": "maps/TK7400.map",
+      "floorGround": 1,
+      "indoor": true,
+      "start": {
+        "x": 32,
+        "y": 32
+      }
+    },
+    {
+      "id": 7401,
+      "name": "Synthetic Annex",
+      "width": 40,
+      "height": 32,
+      "file": "maps/TK7401.map",
+      "floorGround": 2,
+      "indoor": true,
+      "start": null
+    }
+  ],
+  "ground": {
+    "walkableBelow": 16384,
+    "rule": "A ground word below 0x4000 (16384) is walkable; at or above it the cell is blocked. 0 draws nothing."
+  },
+  "wallBands": [
+    {
+      "map": 7400,
+      "ground": 49153,
+      "y": 26,
+      "fromX": 16,
+      "toX": 47,
+      "gaps": [
+        {
+          "x": 32,
+          "object": 17
+        }
+      ]
+    }
+  ],
+  "objectTable": {
+    "file": "SObj.tbl",
+    "count": 17,
+    "overrides": "ObjectFlagOverrides.csv",
+    "up": 1,
+    "down": 2,
+    "right": 4,
+    "left": 8,
+    "rule": "A set bit refuses a step into the object's cell heading that way: north by up, south by down, east by right, west by left. Only the destination cell's object is tested. serverFlag is fileFlag after ObjectFlagOverrides.csv."
+  },
+  "objects": [
+    {
+      "id": 1,
+      "fileFlag": 1,
+      "serverFlag": 1,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 34,
+          "y": 36
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "fileFlag": 2,
+      "serverFlag": 2,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 36,
+          "y": 36
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "fileFlag": 3,
+      "serverFlag": 3,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 38,
+          "y": 36
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "fileFlag": 4,
+      "serverFlag": 4,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 40,
+          "y": 36
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "fileFlag": 5,
+      "serverFlag": 5,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 42,
+          "y": 36
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "fileFlag": 6,
+      "serverFlag": 6,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 34,
+          "y": 38
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "fileFlag": 7,
+      "serverFlag": 7,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 36,
+          "y": 38
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "fileFlag": 8,
+      "serverFlag": 8,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 38,
+          "y": 38
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "fileFlag": 9,
+      "serverFlag": 9,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 40,
+          "y": 38
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "fileFlag": 10,
+      "serverFlag": 10,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 42,
+          "y": 38
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "fileFlag": 11,
+      "serverFlag": 11,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 34,
+          "y": 40
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "fileFlag": 12,
+      "serverFlag": 12,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 36,
+          "y": 40
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "fileFlag": 13,
+      "serverFlag": 13,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 38,
+          "y": 40
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "fileFlag": 14,
+      "serverFlag": 14,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 40,
+          "y": 40
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "fileFlag": 15,
+      "serverFlag": 15,
+      "role": "direction",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 42,
+          "y": 40
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "fileFlag": 0,
+      "serverFlag": 0,
+      "role": "decor",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 28,
+          "y": 32
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "fileFlag": 15,
+      "serverFlag": 0,
+      "role": "pass-through",
+      "cells": [
+        {
+          "map": 7400,
+          "x": 32,
+          "y": 26
+        }
+      ]
+    }
+  ],
+  "warps": [
+    {
+      "from": {
+        "map": 7400,
+        "x": 32,
+        "y": 56
+      },
+      "to": {
+        "map": 7401,
+        "x": 20,
+        "y": 13
+      }
+    },
+    {
+      "from": {
+        "map": 7401,
+        "x": 20,
+        "y": 12
+      },
+      "to": {
+        "map": 7400,
+        "x": 32,
+        "y": 55
+      }
+    }
+  ],
+  "warpRule": "Stepping into a from tile moves the player to its to tile, before any collision test. Arriving on a tile never fires a warp.",
+  "entities": [
+    {
+      "kind": "npc",
+      "npcId": 1000,
+      "runtimeId": 300000,
+      "identifier": "SyntheticSentinel",
+      "name": "Synthetic Sentinel",
+      "map": 7400,
+      "x": 30,
+      "y": 29,
+      "look": 1,
+      "stationary": true
+    }
+  ],
+  "runtimeIdRule": "A fresh server numbers NPCs from 300000 in NPCs.csv order.",
+  "environment": {
+    "pathsRelativeTo": "the repository root. The server uses a path as given, so start it from the root or make the paths absolute.",
+    "variables": [
+      {
+        "name": "P1998_GAME_DATA",
+        "value": "test-content/synthetic",
+        "note": "The content root: every CSV and Lua file."
+      },
+      {
+        "name": "P1998_MAPS",
+        "value": "test-content/synthetic/maps",
+        "note": "The .map files."
+      },
+      {
+        "name": "P1998_SOBJ",
+        "value": "test-content/synthetic/SObj.tbl",
+        "note": "The object flag table."
+      },
+      {
+        "name": "P1998_MAPS_INSTALL_FALLBACK",
+        "value": "0",
+        "note": "A missing map is reported missing, never read from a client install."
+      },
+      {
+        "name": "P1998_STATE",
+        "value": null,
+        "note": "A new, empty directory for every run."
+      },
+      {
+        "name": "P1998_START_POINT",
+        "value": "7400,32,32",
+        "note": "New characters start on the start tile. Needs the start-point setting; a server without it ignores the variable and starts new characters on map 4711, which this profile does not have."
+      }
+    ]
+  }
+}

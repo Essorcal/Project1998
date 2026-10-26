@@ -1,0 +1,4 @@
+# Synthetic test profile: invented content written by `dotnet run --project Tools -- synthetic-profile`. Edit the generator, not this file.
+id,name,xs,ys
+7400,Synthetic Start,64,64
+7401,Synthetic Annex,40,32

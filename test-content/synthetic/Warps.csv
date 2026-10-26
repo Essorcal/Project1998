@@ -1,0 +1,4 @@
+# Synthetic test profile: invented content written by `dotnet run --project Tools -- synthetic-profile`. Edit the generator, not this file.
+SourceMapId,SourceX,SourceY,DestinationMapId,DestinationX,DestinationY
+7400,32,56,7401,20,13
+7401,20,12,7400,32,55

@@ -1,0 +1,3 @@
+# Synthetic test profile: invented content written by `dotnet run --project Tools -- synthetic-profile`. Edit the generator, not this file.
+NpcId,NpcIdentifier,NpcDescription,NpcMapId,NpcX,NpcY,NpcLook,NpcLookColor,NpcIsChar,NpcIsRepairNpc,NpcIsShopNpc,NpcIsBankNpc,NpcReturnDistance,NpcMoveTime,Enabled,EraFeature
+1000,SyntheticSentinel,Synthetic Sentinel,7400,30,29,1,0,0,0,0,0,0,0,1,
