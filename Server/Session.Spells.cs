@@ -2655,10 +2655,15 @@ public sealed partial class Session
     /// <paramref name="minimum"/> once netted: RTK's <c>calculateDamage</c>, then a floor, then <c>removeHealth</c>
     /// (shamans_torment.lua:71-75). No deflect roll and no graphic: RTK's beat calls neither. The over-head bar, a kill's
     /// corpse beat and its experience, as <see cref="LuaDamageTarget"/> gives them, on the creature's own map, which a
-    /// beat can find the caster has left. False, striking nothing, when it is not a living creature.</summary>
+    /// beat can find the caster has left. False, striking nothing, when it is not a living creature, or when the caster is
+    /// logging out.</summary>
     internal bool LuaStrikeVictim(SpellDef sp, Mob? victim, ushort map, double amt, int minimum)
     {
         if (victim is not { IsNpc: false } mob) return false;
+        // A beat's verb enters the Lua gate after the caster's monitor; on the gate's slow path the monitor is dropped
+        // while it waits, and a logout can run to its end in that gap. Read again here, under the retaken monitor, so
+        // the blow never lands for a player who has gone (#406 review, F1).
+        if (_leaving) return false;
         if (amt < 1) amt = 1;
         if (!_world.TryDamage(map, mob, SpellRaw(amt, mob), out bool died, _char.Id, minDamage: Math.Max(0, minimum)))
             return false;
@@ -2699,9 +2704,13 @@ public sealed partial class Session
     private void RunDueSpellTicks()
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        // A caster who has logged out runs nothing more. The heartbeat takes its roster before it reaches us, so a
+        // logout's teardown (which sets _leaving first, under this monitor) can run to its end between that snapshot
+        // and this call; the runs end here instead of beating for a player who has gone (#406 review, F1).
+        if (EndSpellTicksIfLeaving()) return;
         long now = Environment.TickCount64;
         // A copy: a verb may start, refresh or end ticks, and the Lua gate's slow path can let this player's own cast
-        // in between two beats.
+        // in between two beats, or the logout's teardown (the check after each beat below).
         foreach (var t in _spellTicks.ToArray())
         {
             if (t.Ended || now < t.Next || t.Next >= t.Until) continue;
@@ -2724,10 +2733,23 @@ public sealed partial class Session
                 Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on {(t.Self ? "its caster" : $"mob {t.MobId}")} " +
                          "did not run to completion — the tick ends");
             }
+            if (EndSpellTicksIfLeaving()) return;   // a logout that got in while the beat waited for the Lua gate
         }
         now = Environment.TickCount64;
         _spellTicks.RemoveAll(t => t.Ended || now >= t.Until);
         PublishSpellTickDue();
+    }
+
+    /// <summary>If this player is logging out (<c>_leaving</c>, set first by the logout's teardown under this monitor),
+    /// end every run and say so; under this session's monitor. A logout ends the runs, as RTK's beat finds no caster then
+    /// and its script lands nothing.</summary>
+    private bool EndSpellTicksIfLeaving()
+    {
+        if (!_leaving) return false;
+        if (_spellTicks.Count > 0) Log.Info($"   -> '{_char.Name}' is logging out: {_spellTicks.Count} spell run(s) end");
+        _spellTicks.Clear();
+        PublishSpellTickDue();
+        return true;
     }
 
     // RTK player.registry values a verb keeps only for this login (Shaman's torment's "totalsiphon"): not saved, so
