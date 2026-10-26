@@ -42,9 +42,11 @@ namespace Tests;
 ///
 /// <para>The state, log and run folders sit in one new temp folder per boot, deleted afterwards. A test host that
 /// dies cannot delete its own, so each run first sweeps the ones nobody has written to for
-/// <see cref="StaleAfter"/> (<see cref="SweepStaleBootFolders"/>). Every <c>P1998_*</c> variable of this
-/// process is dropped from the child's environment first, so a developer's shell cannot leak into the
-/// boot.</para>
+/// <see cref="StaleAfter"/> (<see cref="SweepStaleBootFolders"/>): renamed, then deleted, so that on Windows a
+/// folder with a file still open in it is left whole rather than emptied around that file. On Linux an open file
+/// stops neither step, so the one server the sweep could reach there, a hung one that has not written for 15
+/// minutes, loses its folder. Every <c>P1998_*</c> variable of this process is dropped from the child's
+/// environment first, so a developer's shell cannot leak into the boot.</para>
 /// </summary>
 public class SyntheticProfileBootTests
 {
@@ -62,9 +64,14 @@ public class SyntheticProfileBootTests
     /// host died: past <see cref="BootBound"/>, so it never cuts a slow boot short.</summary>
     private static readonly TimeSpan Leash = TimeSpan.FromSeconds(120);
 
-    /// <summary>Each boot's temp folder is this prefix and 32 hex digits; the sweep touches nothing else.</summary>
+    /// <summary>Each boot's temp folder is this prefix and 32 hex digits; the sweep touches nothing else, besides
+    /// its own renamed leftovers (<see cref="DeletingSuffix"/>).</summary>
     private const string BootFolderPrefix = "p1998-synthetic-boot-";
     private static readonly Regex BootFolderName = new($"^{BootFolderPrefix}[0-9a-f]{{32}}$");
+
+    /// <summary>What the sweep renames a stale boot folder to before deleting it. No boot uses the name.</summary>
+    private const string DeletingSuffix = ".deleting";
+    private static readonly Regex ClaimedFolderName = new($"^{BootFolderPrefix}[0-9a-f]{{32}}{Regex.Escape(DeletingSuffix)}$");
 
     /// <summary>How long a boot folder must have gone unwritten before the sweep deletes it. A boot in progress
     /// writes into its folder from the start (the server's log, then <c>run/status.json</c> every 10 s while it
@@ -235,9 +242,10 @@ public class SyntheticProfileBootTests
         Assert.Equal(0, run.ExitCode);
     }
 
-    /// <summary>The sweep deletes a boot folder nothing has been written to for <see cref="StaleAfter"/>, and
-    /// leaves alone a fresh one, an old one with something written inside it lately (a boot still running), and a
-    /// folder whose name is not a boot folder's. Run on a folder of its own, not the real temp directory.</summary>
+    /// <summary>The sweep deletes a boot folder nothing has been written to for <see cref="StaleAfter"/>, and a
+    /// leftover an earlier sweep renamed but could not finish deleting; it leaves alone a fresh boot folder, an old
+    /// one with something written inside it lately (a boot still running), and a folder whose name is not a boot
+    /// folder's. Run on a folder of its own, not the real temp directory.</summary>
     [Fact]
     public void The_sweep_deletes_only_boot_folders_nothing_has_written_to_lately()
     {
@@ -245,34 +253,22 @@ public class SyntheticProfileBootTests
         var now = DateTime.UtcNow;
         try
         {
-            string Folder(string name, TimeSpan age, TimeSpan? statusAge = null)
-            {
-                string dir = Path.Combine(root, name);
-                Directory.CreateDirectory(Path.Combine(dir, "logs"));
-                Directory.CreateDirectory(Path.Combine(dir, "run"));
-                File.WriteAllText(Path.Combine(dir, "logs", "server.log"), "log");
-                File.WriteAllText(Path.Combine(dir, "run", "status.json"), "{}");
-                // Files first, then folders: a folder's own write time moves when an entry is added inside it.
-                foreach (string file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-                    File.SetLastWriteTimeUtc(file, now - age);
-                if (statusAge is { } recent) File.SetLastWriteTimeUtc(Path.Combine(dir, "run", "status.json"), now - recent);
-                foreach (string sub in Directory.EnumerateDirectories(dir)) Directory.SetLastWriteTimeUtc(sub, now - age);
-                Directory.SetLastWriteTimeUtc(dir, now - age);
-                return dir;
-            }
+            string stale = PlantBootFolder(root, BootFolderPrefix + new string('a', 32), now, TimeSpan.FromMinutes(20));
+            string fresh = PlantBootFolder(root, BootFolderPrefix + new string('b', 32), now, TimeSpan.FromMinutes(1));
+            string running = PlantBootFolder(root, BootFolderPrefix + new string('c', 32), now, TimeSpan.FromMinutes(20),
+                                             statusAge: TimeSpan.FromSeconds(10));
+            string foreign = PlantBootFolder(root, BootFolderPrefix + "notes", now, TimeSpan.FromMinutes(20));
+            string leftover = PlantBootFolder(root, BootFolderPrefix + new string('d', 32) + DeletingSuffix, now,
+                                              TimeSpan.FromMinutes(1));
 
-            string stale = Folder(BootFolderPrefix + new string('a', 32), TimeSpan.FromMinutes(20));
-            string fresh = Folder(BootFolderPrefix + new string('b', 32), TimeSpan.FromMinutes(1));
-            string running = Folder(BootFolderPrefix + new string('c', 32), TimeSpan.FromMinutes(20),
-                                    statusAge: TimeSpan.FromSeconds(10));
-            string foreign = Folder(BootFolderPrefix + "notes", TimeSpan.FromMinutes(20));
-
-            int deleted = SweepStaleBootFolders(root, now);
+            int removed = SweepStaleBootFolders(root, now);
             Assert.False(Directory.Exists(stale), "a boot folder untouched for 20 minutes was kept");
+            Assert.False(Directory.Exists(stale + DeletingSuffix), "a stale boot folder was renamed and not deleted");
+            Assert.False(Directory.Exists(leftover), $"a {DeletingSuffix} leftover of an earlier sweep was kept");
             Assert.True(Directory.Exists(fresh), "a boot folder written a minute ago was deleted");
             Assert.True(Directory.Exists(running), "a boot folder whose status file was written 10 s ago was deleted");
             Assert.True(Directory.Exists(foreign), "a folder whose name is not a boot folder's was deleted");
-            Assert.Equal(1, deleted);
+            Assert.Equal(2, removed);
         }
         finally
         {
@@ -280,33 +276,124 @@ public class SyntheticProfileBootTests
         }
     }
 
-    /// <summary>Delete every boot folder under <paramref name="tempRoot"/> that nothing has been written to for
-    /// <see cref="StaleAfter"/>: the newest write time of the folder and of everything in it is what counts. Only
-    /// names that are a boot folder's are considered. Best effort: a folder that cannot be read or deleted (a file
-    /// still open, on Windows) is left for a later run. Returns how many were deleted.</summary>
+    /// <summary>A stale boot folder with a file still open in it, as a hung server's log would be. On Windows a
+    /// folder cannot be renamed while anything inside it is open, so the sweep leaves it whole: every file stays,
+    /// including <c>run/restart_at</c>, the leash such a server has not read yet. On Linux an open file stops
+    /// neither a rename nor a delete, so the folder goes, as the class summary says.</summary>
+    [Fact]
+    public void A_stale_boot_folder_with_a_file_held_open_is_left_whole_on_Windows()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"p1998-sweep-probe-{Guid.NewGuid():N}");
+        var now = DateTime.UtcNow;
+        try
+        {
+            string held = PlantBootFolder(root, BootFolderPrefix + new string('e', 32), now, TimeSpan.FromMinutes(20));
+            var before = FilesUnder(held);
+            Assert.Contains("run/restart_at", before);
+
+            int removed;
+            // Opened the way the server's log writer opens it: for writing, others may only read.
+            using (new FileStream(Path.Combine(held, "logs", "server.log"), FileMode.Append, FileAccess.Write, FileShare.Read))
+            {
+                Assert.True(IsStale(held, now), "the planted folder is not stale, so the sweep would not even try it");
+                removed = SweepStaleBootFolders(root, now);
+            }
+
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.True(Directory.Exists(held), "a stale boot folder with a file held open was removed");
+                Assert.Equal(before, FilesUnder(held));
+                Assert.False(Directory.Exists(held + DeletingSuffix), "a folder with a file held open was renamed");
+                Assert.Equal(0, removed);
+            }
+            else
+            {
+                Assert.False(Directory.Exists(held), "on Linux an open file stops neither the rename nor the delete");
+                Assert.Equal(1, removed);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>A boot folder as a boot leaves one (logs, run with its trigger and status file, state), every entry
+    /// last written <paramref name="age"/> before <paramref name="now"/>, except <c>run/status.json</c> at
+    /// <paramref name="statusAge"/> when given.</summary>
+    private static string PlantBootFolder(string root, string name, DateTime now, TimeSpan age, TimeSpan? statusAge = null)
+    {
+        string dir = Path.Combine(root, name);
+        foreach (string sub in new[] { "logs", "run", "state" }) Directory.CreateDirectory(Path.Combine(dir, sub));
+        File.WriteAllText(Path.Combine(dir, "logs", "server.log"), "log");
+        File.WriteAllText(Path.Combine(dir, "run", "restart_at"), "0|leash");
+        File.WriteAllText(Path.Combine(dir, "run", "status.json"), "{}");
+        File.WriteAllText(Path.Combine(dir, "state", "project1998.db"), "db");
+        // Files first, then folders: a folder's own write time moves when an entry is added inside it.
+        foreach (string file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            File.SetLastWriteTimeUtc(file, now - age);
+        if (statusAge is { } recent) File.SetLastWriteTimeUtc(Path.Combine(dir, "run", "status.json"), now - recent);
+        foreach (string sub in Directory.EnumerateDirectories(dir)) Directory.SetLastWriteTimeUtc(sub, now - age);
+        Directory.SetLastWriteTimeUtc(dir, now - age);
+        return dir;
+    }
+
+    private static List<string> FilesUnder(string dir) =>
+        Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(dir, f).Replace('\\', '/'))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>Remove the boot folders under <paramref name="tempRoot"/> that no boot can still own, and return how
+    /// many went.
+    /// <list type="bullet">
+    /// <item>A boot folder (<see cref="BootFolderName"/>) goes when nothing in it has been written for
+    /// <see cref="StaleAfter"/> (<see cref="IsStale"/>). It is first renamed with <see cref="DeletingSuffix"/>,
+    /// then deleted. The rename is all or nothing: on Windows it is refused while any file inside is open, and the
+    /// folder is then left whole for a later run, rather than emptied around the open file as a recursive delete
+    /// would. On Linux an open file stops neither the rename nor the delete.</item>
+    /// <item>A folder already carrying the suffix (<see cref="ClaimedFolderName"/>) is one an earlier sweep renamed
+    /// and could not finish deleting. No boot knows that name, so it goes whatever its age.</item>
+    /// </list>
+    /// Anything else, and any folder that cannot be read, renamed or deleted, is left alone.</summary>
     private static int SweepStaleBootFolders(string tempRoot, DateTime nowUtc)
     {
-        int deleted = 0;
+        int removed = 0;
         foreach (string dir in Directory.EnumerateDirectories(tempRoot, BootFolderPrefix + "*"))
         {
-            if (!BootFolderName.IsMatch(Path.GetFileName(dir))) continue;
+            string name = Path.GetFileName(dir);
             try
             {
-                var folder = new DirectoryInfo(dir);
-                DateTime lastWrite = folder.EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
-                    .Select(entry => entry.LastWriteTimeUtc)
-                    .Append(folder.LastWriteTimeUtc)
-                    .Max();
-                if (nowUtc - lastWrite < StaleAfter) continue;
-                folder.Delete(recursive: true);
-                deleted++;
+                string doomed;
+                if (ClaimedFolderName.IsMatch(name)) doomed = dir;
+                else if (BootFolderName.IsMatch(name) && IsStale(dir, nowUtc))
+                {
+                    doomed = dir + DeletingSuffix;
+                    Directory.Move(dir, doomed);
+                }
+                else continue;
+                Directory.Delete(doomed, recursive: true);
+                removed++;
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
-                // Gone already (another run swept it) or still held open: either way, not this run's to force.
+                // Refused (a file held open, on Windows), or already gone (another run's sweep): left as it is. A
+                // renamed folder whose delete stopped partway keeps its suffix, and the next sweep finishes it.
             }
         }
-        return deleted;
+        return removed;
+    }
+
+    /// <summary>Nothing in <paramref name="dir"/>, nor the folder itself, has been written for
+    /// <see cref="StaleAfter"/>.</summary>
+    private static bool IsStale(string dir, DateTime nowUtc)
+    {
+        var folder = new DirectoryInfo(dir);
+        DateTime lastWrite = folder.EnumerateFileSystemInfos("*", SearchOption.AllDirectories)
+            .Select(entry => entry.LastWriteTimeUtc)
+            .Append(folder.LastWriteTimeUtc)
+            .Max();
+        return nowUtc - lastWrite >= StaleAfter;
     }
 
     /// <summary>Each log record's text without its <c>[HH:mm:ss.fff] </c> stamp, continuation lines (an
