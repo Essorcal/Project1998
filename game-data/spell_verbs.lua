@@ -1414,19 +1414,77 @@ local CHUNG_RYONG_RAGE = {
 }
 local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration = 938000`, first cast only
 
-function verbs.chungryong_rage(ctx, row)
-  -- Climb from the live tier; if the fury has already lapsed (or never ran) start fresh at 1.
-  local base = ctx.rageActive and ctx.crRageTier or 0
-  local tier = math.min(base + 1, #CHUNG_RYONG_RAGE)
-  local t    = CHUNG_RYONG_RAGE[tier]
+-- THE CLIMBING FURIES' LADDERS (the PC-subpath plan's V-rage). RTK's Crossing swords (Do), Sonhi rage (Barbarian) and
+-- Spirit of war (Chongun) are copies of RTK's Chung ryong rage, each its own script with its own lines and graphic and
+-- all three with the same numbers (RTK Spells/Subpaths/Do/crossing_swords.lua, Barbarian/sonhi_rage.lua,
+-- Chongun/spirit_of_war.lua). A SpellParams.csv row binds each to chungryong_rage and names its ladder in `category`;
+-- a row with none (Chung Ryong's own) climbs CHUNG_RYONG_RAGE above exactly as it always has. The row's `duration` is
+-- the run, armed by the first cast only; the wait is the spell's spell_effects.csv aether, as Chung Ryong's is.
+--   * tiers: mult (the whole-swing rage), mana, and ac (an AC delta: negative is harder). The scripts' recast adds
+--     armor 5 a tier from tier 2, and RTK's calcStat runs recast every time it recomputes (rtk/src/map/pc.c), so the
+--     armour holds while the tier does; the AC buff here is the same.
+--   * gated: a cast inside the wait is refused ("<name> isn't ready yet."), as RTK's engine refuses one inside its
+--     aethers before the script runs. Chung Ryong's ladder has never checked its wait, and keeps that here.
+--   * weak: the line for too little mana. Chung Ryong's is ctx:enoughMana's "You do not have enough mana.".
+--   * top: what a cast at the top tier does. "hold": nothing, silently and for free (the scripts have no branch for
+--     it). Chung Ryong's ladder casts its top tier again, as it always has.
+--   * A ladder's tiers may carry their own msg (Chung Ryong's do); otherwise each spell's own six lines are
+--     RAGE_LINES[its key], shown after "[Rage N] ".
+--   * A climb continues only the fury it climbed: on a row ladder, the running fury must be this spell
+--     (ctx.rageName), else the cast starts at tier 1, as the scripts' hasDuration(<own key>) reads it.
+-- What a lapsed climb costs in vita is the engine's, looked up by the same ladder name (Session.ChungRyongRageWearOff).
+local RAGE_LADDERS = {
+  chung_ryongs_rage = { tiers = CHUNG_RYONG_RAGE, gated = false, top = "again" },
+  rtk_rage = {
+    gated = true, weak = "Your will is too weak.", top = "hold",
+    tiers = {
+      { mult = 6,  mana =   3000, ac =   0 },
+      { mult = 9,  mana =  10000, ac =  -5 },
+      { mult = 12, mana =  22000, ac = -10 },
+      { mult = 18, mana =  38000, ac = -15 },
+      { mult = 27, mana =  78000, ac = -20 },
+      { mult = 50, mana = 150000, ac = -25 },
+    },
+  },
+}
 
-  if not ctx:enoughMana(t.mana) then return false end     -- sends its own "not enough mana" line
+-- Each row-ladder fury's own lines, tier 1 to 6, as its script words them. Crossing swords' first line names Chung
+-- Ryong's rage: the script's own line, copied with the body (Sonhi rage's has the same slip), kept as RTK has it.
+local RAGE_LINES = {
+  crossing_swords = {
+    "You cast Chung Ryong's rage.",
+    "Crossing swords grows within you.",
+    "Crossing swords inspires you.",
+    "Your body trembles with incredible strength.",
+    "You enter a mindless frenzy.",
+    "Your body is torn apart with Crossing swords.",
+  },
+}
+
+function verbs.chungryong_rage(ctx, row)
+  local name   = row.category or "chung_ryongs_rage"
+  local ladder = RAGE_LADDERS[name]
+  if not ladder then error("no rage ladder named '" .. tostring(name) .. "' for " .. ctx.spellKey) end
+  local tiers  = ladder.tiers
+  if ladder.gated and ctx:onCooldown(ctx.spellKey) then ctx:say(ctx.spellName .. " isn't ready yet."); return false end
+  -- Climb from the live tier; if the fury has already lapsed (or never ran) start fresh at 1.
+  local climbing = ctx.rageActive and (row.category == nil or ctx.rageName == ctx.spellName)
+  local base = climbing and ctx.crRageTier or 0
+  if base >= #tiers and ladder.top == "hold" then return false end   -- silent, free: the top tier holds
+  local tier = math.min(base + 1, #tiers)
+  local t    = tiers[tier]
+  local line = t.msg or (RAGE_LINES[ctx.spellKey] or {})[tier]
+  if not line then error("no [Rage " .. tier .. "] line for " .. ctx.spellKey) end
+
+  if ladder.weak then
+    if ctx.mp < t.mana then ctx:say(ladder.weak); return false end
+  elseif not ctx:enoughMana(t.mana) then return false end  -- sends its own "not enough mana" line
   ctx:debitMana(t.mana)
   -- durMs 0 on a climb: keep the run's existing deadline (RTK never re-arms it). Only a fresh cast starts one.
   ctx:setCrRage(tier, t.mult, t.ac, base > 0 and 0 or (row.duration or CR_RAGE_DURATION_MS))
   ctx:setCooldown(ctx.spellKey, ctx.spellAether > 0 and ctx.spellAether or 120000)
   ctx:fxSelf()
-  ctx:say("[Rage " .. tier .. "] " .. t.msg)
+  ctx:say("[Rage " .. tier .. "] " .. line)
   ctx:narrated()                                          -- this line REPLACES the central "You cast X."
   return true
 end
@@ -1702,6 +1760,96 @@ function verbs.torment_tick(ctx, row)
   local factor = 2 / (1 + 2.71828 ^ (-1 * (0.95 * (amount - 1))))
   damage = math.ceil(damage * factor / amount) + 1000
   ctx:strikeVictim(damage, 1000)
+  return true
+end
+
+-- =========================================================================================================
+-- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Hear footstep and Assess opponent. Caleb, 2026-10-26:
+-- each spell as its RTK script (P5), and Spirit blade x10 as RTK's (Q8). The other six Do spells ride families that
+-- already exist: Ki strike is splash_strike above; Spirit blade, Balance weapon and Master weapon are enchants (x10,
+-- x15, x20 in game-data/SpellMods.csv, the stance_enchant verb); Blend is a stealth spell (Content.IsStealthSpell, the
+-- stance_stealth verb); Crossing swords climbs chungryong_rage's rtk_rage ladder. Each verb here is bound by its
+-- SpellParams.csv row, which carries its numbers, and is the shape of its script, in that script's order. RTK is weight
+-- 0 for balance; these numbers are its scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * Each wait is checked first, with this file's own line, and armed under the spell's own key (subpath_waiting).
+--   * The cast pose is the engine's, on a cast that lands, and so is the central "You cast X." line; Dash's script
+--     sends none. Assess opponent's readout replaces it, as an inspect's result does.
+--   * RTK waives Dash's wait for a GM; no verb here waives anything for staff.
+-- =========================================================================================================
+
+-- Dash (RTK Subpaths/Do/dash.lua; Barbarian's dash.lua is the same body, so a Barbarian row binds here too): up to
+-- `amount` tiles in the faced direction, stopping before the first blocked one (ctx:leap, the walk the rogue's Race
+-- takes; RTK's checkSpecificTile), with a `duration` ms wait. Short of `mana`, "Your will is too weak.", for free. With
+-- it, nothing is spent: the script checks the mana and never takes it. A dash with nowhere to go still arms its wait,
+-- as the script arms it before its warp. Row: mana 250, amount 3, duration 150000.
+function verbs.dash(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:leap(row.amount or 3)
+  return true
+end
+
+-- Hear footstep (RTK Subpaths/Do/hear_footstep.lua; Spy's and Diviner's are the same body): for `durationMax` ms the
+-- caster is told, every HEAR_FOOTSTEP_BEAT_MS, each other player standing invisible within `amount` tiles on both axes,
+-- one line a name ("<name> is hidden in the area."). The run is the periodic tick on the caster themselves
+-- (ctx:startSelfTick), whose beat is hear_footstep_tick. The cast takes `mana` (0), draws its spell_effects.csv graphic
+-- over the caster and arms the `duration` ms wait. Row: mana 0, amount 4, duration 60000, durationMax 32000.
+local HEAR_FOOTSTEP_BEAT_MS = 5000   -- the script's while_cast speaks when os.time() % 5 == 0: every 5 s
+
+function verbs.hear_footstep(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  ctx:fxSelf()
+  ctx:startSelfTick("hear_footstep_tick", HEAR_FOOTSTEP_BEAT_MS, row.durationMax or 0)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  return true
+end
+
+-- Hear footstep's beat (the script's while_cast), on the caster: RTK's distanceSquare(player, pc, 4) and state == 2,
+-- the caster left out. Nobody hidden, nothing said.
+function verbs.hear_footstep_tick(ctx, row)
+  for name in string.gmatch(ctx:hiddenNear(row.amount or 0), "[^\n]+") do
+    ctx:say(name .. " is hidden in the area.")
+  end
+  return true
+end
+
+-- Thousands commas, as RTK's Tools.formatNumber writes them ("12,345,678"). The scripts call Tools.formatValue, which
+-- RTK defines nowhere (its Tools.lua has formatNumber), so RTK's own readout stops with a Lua error after a player's
+-- first line; these are the two lines the script plainly means, written with the formatter RTK has.
+local function commas(n)
+  local s = tostring(math.floor(n))
+  local count
+  repeat s, count = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2") until count == 0
+  return s
+end
+
+-- Assess opponent (RTK Subpaths/Do/assess_opponent.lua; Chongun's evaluate_opponent.lua and Spy's assess_opponent.lua
+-- are the same body): a readout of the target. A creature: "[<name>] VIT: <max vita>". A player: "[<title> <name>]",
+-- "VIT: <vita>" and "MANA: <mana>", with commas. At nothing, or an NPC, it casts nothing, silently and for free: RTK's
+-- engine runs the script only for a target it found. The engine's deflect comes first, as RTK's clif_parsemagic rolls
+-- it before the script for a spell whose row can fail (this one's can): deflected, nothing is read, armed or spent. Short
+-- of `mana`, "Your will is too weak.", for free; with it, nothing is spent, as the script checks the mana and never
+-- takes it. Row: mana 550, duration 25000.
+function verbs.assess(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.victimIsNpc or ctx.castAtNothing then return false end    -- silent, free: nothing to judge
+  if ctx:victimDeflects() then ctx:say("Your magic has been deflected."); return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  if ctx.victimKind == "creature" then
+    ctx:say("[" .. ctx.victimName .. "] VIT: " .. math.floor(ctx.victimMaxHp))
+  else
+    ctx:say("[" .. ctx.victimTitle .. " " .. ctx.victimName .. "]")
+    ctx:say("VIT: " .. commas(ctx.victimHp))
+    ctx:say("MANA: " .. commas(ctx.victimMp))
+  end
+  ctx:narrated()                                                   -- the readout replaces "You cast Assess opponent."
   return true
 end
 

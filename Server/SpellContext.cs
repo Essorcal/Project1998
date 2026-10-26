@@ -714,6 +714,42 @@ public sealed class SpellContext
     /// <c>target:selfAnimation(player.ID, anim, 1)</c>).</summary>
     public void   selfAnimation(double anim) =>
         _s.LuaSelfAnimation(Victim.mob?.Id ?? Victim.pc?.PlayerId, VictimMap, (int)anim);
+    /// <summary>Start, or refresh, this caster's tick of this spell on the caster themselves, with no creature: the verb
+    /// named <paramref name="verb"/> runs every <paramref name="everyMs"/> for <paramref name="durationMs"/> (RTK
+    /// <c>player:setDuration(key, ms)</c> and the script's <c>while_cast</c>; Hear footstep). A run already going takes
+    /// the new length and keeps its beat. Death, <c>@dispel</c> and a won Dispell end it. See
+    /// <c>Session.LuaStartSelfTick</c>.</summary>
+    public bool startSelfTick(string verb, double everyMs, double durationMs) =>
+        _s.LuaStartSelfTick(_sp, verb, (int)everyMs, (int)durationMs);
+    /// <summary>The names of the other players standing invisible within <paramref name="range"/> tiles of the caster on
+    /// both axes, on the caster's map, one a line ("\n" between them; "" for nobody): RTK's
+    /// <c>getObjectsInSameMap(BL_PC)</c> filtered by <c>state == 2</c> and <c>distanceSquare</c>, the caster left out
+    /// (Hear footstep's beat).</summary>
+    public string hiddenNear(double range) => _s.LuaHiddenNear((int)range);
+
+    // ---- the target readout (RTK's Evaluate opponent and Assess opponent) -----------------------------------------
+    // Reads only. A player victim's name, class and rank, vita and mana are bare reads of that player's fields, as
+    // targetMana's is: display figures, each one scalar or reference read, never written and never under their monitor.
+    /// <summary>What this cast's victim (<see cref="Victim"/>) is: "creature", "player" or "none" (an NPC is none).</summary>
+    public string victimKind  => Victim.mob is not null ? "creature" : Victim.pc is not null ? "player" : "none";
+    /// <summary>This cast's victim's name: a creature's, or a player's; "" with none.</summary>
+    public string victimName  => Victim.mob?.Name ?? Victim.pc?.CharName ?? "";
+    /// <summary>A player victim's class and rank as the world calls them (RTK <c>classNameMark</c>,
+    /// <c>Session.ClassTitle</c>); "" for a creature or none.</summary>
+    public string victimTitle => Victim.pc?.ClassTitle ?? "";
+    /// <summary>This cast's victim's vita now: a creature's, or a player's; 0 with none.</summary>
+    public double victimHp    => Victim.mob is { } m ? m.Hp : Victim.pc?.LuaHp ?? 0;
+    /// <summary>A creature victim's max vita (RTK <c>target.maxHealth</c>); 0 for a player or none.</summary>
+    public double victimMaxHp => Victim.mob?.MaxHp ?? 0;
+    /// <summary>A player victim's mana now; 0 for a creature or none.</summary>
+    public double victimMp    => Victim.pc?.LuaMp ?? 0;
+    /// <summary>Roll the engine's magic deflect against this cast's victim, for a spell whose row can fail (RTK's
+    /// clif_parsemagic rolls it before the script runs): a creature's protection and Will, a player's Will; never on
+    /// the caster. True when deflected; the verb then says so and does nothing else.</summary>
+    public bool victimDeflects() => _s.LuaVictimDeflects(_sp, Victim);
+    /// <summary>The name of the fury running now (the rage slot's, shown in the buff box); meaningful while
+    /// <see cref="rageActive"/>. A climbing fury on a row ladder continues only its own climb (chungryong_rage).</summary>
+    public string rageName    => _s.LuaRageName;
 
     // ---- login-only registry ---------------------------------------------------------------------------------------
     /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value

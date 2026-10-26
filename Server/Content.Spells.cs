@@ -1082,9 +1082,15 @@ public static partial class Content
     // byline "Rogue Tutor Melalye" but signed Yttribium, "Reviewed 2011, by Deimos") is the LEAST era-correct
     // despite being the most detailed. Do not treat it as authoritative on magnitudes; it IS the best source
     // for STRUCTURE (which subpath rank grants which tier) and for qualitative rules.
-    // WHAT WE SHIP (earliest of each):
-    //     Enchant 1.5 | Infuse 2 | Ingress 3 | Viper's Venom 4 | Dragon's Flame 5 | Spirit Blade 9
+    // WHAT WE SHIP (earliest of each, but Spirit Blade):
+    //     Enchant 1.5 | Infuse 2 | Ingress 3 | Viper's Venom 4 | Dragon's Flame 5 | Spirit Blade 10
     //     Baekho's Blade (rogue, Ee San) 1.5
+    // SPIRIT BLADE FOLLOWS RTK, ON CALEB'S WORD: x10, RTK's Spells/Subpaths/Do/spirit_blade.lua (`player.enchant = 10`),
+    // chosen by Caleb on 2026-10-26 (the PC-subpath Do slice, Q8: "x10, as RTK"; the option read "About 11% more weapon
+    // damage while it's active, matching RTK's script and later guides."). It shipped at 9 by the earliest-source rule,
+    // which still sets every other enchant here. Do's two marked enchants take their RTK scripts' figures by the same slice (P5): Balance weapon
+    // x15 for 15,000 mana and Master weapon x20 for 25,000 (Subpaths/Do/balance_weapon.lua, master_weapon.lua); no
+    // earlier source gives either a number.
     // Melalye's Dragon's Harness (Sam San) 8 DOES exist: Spells.csv id 1094, dragons_harness_warrior, and
     // SpellMods.csv carries it at that 8 for 10,000 mana, the only figure any source in this note gives it
     // (Sam san is kept with no era gate; see MaxMark). SpellMods.csv also carries Blade's charm (rogue, Sam
@@ -1113,8 +1119,12 @@ public static partial class Content
     // see Session.PlayerSwingRaw). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
     // RTK's PC_INVIS state also hides the player's sprite from other clients (clif.c), which would need
     // viewport/ShowPlayer changes this pass doesn't touch.
+    // Blend (Do; RTK Spells/Subpaths/Do/blend.lua) joins them on Caleb's word (2026-10-26, P5, the Do slice): the
+    // script is Invisible's with its own numbers (state 2 for 120 s, 4,000 mana, a 30 s wait, all on its
+    // spell_effects.csv row), and RTK's `invis` table holds both (Spells/spellTables.lua). So it takes this family's
+    // rules, the sneak-attack x5 among them, where RTK's scripts set invis 9 for Blend and Invisible alike.
     private static readonly HashSet<string> StealthSpells =
-        new(StringComparer.OrdinalIgnoreCase) { "invisible_rogue", "spirits_form_rogue", "lifes_cloak_rogue", "glass_form_rogue" };
+        new(StringComparer.OrdinalIgnoreCase) { "invisible_rogue", "spirits_form_rogue", "lifes_cloak_rogue", "glass_form_rogue", "blend" };
     public static bool IsStealthSpell(SpellDef sp) => StealthSpells.Contains(sp.Key);
 
     // RTK rogue/lethal_strike.lua + desperate_attack.lua, warrior/berserk.lua + whirlwind.lua: a facing-tile

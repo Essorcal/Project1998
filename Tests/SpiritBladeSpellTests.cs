@@ -8,8 +8,10 @@ namespace Tests;
 /// <summary>
 /// Spirit Blade arms its enchant (the test client's spell census, defect 1).
 ///
-/// <para><c>spirit_blade</c> is one of the <c>EnchantFor</c> spells (<c>game-data/SpellMods.csv</c>: x9 for 10000
-/// mana) and the only one with no <c>spell_effects.csv</c> row. <c>Session.ApplyCast</c> used to send every
+/// <para><c>spirit_blade</c> is one of the <c>EnchantFor</c> spells (<c>game-data/SpellMods.csv</c>: x10 for 10000
+/// mana, RTK's <c>Spells/Subpaths/Do/spirit_blade.lua</c>, on Caleb's word of 2026-10-26; it was x9 by the
+/// earliest-source rule, <c>Content.EnchantSpells</c>' note) and, with Do's Balance and Master weapon, one of the three
+/// with no <c>spell_effects.csv</c> row. <c>Session.ApplyCast</c> used to send every
 /// spell without a row to the keyword fallback (the <c>generic</c> verb) before it reached the enchant
 /// dispatch, so a Spirit Blade cast charged generic's 5 mana, printed "You cast Spirit blade." and armed
 /// nothing. Silent: the player paid, was told it worked, and swung at x1. It now runs <c>stance_enchant</c>
@@ -29,21 +31,22 @@ public sealed class SpiritBladeSpellTests
 
     private static SpellDef SpiritBlade => Content.SpellByKey("spirit_blade")!;
 
-    /// <summary>The cast arms the enchant at x9 and charges 10000 mana. Red on 9c00b98: the enchant stays at 1,
-    /// the pool loses generic's 5, and the cast still answers "You cast Spirit blade.".</summary>
+    /// <summary>The cast arms the enchant at x10 and charges 10000 mana. Red on 9c00b98: the enchant stays at 1,
+    /// the pool loses generic's 5, and the cast still answers "You cast Spirit blade.". Red on 0fadbfc (the Do slice's
+    /// base): x9.</summary>
     [Fact]
     public void ACastArmsTheEnchantAtItsOwnMultiplierAndMana()
     {
         var sp = SpiritBlade;
         Assert.Null(Content.FxFor(sp));                                    // the precondition the defect lived on
-        Assert.Equal((9.0, 10000), Content.EnchantFor(sp));                // SpellMods.csv, the table every enchant uses
+        Assert.Equal((10.0, 10000), Content.EnchantFor(sp));               // SpellMods.csv, the table every enchant uses
 
         var (session, outbound, c) = _fx.PlayerWith("SpBlade1", ch => Shape(ch, sp), Map, x: 5, y: 5);
         try
         {
             session.Receive(SpellCastSupport.CastFrame(0));
 
-            Assert.Equal((true, 9.0, 15_000u),
+            Assert.Equal((true, 10.0, 15_000u),
                          (session.LuaEnchantActive, SpellCastSupport.Enchant(session), c.Mp));
             Assert.Contains("You cast Spirit blade.", SpellCastSupport.MiniTexts(outbound));
         }

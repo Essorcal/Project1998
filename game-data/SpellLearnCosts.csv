@@ -632,8 +632,15 @@ rock_blessing_poet,4,99,100000,purple_ring,10,,,,,,,atlas-poet-spells
 kwisin_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
 mingken_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
 ohaeng_master_poet,4,99,350000,,,,,,,,,atlas-poet-spells
+dash_do,18,99,25000,blood,1,splendid_tiger_pelt,1,,,,,rtk-lua
 spirit_blade,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
+blend,18,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+hear_footstep_do,18,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+assess_opponent_do,18,99,5000,red_fox_fur,80,fine_rabbit_meat,5,fox_blade,3,,,rtk-lua
+balance_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
+master_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 ki_strike,18,99,500,acorn,70,amber,1,,,,,rtk-lua
+crossing_swords,18,99,50000,spike,1,chung_ryong_key,1,dragons_liver,1,,,rtk-lua
 assassinate,19,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
 hailstorm,16,64,500,acorn,70,amber,1,,,,,rtk-lua
 ice_bombardment,16,99,500,acorn,70,amber,1,,,,,rtk-lua
