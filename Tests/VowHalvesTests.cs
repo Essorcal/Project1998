@@ -55,6 +55,12 @@ namespace Tests;
 /// two declines inside the receiver's own. A bride whose logout follows the wedding has her line handed to her
 /// connection before her teardown runs, and so before its close.</para>
 ///
+/// <para><b>And the prices past the top of a uint</b> (Caleb, 2026-10-26: "As RTK"). A divorce costs <c>MaxHp *
+/// 2550</c> experience and a broken engagement <c>MaxMp * 1000</c>, both now taken in 64 bits as RTK's Lua numbers are.
+/// Past base Vita 1,684,300 the divorce is quoted in full, more than anyone can hold, so "Yes" leads to the sacrifice;
+/// past base Mana 4,294,967 a broken engagement takes all banked experience. Before, both wrapped to a small
+/// price.</para>
+///
 /// <para><b>The path.</b> Every player logs in through the real <c>0x10</c> arrival on an isolated database and logs
 /// out through the read loop's real exit (<c>Session.EndReadLoopAsync</c>, whose teardown saves). The Chapel is
 /// Crystal's dialog on the Crystalline Chapel (map 3815) through the real <c>0x43</c> click and <c>0x3A</c> replies,
@@ -690,6 +696,165 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             Assert.Equal(1, bS.WithState(() => bS.CountItem("love")));
             Assert.True(VowGone(aS, married: true));
             Assert.True(VowGone(bS, married: true));
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    // ===== the prices past the top of a uint (Caleb, 2026-10-26: "As RTK") ===================================
+
+    /// <summary>
+    /// <b>A divorce at base vita past the wrap quotes its whole cost and leads to the sacrifice.</b> A, a level 99
+    /// married to B, holds the most experience anyone can (4,294,967,295) and 1,684,301 base Vita, the first whose
+    /// divorce (<c>MaxHp * 2550</c>) passes the top of a uint. Crystal quotes all 4,294,967,550, which A cannot pay, so
+    /// "Yes" reads the short-of-experience page and the sacrifice offer, as RTK's Lua numbers do
+    /// (<c>chapel_npc.lua</c>, the divorce's <c>player.exp &lt; expCost</c>). A gives 8000 Vita: divorced, with every
+    /// point of experience kept.
+    /// <para>Red on e67cd9d: the cost wrapped to 254, so Crystal quoted "254 experience" and "Yes" divorced A for 254
+    /// experience.</para>
+    /// </summary>
+    [Fact]
+    public void ADivorcePastTheWrapQuotesItsWholeCostAndLeadsToTheSacrifice()
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = TopOfExperience(NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y, maxHp: 1_684_301u));
+        Seed(db, aRow, NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            var (bS, _) = Arrive(db.Store, b);
+            bHeld = bS;
+            Vow(aS, b, married: true);
+            Vow(bS, a, married: true);
+
+            OnOwnThread(() => OpenVowEntry(aS, aOut, npc, def, divorce: true));
+            Assert.Equal("It will cost 4,294,967,550 experience. Are you sure you want this divorce?", DivorceQuestion(aOut));
+
+            OnOwnThread(() => aS.Receive(MenuFrame(1)));   // "Yes"
+            Assert.Equal(0, Shown(aOut, DonePage(married: true)));
+            Assert.Equal(1, Shown(aOut, SacrificeOffer));
+            Assert.Equal(uint.MaxValue, aS.CharExp);
+
+            List<string> offer = new();
+            OnOwnThread(() =>
+            {
+                aS.Receive(NextFrame());
+                offer = LastMenu(aOut, "Perhaps some physical suffering would be sufficient?");
+                aS.Receive(MenuFrame(1));   // "Sacrifice 8000 Vita"
+                LastMenu(aOut, "It will cost you 8000 base Vita as a penalty. Continue?");
+                aS.Receive(MenuFrame(1));   // "Yes, do it"
+                aS.Receive(NextFrame());    // "You are now divorced."
+            });
+
+            Assert.Equal(new List<string> { "Sacrifice 8000 Vita", "Sacrifice 4000 Mana", "I'd rather not." }, offer);
+            Assert.False(aS.DialogBusy, "A's dialog did not close");
+            Assert.Equal(1, Shown(aOut, DonePage(married: true)));
+            Assert.True(VowGone(aS, married: true), $"A's half was not ended: {VowState(aS)}");
+            Assert.Equal((uint.MaxValue, 1_684_301u - 8000, 100u), Pools(aS));
+            Assert.Equal((uint.MaxValue, 1_684_301u - 8000, 100u), Pools(Row(db.Store, a)));
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    /// <summary>
+    /// <b>A divorce at the last base vita below the wrap is quoted and charged in full, as before.</b> A holds
+    /// 4,294,967,295 experience and 1,684,300 base Vita: Crystal quotes 4,294,965,000, and "Yes" takes it and divorces
+    /// A, who keeps 2,295.
+    /// <para>The control for the fact above: green on e67cd9d too, where the uint product had not wrapped yet.</para>
+    /// </summary>
+    [Fact]
+    public void ADivorceAtTheLastBaseVitaBelowTheWrapIsChargedInFull()
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = TopOfExperience(NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y, maxHp: 1_684_300u));
+        Seed(db, aRow, NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            var (bS, _) = Arrive(db.Store, b);
+            bHeld = bS;
+            Vow(aS, b, married: true);
+            Vow(bS, a, married: true);
+
+            OnOwnThread(() => OpenVowEntry(aS, aOut, npc, def, divorce: true));
+            Assert.Equal("It will cost 4,294,965,000 experience. Are you sure you want this divorce?", DivorceQuestion(aOut));
+            OnOwnThread(() =>
+            {
+                aS.Receive(MenuFrame(1));   // "Yes"
+                aS.Receive(NextFrame());    // "You are now divorced."
+            });
+
+            Assert.False(aS.DialogBusy, "A's dialog did not close");
+            Assert.Equal(0, Shown(aOut, SacrificeOffer));
+            Assert.Equal(1, Shown(aOut, DonePage(married: true)));
+            Assert.True(VowGone(aS, married: true), $"A's half was not ended: {VowState(aS)}");
+            Assert.Equal((2_295u, 1_684_300u, 100u), Pools(aS));
+        }
+        finally
+        {
+            Release(a, aHeld);
+            Release(b, bHeld);
+        }
+    }
+
+    /// <summary>
+    /// <b>Breaking an engagement takes <c>MaxMp * 1000</c> experience, and past the wrap all of it.</b> A, a level 99
+    /// engaged to B, holds 4,294,967,295 experience. At 4,294,967 base Mana the penalty is 4,294,967,000 and A keeps
+    /// 295; at 4,294,968, the first past the top of a uint, the penalty is more than A holds and takes everything, as RTK
+    /// clamps it at 4294967295 and zeroes a smaller balance (<c>chapel_npc.lua</c>, the break's penalty).
+    /// <para>Red on e67cd9d for 4,294,968 only: the penalty wrapped to 704, and A kept 4,294,966,591. The 4,294,967 row
+    /// is the control, green on both.</para>
+    /// </summary>
+    [Theory]
+    [InlineData(4_294_967u, 295u)]
+    [InlineData(4_294_968u, 0u)]
+    public void BreakingAnEngagementPastTheWrapTakesAllBankedExperience(uint mana, uint expLeft)
+    {
+        using var db = new IsolatedDatabase();
+        var (npc, def) = ChapelNpc();
+        string a = Name("A"), b = Name("B");
+        var aRow = TopOfExperience(NewCharacter(a, def.Map, NearCrystal.X, NearCrystal.Y));
+        aRow.MaxMp = mana; aRow.Mp = mana;
+        Seed(db, aRow, NewCharacter(b, def.Map, AlsoNearCrystal.X, AlsoNearCrystal.Y));
+
+        Session? aHeld = null, bHeld = null;
+        try
+        {
+            var (aS, aOut) = Arrive(db.Store, a);
+            aHeld = aS;
+            var (bS, _) = Arrive(db.Store, b);
+            bHeld = bS;
+            Vow(aS, b, married: false);
+            Vow(bS, a, married: false);
+
+            OnOwnThread(() =>
+            {
+                OpenVowEntry(aS, aOut, npc, def, divorce: false);
+                aS.Receive(MenuFrame(1));   // "Yes, it is necessary (You will lose some XP)"
+                aS.Receive(NextFrame());    // "It is done."
+            });
+
+            Assert.False(aS.DialogBusy, "A's dialog did not close");
+            Assert.Equal(1, Shown(aOut, DonePage(married: false)));
+            Assert.True(VowGone(aS, married: false), $"A's half was not ended: {VowState(aS)}");
+            Assert.Equal((expLeft, 1_000u, mana), Pools(aS));
         }
         finally
         {
@@ -2689,6 +2854,15 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         return c;
     }
 
+    /// <summary><paramref name="c"/> as a level 99 holding the most experience anyone can: 4,294,967,295, where
+    /// <c>Session.AwardExp</c> stops.</summary>
+    private static Character TopOfExperience(Character c)
+    {
+        c.Level = 99;
+        c.Exp = uint.MaxValue;
+        return c;
+    }
+
     private static void Seed(IsolatedDatabase db, params Character[] rows)
     {
         foreach (var c in rows) Assert.True(db.Store.Save(c), $"the setup save of {c.Name} failed");
@@ -3083,6 +3257,22 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
             i += len;
         }
         return labels;
+    }
+
+    /// <summary>The divorce's question as it was last sent, from "It will cost" to "Are you sure you want this
+    /// divorce?", so a fact can compare the quoted cost whole.</summary>
+    private static string DivorceQuestion(RecordingOutbound o)
+    {
+        const string head = "It will cost ", tail = "Are you sure you want this divorce?";
+        var text = o.BodiesOf(ServerOp.NpcDialog)
+            .Where(bd => bd.Length > 2 && bd[0] == 0x02 && bd[1] == 0x02)
+            .Select(bd => Encoding.ASCII.GetString(bd))
+            .LastOrDefault(t => t.Contains(tail));
+        Assert.True(text is not null, "no divorce question was sent");
+        int end = text!.IndexOf(tail, StringComparison.Ordinal) + tail.Length;
+        int start = text.LastIndexOf(head, end - 1, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"the divorce question names no cost: {text}");
+        return text[start..end];
     }
 
     /// <summary>How many NPC text boxes said exactly <paramref name="text"/>: a box ends with its message, after the
