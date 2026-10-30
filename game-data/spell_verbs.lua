@@ -1687,12 +1687,16 @@ end
 --     (TORMENT_SECOND_MS, at verbs.torment). RTK's own run ends on its timer's step 20 (rtk/src/map/mob.c:653-655),
 --     so it is that long for a cast just after that step and up to 1.45 s shorter for the rest. RTK beats on step 30
 --     (mob.c:650-652), 0.05-1.5 s after the cast first, and N - 1 times in two casts of three, N in the third (a cast
---     in the half second from step 20 to step 30). The beats here come 1.5 s apart from the cast, and their count is
---     RTK's (the project owner's choice, 2026-10-30): N - 1, strictly before the run's end, and in one fresh run in
---     three an Nth at N x 1.5 s, the run then lasting 1 s past it (TORMENT_EARLY_STEPS, at verbs.torment); 4-20
---     across rolls. A creature's threat from a beat is the blow it took, as from every blow
---     here; the script adds its figure before armour. A ghost casts nothing here (the engine's rule); the script's
---     canCast(0, ...) lets a ghost torment.
+--     in the half second from step 20 to step 30). The beats here come 1.5 s apart from the cast, and a fresh run's
+--     count is RTK's (the project owner's choice, 2026-10-30): N - 1, strictly before the run's end, and in one fresh
+--     run in three an Nth at N x 1.5 s, the run then lasting 1 s past it (TORMENT_EARLY_STEPS, at verbs.torment); 4-20
+--     across rolls. A recast at a running run keeps its beat and rolls nothing, so from the recast on it strikes N
+--     times, every time, where RTK gives N in one recast of three and N - 1 otherwise. A creature counts toward
+--     another run's siphon count until its own run ends; each run here keeps its own beat, so another run's blow is
+--     divided by one more at about one beat more than the creature itself took, where RTK's beats all fall on one
+--     step. A creature's threat from a beat is the blow it took, as from every blow here; the script adds its figure
+--     before armour. A ghost casts nothing here (the engine's rule); the script's canCast(0, ...) lets a ghost
+--     torment.
 -- =========================================================================================================
 
 -- Shaman's solace (RTK Subpaths/Shaman/shamans_solace.lua): its target, a player or a creature, takes `amount` vita,
@@ -1750,7 +1754,10 @@ local TORMENT_SECOND_MS = 1500
 -- for the beat at N x 1.5 s to land: TORMENT_TAIL_MS past it, the 1 s from RTK's step 30 to its next step 20, which is
 -- how long every RTK run lasts after its last beat. That beat then lands inside the run, so it counts its own
 -- creature, as every beat does (the world heartbeat runs a beat up to one of its beats late). A recast that sets a
--- running run's length again keeps that run's beat (ctx:startTick), so it rolls nothing here.
+-- running run's length again keeps that run's beat (ctx:startTick), so it rolls nothing here: the kept beat is less
+-- than 1.5 s off, so the run strikes N times from the recast on, every time. RTK sets a recast's duration against its
+-- one timer, so it gives N in one recast of three and N - 1 otherwise; this port does not match RTK's odds on a
+-- recast.
 local TORMENT_CYCLE_STEPS = 30
 local TORMENT_EARLY_STEPS = 10
 local TORMENT_TAIL_MS     = 1000
