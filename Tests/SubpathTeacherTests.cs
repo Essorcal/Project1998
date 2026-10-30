@@ -377,16 +377,17 @@ public sealed class SubpathTeacherTests
         finally { _fx.World.LeaveMap(s, c.Map); }
     }
 
-    /// <summary>"Main Inn" is the scroll's old destination, a tavern, and spends one; closing the box moves nobody and
-    /// spends nothing.</summary>
+    /// <summary>"Main Inn" is the scroll's old destination, a tavern, and spends one; a reply that is not a pick (a
+    /// "next") moves nobody and spends nothing. That step is not a close: closing the box sends no reply at all, and
+    /// the menu's await stays pending.</summary>
     [Fact]
-    public void AMembersMainInnIsTheTavernAndClosingSpendsNothing()
+    public void AMembersMainInnIsTheTavernAndANonPickSpendsNothing()
     {
         var (s, _, c) = Scroller("Spy");
         try
         {
             s.Receive(SessionFixture.Frame(ClientOp.UseItem, new byte[] { 1 }));
-            s.Receive(NextFrame());   // the box closed
+            s.Receive(NextFrame());   // a "next", not a pick
             Assert.Equal((2, (ushort)SessionFixture.HomeMap), (Count(c, "qui_hyang"), c.Map));
 
             s.Receive(SessionFixture.Frame(ClientOp.UseItem, new byte[] { 1 }));
@@ -554,7 +555,7 @@ public sealed class SubpathTeacherTests
     private List<string> LearnSecretOptions(string subpath, int level, Action<Character>? configure = null)
     {
         var (s, o, _) = Member(subpath, level, configure ?? (_ => { }));
-        Converse(s, Teacher(subpath), "Learn Secret", NextFrame());   // close the picker
+        Converse(s, Teacher(subpath), "Learn Secret", NextFrame());   // a "next", not a pick: the picker ends
         return Menus(o).Single().Split('|').Skip(1).ToList();
     }
 

@@ -745,7 +745,9 @@ public sealed partial class Session
 
     /// <summary>The menu twin of <see cref="DlgInputPush"/>: a menu with no NPC behind it (an item's own choice,
     /// the Qui hyang's "Where do you wish to go?"), on the player's own entity id, under
-    /// <paramref name="portrait"/>. Returns the 1-based pick, 0 if the box was closed.</summary>
+    /// <paramref name="portrait"/>. Returns the 1-based pick, or 0 for a reply that is not a menu pick. The 4.95
+    /// client sends nothing when a box is closed, so, as with <see cref="DlgMenu"/>, a closed box leaves this await
+    /// pending until a new prompt, a map change or <see cref="DropWaitingDialog"/> lets it go.</summary>
     private async Task<int> DlgMenuPush(DialogPortrait portrait, string prompt, IReadOnlyList<string> options)
     {
         var r = await AwaitReply(() => SendNpcMenuP(_char.Id, portrait, prompt, options));
