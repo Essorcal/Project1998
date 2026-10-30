@@ -771,6 +771,46 @@ public sealed class SpellContext
     /// <see cref="rageActive"/>. A climbing fury on a row ladder continues only its own climb (chungryong_rage).</summary>
     public string rageName    => _s.LuaRageName;
 
+    // ---- a typed answer and dialog boxes inside a cast (RTK inputSeq, dialogSeq; Read karma) -----------------------
+    // RTK runs these scripts as coroutines that wait for the player's reply. A verb here is one call, so a wait names
+    // the verb that runs once the reply comes (Session.LuaAsk; the run's beat names its verb the same way). See the
+    // note above Session.LuaAsk for what each box is, and its locks.
+    /// <summary>Ask the caster for a line of text (RTK <c>inputSeq</c>): an input box carrying <paramref name="prompt"/>,
+    /// with no portrait. A submitted answer runs the verb <paramref name="verb"/> for this caster and spell, against the
+    /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.</summary>
+    public void ask(string prompt, string verb) => _s.LuaAsk(_sp, prompt, verb);
+    /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
+    /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
+    /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
+    /// for look 0.</summary>
+    public void dialog(string text, double look = 0, double color = 0, string item = "") =>
+        _s.LuaDialog(text, (int)look, (int)color, item);
+    /// <summary>The caster's box with the next arrow, then, once the caster answers it, a box with no button to the
+    /// player <see cref="pcTargetNamed"/> resolved, their waiting conversation dropped first (RTK read_karma.lua:
+    /// <c>player:dialogSeq({t, text}, 1)</c>, <c>target:freeAsync()</c>, <c>target:dialogSeq({t, text2}, 0)</c>). Both
+    /// boxes take the one portrait, as <see cref="dialog"/> reads it. Nothing with no target; nothing to a target who
+    /// has logged out by then.</summary>
+    public void dialogThenTarget(string text, string targetText, double look = 0, double color = 0, string item = "") =>
+        _s.LuaDialogThenTarget(_sp, text, targetText, (int)look, (int)color, item);
+    /// <summary>The karma of the player <see cref="pcTargetNamed"/> (or <see cref="pcTarget"/>) resolved (RTK
+    /// <c>target.karma</c>); 0 with none. A bare read, never written.</summary>
+    public double targetKarma => _s.LuaPcTarget?.LuaKarma ?? 0;
+    /// <summary>The name of the player <see cref="pcTargetNamed"/> (or <see cref="pcTarget"/>) resolved (RTK
+    /// <c>target.name</c>); "" with none.</summary>
+    public string targetName  => _s.LuaPcTarget?.CharName ?? "";
+
+    // ---- the game's time (RTK curYear, curDay, curTime; Divine time) ------------------------------------------------
+    /// <summary>The in-game year (RTK <c>curYear()</c>): the world clock's (<c>World.WorldClock.ClockNow</c>).</summary>
+    public double gameYear  => _s.LuaGameClock.year;
+    /// <summary>The in-game day of the season, 1-91 (RTK <c>curDay()</c>).</summary>
+    public double gameDay   => _s.LuaGameClock.day;
+    /// <summary>The in-game hour, 0-23 (RTK <c>curTime()</c>), the <c>@clock</c> pin's when one is set.</summary>
+    public double gameHour  => _s.LuaGameClock.hour;
+    /// <summary>The real calendar's month, 1-12 (RTK's <c>os.date("%m")</c>, which Divine time's script names its
+    /// "Moon" by), at the world calendar's own UTC offset (<c>GameCalendar.Epoch</c>), so a host in another zone reads
+    /// the same month.</summary>
+    public double realMonth => DateTimeOffset.UtcNow.ToOffset(GameCalendar.Epoch.Offset).Month;
+
     // ---- the disguise (P3; RTK clone.playerToPlayer and player.disguise) --------------------------------------------
     /// <summary>Take the look of what stands on the faced tile for <paramref name="durationMs"/>, and say what it was
     /// (RTK <c>Spells/Subpaths/Muse/costume.lua:21-37</c>; Spy's Mimic and Ranger's Forest cover are the same body):
