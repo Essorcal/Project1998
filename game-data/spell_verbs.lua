@@ -1776,138 +1776,6 @@ function verbs.torment_tick(ctx, row)
 end
 
 -- =========================================================================================================
--- DIVINER (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Diviner/): Read karma and Divine time. The project owner's
--- word, 2026-10-26 and again 2026-10-30: each spell as its RTK script (P5); Divine time kept, though a 2001 page calls
--- it gone from the game (decision sheet item 17, the era rule's fail-open). Diviner's other two working spells bind to
--- the Do verbs by their SpellParams.csv rows: Hear footstep to hear_footstep (its script is Do's under another key),
--- Vanish to hide (its script is Blend's shape: invisible for 1,000 s, the next landed swing x9, no mana, no wait, and
--- no line when it ends, so it has no SpellText.csv fade line). Each verb is the shape of its script, in that script's
--- order; RTK is weight 0 for balance, and these numbers are its scripts'.
---
--- Read karma is three steps, because RTK's script waits twice for its player (an async script: inputSeq, then
--- dialogSeq) and a verb here is one call: each wait names the verb that runs once the reply comes (ctx:ask, then
--- ctx:dialogThenTarget; the note above Session.LuaAsk). Monk's and Geomancer's read_karma.lua are this script under
--- their own keys, so their rows can bind here too: the wait is armed under ctx.spellKey.
---
--- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
---   * A wait is checked first, with this file's own line (subpath_waiting): RTK's engine refuses a cast inside its
---     aethers before the script runs.
---   * The cast pose is the engine's, on a cast that lands, as for every spell; neither script sends one. Their boxes
---     and lines replace the central "You cast X." line, as Assess opponent's readout does.
---   * A ghost or a mounted caster casts nothing here, the engine's rule for every spell; Read karma's
---     canCast(0, 1, 0) lets a ghost cast it.
---   * The input box carries the script's question alone. Its two lines either side of the entry field ("The one
---     known as", "shall be examined.") are not sent: no input box here sends them (Session.SendInputBox), and the
---     4.95 client's drawing of them is unread.
---   * A typed name is looked up as every typed name here is (ctx:pcTargetNamed: any map, any case, trimmed); RTK's
---     Player(name) matches any case and does not trim.
--- =========================================================================================================
-
--- Read karma's ladder (RTK read_karma.lua:45-115), best first: the band a karma of at least `from` falls in, the
--- portrait both boxes carry (a creature look in its palette, or the Angel's tear's item icon), what the caster reads
--- after the target's name, and what the target reads. Below the cat the two open bands: the rat above -3, the snake at
--- -3 and below. The script's own words, its doubled "and and" (the bear) included.
-local KARMA_LADDER = {
-  { from = 30, look = 49,  color = 5,  them = " is one with the Gods, and their soul is worthy to dwell among them.",
-    you = "You are one with the Gods, and your soul is worthy to dwell among them." },
-  { from = 24, item = "angels_tear",
-    them = "'s journey has been long; they have achieved inner peace and tranquility; they speak with the Gods.",
-    you = "Your journey has been long; you have achieved inner peace and tranquility; you speak with the Gods." },
-  { from = 19, look = 167, color = 24, them = " has reached the threshold of immortality; they put aside mortal possessions and passions.",
-    you = "You have reached the threshold of immortality; you put aside mortal possessions and passions." },
-  { from = 14, look = 108, color = 2,  them = " is at the pinnacle of mortal grace; their soul is noble, beautiful and fearsome to behold.",
-    you = "You are at the pinnacle of mortal grace; your soul is noble, beautiful and fearsome to behold." },
-  { from = 11, look = 29,  color = 9,  them = " has entered the nobility of souls -- fierce, wise and just.",
-    you = "You have entered the nobility of souls -- fierce, wise and just." },
-  { from = 8,  look = 24,  color = 9,  them = " holds quiet power and and great wisdom, confidence and fortitude.",
-    you = "You hold quiet power and and great wisdom, confidence and fortitude." },
-  { from = 6,  look = 27,  color = 9,  them = " is stalwart and honest, worthy of trust, strong of heart.",
-    you = "You are stalwart and honest, worthy of trust, strong of heart." },
-  { from = 4,  look = 126, color = 5,  them = " is clever and good-hearted; the Gods smile upon them.",
-    you = "You are clever and good-hearted; the Gods smile upon you." },
-  { from = 3,  look = 18,  color = 12, them = " is faithful to the teachings of the Gods.",
-    you = "You are faithful to the teachings of the Gods." },
-  { from = 2,  look = 21,  color = 3,  them = "'s soul moves ever quicker toward its goal.",
-    you = "Your soul moves ever quicker toward its goal." },
-  { from = 1,  look = 25,  color = 9,  them = "'s education progresses; they store knowledge for the ordeals to come.",
-    you = "Your education progresses; you store knowledge for the ordeals to come." },
-  { from = 0,  look = 182, color = 30, them = " has begun the journey to perfection.",
-    you = "You have begun the journey to perfection." },
-}
-local KARMA_RAT = { look = 91, color = 10,
-  them = " is out of favor with the Gods; they must purify their soul and cleanse their spirit.",
-  you = "You are out of favor with the Gods; you must purify your soul and cleanse your spirit." }
-local KARMA_SNAKE = { look = 184, color = 25,
-  them = " is among the cursed of the earth; they crawl alone in shame.",
-  you = "You are among the cursed of the earth; you crawl alone in shame." }
-
-local function karma_band(karma)
-  if karma <= -3 then return KARMA_SNAKE end
-  for _, band in ipairs(KARMA_LADDER) do
-    if karma >= band.from then return band end
-  end
-  return KARMA_RAT
-end
-
--- Read karma (RTK Subpaths/Diviner/read_karma.lua): asks a name and shows that player's karma. The cast: its wait;
--- short of `mana`, "You do not have enough mana.", for free; then the input box, "Who's karma shall you read?", and
--- nothing spent yet. The answer runs read_karma_named.
-function verbs.read_karma(ctx, row)
-  if subpath_waiting(ctx, row) then return false end
-  if ctx.mp < (row.mana or 0) then ctx:say("You do not have enough mana."); return false end
-  ctx:ask("Who's karma shall you read?", "read_karma_named")
-  ctx:narrated()
-  return true
-end
-
--- Read karma's answer (the script after its inputSeq). Anything but letters, spaces and an apostrophe: "You can only
--- enter letters and spaces." (RTK inputLetterCheck's box; its script would then say the next line too, once that box
--- was answered, and a box with no button gets no answer from this client). Nobody online by that name: "Player is not
--- online or unavailable.". Neither costs anything. Otherwise, yourself included (the script's own check is commented
--- out): the `mana` is taken (what there is, down to 0, as every debit here), the `duration` ms wait is armed, and the
--- caster reads "<name>" and the band's words in a box with the band's portrait; once they answer it, the player read
--- gets their own box, "You ..." (ctx:dialogThenTarget). The script checks the mana before its question and takes it
--- after, with no second check.
-function verbs.read_karma_named(ctx, row)
-  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces."); return false end
-  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("Player is not online or unavailable."); return false end
-  ctx:debitMana(row.mana or 0)
-  local band = karma_band(ctx.targetKarma)
-  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
-  ctx:dialogThenTarget(ctx.targetName .. band.them, band.you, band.look or 0, band.color or 0, band.item or "")
-  return true
-end
-
--- RTK's ordinal ending for a number, as general_npc_funcs.time writes it: 1st, 2nd, 3rd, and "th" for every number
--- from 4 up (so the 21st day of the season reads "21th", as the script writes it).
-local function rtk_ordinal(n)
-  if n == 1 then return "st" elseif n == 2 then return "nd" elseif n == 3 then return "rd" elseif n >= 4 then return "th" end
-  return ""
-end
-
-local DIVINE_DAY_NAMES = { "Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun" }
-
--- Divine time (RTK Subpaths/Diviner/divine_time.lua, which calls the inn keeper's general_npc_funcs.time): tells the
--- game's time in two lines, "Yuri <year>, <month><ending> Moon, <day><ending>" and "<weekday> <hour> <a.m./p.m.>". The
--- year, the day of the season (1-91) and the hour are the world clock's (RTK curYear, curDay, curTime); the "Moon" is
--- the real calendar's month, as the script reads os.date("%m"); the weekday is the day of the season mod 7 into Mon to
--- Sun; hours 0-12 are a.m. as they stand, 13-23 p.m. less 12 (so noon is "12 a.m." and midnight "0 a.m.", as the
--- script writes them). Short of `mana`, "Your will is too weak.", for free. Row: mana 5.
-function verbs.divine_time(ctx, row)
-  if subpath_waiting(ctx, row) then return false end
-  local mana = row.mana or 0
-  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
-  ctx:debitMana(mana)
-  local month, day, hour = ctx.realMonth, ctx.gameDay, ctx.gameHour
-  local half = "a.m."
-  if hour > 12 then half = "p.m."; hour = hour - 12 end
-  ctx:say("Yuri " .. ctx.gameYear .. ", " .. month .. rtk_ordinal(month) .. " Moon, " .. day .. rtk_ordinal(day))
-  ctx:say(DIVINE_DAY_NAMES[(day % 7) + 1] .. " " .. hour .. " " .. half)
-  ctx:narrated()                                                   -- the two lines replace "You cast Divine time."
-  return true
-end
-
--- =========================================================================================================
 -- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Blend, Hear footstep and Assess opponent. Caleb,
 -- 2026-10-26: each spell as its RTK script (P5), Spirit blade x10 as RTK's (Q8), Blend as its script rather than as the
 -- rogue's Invisible (Q15). The other five Do spells ride families that already exist: Ki strike is splash_strike above;
@@ -2047,5 +1915,137 @@ function verbs.confuse(ctx, row)
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
   if not ctx:confuseTarget(row.chance or 65) then return false end
   ctx:debitMana(mana)
+  return true
+end
+
+-- =========================================================================================================
+-- DIVINER (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Diviner/): Read karma and Divine time. The project owner's
+-- word, 2026-10-26 and again 2026-10-30: each spell as its RTK script (P5); Divine time kept, though a 2001 page calls
+-- it gone from the game (decision sheet item 17, the era rule's fail-open). Diviner's other two working spells bind to
+-- the Do verbs by their SpellParams.csv rows: Hear footstep to hear_footstep (its script is Do's under another key),
+-- Vanish to hide (its script is Blend's shape: invisible for 1,000 s, the next landed swing x9, no mana, no wait, and
+-- no line when it ends, so it has no SpellText.csv fade line). Each verb is the shape of its script, in that script's
+-- order; RTK is weight 0 for balance, and these numbers are its scripts'.
+--
+-- Read karma is three steps, because RTK's script waits twice for its player (an async script: inputSeq, then
+-- dialogSeq) and a verb here is one call: each wait names the verb that runs once the reply comes (ctx:ask, then
+-- ctx:dialogThenTarget; the note above Session.LuaAsk). Monk's and Geomancer's read_karma.lua are this script under
+-- their own keys, so their rows can bind here too: the wait is armed under ctx.spellKey.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * A wait is checked first, with this file's own line (subpath_waiting): RTK's engine refuses a cast inside its
+--     aethers before the script runs.
+--   * The cast pose is the engine's, on a cast that lands, as for every spell; neither script sends one. Their boxes
+--     and lines replace the central "You cast X." line, as Assess opponent's readout does.
+--   * A ghost or a mounted caster casts nothing here, the engine's rule for every spell; Read karma's
+--     canCast(0, 1, 0) lets a ghost cast it.
+--   * The input box carries the script's question alone. Its two lines either side of the entry field ("The one
+--     known as", "shall be examined.") are not sent: no input box here sends them (Session.SendInputBox), and the
+--     4.95 client's drawing of them is unread.
+--   * A typed name is looked up as every typed name here is (ctx:pcTargetNamed: any map, any case, trimmed); RTK's
+--     Player(name) matches any case and does not trim.
+-- =========================================================================================================
+
+-- Read karma's ladder (RTK read_karma.lua:45-115), best first: the band a karma of at least `from` falls in, the
+-- portrait both boxes carry (a creature look in its palette, or the Angel's tear's item icon), what the caster reads
+-- after the target's name, and what the target reads. Below the cat the two open bands: the rat above -3, the snake at
+-- -3 and below. The script's own words, its doubled "and and" (the bear) included.
+local KARMA_LADDER = {
+  { from = 30, look = 49,  color = 5,  them = " is one with the Gods, and their soul is worthy to dwell among them.",
+    you = "You are one with the Gods, and your soul is worthy to dwell among them." },
+  { from = 24, item = "angels_tear",
+    them = "'s journey has been long; they have achieved inner peace and tranquility; they speak with the Gods.",
+    you = "Your journey has been long; you have achieved inner peace and tranquility; you speak with the Gods." },
+  { from = 19, look = 167, color = 24, them = " has reached the threshold of immortality; they put aside mortal possessions and passions.",
+    you = "You have reached the threshold of immortality; you put aside mortal possessions and passions." },
+  { from = 14, look = 108, color = 2,  them = " is at the pinnacle of mortal grace; their soul is noble, beautiful and fearsome to behold.",
+    you = "You are at the pinnacle of mortal grace; your soul is noble, beautiful and fearsome to behold." },
+  { from = 11, look = 29,  color = 9,  them = " has entered the nobility of souls -- fierce, wise and just.",
+    you = "You have entered the nobility of souls -- fierce, wise and just." },
+  { from = 8,  look = 24,  color = 9,  them = " holds quiet power and and great wisdom, confidence and fortitude.",
+    you = "You hold quiet power and and great wisdom, confidence and fortitude." },
+  { from = 6,  look = 27,  color = 9,  them = " is stalwart and honest, worthy of trust, strong of heart.",
+    you = "You are stalwart and honest, worthy of trust, strong of heart." },
+  { from = 4,  look = 126, color = 5,  them = " is clever and good-hearted; the Gods smile upon them.",
+    you = "You are clever and good-hearted; the Gods smile upon you." },
+  { from = 3,  look = 18,  color = 12, them = " is faithful to the teachings of the Gods.",
+    you = "You are faithful to the teachings of the Gods." },
+  { from = 2,  look = 21,  color = 3,  them = "'s soul moves ever quicker toward its goal.",
+    you = "Your soul moves ever quicker toward its goal." },
+  { from = 1,  look = 25,  color = 9,  them = "'s education progresses; they store knowledge for the ordeals to come.",
+    you = "Your education progresses; you store knowledge for the ordeals to come." },
+  { from = 0,  look = 182, color = 30, them = " has begun the journey to perfection.",
+    you = "You have begun the journey to perfection." },
+}
+local KARMA_RAT = { look = 91, color = 10,
+  them = " is out of favor with the Gods; they must purify their soul and cleanse their spirit.",
+  you = "You are out of favor with the Gods; you must purify your soul and cleanse your spirit." }
+local KARMA_SNAKE = { look = 184, color = 25,
+  them = " is among the cursed of the earth; they crawl alone in shame.",
+  you = "You are among the cursed of the earth; you crawl alone in shame." }
+
+local function karma_band(karma)
+  if karma <= -3 then return KARMA_SNAKE end
+  for _, band in ipairs(KARMA_LADDER) do
+    if karma >= band.from then return band end
+  end
+  return KARMA_RAT
+end
+
+-- Read karma (RTK Subpaths/Diviner/read_karma.lua): asks a name and shows that player's karma. The cast: its wait;
+-- short of `mana`, "You do not have enough mana.", for free; then the input box, "Who's karma shall you read?", and
+-- nothing spent yet. The answer runs read_karma_named.
+function verbs.read_karma(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("You do not have enough mana."); return false end
+  ctx:ask("Who's karma shall you read?", "read_karma_named")
+  ctx:narrated()
+  return true
+end
+
+-- Read karma's answer (the script after its inputSeq). Anything but letters, spaces and an apostrophe: "You can only
+-- enter letters and spaces." (RTK inputLetterCheck's box; its script would then say the next line too, once that box
+-- was answered, and a box with no button gets no answer from this client). Nobody online by that name: "Player is not
+-- online or unavailable.". Neither costs anything. Otherwise, yourself included (the script's own check is commented
+-- out): the `mana` is taken (what there is, down to 0, as every debit here), the `duration` ms wait is armed, and the
+-- caster reads "<name>" and the band's words in a box with the band's portrait; once they answer it, the player read
+-- gets their own box, "You ..." (ctx:dialogThenTarget). The script checks the mana before its question and takes it
+-- after, with no second check.
+function verbs.read_karma_named(ctx, row)
+  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces."); return false end
+  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("Player is not online or unavailable."); return false end
+  ctx:debitMana(row.mana or 0)
+  local band = karma_band(ctx.targetKarma)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:dialogThenTarget(ctx.targetName .. band.them, band.you, band.look or 0, band.color or 0, band.item or "")
+  return true
+end
+
+-- RTK's ordinal ending for a number, as general_npc_funcs.time writes it: 1st, 2nd, 3rd, and "th" for every number
+-- from 4 up (so the 21st day of the season reads "21th", as the script writes it).
+local function rtk_ordinal(n)
+  if n == 1 then return "st" elseif n == 2 then return "nd" elseif n == 3 then return "rd" elseif n >= 4 then return "th" end
+  return ""
+end
+
+local DIVINE_DAY_NAMES = { "Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun" }
+
+-- Divine time (RTK Subpaths/Diviner/divine_time.lua, which calls the inn keeper's general_npc_funcs.time): tells the
+-- game's time in two lines, "Yuri <year>, <month><ending> Moon, <day><ending>" and "<weekday> <hour> <a.m./p.m.>". The
+-- year, the day of the season (1-91) and the hour are the world clock's (RTK curYear, curDay, curTime); the "Moon" is
+-- the real calendar's month, as the script reads os.date("%m"); the weekday is the day of the season mod 7 into Mon to
+-- Sun; hours 0-12 are a.m. as they stand, 13-23 p.m. less 12 (so noon is "12 a.m." and midnight "0 a.m.", as the
+-- script writes them). Short of `mana`, "Your will is too weak.", for free. Row: mana 5.
+function verbs.divine_time(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  local month, day, hour = ctx.realMonth, ctx.gameDay, ctx.gameHour
+  local half = "a.m."
+  if hour > 12 then half = "p.m."; hour = hour - 12 end
+  ctx:say("Yuri " .. ctx.gameYear .. ", " .. month .. rtk_ordinal(month) .. " Moon, " .. day .. rtk_ordinal(day))
+  ctx:say(DIVINE_DAY_NAMES[(day % 7) + 1] .. " " .. hour .. " " .. half)
+  ctx:narrated()                                                   -- the two lines replace "You cast Divine time."
   return true
 end
