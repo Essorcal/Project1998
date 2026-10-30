@@ -720,15 +720,15 @@ entityId(u32) 00 00 00 02 00 00 00 00
 mapId(u16) width(u16) height(u16) flagA flagB nameLen name light(u16, e.g. 232=0x00E8)
 ```
 `flagA` is the render byte: **4 when the player's Weather setting is on, 5 when it is off**
-(`Server/Session.Dialog.cs:2308`), and a new character has Weather on (`Shared/Character.cs:210-212`, bit 6),
+(`Server/Session.Dialog.cs:2310`), and a new character has Weather on (`Shared/Character.cs:210-212`, bit 6),
 so most players get 4 (the `0x1F` weather block in §7.1 says why). `flagB` is the realm-centre byte, 0 or 1
-(`:2309`; §10.5). Corrected 2026-10-24: this used to give `flagA(=05) flagB(=00)`.
+(`Server/Session.Dialog.cs:2311`; §10.5). Corrected 2026-10-24: this used to give `flagA(=05) flagB(=00)`.
 
-`nameLen` is one byte, and `SendMapInfo` writes it without a check (`:2313`): a title over 255 bytes would
-wrap it, and the byte would no longer match the name that follows. Nothing reaches that today. The title is
-the map's `map_index.csv` name with its SQL escapes undone (`Server/Content.Csv.cs:12-20`), at most 26 bytes
-in the shipped `game-data`, or `"Nexus"` for a map with no row (`MapTitle`, `Server/Session.Entity.cs:43-44`);
-content with a longer name would reach it.
+`nameLen` is one byte, and `SendMapInfo` writes it without a check (`Server/Session.Dialog.cs:2315`): a title
+over 255 bytes would wrap it, and the byte would no longer match the name that follows. Nothing reaches that
+today. The title is the map's `map_index.csv` name with its SQL escapes undone (`Server/Content.Csv.cs:12-20`),
+at most 26 bytes in the shipped `game-data`, or `"Nexus"` for a map with no row (`MapTitle`,
+`Server/Session.Entity.cs:43-44`); content with a longer name would reach it.
 
 Opens the map's cache file `Maps\TK<mapId>.map`, which the `0x06` stream fills (§10.7, §10.8). Example
 working values: mapId 32, 33×33, name "Nexus", light 232.
@@ -1872,7 +1872,7 @@ writing). Server side, **`0x49`** (`@askpic`) makes a client re-read the file an
 the player reopening the profile editor. It is safe for the client, since the failure path still replies,
 but **the server stores the answer** like any profile save: `HandleChangeProfile` replaces the stored picture,
 clears it when `picSize = 0`, replaces the blurb with the one the answer carries
-(`Server/Session.Dialog.cs:1650-1667`) and answers with the profile-save message. So an `@askpic` on a player
+(`Server/Session.Dialog.cs:1727-1760`) and answers with the profile-save message. So an `@askpic` on a player
 with no valid file clears the picture the server held for them.
 
 Which palette the client draws the picture with is **not** pinned; the generator defaults to `Item.pal`
@@ -5555,7 +5555,7 @@ no-op. Four of the nine are fully decoded; five open a window whose body layout 
   `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` — byte-for-byte the packet it already sends when you save the
   profile editor, which `HandleChangeProfile` parses today. Any failure along the way still replies, with
   `picSize = 0`, so it is safe for the client; but the server stores the answer as a profile save, so a
-  `picSize = 0` answer clears the stored picture (§9.5a; `Server/Session.Dialog.cs:1650-1667`).
+  `picSize = 0` answer clears the stored picture (§9.5a; `Server/Session.Dialog.cs:1727-1760`).
 
 **`0x35` is the PAPER POPUP, not a mail reader.** Earlier notes had this wrong. Parse `0x468550` reads
 `00 width(u8) height(u8) 00 len(u16BE) text[len]` — four flag bytes then a length-prefixed message, which it
