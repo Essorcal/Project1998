@@ -302,7 +302,7 @@ handled as plaintext by the client. Most importantly for the server, the **game-
      connection's IP; the `0x10` arrival must come from the same address. Keep the significant nonce bytes
      **non-zero** — the client's copy stops at the first NUL.
 
-   **Hand-off key — a one-time secret in the key field (2026-10-26).** The 9 bytes between `23 00 09` and the
+   **Hand-off key — a one-time secret in the key field (2026-10-26).** The 9 bytes between `17 00 09` and the
    name used to be the constant `"NexonInc."`. The client copies them back at the head of its `0x10` arrival,
    and they sit **outside** the shared 13-byte field, so all 9 come back at every name length. A static read of
    the 4.95 client found no code that writes `"NexonInc."` into a packet (its only copy of the string feeds the
