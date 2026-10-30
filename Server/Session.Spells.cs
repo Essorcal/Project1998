@@ -2489,8 +2489,9 @@ public sealed partial class Session
     //
     // Times are clock time, as the venom's are (World.PoisonMob). RTK's own clock is not: mob_timer_spawns runs every
     // 50 ms and counts a 30-step cycle, and mob_duratimer (timercheck % 20) takes 1,000 ms off a creature's duration
-    // once a cycle, every 1.5 s, so RTK's "5-20 s" lasts 7.5-30 s and beats 4-20 times; here it lasts 5-20 s and
-    // beats 3-13 times.
+    // once a cycle, every 1.5 s, so RTK's "5-20 s" lasts 7.5-30 s. Torment's verb turns each second of its roll into
+    // RTK's 1.5 s (TORMENT_SECOND_MS), so it lasts 7.5-30 s here too and beats 4-19 times (RTK 4-20: its count hangs
+    // on the cycle's phase).
     //
     // A RUN ON THE CASTER THEMSELVES (the Do slice's Hear footstep, RTK Spells/Subpaths/Do/hear_footstep.lua: a
     // player:setDuration whose while_cast runs with the player). It needs three things a creature's run does not:
