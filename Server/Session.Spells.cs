@@ -2815,6 +2815,129 @@ public sealed partial class Session
     /// ladder's climb reads to continue only its own fury (spell_verbs.lua's <c>chungryong_rage</c>).</summary>
     internal string LuaRageName => _rageName;
 
+    // A TYPED ANSWER AND DIALOG BOXES INSIDE A CAST (the Diviner slice's Read karma, RTK
+    // Spells/Subpaths/Diviner/read_karma.lua; Monk's and Geomancer's read_karma.lua are the same body under their own
+    // keys). RTK runs such a script as a coroutine (`async`): inputSeq shows an input box and the script waits for the
+    // answer, dialogSeq shows a box and waits for its next arrow. A verb here is one call, so each wait hands on to a
+    // named verb instead, as a run's beat names its verb (LuaStartSelfTick):
+    //   * LuaAsk: the input box, on the caster, with the caster's own entity id and no portrait (the script's
+    //     npcGraphic 0 and lastClick = player.ID). A submitted answer runs the named verb for this caster and spell
+    //     with the typed text as ctx.answer (RunSpellStep). A reply that is not a submit runs nothing.
+    //   * LuaDialog: a box with no button (dialogSeq(..., 0)), which waits for nothing.
+    //   * LuaDialogThenTarget: the caster's box with the next arrow (dialogSeq(..., 1)), then, on its reply, a box with no
+    //     button to the player this cast's typed name resolved (target:freeAsync(); target:dialogSeq(..., 0)).
+    // Each box is the prompt every dialog here is (AwaitReply): a new one replaces a box still waiting, and a box the
+    // player closes leaves its wait pending, since the 4.95 client sends nothing on a close; the verb named after it
+    // then never runs, as RTK's coroutine never resumes. RTK's async refuses to start while another of the player's
+    // scripts waits (sl_async); this server's dialogs replace the waiting one instead, as Propose's does.
+    //
+    // Locks. The cast's half runs where every verb runs, in the caster's monitor and the Lua gate. An answer and a next
+    // arrive as the caster's 0x3A, on the caster's thread inside the caster's monitor (Handle wraps Dispatch), and resume
+    // here inline (no synchronization context on the read loop): RunSpellStep enters the Lua gate from there, as a cast
+    // does. The target's box is sent inside the target's own monitor, taken by StateRank (WithState), with no Lua and no
+    // World._lock inside it: the shape of the proposal's line to the proposer. It drops the target's waiting
+    // conversation (DropWaitingDialog, RTK's freeAsync) and sends one box; it writes nothing else of theirs. No new lock.
+
+    /// <summary>Ask the caster for a line of text inside a cast (<c>ctx:ask</c>, RTK <c>inputSeq</c>); a submitted answer
+    /// runs <paramref name="verb"/> for this caster and spell, with the text as <c>ctx.answer</c>.</summary>
+    internal void LuaAsk(SpellDef sp, string prompt, string verb)
+    {
+        if (string.IsNullOrEmpty(verb)) return;
+        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb);
+    }
+
+    private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb)
+    {
+        try
+        {
+            string? typed = await DlgInputPush(0, 0, prompt);
+            if (typed is null) return;   // a reply that is not a submit: nothing runs
+            RunSpellStep(sp, verb, typed);
+        }
+        catch (Exception e) { Log.Error($"{sp.Name}'s answer for '{_char.Name}' threw: {LuaVerbHost.Describe(e)}", e); }
+    }
+
+    /// <summary>Run <paramref name="verb"/>, the next step of <paramref name="sp"/>'s cast, for this caster with
+    /// <paramref name="answer"/> as <c>ctx.answer</c>, against the spell's own SpellParams.csv row. In this caster's
+    /// monitor, entering the Lua gate from it as a cast does. Nothing for a caster who is logging out.</summary>
+    private void RunSpellStep(SpellDef sp, string verb, string answer)
+    {
+        using var _ = EnterState();   // #29: the reply's thread holds it already; re-entrant then
+        if (_leaving) return;
+        var row = Content.SpellParams.TryGetValue(sp.Key, out var r) ? r : SpellScript.NoRow;
+        if (SpellScript.Run(verb, new SpellContext(this, sp, null, answer), row) is null)
+            Log.Warn($"{sp.Name}: '{verb}' is not a loaded verb, so the answer '{answer}' does nothing");
+    }
+
+    /// <summary>The portrait of a spell's dialog box (RTK <c>convertGraphic</c>): the Items.csv item
+    /// <paramref name="item"/>'s icon when one is named, as an NPC's item portrait is drawn (<see cref="DlgSayItem"/>);
+    /// else creature look <paramref name="look"/> in palette <paramref name="color"/>; none for look 0.</summary>
+    private DialogPortrait SpellDialogPortrait(int look, int color, string? item)
+    {
+        if (!string.IsNullOrEmpty(item) && Content.ItemByKey(item) is { } def)
+            return DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
+        return DialogPortrait.Look(look, color);
+    }
+
+    /// <summary>A box with no button on the caster (<c>ctx:dialog</c>, RTK <c>dialogSeq(..., 0)</c>), under the caster's
+    /// own entity id. It waits for nothing.</summary>
+    internal void LuaDialog(string text, int look, int color, string? item)
+    {
+        using var _ = EnterState();
+        SendScriptMessageP(_char.Id, text ?? "", SpellDialogPortrait(look, color, item), prev: false, next: false);
+    }
+
+    /// <summary>The caster's box with the next arrow, then the target's box (<c>ctx:dialogThenTarget</c>): RTK
+    /// read_karma.lua's <c>player:dialogSeq({t, text}, 1)</c>, <c>target:freeAsync()</c>,
+    /// <c>target:dialogSeq({t, text2}, 0)</c>. The target is the player this cast's typed name resolved
+    /// (<see cref="LuaResolveNamedPcTarget"/>); with none, nothing is shown. When the caster's reply comes the target is
+    /// found again by name, as RTK's player object finds its session by id: a target who has logged out since is told
+    /// nothing. See <see cref="SendSpellBoxToTarget"/>.</summary>
+    internal void LuaDialogThenTarget(SpellDef sp, string text, string targetText, int look, int color, string? item)
+    {
+        if (_pcSpellTarget is not { } target) return;
+        _ = RunDialogThenTargetAsync(sp, text ?? "", targetText ?? "", look, color, item, target.CharName);
+    }
+
+    private async Task RunDialogThenTargetAsync(SpellDef sp, string text, string targetText, int look, int color,
+                                                string? item, string targetName)
+    {
+        try
+        {
+            var portrait = SpellDialogPortrait(look, color, item);
+            await AwaitReply(() => SendScriptMessageP(_char.Id, text, portrait, prev: false, next: true));
+            if (_world.Online.FindPlayer(targetName) is { } target)
+                target.SendSpellBoxToTarget(sp, _char.Name, targetText, look, color, item);
+        }
+        catch (Exception e) { Log.Error($"{sp.Name}'s boxes for '{_char.Name}' threw: {LuaVerbHost.Describe(e)}", e); }
+    }
+
+    /// <summary>A spell's box with no button, sent to THIS player from another player's cast (Read karma's second box):
+    /// RTK's <c>target:freeAsync()</c> drops the conversation this player has waiting, then <c>target:dialogSeq(..., 0)</c>
+    /// shows the box. Under this player's own entity id, as every box sent with no NPC behind it is
+    /// (<see cref="DlgPush"/>): the caster may be a city away and out of this client's view, so the caster's id, which
+    /// RTK puts there, names nothing this client has. Inside this player's monitor, taken here by <c>StateRank</c>;
+    /// nothing for a player who is going away (<see cref="GoingAway"/>).</summary>
+    private void SendSpellBoxToTarget(SpellDef sp, string casterName, string text, int look, int color, string? item)
+    {
+        WithState(() =>
+        {
+            if (GoingAway(this)) return;
+            DropWaitingDialog($"{casterName}'s {sp.Name}");
+            SendScriptMessageP(_char.Id, text, SpellDialogPortrait(look, color, item), prev: false, next: false);
+            Log.Info($"      (lua) {sp.Name} -> a box from {casterName} to {_char.Name}");
+        });
+    }
+
+    /// <summary>This player's karma (RTK <c>player.karma</c>): <c>ctx.targetKarma</c>'s read of the player a cast's
+    /// typed name resolved. One bare read of a double, as <see cref="LuaTargetMana"/> reads mana; never written.</summary>
+    internal double LuaKarma => _char.Karma;
+
+    /// <summary>The world clock's hour, day of the season and year (<c>ctx.gameHour</c>, <c>gameDay</c>,
+    /// <c>gameYear</c>; RTK <c>curTime</c>, <c>curDay</c>, <c>curYear</c>): the readout <c>@clock</c> gives, plain field
+    /// reads as every session's are (<c>World.WorldClock</c>).</summary>
+    internal (int hour, int day, int year) LuaGameClock => _world.Clock.ClockNow;
+
     // Add a categorized status to THIS player (curse target side): refresh-not-stack by key, folds into Totals().
     // Unlike ReceiveTimedBuff this keeps a zero-amount entry (a curse's category slot matters even with no stat
     // effect) and records the Category so checkIfCast / cure-by-category work.
