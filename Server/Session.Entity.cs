@@ -33,13 +33,13 @@ public sealed partial class Session
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }
 
-    /// <summary>The name the 0x15 map-info shows in the client's title bar, from Maps.csv.
+    /// <summary>The name the 0x15 map-info shows in the client's title bar, from map_index.csv.
     ///
     /// Four of the six SendMapInfo call sites passed the literal "Nexus" instead — login, both
     /// realm-center/weather in-place refreshes, and the hard refresh — so every map in the world
     /// announced itself as "Nexus", and map 41 in particular showed "Nexus" rather than "Mythic
     /// Nexus". Only the warp path and the (unused) alternate entry burst ever read the real name.
-    /// It reads like a placeholder that outlived its stub: the name has been in Maps.csv all along.</summary>
+    /// It reads like a placeholder that outlived its stub: the name has been in map_index.csv all along.</summary>
     private static string MapTitle(ushort mapId) =>
         Content.TryMap(mapId, out var md) && !string.IsNullOrWhiteSpace(md.Name) ? md.Name : "Nexus";
 
