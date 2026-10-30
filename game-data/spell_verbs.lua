@@ -1685,10 +1685,12 @@ end
 --   * RTK waives Reincarnate's wait for a GM; no verb here waives anything for staff.
 --   * Torment's run is the script's roll of N seconds as RTK's creature timer counts it, N x 1.5 s, so 7.5-30 s
 --     (TORMENT_SECOND_MS, at verbs.torment). RTK's own run ends on its timer's step 20 (rtk/src/map/mob.c:653-655),
---     so it is that long for a cast just after that step and up to 1.45 s shorter for the rest. The beats here come
---     1.5 s apart from the cast, strictly before the end: N - 1 of them, 4-19. RTK beats on step 30 (mob.c:650-652),
---     0.05-1.5 s after the cast first, and N - 1 times in two casts of three, N in the third (a cast in the half
---     second from step 20 to step 30). A creature's threat from a beat is the blow it took, as from every blow
+--     so it is that long for a cast just after that step and up to 1.45 s shorter for the rest. RTK beats on step 30
+--     (mob.c:650-652), 0.05-1.5 s after the cast first, and N - 1 times in two casts of three, N in the third (a cast
+--     in the half second from step 20 to step 30). The beats here come 1.5 s apart from the cast, and their count is
+--     RTK's (the project owner's choice, 2026-10-30): N - 1, strictly before the run's end, and in one fresh run in
+--     three an Nth at N x 1.5 s, the run then lasting 1 s past it (TORMENT_EARLY_STEPS, at verbs.torment); 4-20
+--     across rolls. A creature's threat from a beat is the blow it took, as from every blow
 --     here; the script adds its figure before armour. A ghost casts nothing here (the engine's rule); the script's
 --     canCast(0, ...) lets a ghost torment.
 -- =========================================================================================================
@@ -1727,7 +1729,8 @@ end
 -- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), counts
 -- a creature into the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic.";
 -- at a creature, a run of rollRange(duration, durationMax) whole seconds, each as long as RTK's creature timer makes it
--- (TORMENT_SECOND_MS), whose beat (torment_tick) strikes it every TORMENT_TICK_MS.
+-- (TORMENT_SECOND_MS), whose beat (torment_tick) strikes it every TORMENT_TICK_MS; one fresh run in three lands one
+-- beat more, at its rolled end (TORMENT_EARLY_STEPS).
 -- At nothing, or at an NPC, it casts nothing, silently and for free: RTK's engine runs no script without a target.
 -- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only and never shown: the script's
 -- debug line "total siphon: N", sent on every cast, is dropped on the project owner's decision (2026-10-26). The beat
@@ -1740,6 +1743,17 @@ local TORMENT_SIPHON  = "totalsiphon"   -- its player.registry key
 -- (rtk/src/map/mob.c:633-689), and mob_duratimer, on the cycle's step 20, takes 1,000 off a creature's duration
 -- (mob.c:463-514). So 1,000 lasts 1.5 s, and the script's 5-20 s roll runs 7.5-30 s.
 local TORMENT_SECOND_MS = 1500
+-- RTK's beat count, the project owner's choice (2026-10-30, "Match RTK's count"). A cast falls somewhere in the
+-- timer's 30-step cycle. In the 10 steps from step 20 to step 30 (mob.c:650-655) it meets a beat before its first
+-- countdown, so a roll of N beats N times; anywhere else, N - 1. Here the beat comes 1.5 s apart from the cast and
+-- strictly before the run's end, so a run of N x 1.5 s beats N - 1 times. One fresh run in three is made long enough
+-- for the beat at N x 1.5 s to land: TORMENT_TAIL_MS past it, the 1 s from RTK's step 30 to its next step 20, which is
+-- how long every RTK run lasts after its last beat. That beat then lands inside the run, so it counts its own
+-- creature, as every beat does (the world heartbeat runs a beat up to one of its beats late). A recast that sets a
+-- running run's length again keeps that run's beat (ctx:startTick), so it rolls nothing here.
+local TORMENT_CYCLE_STEPS = 30
+local TORMENT_EARLY_STEPS = 10
+local TORMENT_TAIL_MS     = 1000
 
 function verbs.torment(ctx, row)
   if ctx.victimIsNpc or ctx.castAtNothing then return false end    -- silent, free: nothing to torment
@@ -1756,7 +1770,11 @@ function verbs.torment(ctx, row)
   end
   if creature then
     local secs = ctx:rollRange((row.duration or 0) / 1000, (row.durationMax or 0) / 1000)
-    ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * TORMENT_SECOND_MS)
+    local ms = secs * TORMENT_SECOND_MS
+    if not ctx:tickRunning() and ctx:rollRange(1, TORMENT_CYCLE_STEPS) <= TORMENT_EARLY_STEPS then
+      ms = ms + TORMENT_TAIL_MS                                    -- the beat at secs x 1.5 s lands
+    end
+    ctx:startTick("torment_tick", TORMENT_TICK_MS, ms)
     ctx:selfAnimation(TORMENT_ANIM)
   else
     ctx:say("This target's soul is too pure for this magic.")

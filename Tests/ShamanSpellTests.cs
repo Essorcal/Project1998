@@ -283,10 +283,11 @@ public sealed class ShamanSpellTests
     /// debug line, dropped on the project owner's decision), 230 mana, the script's graphic 84 drawn over the creature
     /// for the caster alone (a player watching sees none), and a run on the creature whose beat comes every 1.5 s for the
     /// script's roll of 5 to 20 whole seconds, each 1.5 s long as RTK's creature timer counts it: 7.5 to 30 s in steps of
-    /// 1.5 s. The siphon count is still kept: it reads 1. Red on be75e7e: 5 mana, "You cast Shaman's torment.", no
-    /// graphic and no run; red with the debug line put back. The length's check alone passes on 912ba3c's clock-time run
-    /// when the roll is 9, 12, 15 or 18 (lengths both counts share), so
-    /// <see cref="TheShortestAndLongestRunsLastAsRtksTimerCountsThem"/> pins the two ends with the roll fixed.</summary>
+    /// 1.5 s, or, in one fresh run in three, 1 s more, so its last beat lands. The siphon count is still kept: it reads 1.
+    /// Red on be75e7e: 5 mana, "You cast Shaman's torment.", no graphic and no run; red with the debug line put back. The
+    /// length's check alone passes on 912ba3c's clock-time run when the roll is 9, 12, 15 or 18 (lengths both counts
+    /// share), and on 021fa2f, which has no extra second; <see cref="TheShortestAndLongestRunsLastAsRtksTimerCountsThem"/>
+    /// and <see cref="OneFreshRunInThreeLandsTheBeatAtItsEnd"/> pin those.</summary>
     [Fact]
     public void TormentAtACreatureStartsARun()
     {
@@ -304,12 +305,13 @@ public sealed class ShamanSpellTests
             var theirs = wOut.BodiesOf(ServerOp.Effect).Where(b => Id(b) == mob.Id).ToList();
             var t = ticks.SingleOrDefault();
             long length = t is null ? 0 : t.UntilIn - t.NextIn + t.Every;   // both were set from one clock reading
+            long rolled = length % 1_500 == 1_000 ? length - 1_000 : length;  // without a last beat's extra second
             string what = $"lines [{string.Join(" | ", lines)}], siphon {held}, spent {Mana - cc.Mp}, ticks {ticks.Count}, " +
                           $"every {t?.Every}, length {length} ms, caster effects {mine.Count} " +
                           $"({string.Join(",", mine.Select(b => b[4]))}), watcher's {theirs.Count}";
             Assert.True(lines.Count == 0 && held == 1 && cc.Mp == Mana - 230
                         && t is { Spell: "shamans_torment", Verb: "torment_tick", Every: 1_500, Ended: false } && t.Mob == mob.Id
-                        && length >= 7_500 && length <= 30_000 && length % 1_500 == 0
+                        && rolled >= 7_500 && rolled <= 30_000 && rolled % 1_500 == 0
                         && mine.Count == 1 && mine[0][4] == 84 + ServerConfig.Current.EfxWireOffset && theirs.Count == 0, what);
         }
         finally { Leave(TormentMap, caster, watcher); _fx.World.DespawnMob(TormentMap, mob); }
@@ -407,7 +409,8 @@ public sealed class ShamanSpellTests
     }
 
     /// <summary>A run strikes on every beat of its rolled length and then ends: a beat 1.5 s apart while the beat
-    /// falls before the end, so a 7.5 s run strikes four times and a 30 s run nineteen. Red on be75e7e: no run.</summary>
+    /// falls before the end, so a 7.5 s run strikes four times and a 30 s run nineteen, and with the extra second one
+    /// fresh run in three gets (8.5 s, 31 s) five and twenty. Red on be75e7e: no run.</summary>
     [Fact]
     public void ARunStrikesEveryBeatOfItsLengthThenEnds()
     {
@@ -419,7 +422,7 @@ public sealed class ShamanSpellTests
             var t = Ticks(caster).Single();
             long length = t.UntilIn - t.NextIn + t.Every;
             int beats = (int)((length - 1) / 1_500);   // beats at 1.5 s, 3 s, ... strictly before the end
-            for (int i = 0; i < 20; i++) Advance(caster, 1_500);
+            for (int i = 0; i < 21; i++) Advance(caster, 1_500);   // 31.5 s, past the longest run's end
             Assert.True(Lost(mob) == beats * 3_000 && Ticks(caster).Count == 0,
                         $"{length} ms run: lost {Lost(mob)} (want {beats} beats of 3000), ticks left {Ticks(caster).Count}");
         }
@@ -430,28 +433,124 @@ public sealed class ShamanSpellTests
     /// counts them (the project owner's choice): <c>rtk/src/map/mob.c</c>'s <c>mob_timer_spawns</c> steps every 50 ms
     /// through a 30-step cycle and its <c>mob_duratimer</c> takes 1,000 off a creature's duration once a cycle, so a
     /// second lasts 1.5 s and the runs 7.5 s and 30 s. Their beats come 1.5 s apart, strictly before the end: 4 and 19.
+    /// And they beat as often as RTK's do (the project owner's choice, 2026-10-30): a cast in the 10 steps of 30 from
+    /// step 20 to step 30 meets a beat before its first countdown and beats once more, so one fresh run in three here
+    /// lasts 1 s longer and its beat at the roll's end lands: 8.5 s and 5 beats, 31 s and 20. With the roll fixed, fresh
+    /// runs are started (each ended unbeaten) until both outcomes are seen, and the first of each is beaten to its end.
     /// The verb runs as a cast runs it (<c>ApplyCast</c>'s <c>SpellScript.Run</c>, under the caster's monitor), with the
     /// spell's real row and its roll pinned to the row's own bound. Red on 912ba3c (clock time): 5,000 ms and 3 beats,
-    /// 20,000 ms and 13.</summary>
+    /// 20,000 ms and 13. Red on 021fa2f: no second outcome in 200 runs. With the extra second, missing either outcome
+    /// in 200 runs has odds under 10^-35.</summary>
     [Theory]
     [InlineData("duration", 7_500, 4)]
     [InlineData("durationMax", 30_000, 19)]
     public void TheShortestAndLongestRunsLastAsRtksTimerCountsThem(string bound, int lasts, int beats)
     {
         var mob = AddCreature(BeatMap, CX + 1, CY);
-        var (caster, _, _) = Caster("shamans_torment", BeatMap);
+        var (caster, _, cc) = Caster("shamans_torment", BeatMap);
         try
         {
-            var sp = Content.SpellByKey("shamans_torment")!;
-            var real = Content.SpellParams[sp.Key];
-            var row = new Dictionary<string, string>(real) { ["duration"] = real[bound], ["durationMax"] = real[bound] };
-            bool? cast = caster.WithState(() => SpellScript.Run(real["verb"], new SpellContext(caster, sp, mob.Id, null), row));
-            var t = Ticks(caster).SingleOrDefault();
-            long length = t is null ? 0 : t.UntilIn - t.NextIn + t.Every;   // both were set from one clock reading
-            for (int i = 0; i < 20; i++) Advance(caster, 1_500);              // 30 s, the longest run's end
-            Assert.True(cast == true && length == lasts && Lost(mob) == beats * 3_000 && Ticks(caster).Count == 0,
-                        $"roll {int.Parse(real[bound]) / 1_000} s: cast {cast}, length {length} ms (want {lasts}), " +
-                        $"lost {Lost(mob)} (want {beats} beats of 3000), ticks left {Ticks(caster).Count}");
+            var seen = new SortedDictionary<long, int>();   // a fresh run's length -> the blows it struck to its end
+            int runs = 0;
+            for (; runs < 200 && seen.Count < 2; runs++)
+            {
+                long length = StartPinned(caster, cc, mob, bound);
+                if (length == 0 || seen.ContainsKey(length)) { EndRuns(caster); continue; }
+                int before = Lost(mob);
+                for (int i = 0; i < 21; i++) Advance(caster, 1_500);         // 31.5 s, past the longest run's end
+                seen[length] = Ticks(caster).Count == 0 && (Lost(mob) - before) % 3_000 == 0 ? (Lost(mob) - before) / 3_000 : -1;
+            }
+            Assert.True(seen.Count == 2 && seen.GetValueOrDefault(lasts, -2) == beats
+                        && seen.GetValueOrDefault(lasts + 1_000, -2) == beats + 1,
+                        $"roll {int.Parse(Content.SpellParams["shamans_torment"][bound]) / 1_000} s, {runs} runs: " +
+                        $"{string.Join(", ", seen.Select(kv => $"{kv.Key} ms beat {kv.Value} times"))} " +
+                        $"(want {lasts} ms {beats} times and {lasts + 1_000} ms {beats + 1} times)");
+        }
+        finally { _fx.World.LeaveMap(caster, BeatMap); _fx.World.DespawnMob(BeatMap, mob); }
+    }
+
+    /// <summary>One fresh run in three gets the extra second, as one cast in three falls in RTK's 10 steps of 30 from
+    /// step 20 to step 30: 3,000 runs with the roll fixed at 5 s last 7,500 or 8,500 ms and nothing else, and 8,500 ms
+    /// comes 850 to 1,150 times (1,000 expected; the band is about 5.8 standard deviations each side, so a fair 1-in-3
+    /// misses it with odds under 10^-8, while 1 in 4 or 1 in 2 falls outside it). Red on 021fa2f: 8,500 never comes.</summary>
+    [Fact]
+    public void OneFreshRunInThreeLandsTheBeatAtItsEnd()
+    {
+        var mob = AddCreature(BeatMap, CX + 1, CY);
+        var (caster, _, cc) = Caster("shamans_torment", BeatMap);
+        try
+        {
+            const int Runs = 3_000;
+            var lengths = new SortedDictionary<long, int>();
+            for (int i = 0; i < Runs; i++)
+            {
+                long length = StartPinned(caster, cc, mob, "duration");
+                lengths[length] = lengths.GetValueOrDefault(length) + 1;
+                EndRuns(caster);
+            }
+            int late = lengths.GetValueOrDefault(8_500);
+            Assert.True(lengths.Keys.All(l => l is 7_500 or 8_500) && late >= 850 && late <= 1_150,
+                        $"{Runs} runs: {string.Join(", ", lengths.Select(kv => $"{kv.Key} ms x{kv.Value}"))} (want 8500 ms 850-1150 times)");
+        }
+        finally { _fx.World.LeaveMap(caster, BeatMap); _fx.World.DespawnMob(BeatMap, mob); }
+    }
+
+    /// <summary>The last beat a run's extra second lets land counts its own creature, as every beat does and as RTK's
+    /// last beat does (its duration still has 1,000 left then), even when the world heartbeat runs it late. Two
+    /// creatures, each with a 5 s run that got time past its roll's end (fresh runs are started until both have), take
+    /// 2,443 a beat, the figure for two; the fifth beat is run 400 ms late (a 333 ms heartbeat's lateness, with room) and
+    /// still strikes each for 2,443, so each loses 5 x 2,443 = 12,215. Red with the extra second cut to 1 ms: the late
+    /// last beat finds no run with time left, counts nobody, and strikes 3,000 (12,772).</summary>
+    [Fact]
+    public void TheLastBeatCountsItsOwnCreatureWhenTheHeartbeatIsLate()
+    {
+        var first = AddCreature(BeatMap, CX + 1, CY);
+        var second = AddCreature(BeatMap, CX, CY + 1);
+        var (caster, _, cc) = Caster("shamans_torment", BeatMap);
+        try
+        {
+            int tries = 0;
+            long a = 0, b = 0;
+            for (; tries < 200; tries++)
+            {
+                a = StartPinned(caster, cc, first, "duration");
+                b = StartPinned(caster, cc, second, "duration");
+                if (a > 7_500 && b > 7_500) break;                           // both got time past the roll's end
+                EndRuns(caster);
+            }
+            for (int i = 0; i < 4; i++) Advance(caster, 1_500);
+            Advance(caster, 1_900);                                          // the fifth beat, 400 ms late
+            Advance(caster, 1_500);                                          // past the end
+            Assert.True(tries < 200 && a == 8_500 && b == 8_500 && Lost(first) == 12_215 && Lost(second) == 12_215
+                        && Ticks(caster).Count == 0,
+                        $"{tries} tries: runs {a} and {b} ms (want 8500), lost {Lost(first)} and {Lost(second)} " +
+                        $"(want 12215 each), ticks left {Ticks(caster).Count}");
+        }
+        finally { _fx.World.LeaveMap(caster, BeatMap); _fx.World.DespawnMob(BeatMap, first); _fx.World.DespawnMob(BeatMap, second); }
+    }
+
+    /// <summary>A recast at a creature whose run is still going sets the run's length again from now and keeps its beat
+    /// (<see cref="ACreatureCountsOnceWhileItsRunLasts"/>), and rolls no extra second: the kept beat already sets where
+    /// its beats fall. 60 recasts with the roll fixed at 5 s each leave 7,500 ms or a hair less, never 8,500. Red with
+    /// the fresh-run check taken out of the verb: one in three recasts gets 8,500, so all 60 missing it has odds under
+    /// 10^-10.</summary>
+    [Fact]
+    public void ARecastThatSetsARunsLengthAgainAddsNoLastBeat()
+    {
+        var mob = AddCreature(BeatMap, CX + 1, CY);
+        var (caster, _, cc) = Caster("shamans_torment", BeatMap);
+        try
+        {
+            StartPinned(caster, cc, mob, "duration");
+            var left = new List<long>();
+            for (int i = 0; i < 60; i++)
+            {
+                StartPinned(caster, cc, mob, "duration");
+                var t = Ticks(caster).Single();
+                left.Add(t.UntilIn);
+            }
+            Assert.True(left.All(ms => ms <= 7_500 && ms > 7_500 - SlackMs / 5),
+                        $"left after each recast: {string.Join(", ", left.Distinct().OrderBy(x => x))} ms (want 6500-7500)");
         }
         finally { _fx.World.LeaveMap(caster, BeatMap); _fx.World.DespawnMob(BeatMap, mob); }
     }
@@ -666,6 +765,32 @@ public sealed class ShamanSpellTests
     }
 
     private static object F(object o, string name) => o.GetType().GetField(name)!.GetValue(o)!;
+
+    /// <summary>Cast torment at <paramref name="mob"/> as <c>ApplyCast</c> runs a verb (<c>SpellScript.Run</c> under
+    /// the caster's monitor), with the spell's real row and its roll pinned to the row's own <paramref name="bound"/>
+    /// (<c>duration</c> 5 s, <c>durationMax</c> 20 s); the mana is topped up first, so any number of casts can follow.
+    /// The run's length, as both its deadlines were set from one clock reading (a fresh run's; a recast keeps its beat,
+    /// so read its end instead), or 0 when the cast did not land or started no run.</summary>
+    private static long StartPinned(Session caster, Character cc, Mob mob, string bound)
+    {
+        var sp = Content.SpellByKey("shamans_torment")!;
+        var real = Content.SpellParams[sp.Key];
+        var row = new Dictionary<string, string>(real) { ["duration"] = real[bound], ["durationMax"] = real[bound] };
+        bool? cast = caster.WithState(() =>
+        {
+            cc.Mp = Mana;
+            return SpellScript.Run(real["verb"], new SpellContext(caster, sp, mob.Id, null), row);
+        });
+        var t = Ticks(caster).SingleOrDefault(x => x.Mob == mob.Id);
+        return cast == true && t is not null ? t.UntilIn - t.NextIn + t.Every : 0;
+    }
+
+    /// <summary>End the caster's runs at once, unbeaten, so the next cast starts a fresh one.</summary>
+    private static void EndRuns(Session s) => s.WithState(() =>
+    {
+        ((IList)TicksField.GetValue(s)!).Clear();
+        PublishTickDue.Invoke(s, null);
+    });
 
     private static uint Id(byte[] effectBody) =>
         (uint)((effectBody[0] << 24) | (effectBody[1] << 16) | (effectBody[2] << 8) | effectBody[3]);
