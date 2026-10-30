@@ -1683,8 +1683,12 @@ end
 --   * A solace aimed at nothing heals its caster, as every "Which target?" heal here does (the 4.95 client casts with
 --     the slot alone, and you never face yourself). RTK's engine runs no script without a target.
 --   * RTK waives Reincarnate's wait for a GM; no verb here waives anything for staff.
---   * Torment's run is clock time, 5-20 s, as the venom's is; RTK counts a creature's duration down 1,000 every 1.5 s,
---     so its run lasts half as long again (the periodic tick's note in Server/Session.Spells.cs). A creature's threat from a beat is the blow it took, as from every blow
+--   * Torment's run is the script's roll of N seconds as RTK's creature timer counts it, N x 1.5 s, so 7.5-30 s
+--     (TORMENT_SECOND_MS, at verbs.torment). RTK's own run ends on its timer's step 20 (rtk/src/map/mob.c:653-655),
+--     so it is that long for a cast just after that step and up to 1.45 s shorter for the rest. The beats here come
+--     1.5 s apart from the cast, strictly before the end: N - 1 of them, 4-19. RTK beats on step 30 (mob.c:650-652),
+--     0.05-1.5 s after the cast first, and N - 1 times in two casts of three, N in the third (a cast in the half
+--     second from step 20 to step 30). A creature's threat from a beat is the blow it took, as from every blow
 --     here; the script adds its figure before armour. A ghost casts nothing here (the engine's rule); the script's
 --     canCast(0, ...) lets a ghost torment.
 -- =========================================================================================================
@@ -1722,8 +1726,8 @@ end
 -- Shaman's torment (RTK Subpaths/TESTING/shamans_torment.lua, an unfinished testing script, ported as written). The
 -- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), counts
 -- a creature into the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic.";
--- at a creature, a run of rollRange(duration, durationMax) whole seconds whose beat (torment_tick) strikes it every
--- TORMENT_TICK_MS.
+-- at a creature, a run of rollRange(duration, durationMax) whole seconds, each as long as RTK's creature timer makes it
+-- (TORMENT_SECOND_MS), whose beat (torment_tick) strikes it every TORMENT_TICK_MS.
 -- At nothing, or at an NPC, it casts nothing, silently and for free: RTK's engine runs no script without a target.
 -- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only and never shown: the script's
 -- debug line "total siphon: N", sent on every cast, is dropped on the project owner's decision (2026-10-26). The beat
@@ -1731,6 +1735,11 @@ end
 local TORMENT_TICK_MS = 1500            -- the script's while_cast_1500
 local TORMENT_ANIM    = 84              -- its target:selfAnimation(player.ID, 84, 1), for the caster alone
 local TORMENT_SIPHON  = "totalsiphon"   -- its player.registry key
+-- One second of the script's duration as RTK's creature timer counts it, the project owner's choice (2026-10-26,
+-- "Match RTK"): mob_timer_spawns runs every 50 ms (rtk/src/map/map.c:1863) through a 30-step cycle
+-- (rtk/src/map/mob.c:633-689), and mob_duratimer, on the cycle's step 20, takes 1,000 off a creature's duration
+-- (mob.c:463-514). So 1,000 lasts 1.5 s, and the script's 5-20 s roll runs 7.5-30 s.
+local TORMENT_SECOND_MS = 1500
 
 function verbs.torment(ctx, row)
   if ctx.victimIsNpc or ctx.castAtNothing then return false end    -- silent, free: nothing to torment
@@ -1747,7 +1756,7 @@ function verbs.torment(ctx, row)
   end
   if creature then
     local secs = ctx:rollRange((row.duration or 0) / 1000, (row.durationMax or 0) / 1000)
-    ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * 1000)
+    ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * TORMENT_SECOND_MS)
     ctx:selfAnimation(TORMENT_ANIM)
   else
     ctx:say("This target's soul is too pure for this magic.")
