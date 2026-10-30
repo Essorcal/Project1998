@@ -67,14 +67,14 @@ internal static class SubpathCircles
 
 /// <summary>
 /// A PC subpath's teacher: one per subpath, named "&lt;Subpath&gt; Teacher", standing on the subpath's Circle
-/// (Caleb, 2026-10-26: "Circle, via scroll"; the spot on each Circle is ours, no source places one). One ability for
+/// (owner, 2026-10-26: "Circle, via scroll"; the spot on each Circle is ours, no source places one). One ability for
 /// all twelve; which subpath it teaches comes from the map it stands on (<see cref="SubpathCircles"/>), the way the
 /// shrines pick their alignment (<see cref="AlignmentAbility"/>). Composed onto <c>SubpathTeacherNpc</c> on those
 /// twelve maps only (<c>NpcAbilities.csv</c>, <c>subpath_teacher@map:...</c>); a test holds the two sets equal.
 ///
 /// <para><b>Who.</b> A member of the teacher's own subpath gets Learn Secret and Forget Secret. Anyone else gets a
 /// one-line refusal, in the shape of RTK's shrine refusal ("You are not Kwi-Sin, I can not help you.",
-/// <c>NPCs/Common/alignment.lua</c>), and nothing else (Caleb, 2026-10-26, "Fine as stated").</para>
+/// <c>NPCs/Common/alignment.lua</c>), and nothing else (owner, 2026-10-26, "Fine as stated").</para>
 ///
 /// <para><b>What.</b> <see cref="Content.SubpathTeacherSpells"/>: the subpath's own rows that have a
 /// <c>SpellLearnCosts.csv</c> row keyed to the subpath's own path id, at that row's level, minus what the member

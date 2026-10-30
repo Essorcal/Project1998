@@ -105,7 +105,7 @@ public sealed class EmotePickupStateTests
     }
 
     /// <summary>A transformed player's emote does nothing (RTK's <c>PC_DISGUISE</c>, ours a morph such as Feral;
-    /// Caleb's decision 2 on sheet item 9, 2026-10-22). Red on 2874006.</summary>
+    /// the project owner's decision 2 on sheet item 9, 2026-10-22). Red on 2874006.</summary>
     [Fact]
     public void ATransformedEmoteSendsNothing()
     {

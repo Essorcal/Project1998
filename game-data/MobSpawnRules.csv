@@ -56,7 +56,7 @@ spirit_dog,4192:16:6|4195:17:17|4197:4:20,0,,,,,
 # spirit_dragon's middle room is 4258:9:13, NOT RTK's 4258:7:13 (rtklua/Accepted/AI/bosses/mythic_bosses/mythic_dragon.lua,
 # spirit_dragon's on_spawn). On the 4.95 map (Jeweled Dragon 3, 18x36) RTK's tile is open ground walled in on all four
 # sides, so the boss stood where no player could walk to it or swing at it. 9:13 is the corridor two tiles east, which
-# the map's warp landings reach. A deliberate deviation for the 4.95 terrain, on Caleb's word (2026-10-22); the fact
+# the map's warp landings reach. A deliberate deviation for the 4.95 terrain, on the project owner's word (2026-10-22); the fact
 # TheSpiritDragonsJeweledDragonRoomIsOnTheCorridorAPlayerWalks (Tests/SpawnDirectorTests.cs) pins it.
 spirit_dragon,4254:16:5|4258:9:13|4253:13:6,0,,,,,
 spirit_horse,4240:21:35|4243:6:24|4248:16:12,0,,,,,

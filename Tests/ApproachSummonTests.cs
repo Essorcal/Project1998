@@ -16,7 +16,7 @@ namespace Tests;
 /// kingdom, or the spell fizzles. RTK's <c>Spells/common/approach.lua</c> and <c>summon.lua</c> agree on the
 /// group, the 30 mana and "Fizzle.", and add the map checks this file pins: indoors, PvP, warp-out, the
 /// destination's level/vita/mana bands, staff. The Atlas's "area that allows approaching" is Maps.csv's
-/// <c>MapCanSummon</c> (RTK <c>canSummon</c>). Which map it reads is Caleb's ruling of 2026-10-06: Approach the
+/// <c>MapCanSummon</c> (RTK <c>canSummon</c>). Which map it reads is the project owner's ruling of 2026-10-06: Approach the
 /// person's, as RTK's approach.lua does; Summon both, the caster's as RTK's summon.lua does and the person's as
 /// the Atlas says.</para>
 ///
@@ -91,10 +91,10 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// target does not move, and the cast says "You cast Approach.". Both kingdoms, two Neutrals (nation 0), and
     /// a name typed in the wrong case (the lookup is case-insensitive, like whisper's).
     /// <para>Red on 9c00b98: the caster stays home and 5 mana goes (the generic fallback). The Neutral pair is
-    /// Caleb's ruling of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two
+    /// the project owner's ruling of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two
     /// Neutrals: "Fizzle.", nothing spent, nobody moved.</para>
     /// <para>ApFromNoSummon: Approach leaves a <c>MapCanSummon</c> 0 map (Tiger's Steps) for an allowed one.
-    /// Approach reads only the person's map, as RTK's approach.lua does (<c>target.canSummon</c>) and as Caleb
+    /// Approach reads only the person's map, as RTK's approach.lua does (<c>target.canSummon</c>) and as the project owner
     /// ruled (2026-10-06); red if the verb also asks about the caster's map.</para>
     /// </summary>
     [Theory]
@@ -120,7 +120,7 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// caster (north first: the @bring move), 30 mana is spent, the caster does not move, and the cast says
     /// "You cast Summon.". The target is told nothing: RTK's summon.lua sends them no line. Both kingdoms, and
     /// two Neutrals (nation 0).
-    /// <para>Red on 9c00b98: the target stays where they were and 5 mana goes. The Neutral pair is Caleb's ruling
+    /// <para>Red on 9c00b98: the target stays where they were and 5 mana goes. The Neutral pair is the project owner's ruling
     /// of 2026-10-06, not a sourced fact; it is red on dd4ccf7, whose kingdom rule refused two Neutrals.</para>
     /// </summary>
     [Theory]
@@ -191,12 +191,12 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
     /// <item>other-kingdom / neutral-caster / neutral-target: not of the same nation. tswolf 2001 ("From Same
     ///   Kingdom") and Atlas 2002 ("citizenship in the same kingdom"); RTK has no such check. other-kingdom is
     ///   Koguryo and Buya; the two neutral cases put a Neutral (nation 0) with a Koguryo citizen, each way round.
-    ///   Two Neutrals are not a refusal: read literally the sources leave them out, but Caleb chose to allow
+    ///   Two Neutrals are not a refusal: read literally the sources leave them out, but the project owner chose to allow
     ///   them (2026-10-06), so they are in the success facts above.</item>
     /// <item>no-summon-target / no-summon-caster: a map with <c>MapCanSummon</c> 0 (Tiger's Steps, plain but for
     ///   that flag). Approach: the person's map only (RTK approach.lua <c>target.canSummon</c>; the Atlas's "in an
     ///   area that allows approaching"). Summon: the caster's map (RTK summon.lua <c>player.canSummon</c>) or the
-    ///   person's (the Atlas). Which maps count is Caleb's ruling of 2026-10-06. Approach out of such a map is a
+    ///   person's (the Atlas). Which maps count is the project owner's ruling of 2026-10-06. Approach out of such a map is a
     ///   success case above.</item>
     /// <item>both-flags-target / both-flags-room / locked-to-area: the no-summon check and the warp-out check
     ///   both apply, and the area check answers first, so the line is "Fizzle.", not "That does not work here."

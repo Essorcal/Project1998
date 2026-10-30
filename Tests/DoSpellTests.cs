@@ -8,7 +8,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The Do spells slice (Caleb, 2026-10-26: P5 "each spell as its RTK script", P1 and P3 "on sale once it works, at its
+/// The Do spells slice (owner, 2026-10-26: P5 "each spell as its RTK script", P1 and P3 "on sale once it works, at its
 /// script's price", Q8 "Spirit blade x10, as RTK"): Dash, Blend, Hear footstep, Assess opponent, Balance weapon, Master
 /// weapon and Crossing swords do what their RTK scripts do, and the Do teacher sells them. Before, all seven fell to the
 /// <c>generic</c> verb: 5 mana and nothing else (<c>Tests/Fixtures/spell-dispatch-routes.txt</c> had them on
@@ -38,7 +38,7 @@ public sealed class DoSpellTests
     /// <summary>Slack on a wait read straight after the cast.</summary>
     private const long SlackMs = 5_000;
 
-    /// <summary>Blend's sneak multiplier, its script's <c>invis = 9</c> (Caleb's Q15), which its SpellParams.csv row carries
+    /// <summary>Blend's sneak multiplier, its script's <c>invis = 9</c> (the project owner's Q15), which its SpellParams.csv row carries
     /// as <c>amount</c>: the one figure these facts expect of it.</summary>
     private const int BlendTimes = 9;
 
@@ -186,7 +186,7 @@ public sealed class DoSpellTests
     }
 
     // ===== Blend ================================================================================================
-    // As its RTK script (Caleb, 2026-10-26, Q15): its own `hide` verb on the rogue's stealth state, x9, its own lines.
+    // As its RTK script (owner, 2026-10-26, Q15): its own `hide` verb on the rogue's stealth state, x9, its own lines.
     // The rogue's four stealths keep x5 and the set's rules; the facts at the end of this section pin that.
 
     /// <summary>The caster turns invisible (RTK state 2) for 120 s for 4,000 mana, with a 30 s wait, "You cast Blend."
@@ -931,7 +931,7 @@ public sealed class DoSpellTests
     }
 
     /// <summary>Chung Ryong's rage refuses a climb inside its 120 s wait, with the same line as Crossing swords' wait and
-    /// for free, and the next climb after the wait lands (Caleb, 2026-10-26, Q16: "As RTK"). No staff waiver, as for
+    /// for free, and the next climb after the wait lands (owner, 2026-10-26, Q16: "As RTK"). No staff waiver, as for
     /// Crossing swords. Red on 65cfc39, where nothing checked the wait and the second cast climbed at once.</summary>
     [Fact]
     public void ChungRyongsRageRefusesAClimbInsideItsWait()

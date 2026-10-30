@@ -16,9 +16,9 @@ namespace Server;
 /// when the spell is casted, they will be stuck in that space. Duration is 22 Seconds."; Human Barrier "Similar to
 /// Barrier. Lasts for 22 Seconds. Has 86 Second Aethers." RTK (poet/barrier.lua, blockade_human.lua, weight 0)
 /// charges Barrier 0, gives Human Barrier a 56 s aether, holds only attackable players, and snares the caster;
-/// the era pages win on all four (Caleb, 2026-10-08).</para>
+/// the era pages win on all four (owner, 2026-10-08).</para>
 ///
-/// <para><b>Caleb's reading (2026-10-08).</b> What is on the four tiles at the cast is held, paralysed until the
+/// <para><b>The project owner's reading (2026-10-08).</b> What is on the four tiles at the cast is held, paralysed until the
 /// barrier wears off; for the 22 s nothing else may step onto them. The tiles stay where they were cast, so the
 /// Poet may walk away and they stay closed. The caster is never held. Human Barrier holds any player, in towns
 /// and off PvP maps too.</para>
@@ -43,7 +43,7 @@ public sealed partial class Session
     /// <c>paras</c>, but <c>arch_cure</c> cures only its own caster, and a held player cannot cast (PR #338 review,
     /// F3). Four things end it: the 22 s; death; <c>@dispel</c>; and another player's Dispell-family cast (Dispell,
     /// Remove Magic, Return Natural, Restore Balance) on a won roll (PR #338 re-check, F7), except on a GM, at whom
-    /// it fizzles (Caleb, 2026-10-10). Its <c>cleanse</c> verb runs <c>FlushDurations</c>, which clears every
+    /// it fizzles (owner, 2026-10-10). Its <c>cleanse</c> verb runs <c>FlushDurations</c>, which clears every
     /// entry in the player's buff list, this hold included, and the fury, stealth, Backstab, Flank and four-way
     /// timers. It does not clear the ward flags (Harden Body), the Sanctuary and Cunning damage reductions or the
     /// enchant, which <c>@dispel</c> and death do (PR #338 re-check 2, F10).</summary>

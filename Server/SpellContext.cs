@@ -169,7 +169,7 @@ public sealed class SpellContext
     public bool canStrike()             => _s.LuaCanStrike(_sp, Victim);
     /// <summary>Is this cast aimed at nothing: no victim (<see cref="Victim"/>), or, on a PvP map, the caster only as
     /// the resolver's fallback for a cast aimed at nothing? <c>magic_damage</c> asks it first, before its mana, and
-    /// refuses silently and for free (Caleb, 2026-10-21; RTK's zap returns there first, global_zap.lua:8-10). An id
+    /// refuses silently and for free (owner, 2026-10-21; RTK's zap returns there first, global_zap.lua:8-10). An id
     /// aimed at the caster is not nothing. See <c>Session.LuaCastAtNothing</c>.</summary>
     public bool castAtNothing           => _s.LuaCastAtNothing(_sp, Victim, _targetId);
     /// <summary>How many tiles this cast's victim (<see cref="Victim"/>) stands from the caster on the larger of the two

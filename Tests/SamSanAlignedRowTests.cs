@@ -9,7 +9,7 @@ using Xunit.Abstractions;
 namespace Tests;
 
 /// <summary>
-/// The thirty aligned Sam san rows (Caleb, 2026-10-24, decision sheet item 7): the Kwi-Sin, Ming-Ken and Ohaeng rows
+/// The thirty aligned Sam san rows (owner, 2026-10-24, decision sheet item 7): the Kwi-Sin, Ming-Ken and Ohaeng rows
 /// of the ten Sam san families that had only their unaligned row.
 ///
 /// <para>The silent failure. <c>Content.SpellsForClass</c> offers a row only if it is universal or matches the

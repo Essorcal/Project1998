@@ -7,7 +7,7 @@ namespace Tests;
 
 /// <summary>
 /// A cast aimed by id at a player on another map no longer reaches them through the buff or the damage resolver.
-/// Caleb, 2026-10-11 ("Fix as a slice"), on #342's review (F2): <c>Session.ResolveTargetBuff</c> and
+/// The project owner, 2026-10-11 ("Fix as a slice"), on #342's review (F2): <c>Session.ResolveTargetBuff</c> and
 /// <c>Session.ResolveDamageTarget</c> took an id to the player with that id on ANY map. From a PvP map that let a
 /// damage spell, a curse, a venom or a Doze land on a player standing in a town, because every one of those gates
 /// reads the caster's map; and a heal, a buff or a ward reached anyone anywhere.
@@ -127,7 +127,7 @@ public sealed class ResolverTargetMapTests
         { "harden_armor_mage", FacedHere, FacedThere },
     };
 
-    /// <summary>The fallback is the faced tile (Caleb kept #342's: "Merge as is (fallback)"). A caster faces a player
+    /// <summary>The fallback is the faced tile (the project owner kept #342's: "Merge as is (fallback)"). A caster faces a player
     /// on their own map and casts twice: with the slot alone (the stock 4.95 client's frame) and with the id of a player
     /// on another map. Both land on the faced player, with the same lines and cost, and the far player is untouched.
     /// <para>Red on df98c3a: the id cast lands on the far player and the faced one is untouched.</para></summary>

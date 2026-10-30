@@ -3259,7 +3259,7 @@ rows). Each `SpellDef` = `Id, Key(SplIdentifier), Name(SplDescription), Type, Pa
   > 2001-06-27), its spell pages link Il San and Ee San and no Sam San through 2001-08-21, and Wayback holds
   > no tswolf.com/spells/samsan.shtml; Nexus Atlas first documents it on its "Sam San, 3rd Mark" quest page
   > (nexusatlas.com/quests/samsan.php, first capture 2002-10-05). Sam san is kept as today anyway, with no era
-  > gate (Caleb, 2026-10-24), and its promotion is to be built after Il san's and Ee san's. Sa san is later
+  > gate (owner, 2026-10-24), and its promotion is to be built after Il san's and Ee san's. Sa san is later
   > still: its Atlas quest page is first captured 2008-10-15.
   > *Known consequence:* those 34 Sa san items stay unwearable, since `ItmMark` reads the same field. That is
   > right for a rank nobody can hold, and it reverses the moment `MaxMark` moves.
@@ -3787,14 +3787,14 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
   - NOT extended to traps, pet mob-on-mob hits or harvest nodes — no measurement exists for any of them, and
     guessing would move balance with nothing behind it. Ambush and melee already net attacker-side.
   - **Base settled 2026-10-21 (#200):** the same probe says Spark scales off `level/2` and rules will out ("a +1
-    will item changed nothing"), and Caleb took that: the seven Spark-family rows (Spark, Glimpse of the Void and
+    will item changed nothing"), and the project owner took that: the seven Spark-family rows (Spark, Glimpse of the Void and
     Nature's Ire for mage; all four for poet) read `50 + level/2`, no longer `50 + floor((level + will)/4)`. The
     half is kept to the armor step: `Session.CastArch` no longer rounds the evaluated amount, and `ctx:magicDamage`,
     `LuaMagicDamage`, `LuaDamageTarget`, `SpellNet`, `HitPlayerWithSpell`, `ReceiveSpellDamage` and
     `DamageIntake.Raw` carry a double to the armor step: `SpellNet`'s `Combat.ApplyArmor` against a creature, and
     `Combat.ArmorFactor` and `Combat.FloorOnce` in `Session.TakeDamage` against a player. So a level-15 self-cast at
     AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it was 107). **Mage Bolt joined that row on
-    2026-10-22** (Caleb, decision sheet item 3; #200): `bolt_mage` reads `50 + level/2` for 20 mana from its own
+    2026-10-22** (owner, decision sheet item 3; #200): `bolt_mage` reads `50 + level/2` for 20 mana from its own
     spell_effects.csv row, as the other seven do. `game-data/SpellParams.csv` still binds it to `verbs.magic_damage`,
     which keeps Bolt's refusals and now takes the row's amount and mana (`ctx.spellAmount`, `ctx.spellMana`, the
     same evaluation `CastArch` hands the archetype); its old 2 + 1.5 × Will for 4 mana had no source.
@@ -4143,7 +4143,7 @@ lives in `Server/Combat.cs` so both attack directions use one verified implement
     8-minute (480000 ms) cooldown, through the pre-existing `OnCooldown`/`SetCooldown` plumbing; every lower
     tier costs a flat 10 mana with no cooldown (`game-data/Pets.csv`). The source is Nexus Atlas's poet page
     (`Sources.csv` `atlas-poet-spells`). RTK agrees on the cooldown (`cotw_wind_dancer.lua` line 6,
-    `cotw_wind_warrior.lua` line 5) but charges the dancer tier 10 mana (`cotw_wind_dancer.lua` line 3); Caleb
+    `cotw_wind_warrior.lua` line 5) but charges the dancer tier 10 mana (`cotw_wind_dancer.lua` line 3); the project owner
     chose 0 on 2026-09-29. The gold in RTK's `requirements()` is the trainer's learn price, which every tier
     has, not a cast cost. *(Changed 2026-10-05. Wind dancer and the Champions used to cost 10 mana, with no
     cooldown.)* **NOT ported:** `cotw_controller_poet`, neither its threat-transfer nor
@@ -4340,7 +4340,7 @@ same status pane. User-confirmed working 2026-07-27.
 **Arrival on an occupied tile = stack, settled 2026-09-06 (#99 part 2).** When a warp, scripted-tile
 entrance, world-map hop, Gateway or GM teleport puts a player on a tile another player already stands on,
 the original game stacked them — it neither refused the warp nor moved the arriver to a neighbouring tile
-(Caleb, from play; `game-data/Sources.csv` `live-2026-09-06-arrival-stack`, a recollection rather than a
+(the project owner, from play; `game-data/Sources.csv` `live-2026-09-06-arrival-stack`, a recollection rather than a
 dated capture, so weight 2 rather than 3; no contrary source is recorded in this tree or the research
 archive). Structurally consistent with RTK at weight 0: `pc_warp` applies no
 occupancy test (§11m), and the `slash.lua` note earlier in this document has `getAliveObjectsInCell(m, x, y,

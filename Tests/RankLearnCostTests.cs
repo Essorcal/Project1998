@@ -5,7 +5,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// What a trainer charges, and who offers it, for three sets of rank spells (Caleb, 2026-10-24, decision sheet
+/// What a trainer charges, and who offers it, for three sets of rank spells (owner, 2026-10-24, decision sheet
 /// items 8 and 9), as <c>game-data/SpellLearnCosts.csv</c> now has them.
 ///
 /// <para><b>Six Sam san rows</b> (Dragon's harness, Blade's charm, Explorer's remedy, Power stream, Energy flow,

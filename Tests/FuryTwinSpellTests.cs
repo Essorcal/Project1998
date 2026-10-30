@@ -16,14 +16,14 @@ namespace Tests;
 /// mana again. Serpent's Fury and Spirit Fury, the Rogue's and the Warrior's level-99 dog spells, were the same.
 /// Silent: the player paid, was told it worked, and swung at x1.</para>
 ///
-/// <para>The values are Caleb's (2026-10-08, #334), from the era spell pages in <c>game-data/Sources.csv</c>:
+/// <para>The values are the project owner's (2026-10-08, #334), from the era spell pages in <c>game-data/Sources.csv</c>:
 /// the 2002 Nexus Atlas Warrior and Rogue pages list each twin as an alignment name of its fury, "Increases
 /// Weapon Damage" x2 (Wolf's), x3 (Tiger's) and x4 (Dragon's), 625 s, with no stats of their own
 /// (<c>atlas-2002-12-30-spells-warrior-dog</c>, <c>atlas-2002-12-30-spells-classes</c>); the Atlas dog page gives
 /// Serpent's Fury x4, 800 mana, 375 s and a 25 s aether, and Spirit Fury x5, 1000 mana, 375 s and none. tswolf
 /// (2001) agrees on the mana and the durations. RTK's scripts agree on every multiplier (weight 0).</para>
 ///
-/// <para>A twin is learned where its fury is, too (Caleb, 2026-10-21, decision sheet item 4). The Rogue's three
+/// <para>A twin is learned where its fury is, too (owner, 2026-10-21, decision sheet item 4). The Rogue's three
 /// Wolf's Fury names kept RTK's level 34 in <c>game-data/SpellLearnCosts.csv</c>, while Wolf's Fury itself is 30 and
 /// the 2002 Atlas rogue page prints them under it at "Level 30" (so does the live Atlas page); tswolf's July 2001
 /// rogue page has Wolf's Fury at 30. Their rows now read 30 and cite <c>tswolf-2001-spells-classes</c> and
@@ -46,7 +46,7 @@ public sealed class FuryTwinSpellTests
 
     public FuryTwinSpellTests(SessionFixture fx) => _fx = fx;
 
-    /// <summary>The fifteen twins: the key, the fury it is a name of, its mana and the rage Caleb chose.</summary>
+    /// <summary>The fifteen twins: the key, the fury it is a name of, its mana and the rage the project owner chose.</summary>
     public static TheoryData<string, string, int, int> Twins => new()
     {
         { "souls_rage_warrior",            "wolfs_fury_warrior",   30, 2 },

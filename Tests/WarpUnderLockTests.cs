@@ -16,7 +16,7 @@ namespace Tests;
 /// resolve and the write are now one acquisition, in <see cref="World.PlacePlayer"/>.</para>
 ///
 /// <para><b>What the source check settled (#99 part 2).</b> An occupied arrival tile is neither refused nor
-/// stepped aside from: the original game stacked the arriver on whoever was already there (Caleb, from play,
+/// stepped aside from: the original game stacked the arriver on whoever was already there (the project owner, from play,
 /// 2026-09-06; Sources.csv <c>live-2026-09-06-arrival-stack</c>). The default
 /// <see cref="ArrivalPolicy.Clamp"/> — clamp and take the tile, occupancy untested — is therefore the game's
 /// behaviour, <see cref="ArrivalsStackOnAnOccupiedTileAsTheOriginalGameDid"/> is the source-backed guard for
@@ -91,7 +91,7 @@ public class WarpUnderLockTests
     /// <summary>
     /// <b>Arrivals stack on an occupied tile, as the original game did.</b> A player is standing on the
     /// destination tile and the arriver lands on it anyway: the warp is not refused and the arriver is not
-    /// moved to a neighbour. That is #99's source-check answer (Caleb, from play, 2026-09-06; Sources.csv
+    /// moved to a neighbour. That is #99's source-check answer (the project owner, from play, 2026-09-06; Sources.csv
     /// <c>live-2026-09-06-arrival-stack</c>), and this is the sequential half of the acceptance — the
     /// concurrent half is <see cref="TwoWarpsThroughOneDoorBothLandWhereClampSays"/>.
     ///

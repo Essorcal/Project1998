@@ -23,7 +23,7 @@ namespace Tests;
 /// <item><b>mana 0, all eight.</b> The same Nexus Atlas page: "Mana Cost - 0". RTK disagrees for the dancer
 /// tier: cotw_wind_dancer.lua charges <c>magicCost = 10</c> for Wind dancer and each Champion (lines 3, 47,
 /// 91 and 135), while cotw_wind_warrior.lua has no mana check for Wind warrior or the Avatars. The fan site
-/// wins because RTK is weight 0 (AGENTS.md Rule 2); Caleb chose mana 0 on 2026-09-29.</item>
+/// wins because RTK is weight 0 (AGENTS.md Rule 2); the project owner chose mana 0 on 2026-09-29.</item>
 /// </list>
 /// </summary>
 public class WindPetCooldownTests

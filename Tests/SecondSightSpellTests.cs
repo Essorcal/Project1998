@@ -10,7 +10,7 @@ namespace Tests;
 ///
 /// <para>The four rows reached <c>arch_buff</c> with no stat and no slot, so a cast took 240 mana, answered
 /// "You cast Second sight." and did nothing, and a recast took the mana again. The era pages give the spell an
-/// effect and its numbers, and Caleb chose them over RTK's (2026-10-08, #334):</para>
+/// effect and its numbers, and the project owner chose them over RTK's (2026-10-08, #334):</para>
 /// <list type="bullet">
 /// <item>tswolf, Poet page (2001-03-09, <c>tswolf-2001-spells-classes</c>): "Enables Text Notices of Invisible
 /// Rogues", 140 mana, "Shows Text Notices in your Information Bar about the whereabouts of Invisible People."</item>

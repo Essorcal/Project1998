@@ -7,7 +7,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// A player-target cast aimed by id reaches only a player on the caster's own map. Caleb, 2026-10-11 ("Fix as a
+/// A player-target cast aimed by id reaches only a player on the caster's own map. The project owner, 2026-10-11 ("Fix as a
 /// slice"), on PR #340's review (F2): <c>Session.ResolvePcCastTarget</c> took an explicit target id to the player
 /// with that id on ANY map, so a frame carrying the id of a player on another map Dispelled them.
 ///

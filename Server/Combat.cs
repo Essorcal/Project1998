@@ -223,7 +223,7 @@ public static class Combat
     /// <see cref="ApplyArmor"/>'s note.</summary>
     public static double ArmorFactor(int armor, int floor) => (100 + Math.Max(armor, floor)) / 100.0;
 
-    /// <summary>The one rounding a hit takes (#78; Caleb, 2026-10-21: "multiply everything, round down once,
+    /// <summary>The one rounding a hit takes (#78; owner, 2026-10-21: "multiply everything, round down once,
     /// minimum 1"): floor the finished product of every term, then raise it to 1, so a hit that lands always
     /// takes something. The floor is the live-proven one (the Spark probe, <see cref="ApplyArmor"/>), not RTK's
     /// spell ceiling.</summary>

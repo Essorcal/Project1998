@@ -12,7 +12,7 @@ namespace Tests;
 /// accumulator, reset at the topped-off check, so the first regen after damage was always exactly 25 s
 /// later and a player chipped every 20 s never regenerated at all. The original game ran one global timer
 /// (RTK <c>Player.regen</c> on <c>timerTick%50</c> at 0.5 s a tick): everyone below full heals in the same
-/// moment, damage restarts nothing, and two players in a fight always tick together. Caleb decided on
+/// moment, damage restarts nothing, and two players in a fight always tick together. The project owner decided on
 /// 2026-09-19 to go back to that, and it is the one player-visible change in this PR — so it is written
 /// down as a fact rather than left to a comment, including the edge that makes it a CHANGE (a player
 /// damaged one beat before the boundary regenerates on that boundary, not 25 s later).</para>

@@ -789,7 +789,7 @@ public sealed class CommandTableTests
         Assert.DoesNotContain(Session.PaneRule, string.Join("\n", transcript));
     }
 
-    /// <summary>The four listings Caleb read off the real client, end to end: nothing they produce is wider
+    /// <summary>The four listings the project owner read off the real client, end to end: nothing they produce is wider
     /// than the pane unless it is a single unbreakable token. This is the acceptance check for the whole
     /// formatting pass — it walks the actual output rather than the wrapper in isolation, so a caller that
     /// bypasses Reply, or a table row whose Args column grew, fails here.</summary>

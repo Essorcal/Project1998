@@ -8,7 +8,7 @@ using Xunit.Abstractions;
 namespace Tests;
 
 /// <summary>
-/// The first PC-subpath slice (Caleb, 2026-10-26, P1-P5): a teacher on each of the twelve Circles
+/// The first PC-subpath slice (owner, 2026-10-26, P1-P5): a teacher on each of the twelve Circles
 /// (<c>Server/SubpathTeacher.cs</c>), selling a member only their own subpath's working spells at RTK's script prices
 /// (<c>game-data/SpellLearnCosts.csv</c>, the nine rows keyed to paths 13, 16, 18, 19 and 20); a member's Qui hyang
 /// offering RTK's "Subpath Circle" (<c>item_verbs.lua</c> <c>quihyang</c>); and the spellbook rebuild keeping the
@@ -107,7 +107,7 @@ public sealed class SubpathTeacherTests
     /// and nothing at all for the other seven. Each item named is one Items.csv has. Red without the nine rows: every
     /// list is empty. The Shaman spells slice then put Shaman's solace, Reincarnate and Shaman's torment on sale beside
     /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
-    /// row's level, 0, for nothing (Caleb's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
+    /// row's level, 0, for nothing (the project owner's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
     /// and Spirit blade, each at its script's price, the borrowed ones as written (Hear footstep asks Blend's, Crossing
     /// swords Chung ryong rage's).</summary>
     [Theory]

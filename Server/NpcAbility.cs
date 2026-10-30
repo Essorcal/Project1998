@@ -1441,7 +1441,7 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// <c>Config.shotgunWeddingEnabled</c> (no config system here — the 3-day wait always applies) and
 /// <c>Config.bossDropSalesEnabled</c> (Sell always shows nothing extra, matching the lua's own "else return
 /// {}" branch).
-/// <para><b>A confirm whose vow the partner already ended is free</b> (PR #344's Follow-ups; Caleb, 2026-10-18, "As
+/// <para><b>A confirm whose vow the partner already ended is free</b> (PR #344's Follow-ups; owner, 2026-10-18, "As
 /// recommended"). Break Off Engagement and Divorce are offered for the vow the player holds when the top menu is built,
 /// and the dialog then waits on the player for several answers. Meanwhile the partner can end the same vow at a
 /// Chapel of their own, which ends this player's half too when they are online (<c>Session.FinishDivorce</c>). So
@@ -1453,7 +1453,7 @@ public sealed class ShadowStatsAbility : INpcAbility
 /// the shape of the login line (<c>Session.SettleVowHalves</c>). The player has by then read the status line the partner's
 /// visit sent them; RTK has no equivalent to follow (its divorce never touches the other side), so the words are
 /// ours.</para>
-/// <para><b>A "No", a stale Marriage and the ceremony's question read the same line</b> (PR #350's review, N3; Caleb,
+/// <para><b>A "No", a stale Marriage and the ceremony's question read the same line</b> (PR #350's review, N3; owner,
 /// 2026-10-21). The check comes before the answer is read, so a "No" to Break Off Engagement's question, or to
 /// Divorce's first, after the partner ended the vow reads it too, not "I hope you can salvage your relationship." or
 /// "Patience and love will save your marriage. ...". Marriage, offered by a top menu built while the player was
@@ -1519,7 +1519,7 @@ public sealed class ChapelAbility : INpcAbility
         // RTK: player.baseMagic * 1000, in Lua numbers, which do not wrap; it then clamps the penalty at 4294967295 and
         // takes all of a smaller balance (chapel_npc.lua:144-152). Taken in 64 bits, so the Math.Min below is that clamp
         // and that zeroing in one. As a uint it wrapped past base mana 4,294,967: 4,294,968 cost 704 experience
-        // (Caleb, 2026-10-26: "As RTK").
+        // (owner, 2026-10-26: "As RTK").
         long penalty = (long)ctx.MaxMp * 1000;
         ctx.SpendExp((uint)Math.Min(ctx.Exp, penalty));
         ctx.BreakEngagement();
@@ -1551,7 +1551,7 @@ public sealed class ChapelAbility : INpcAbility
         // RTK: player.baseHealth * 2550, in Lua numbers, which do not wrap (chapel_npc.lua:248-256). Taken in 64 bits:
         // as a uint it wrapped past base vita 1,684,300, so 1,684,301 was quoted and charged 254 experience. Now it is
         // quoted in full, more than anyone can hold (experience stops at 4,294,967,295), so "Yes" leads to the
-        // sacrifice below, as for anyone short of experience (Caleb, 2026-10-26: "As RTK").
+        // sacrifice below, as for anyone short of experience (owner, 2026-10-26: "As RTK").
         long expCost = (long)ctx.MaxHp * 2550;
         int choice = await ctx.Menu($"It will cost {expCost:N0} experience. Are you sure you want this divorce?",
             new[] { "Yes", "No" });
