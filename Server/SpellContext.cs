@@ -759,6 +759,13 @@ public sealed class SpellContext
     /// <see cref="rageActive"/>. A climbing fury on a row ladder continues only its own climb (chungryong_rage).</summary>
     public string rageName    => _s.LuaRageName;
 
+    // ---- login-only registry ---------------------------------------------------------------------------------------
+    /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value
+    /// this server does not save (Shaman's torment's "totalsiphon"). <see cref="reg"/> is the saved one.</summary>
+    public int  tempReg(string key)                   => _s.LuaTempReg(key);
+    /// <summary>Set a per-caster integer kept for this login only (not saved).</summary>
+    public void setTempReg(string key, double v)      => _s.LuaSetTempReg(key, (int)v);
+
     // ---- the Barbarian spells' primitives (RTK Spells/Subpaths/Barbarian/), built for the later slices too ---------
     // Every write to another player is made inside that player's own monitor, by a Receive* method or EnterMap, the
     // paths Summon, the curses and the blows already take; no new lock. See Session.Spells.cs, "the Barbarian spells".
@@ -812,11 +819,4 @@ public sealed class SpellContext
                               double beatAnim, double beatMs) =>
         _s.LuaCurseAround(_sp, category, stat, (int)System.Math.Round(amount), (int)durMs, blockedBy, line,
                           (int)beatAnim, (int)beatMs);
-
-    // ---- login-only registry ---------------------------------------------------------------------------------------
-    /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value
-    /// this server does not save (Shaman's torment's "totalsiphon"). <see cref="reg"/> is the saved one.</summary>
-    public int  tempReg(string key)                   => _s.LuaTempReg(key);
-    /// <summary>Set a per-caster integer kept for this login only (not saved).</summary>
-    public void setTempReg(string key, double v)      => _s.LuaSetTempReg(key, (int)v);
 }

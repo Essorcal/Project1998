@@ -109,10 +109,10 @@ public sealed class SubpathTeacherTests
     /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
     /// row's level, 0, for nothing (Caleb's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
     /// and Spirit blade, each at its script's price, the borrowed ones as written (Hear footstep asks Blend's, Crossing
-    /// swords Chung ryong rage's). The Barbarian spells slice then put fifteen of Barbarian's sixteen on sale, each at its
-    /// script's price: Push, whose script has no <c>requirements()</c>, at its row's level, 0, for nothing; Survival
-    /// challenge, which has no script of its own, stays off sale.</summary>
+    /// swords Chung ryong rage's).</summary>
     [Theory]
+    // The Barbarian spells slice: fifteen of the sixteen at their scripts' prices; Push, whose script has no
+    // requirements(), at its row's level, 0, for nothing; Survival challenge, with no script of its own, off sale.
     [InlineData("Barbarian", "barbarian_cry 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
                              "barbarian_rage 99 20000 [1 dragons_liver, 1 electra, 1 spike]; " +
                              "break_jaw 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
