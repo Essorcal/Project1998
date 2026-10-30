@@ -759,6 +759,60 @@ public sealed class SpellContext
     /// <see cref="rageActive"/>. A climbing fury on a row ladder continues only its own climb (chungryong_rage).</summary>
     public string rageName    => _s.LuaRageName;
 
+    // ---- the Barbarian spells' primitives (RTK Spells/Subpaths/Barbarian/), built for the later slices too ---------
+    // Every write to another player is made inside that player's own monitor, by a Receive* method or EnterMap, the
+    // paths Summon, the curses and the blows already take; no new lock. See Session.Spells.cs, "the Barbarian spells".
+    /// <summary>The caster's own name, for a line a verb words for its target ("&lt;caster&gt; casts Push spell on you.").</summary>
+    public string name => _s.CharName;
+    /// <summary>Shout <paramref name="msg"/> over the caster's head, as it stands (RTK <c>player:talk(2, msg)</c>, the shout the
+    /// warrior strikes give: Barbarian cry's "TOWNIE~~!"). <see cref="talk"/> puts the caster's name in front.</summary>
+    public void shout(string msg) => _s.Shout(msg);
+    /// <summary>Strike what stands on the faced tile for <paramref name="amount"/>, netted against its armour, with no
+    /// deflect roll, with this spell's graphic over it: "each" strikes the creature there (not an NPC) and the player there
+    /// when the caster may attack them (RTK's getTargetFacing(BL_MOB) and (BL_PC), Barbarian cry); "first" strikes the
+    /// first of them, a living player before a creature, as RTK's getTargetFacing(BL_ALL) lists a cell (Rend). A dead
+    /// player is passed over. Returns how many were struck; 0 is still a cast. See <c>Session.LuaStrikeFaced</c>.</summary>
+    public double strikeFaced(double amount, string mode) => _s.LuaStrikeFaced(_sp, amount, mode);
+    /// <summary>Spawn the mobs.csv creature <paramref name="mobKey"/>, unowned, on the faced tile when RTK's spawn test finds
+    /// it free (no map object, passable, no warp, nothing standing or lying there, inside RTK's bounds), else on the
+    /// caster's own tile (RTK <c>player:spawn</c>; Mount's horse). Throws for an unknown creature.</summary>
+    public bool spawnFaced(string mobKey) => _s.LuaSpawnFaced(_sp, mobKey);
+    /// <summary>Put a menu of <paramref name="options"/> ('|' between them) under <paramref name="prompt"/> to the caster,
+    /// with no portrait (RTK <c>player:menuString</c> from a spell), and return at once. A pick runs the verb named
+    /// <paramref name="verb"/> for this spell, with this spell's SpellParams.csv row and the picked option as
+    /// <see cref="answer"/>, on the caster's own thread and monitor, unless they have died or are leaving by then. A closed
+    /// box runs nothing. See <c>Session.LuaSpellMenu</c>.</summary>
+    public void menu(string prompt, string options, string verb) => _s.LuaSpellMenu(_sp, prompt, options, verb);
+    /// <summary>Take on the form this spell's Morphs.csv row gives <paramref name="answer"/> (its answers column), for its
+    /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
+    /// row does not list.</summary>
+    public bool morphTo(string answer) => _s.LuaMorphTo(_sp, answer);
+    /// <summary>Resolve the living player on the faced tile, on any map, as this cast's player target (RTK
+    /// <c>getTargetFacing(player, BL_PC)</c>, which passes over the dead); no aimed id is read. False, and silent, with
+    /// nobody there. <see cref="pushTarget"/>, <see cref="speechStatus"/> and <see cref="tellTargetLine"/> act on it.</summary>
+    public bool facedPlayer() => _s.LuaFacedPlayer(_sp);
+    /// <summary>Push's move: the resolved player target one tile on in the caster's facing, or two when the first is taken,
+    /// when RTK's test finds the tile free, inside the target's own monitor (Summon's checks first). This spell's graphic
+    /// over them before and after. False, and nobody moves, when neither tile is free.</summary>
+    public bool pushTarget() => _s.LuaPushTarget(_sp);
+    /// <summary>Send <paramref name="line"/> to the resolved player target's status box, inside their monitor.</summary>
+    public void tellTargetLine(string line) => _s.LuaTellTargetLine(line);
+    /// <summary>Give the resolved player target a speech status for <paramref name="ms"/>: "garbled" (each letter they say
+    /// may come out '*', a GM excepted; Break jaw) or "mute" (they cannot say or shout; Spy's Dagger to throat), under
+    /// this spell's name and key, with this spell's graphic over them and its SpellText.csv fade line at the end. False,
+    /// changing nothing, when this spell's status already holds them (RTK <c>hasDuration</c>). See Session.Chat.cs.</summary>
+    public bool speechStatus(string kind, double ms) => _s.LuaSpeechStatus(_sp, kind, (int)ms);
+    /// <summary>The area curse (Insult, Dishonor): on each of the caster's four sides, north, east, south, west, the
+    /// player the caster may attack and the creature (not an NPC) there take <paramref name="category"/>'s curse of
+    /// <paramref name="stat"/> <paramref name="amount"/> for <paramref name="durMs"/>, with this spell's graphic, unless
+    /// they already carry a status of a category in <paramref name="blockedBy"/> ('|' between them). A player reads
+    /// <paramref name="line"/>; a creature redraws <paramref name="beatAnim"/> every <paramref name="beatMs"/>. A dead
+    /// player ends the walk. Returns how many were cursed.</summary>
+    public double curseAround(string category, string stat, double amount, double durMs, string blockedBy, string line,
+                              double beatAnim, double beatMs) =>
+        _s.LuaCurseAround(_sp, category, stat, (int)System.Math.Round(amount), (int)durMs, blockedBy, line,
+                          (int)beatAnim, (int)beatMs);
+
     // ---- login-only registry ---------------------------------------------------------------------------------------
     /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value
     /// this server does not save (Shaman's torment's "totalsiphon"). <see cref="reg"/> is the saved one.</summary>

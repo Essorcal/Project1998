@@ -1463,6 +1463,16 @@ local RAGE_LINES = {
     "You enter a mindless frenzy.",
     "Your body is torn apart with Crossing swords.",
   },
+  -- Sonhi rage (Barbarian; RTK Subpaths/Barbarian/sonhi_rage.lua). Its first line names Chung Ryong's rage too, as the
+  -- script words it; kept as RTK has it (the project owner, 2026-10-30, Q4: "Yes, as RTK").
+  sonhi_rage = {
+    "You cast Chung Ryong's rage.",
+    "Sonhi's rage grows within you.",
+    "Sonhi's rage inspires you.",
+    "Your body trembles with incredible strength.",
+    "You enter a mindless frenzy.",
+    "Your body is torn apart with Sonhi's rage.",
+  },
 }
 
 function verbs.chungryong_rage(ctx, row)
@@ -1772,6 +1782,167 @@ function verbs.torment_tick(ctx, row)
   local factor = 2 / (1 + 2.71828 ^ (-1 * (0.95 * (amount - 1))))
   damage = math.ceil(damage * factor / amount) + 1000
   ctx:strikeVictim(damage, 1000)
+  return true
+end
+
+-- =========================================================================================================
+-- BARBARIAN (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Barbarian/). The project owner, 2026-10-26 and
+-- 2026-10-30: each spell as its RTK script (P5); Push and Break jaw land on any player on any map with no PK check,
+-- and Sonhi rage climbs RTK's tiers with its armour sign (Q4, "Yes, as RTK"). The verbs here are Barbarian cry, Rend,
+-- Mount, Wilderness guise, Push, Break jaw, Insult and Dishonor. The others ride families that already exist: Sonhi
+-- rage climbs chungryong_rage's rtk_rage ladder (its lines are RAGE_LINES.sonhi_rage), Dash is Do's dash verb (the
+-- script is Do's body under another table name), Envigorate is a Heal row and Tiger's might a Buff row in
+-- spell_effects.csv, Barbarian rage a rage row and Wilderness weapon and Nomadic blade enchant rows in SpellMods.csv.
+-- Survival challenge has no script of its own (the file is Dishonor's body) and stays as it was. Each verb is bound by
+-- its SpellParams.csv row, which carries its numbers, and is the shape of its script, in that script's order. The
+-- graphic and sound over a target are the spell's spell_effects.csv row. RTK is weight 0 for balance; these numbers
+-- are its scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * Each wait is checked first, with this file's own line, and armed under the spell's own key (subpath_waiting).
+--     RTK waives the waits for a GM; no verb here waives anything for staff.
+--   * The cast pose is the engine's, on a cast that lands, and so is the central "You cast X." line, unless a verb
+--     says its script's own lines and marks the cast narrated.
+--   * A ghost casts nothing and a mounted caster nothing (the engine's gates), where some scripts let a ghost cast.
+--   * A player struck reads the engine's one line, "<caster> hits you with <spell>.".
+-- =========================================================================================================
+
+local CRY_SHOUT  = "TOWNIE~~!"   -- barbarian_cry.lua: player:talk(2, "TOWNIE~~!")
+local REND_SHOUT = "Rraah~!"     -- rend.lua: player:talk(2, "Rraah~!")
+
+-- Barbarian cry (RTK Subpaths/Barbarian/barbarian_cry.lua). The caster pays `mana` and keeps `coeff` of their vita
+-- (math.ceil), shouts, and the creature on the faced tile and the player there, when the caster may attack them (a
+-- PvP map), each take `amount` x the caster's vita as it stood before (math.ceil): RTK's two getTargetFacing calls and
+-- global_zap, netted against the target's armour with no deflect roll (a self-cast spell). The cost is paid whatever
+-- stands there. Short of mana, "You do not have enough mana.", for free. The script's three lines, its copy slip
+-- included, replace the central one. Row: mana 3100, amount 3, coeff 0.33, duration 1200000 (its wait).
+function verbs.cry_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+  local damage = math.ceil(ctx.hp * (row.amount or 0))
+  ctx:setHp(math.ceil(ctx.hp * (row.coeff or 1)))
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:shout(CRY_SHOUT)
+  ctx:strikeFaced(damage, "each")
+  ctx:say("You cast Townie.")
+  ctx:say("You can not touch the spirit world.")
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  ctx:narrated()
+  return true
+end
+
+-- Rend (RTK Subpaths/Barbarian/rend.lua). Nothing is checked but the wait: the script names 3100 mana and never asks
+-- for it. The blow is `amount` x the caster's vita plus `amount` x their mana (each math.ceil), and the caster is left
+-- with `coeff` of their max vita (truncated; never under 1 here) and no mana, whatever stands there. The first thing
+-- on the faced tile takes it: a player there (when the caster may attack them, else nobody), else the creature (an NPC,
+-- nobody), as RTK's getTargetFacing(BL_ALL) lists a cell's players before its creatures. Netted against armour, no
+-- deflect roll. The script's two lines replace the central one. Row: amount 2, coeff 0.05, duration 87000.
+function verbs.rend_strike(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local times = row.amount or 0
+  local damage = math.ceil(ctx.hp * times) + math.ceil(ctx.mp * times)
+  ctx:setHp(math.floor(ctx.maxHp * (row.coeff or 1)))
+  ctx:setMana(0)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:shout(REND_SHOUT)
+  ctx:strikeFaced(damage, "first")
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  ctx:say("You can not touch the spirit world.")
+  ctx:narrated()
+  return true
+end
+
+-- Mount (RTK Subpaths/Barbarian/mount.lua): the creature `category` names (a mobs.csv identifier) appears on the faced
+-- tile when nothing is there (no map object, a passable tile, no warp, nobody and nothing on the floor, inside RTK's
+-- bounds), else on the caster's own tile; nobody owns it, and the ride key ('r') rides it as it rides any horse. The
+-- mana is checked and never taken, as the script: short of it, "You do not have enough mana.", for free. Row: mana
+-- 600, category horse, duration 187000 (its wait).
+function verbs.spawn_mount(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("You do not have enough mana."); return false end
+  ctx:spawnFaced(row.category or "")
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  return true
+end
+
+-- Wilderness guise (RTK Subpaths/Barbarian/wilderness_guise.lua): RTK's menu of five guises. The cast holds a 1 s lock
+-- (the script's setDuration(key, 1000)), within which another cast says "Spell already cast."; the mana is checked and
+-- never taken ("Your will is too weak." short of it, free). The menu's answer runs guise_pick, which takes on the
+-- chosen guise's look for its time, the spell's Morphs.csv row (Wolf 23, Rabbit 21, Deer 89, Sheep 173, Thirsty ogre
+-- 185; 300 s), ending any other form, as the script's removeDuras(morphs). A closed box changes nothing. Row: mana 30.
+local GUISE_LOCK_MS = 1000
+local GUISE_PROMPT  = "Which guise would you like to use?"
+local GUISES        = "Wolf|Rabbit|Deer|Sheep|Thirsty ogre"
+
+function verbs.guise_menu(ctx, row)
+  if ctx:hasDuration(ctx.spellKey) then ctx:say("Spell already cast."); return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  ctx:setDuration(ctx.spellKey, GUISE_LOCK_MS)
+  ctx:menu(GUISE_PROMPT, GUISES, "guise_pick")
+  return true
+end
+
+function verbs.guise_pick(ctx, row)
+  ctx:morphTo(ctx.answer)
+  return true
+end
+
+-- Push (RTK Subpaths/Barbarian/push.lua): the player on the faced tile, on any map and with no PK check (the project
+-- owner, 2026-10-30, Q4), goes one tile on in the caster's facing, or two when the first is taken, when that tile is
+-- free (no map object, passable, no warp, nobody and nothing on the floor, inside RTK's bounds). Nobody faced: nothing
+-- happens and nothing is spent. Short of `mana`, "Your will is too weak.", for free. With a target the mana is spent
+-- even when neither tile is free ("You can't push it."). The pushed player reads "<caster> casts Push spell on you.".
+-- Row: mana 600 (no wait: the script arms none).
+function verbs.push(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if not ctx:facedPlayer() then return false end
+  ctx:debitMana(mana)
+  if ctx:pushTarget() then
+    ctx:tellTargetLine(ctx.name .. " casts Push spell on you.")
+    return true
+  end
+  ctx:say("You can't push it.")
+  ctx:narrated()
+  return true
+end
+
+-- Break jaw (RTK Subpaths/Barbarian/break_jaw.lua): the wait is armed and the cast lands whatever stands there (the
+-- script names 600 mana and never asks for it). The player on the faced tile, on any map and with no PK check (Q4),
+-- whose jaw is not already broken, speaks garbled for `durationMax` ms (speech.lua: each letter a 1-in-5 chance of
+-- '*'; a GM speaks plainly) and reads "<caster> lands a swift blow to your jaw."; at its end "Your jaw feels better."
+-- (its SpellText.csv fade line). Row: duration 150000 (its wait), durationMax 60000.
+function verbs.break_jaw(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  if ctx:facedPlayer() and ctx:speechStatus("garbled", row.durationMax or 0) then
+    ctx:tellTargetLine(ctx.name .. " lands a swift blow to your jaw.")
+  end
+  return true
+end
+
+-- Insult and Dishonor (RTK Subpaths/Barbarian/insult.lua and dishonor.lua, one body but the number): for `mana`, a
+-- curse of `stat` `amount` for `duration` ms on whatever stands on the caster's four sides, north, east, south, west,
+-- as RTK's getTargetsAround walks them: each creature, and each player the caster may attack (a PvP map), that carries
+-- no curse or protection already (the category's BLOCKS), with the spell's graphic and, over a creature, the scripts'
+-- while_cast graphic 34 each second. A player reads "<caster> attacks you with <spell> spell." and at the end the
+-- spell's SpellText.csv fade line. A dead player met on the walk ends it there, as the scripts' `return` does. The
+-- mana is spent with nobody around. No wait: the scripts name 150 s and never arm it. Row: mana 200, category curses,
+-- stat armor, amount 30 (Insult) or 50 (Dishonor), duration 425000.
+local CURSE_AROUND_BEAT_ANIM = 34     -- while_cast: block:sendAnimation(34, 0)
+local CURSE_AROUND_BEAT_MS   = 1000   -- RTK runs while_cast once a second
+
+function verbs.curse_around(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  local category = row.category or "curses"
+  local blocked = table.concat(BLOCKS[category] or { category }, "|")
+  ctx:curseAround(category, row.stat or "", math.floor(tonumber(row.amount) or 0), row.duration or 0, blocked,
+                  ctx.name .. " attacks you with " .. ctx.spellName .. " spell.",
+                  CURSE_AROUND_BEAT_ANIM, CURSE_AROUND_BEAT_MS)
   return true
 end
 

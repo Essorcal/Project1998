@@ -3481,6 +3481,284 @@ public sealed partial class Session
     // Propose core: the verb owns the engaged/married guard; this fires the async ask flow.
     internal bool LuaPropose(SpellDef sp) { _ = RunProposeAsync(sp); return true; }
 
+    // ---- the Barbarian spells (RTK rtklua/Accepted/Spells/Subpaths/Barbarian/) -------------------------------------
+    // The engine half of the Barbarian verbs in game-data/spell_verbs.lua, each the shape of one RTK script, built so the
+    // later PC-subpath slices can reuse them: a strike on the faced tile (Barbarian cry, Rend), a creature on the faced
+    // tile (Mount; Druid's Steed, Chongun's Employ troop), a menu inside a cast (Wilderness guise; Employ troop), a form by
+    // a menu's answer, the faced player (Push, Break jaw; Spy's Dagger to throat), Push's move, a speech status
+    // (Break jaw; Dagger to throat, Session.Chat.cs reads both) and the area curse (Insult, Dishonor; Monk's Awe).
+    //
+    // LOCKS. A verb runs on the caster's packet thread, inside the caster's monitor and the Lua gate, never World._lock.
+    // Nothing here takes a new lock or writes another player outside that player's own monitor: a blow lands through
+    // ReceiveSpellDamage, a status through ReceiveCurse, a line through the target's WithState and Push's move through
+    // the target's EnterState and EnterMap, Summon's sequence (Session.ApproachSummon.cs); each takes the target's
+    // monitor by StateRank, the order every cross-player spell already uses. A creature is written through World's own
+    // methods, which take World._lock inside. The menu's answer resumes on the caster's own handler thread, inside the
+    // caster's monitor, and runs its verb through the Lua gate from there: the cast's own order.
+
+    /// <summary>RTK's free-tile test for a spawn or a push (<c>Spells/Subpaths/Barbarian/mount.lua:38-48</c>,
+    /// <c>push.lua:37-51</c>): no map object at all (<c>getObject == 0</c>), a passable tile (<c>getPass == 0</c>), no warp,
+    /// nothing standing or lying there (<c>getObjectsInCell(BL_ALL)</c>: a player, a ghost included, a creature, an NPC, a
+    /// floor item), and inside <c>0 &lt;= x &lt; getMapXMax</c>, which is the map's width less one, so RTK's own last row and
+    /// column never take one.</summary>
+    private bool RtkTileFree(ushort map, ushort xs, ushort ys, int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= xs - 1 || y >= ys - 1) return false;
+        var md = MapData.For(map, xs, ys);
+        if (md is not null && (md.Obj(x, y) != 0 || md.Pass(x, y) != 0)) return false;
+        if (Content.TryWarp(map, (ushort)x, (ushort)y, out _)) return false;
+        if (_world.MobAt(map, x, y) is not null || _world.PeerAt(map, x, y) is not null) return false;
+        foreach (var item in _world.ItemsOn(map))
+            if (item.X == x && item.Y == y) return false;
+        return true;
+    }
+
+    /// <summary>Strike the faced tile (<c>ctx:strikeFaced</c>). <paramref name="mode"/> "each" is Barbarian cry's two
+    /// lookups, <c>getTargetFacing(player, BL_PC)</c> and <c>(player, BL_MOB)</c>, each struck through
+    /// <c>global_zap</c> (<c>Spells/Subpaths/Barbarian/barbarian_cry.lua:31-39</c>): the player when the caster may attack
+    /// them (a PvP map, the #351/#356 reading of <c>canPK</c>), and the creature, not an NPC. "first" is Rend's one lookup,
+    /// <c>getTargetFacing(player, BL_ALL)</c> (<c>rend.lua:30-46</c>), which lists a cell's players before its creatures
+    /// (RTK <c>map_foreachincell</c>): a living player there takes it when the caster may attack them and else nothing
+    /// does; with no player, the creature, unless it is an NPC. A dead player is passed over, as RTK's lookup passes over
+    /// <c>state == 1</c>. Each blow is netted against the target's own armour, with no deflect roll: RTK rolls a deflect
+    /// only for a cast with a target, and these are self-cast (type 5) spells. The spell's graphic and sound play over
+    /// each target struck. Returns how many were struck.</summary>
+    internal int LuaStrikeFaced(SpellDef sp, double amount, string mode)
+    {
+        if (amount < 1) amount = 1;
+        var (fx, fy) = FrontTile();
+        var mob = _world.MobAt(_char.Map, fx, fy);
+        var peer = _world.PeerAt(_char.Map, fx, fy);
+        if (peer is not null && (peer.IsDead || ReferenceEquals(peer, this))) peer = null;
+        bool pvp = Content.IsPvpMap(_char.Map);
+        var row = Content.FxFor(sp);
+        int anim = row is not null ? Content.EffectAnim(row, sp.PathId) : -1;
+        int snd  = row is not null ? Content.EffectSound(row, sp.PathId) : -1;
+        int struck = 0;
+        bool first = mode == "first";
+        if (peer is not null && pvp)
+        {
+            BroadcastFx(peer._char.Id, anim, snd);
+            peer.ReceiveSpellDamage(amount, this, sp.Name);
+            struck++;
+        }
+        if (!(first && peer is not null) && mob is { IsNpc: false })
+        {
+            if (_world.TryDamage(_char.Map, mob, SpellRaw(amount, mob), out bool died, _char.Id))
+            {
+                BroadcastFx(mob.Id, anim, snd);
+                ShowDamageResult(mob.Id, mob, died);
+                if (died) AwardKillExp((uint)(mob.Exp > 0 ? mob.Exp : mob.MaxHp), _char.Map, mob.X, mob.Y, mob.Key);
+                struck++;
+            }
+        }
+        Log.Info($"      (lua) {sp.Name} -> faced tile ({fx},{fy}) {mode}: {amount} raw, {struck} struck");
+        return struck;
+    }
+
+    /// <summary>Mount's spawn (<c>ctx:spawnFaced</c>; RTK <c>Spells/Subpaths/Barbarian/mount.lua:21-52</c>): the mobs.csv
+    /// creature <paramref name="mobKey"/> on the faced tile when <see cref="RtkTileFree"/> passes it, else on the caster's
+    /// own tile, facing the caster. Nobody owns it, as RTK's <c>player:spawn</c> passes no owner, so it stays until it is
+    /// ridden or killed, as the horse the ride key sets down does (<see cref="TryRideHorse"/>). Throws for a creature
+    /// mobs.csv does not have: a data fault, which the verb's caller reports as "isn't working right now".</summary>
+    internal bool LuaSpawnFaced(SpellDef sp, string mobKey)
+    {
+        var def = Content.MobByKey(mobKey)
+                  ?? throw new InvalidOperationException($"{sp.Key}: no creature '{mobKey}' in mobs.csv to spawn");
+        var (fx, fy) = FrontTile();
+        bool front = RtkTileFree(_char.Map, _char.MapXs, _char.MapYs, fx, fy);
+        ushort x = front ? (ushort)fx : _char.X, y = front ? (ushort)fy : _char.Y;
+        var mob = SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: (byte)((_facing + 2) & 3), color: def.Color,
+                                 exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+        Log.Info($"      {sp.Name}(lua) -> spawned '{def.Key}' ({mob.Id}) {(front ? "on the faced tile" : "on the caster's tile")} ({x},{y})");
+        return true;
+    }
+
+    /// <summary>A menu inside a cast (<c>ctx:menu</c>; RTK <c>player:menuString</c> from a spell, Wilderness guise's
+    /// "Which guise would you like to use?"): sent now, with no portrait (RTK's <c>npcGraphic = 0</c> under
+    /// <c>dialogType 0</c>), on the caster's own entity id, and answered later. The cast returns at once.</summary>
+    internal void LuaSpellMenu(SpellDef sp, string prompt, string options, string verb)
+    {
+        var opts = options.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _ = RunSpellMenuAsync(sp, prompt, opts, verb);
+    }
+
+    /// <summary>The menu's answer. It resumes on the caster's own handler thread, inside their monitor
+    /// (<see cref="HandleNpcDialog"/> completes the reply), and runs <paramref name="verb"/> for <paramref name="sp"/> with
+    /// the spell's SpellParams.csv row and the picked option as <c>ctx.answer</c>. A closed box never answers, so nothing
+    /// runs; a warp lets the box go (<see cref="EnterMap"/>), as for every prompt. A caster who has died or is leaving by
+    /// the time they pick runs nothing. The verb's verdict is not read: the cast it belongs to has long since landed.</summary>
+    private async Task RunSpellMenuAsync(SpellDef sp, string prompt, string[] options, string verb)
+    {
+        try
+        {
+            int choice = await DlgMenuPush(DialogPortrait.None, prompt, options);
+            if (choice < 1 || choice > options.Length) return;
+            if (IsDead || _leaving) return;
+            Content.SpellParams.TryGetValue(sp.Key, out var row);
+            SpellScript.Run(verb, new SpellContext(this, sp, null, options[choice - 1]), row);
+        }
+        catch (Exception e) { Log.Error($"{sp.Name}'s menu threw for '{_char.Name}': {LuaVerbHost.Describe(e)}", e); }
+    }
+
+    /// <summary>Take on the form <paramref name="answer"/> names in this spell's Morphs.csv row (<c>ctx:morphTo</c>), for
+    /// that row's time: the morph verb's two steps, staged then applied, so the look, the graphic, the buff box line and
+    /// the redraw are the morph family's, and any other form ends (RTK's <c>removeDuras(morphs)</c>). False, changing
+    /// nothing, for an answer the row does not list.</summary>
+    internal bool LuaMorphTo(SpellDef sp, string? answer)
+    {
+        if (Content.MorphDispatchFor(sp) is not (Dictionary<string, ushort> answers, int mana, int dur)) return false;
+        if (!answers.TryGetValue((answer ?? "").Trim().ToLowerInvariant(), out var look)) return false;
+        LuaSetPendingMorph(look, 0, mana, dur);
+        LuaApplyMorph(sp);
+        return true;
+    }
+
+    /// <summary>The living player on the faced tile, on any map, as this cast's player target (<c>ctx:facedPlayer</c>;
+    /// RTK <c>getTargetFacing(player, BL_PC)</c>, which passes over <c>state == 1</c>). No aimed id is read: a self-cast
+    /// spell's script looks only at the faced tile. Silent when nobody is there, as a cast that finds nothing is.</summary>
+    internal bool LuaFacedPlayer(SpellDef sp)
+    {
+        _approachPlace = null;
+        var (fx, fy) = FrontTile();
+        var peer = _world.PeerAt(_char.Map, fx, fy);
+        _pcSpellTarget = peer is not null && !peer.IsDead && !ReferenceEquals(peer, this) ? peer : null;
+        if (_pcSpellTarget is null) { LogNoTarget(sp); return false; }
+        return true;
+    }
+
+    /// <summary>Send <paramref name="line"/> to the resolved player target, inside their monitor (#29 rule 2), as
+    /// <see cref="TellTarget"/> sends a spell's line.</summary>
+    internal void LuaTellTargetLine(string line)
+    {
+        if (_pcSpellTarget is not { } target) return;
+        target.WithState(() => target.SendMiniText(line));
+    }
+
+    /// <summary>Push's move (<c>ctx:pushTarget</c>; RTK <c>Spells/Subpaths/Barbarian/push.lua:16-86</c>): the resolved
+    /// player target to the tile one on from where they stand in the caster's facing, or, when that one is not free, the
+    /// tile after it, each by <see cref="RtkTileFree"/>. The spell's graphic plays over them first, as the script draws it
+    /// before it looks, and again where they land.
+    /// <para><b>Locks.</b> Summon's sequence (<see cref="LuaSummonTarget"/>): the target's monitor, taken by StateRank,
+    /// held from the checks through the move, so a target who logged out or traded meanwhile is seen
+    /// (<see cref="TargetFreeToMove"/>); where they stand is read inside it; <c>EnterMap</c> moves them on their own map
+    /// and takes World._lock inside, as for Summon. Nothing else of theirs is written.</para></summary>
+    internal bool LuaPushTarget(SpellDef sp)
+    {
+        if (_pcSpellTarget is not { } target || ReferenceEquals(target, this)) return false;
+        var row = Content.FxFor(sp);
+        int anim = row is not null ? Content.EffectAnim(row, sp.PathId) : -1;
+        int snd  = row is not null ? Content.EffectSound(row, sp.PathId) : -1;
+        uint id = target.PlayerId;
+        BroadcastFx(id, anim, snd);
+        int dx = _facing switch { 1 => 1, 3 => -1, _ => 0 }, dy = _facing switch { 0 => -1, 2 => 1, _ => 0 };
+        MapData.Prewarm(_char.Map);   // the tile test reads the map under the target's monitor: a cache hit, not a load
+        bool moved;
+        using (target.EnterState())
+            moved = PushMove(target, sp, dx, dy);
+        if (moved) BroadcastFx(id, anim, -1);
+        return moved;
+    }
+
+    /// <summary>The move inside the target's monitor (<see cref="LuaPushTarget"/>).</summary>
+    private bool PushMove(Session target, SpellDef sp, int dx, int dy)
+    {
+        if (!TargetFreeToMove(target, sp)) return false;
+        ushort map = target._char.Map, xs = target._char.MapXs, ys = target._char.MapYs;
+        if (map != _char.Map) { Log.Info($"      {sp.Name}(lua): '{target._char.Name}' left the map — nobody moved"); return false; }
+        for (int step = 1; step <= 2; step++)
+        {
+            int x = target._char.X + dx * step, y = target._char.Y + dy * step;
+            if (!RtkTileFree(map, xs, ys, x, y)) continue;
+            string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
+            if (target.EnterMap(map, xs, ys, (ushort)x, (ushort)y, mapName) is null) return false;
+            Log.Info($"      {sp.Name}(lua): pushed '{target._char.Name}' to ({x},{y}) on map {map}");
+            return true;
+        }
+        Log.Info($"      {sp.Name}(lua): nowhere to push '{target._char.Name}' — nobody moved");
+        return false;
+    }
+
+    /// <summary>Give the resolved player target a speech status (<c>ctx:speechStatus</c>): "garbled"
+    /// (<see cref="GarbledSpeech"/>, Break jaw; RTK <c>speech.lua:2259</c>) or "mute" (<see cref="MutedSpeech"/>, Spy's
+    /// Dagger to throat; <c>speech.lua:14-17</c>), read by <see cref="HandleChat"/>. It is a categorised entry in their buff
+    /// list under this spell's key and name, the curses' storage (<see cref="ReceiveCurse"/>): the buff box lists it, it
+    /// ends at its time with the spell's SpellText.csv fade line, a death or a won Dispell ends it (RTK ends a duration whose
+    /// spell has <c>SplDispel</c> 0 at both), and a relog keeps it, as every running status is kept. The check and the write
+    /// are one section of the target's monitor. False, changing nothing, when this spell's status already holds them, as
+    /// RTK's <c>hasDuration</c> refuses a second Break jaw.</summary>
+    internal bool LuaSpeechStatus(SpellDef sp, string kind, int ms)
+    {
+        if (_pcSpellTarget is not { } target || ms <= 0) return false;
+        string category = kind switch
+        {
+            "garbled" => GarbledSpeech,
+            "mute"    => MutedSpeech,
+            _         => throw new ArgumentException($"no speech status '{kind}'", nameof(kind)),
+        };
+        bool landed = target.WithState(() =>
+        {
+            if (target.HasStatusFromSpell(sp.Key)) return false;
+            target.ReceiveCurse("", 0, ms, sp.Key, sp.Name, category);
+            return true;
+        });
+        if (!landed) { Log.Info($"      -x {sp.Name}: '{target._char.Name}' already carries it"); return false; }
+        if (Content.FxFor(sp) is { } row) BroadcastFx(target.PlayerId, Content.EffectAnim(row, sp.PathId), Content.EffectSound(row, sp.PathId));
+        Log.Info($"      (lua) {sp.Name} -> {kind} speech on '{target._char.Name}' for {ms}ms");
+        return true;
+    }
+
+    /// <summary>RTK getTargetsAround's walk: north, east, south, west (<c>Scripts/scripts.lua:672-724</c>).</summary>
+    private static readonly (int dx, int dy)[] AroundNesw = { (0, -1), (1, 0), (0, 1), (-1, 0) };
+
+    /// <summary>The area curse (<c>ctx:curseAround</c>; RTK <c>Spells/Subpaths/Barbarian/insult.lua:26-60</c> and
+    /// <c>dishonor.lua</c>). The four sides in RTK's order; on each, a cell's player before its creature, as RTK lists a
+    /// cell. A dead player met there ends the walk (the scripts' <c>if targets[i].state == 1 then return end</c>). A player
+    /// the caster may attack (a PvP map), and a creature that is not an NPC, take the curse unless they carry a status of a
+    /// category in <paramref name="blockedBy"/> already (RTK <c>checkIfCast(curses)</c>, <c>cursed == 0</c>,
+    /// <c>checkIfCast(protections)</c>): the curse's slot and stat, the spell's graphic over them, and for a player
+    /// <paramref name="line"/>, inside their monitor (<see cref="ReceiveCurse"/>, as every curse lands); a creature redraws
+    /// <paramref name="beatAnim"/> every <paramref name="beatMs"/> while it holds (RTK's while_cast). Returns how many.</summary>
+    internal int LuaCurseAround(SpellDef sp, string category, string stat, int amount, int durMs, string blockedBy,
+                                string line, int beatAnim, int beatMs)
+    {
+        var row = Content.FxFor(sp);
+        int anim = row is not null ? Content.EffectAnim(row, sp.PathId) : -1;
+        int snd  = row is not null ? Content.EffectSound(row, sp.PathId) : -1;
+        var blocks = blockedBy.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        bool pvp = Content.IsPvpMap(_char.Map);
+        int cursed = 0;
+        foreach (var (dx, dy) in AroundNesw)
+        {
+            int cx = _char.X + dx, cy = _char.Y + dy;
+            if (cx < 0 || cy < 0 || cx >= _char.MapXs || cy >= _char.MapYs) continue;
+            var peer = _world.PeerAt(_char.Map, cx, cy);
+            if (peer is not null && peer.IsDead) break;
+            if (peer is not null && pvp && !ReferenceEquals(peer, this))
+            {
+                bool landed = peer.WithState(() =>
+                {
+                    if (blocks.Any(peer.HasStatusCategory)) return false;
+                    peer.ReceiveCurse(stat, amount, durMs, sp.Key, sp.Name, category);
+                    peer.SendMiniText(line);
+                    return true;
+                });
+                if (landed) { BroadcastFx(peer._char.Id, anim, snd); cursed++; }
+            }
+            var mob = _world.MobAt(_char.Map, cx, cy);
+            if (mob is null || mob.IsNpc) continue;
+            if (blocks.Any(c => _world.MobHasStatus(mob, CatFamily(c)) || (CatFamily(c) == "curses" && _world.MobHasStatus(mob, "minorcurses"))))
+                continue;
+            if (!_world.ApplyMobStatus(mob, CatFamily(category), durMs, hold: false, blind: false,
+                                       fxAnim: beatAnim, fxSound: 0, fxEveryMs: beatMs, spellKey: sp.Key)) continue;
+            if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
+            BroadcastFx(mob.Id, anim, snd);
+            cursed++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} around ({_char.X},{_char.Y}): {cursed} cursed");
+        return cursed;
+    }
+
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
     // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the

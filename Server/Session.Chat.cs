@@ -47,6 +47,15 @@ public sealed partial class Session
         // after the command table, so a mute silences the player without also taking away any other command.
         if (IsMuted()) { ReportMuted(); return; }
 
+        // SPEECH STATUSES, the spells that take a player's voice (RTK speech.lua's onSay, which runs for Say and Shout
+        // alike and not for a whisper): a mute (Spy's Dagger to throat, speech.lua:14-17) says its line and nothing is
+        // spoken or heard, an NPC included, as onSay returns first; a garbled voice (Barbarian's Break jaw,
+        // speech.lua:2258-2277) speaks with each letter a 1-in-5 chance of '*', a GM excepted (its gmLevel == 0 test),
+        // while an NPC hears the words as typed, as onSay hands the NPCs its untouched lspeech. Each is a categorised
+        // entry in this player's own buff list (Session.LuaSpeechStatus), read here on their own thread and monitor.
+        if (HasStatusCategory(MutedSpeech)) { SendMiniText(SpeechlessLine); return; }
+        string spoken = !IsGm && HasStatusCategory(GarbledSpeech) ? Garble(text) : text;
+
         // Real chat (not a ! command). Broadcast the over-head bubble (0x0D) to co-located players INCLUDING
         // us, so we see our own bubble too. Prefix with who said it (client keybind help, re/str_eng.res:102/105,
         // documents dedicated Say ''' and Shout '!' hotkeys — this is the server-side text the client shows in
@@ -60,7 +69,7 @@ public sealed partial class Session
         // (type 1) uses the ±16 box — the yellow shout bubble carries about double, but is NOT map-wide.
         // (say=0 is confirmed by every chat message that has worked so far; type 1 = shout is RTK's talktype.)
         bool shout = chatType != 0;
-        string formatted = shout ? $"{_char.Name}! {text}" : $"{_char.Name}: {text}";
+        string formatted = shout ? $"{_char.Name}! {spoken}" : $"{_char.Name}: {spoken}";
         if (formatted.Length > 250) formatted = formatted[..250];
         var outMsg = Encoding.ASCII.GetBytes(formatted);
         // Say is a genuine RTK SAMEAREA send, so it gets the edge shift (World.ShiftedBox) — speaking with your
@@ -69,10 +78,27 @@ public sealed partial class Session
         int halfW = shout ? ShoutHalfW : SayHalfW, halfH = shout ? ShoutHalfH : SayHalfH;
         _world.BroadcastArea(_char.Map, _char.X, _char.Y, halfW, halfH,
             p => p.SpeakEntity(chatType, _char.Id, outMsg), edgeShift: !shout);
-        Log.Info($"   -> speech type={chatType}{(shout ? " (shout, ±16)" : " (say, area)")}: \"{text}\" -> map {_char.Map}");
+        Log.Info($"   -> speech type={chatType}{(shout ? " (shout, ±16)" : " (say, area)")}: \"{spoken}\" -> map {_char.Map}");
 
         // …and let a nearby NPC react to it (RTK onSayClick: "i'd like to fish", a tutor's name, …).
         DispatchSpeech(text);
+    }
+
+    /// <summary>The buff-list category of a garbled voice (Break jaw; see <see cref="HandleChat"/>).</summary>
+    internal const string GarbledSpeech = "garbled";
+    /// <summary>The buff-list category of a taken voice (Spy's Dagger to throat; see <see cref="HandleChat"/>).</summary>
+    internal const string MutedSpeech = "mute";
+    /// <summary>What a muted player reads when they try to speak (RTK speech.lua:14-17).</summary>
+    internal const string SpeechlessLine = "Your anxiety renders you speechless.";
+
+    /// <summary>A garbled voice: each character, a space included, becomes '*' on a 1-in-5 roll and is otherwise kept
+    /// (RTK speech.lua's <c>math.random(1, 5) == 1</c> per character).</summary>
+    private static string Garble(string text)
+    {
+        var chars = text.ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+            if (Random.Shared.Next(5) == 0) chars[i] = '*';
+        return new string(chars);
     }
 
     // ---- whisper/tell (RTK clif_parsewisp, clif.c:7644-7790) ---------------------------------------------
