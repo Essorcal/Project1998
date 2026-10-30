@@ -109,7 +109,9 @@ public sealed class SubpathTeacherTests
     /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
     /// row's level, 0, for nothing (Caleb's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
     /// and Spirit blade, each at its script's price, the borrowed ones as written (Hear footstep asks Blend's, Crossing
-    /// swords Chung ryong rage's).</summary>
+    /// swords Chung ryong rage's). The Muse spells slice then put Sacred verse and Tranquil symphony on sale at their
+    /// scripts' level 30 for a Scroll and an Ink, and Costume and Song of the Goddess (from RTK's TESTING copy), whose
+    /// scripts have no <c>requirements()</c>, at their rows' level, 0, for nothing (the project owner's P3).</summary>
     [Theory]
     [InlineData("Barbarian", "")]
     [InlineData("Chongun",   "")]
@@ -130,7 +132,7 @@ public sealed class SubpathTeacherTests
     [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
     [InlineData("Druid",     "earth_strike 99 0 [1 gold_acorn, 1 topaz]; lightning_storm 99 0 [20 rabbit_meat, 30 rat_meat]; natures_smite 99 0 [1 gold_acorn, 1 topaz]")]
     [InlineData("Monk",      "")]
-    [InlineData("Muse",      "")]
+    [InlineData("Muse",      "costume 0 0 []; sacred_verse 30 0 [1 ink, 1 scroll]; song_of_the_goddess 0 0 []; tranquil_symphony 30 0 [1 ink, 1 scroll]")]
     public void EachTeacherSellsTheWorkingSpellsAtRtksScriptPrices(string subpath, string expected)
     {
         int path = Content.PathIdForClass(subpath);

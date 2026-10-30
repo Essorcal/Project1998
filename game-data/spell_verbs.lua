@@ -1917,3 +1917,100 @@ function verbs.confuse(ctx, row)
   ctx:debitMana(mana)
   return true
 end
+
+-- =========================================================================================================
+-- MUSE (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Muse/): Sacred verse, Tranquil symphony and Costume, and Song of
+-- the Goddess from RTK's TESTING copy (Subpaths/TESTING/muse_song_of_the_goddess.lua; Muse's own folder has none). The
+-- project owner's P5 (each spell as its RTK script) and P3 (on sale at its script's level and items), and for the Song
+-- the project owner's 2026-10-30 answer, "Port RTK's testing copy", sold at its row's level with no items. WarMusic (no
+-- script) stays as it is, and RTK's Lullaby has no row. Each verb is bound by its SpellParams.csv row, which carries
+-- its numbers, and is the shape of its script, in that script's order. The graphic and sound are the spell's
+-- spell_effects.csv row, a Utility row, so there is no cast delay. RTK is weight 0 for balance; these numbers are its
+-- scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * The cast pose is the engine's, on a cast that lands, and so is the central "You cast X." line. Sacred verse's
+--     and Tranquil symphony's scripts send both themselves; Costume's sends neither, and the Song's only the pose.
+--   * A player the Song reaches reads the engine's one line, "<caster> casts Song of the Goddess on you."; the script
+--     says "cast", and sends it to a caster who sings to themselves too. A Song aimed at nothing sings to its caster,
+--     the rule every "Which target?" heal here has; RTK's engine runs no script without a target.
+--   * The Song's run is held by its caster: it ends when either player logs out (RTK saves the duration on the player
+--     and resumes it after their relog; a logged-out caster's beat lands nothing in RTK either), and the healed
+--     player's buff box does not list it.
+--   * "Already in a sanctuary" is the Sanctuary line's one slot being held, so a player under Tranquil symphony is in
+--     one. RTK's `sanctuaries` table lists `sacred_symphony`, a name no spell has, and not `tranquil_symphony`, so RTK
+--     lets either song land again on a Tranquil symphony holder, and its two halves then sum to a deduction of 0,
+--     which RTK's damage code reads as no reduction at all while both run. One slot here cannot hold two.
+--   * A player you may attack is one on a PvP map, this server's canPK (RTK also counts a PK flag and a kill list).
+-- =========================================================================================================
+
+-- Sacred verse and Tranquil symphony (RTK Subpaths/Muse/sacred_verse.lua and tranquil_symphony.lua, one body but the
+-- name and the times): every player on the caster's map, the caster included, who is not already in a sanctuary takes
+-- `amount` of every blow (the scripts' deduction - .5) for `durationMax` ms, or `pcDurMs` ms where the caster may attack
+-- them; each but the caster reads "You have found Sanctuary." and "<caster> casts <spell> on you.", with the spell's
+-- graphic over every one it reaches and its sound at the caster (ctx:mapSanctuary). Short of `mana`, "Your will is too
+-- weak.", for free. No wait. Rows: mana 60, amount 0.5, durationMax 120000 / 300000, pcDurMs 60000 / 185000.
+function verbs.map_sanctuary(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  local dur = row.durationMax or 0
+  if ctx:mapPvp(ctx.map) then dur = row.pcDurMs or dur end         -- the scripts' player:canPK(pcs[i])
+  ctx:mapSanctuary(row.amount or 1, dur)                            -- 0 reached is still a cast
+  return true
+end
+
+-- Costume (RTK Subpaths/Muse/costume.lua; Spy's mimic.lua and Ranger's forest_cover.lua are its body with other
+-- numbers, so their rows can bind here): for `mana` the caster takes the look of what stands on the faced tile for
+-- `durationMax` ms (ctx:disguise): a creature's form and colour, or a player's gear, face and colours under the caster's
+-- own name (a player in a creature's form gives that form). Then the spell's graphic over the caster and the `duration`
+-- ms wait. At an NPC there is no look, but the rest, as the script's two branches both miss one. When it ends, at its
+-- time, death, @dispel or a won Dispell, the spell's graphic plays over the caster again (its uncast). Short of `mana`,
+-- "Your will is too weak.", for free. Facing nothing living, the script takes the mana and then stops with a Lua error
+-- (it indexes the nil target), so the mana is gone and nothing else happens: no graphic, no wait, no line, no pose.
+-- Row: mana 1600, duration 225000 (the wait), durationMax 150000 (the run).
+function verbs.disguise(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if ctx:disguise(row.durationMax or 0) == "none" then return false end   -- RTK's script errors here, the mana spent
+  ctx:fxSelf()
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  return true
+end
+
+-- Song of the Goddess (RTK Subpaths/TESTING/muse_song_of_the_goddess.lua, ported as written): its "Which target?" heal
+-- target, a player or a creature, gets a `durationMax` ms run (24 s) whose beat (heal_run_tick) heals it, one beat for
+-- each 1,000 ms of the run, as RTK's duration timers take 1,000 off a beat: every second on a player (24 heals), every
+-- 1.5 s on a creature (RTK's creature timer, so 24 heals over 36 s). The mana and the heal go by the caster's rank, the
+-- script's two if-chains, which name ranks 1 and 2 only: `mana` and `amount` (1,000 and 5,000) at any other rank. At
+-- an NPC it casts nothing, silently and for free (RTK's engine runs no script for one). Short of the mana, "Your will
+-- is too weak.", for free; at a ghost, "You need a different type of cure.", for free. The cast plays the spell's sound
+-- over the target (its playSound(4)); each beat its graphic and sound (sendAnimation(66), playSound(4)). The heal
+-- reads the caster's rank on each beat, as the script's while_cast does. A recast on the same target takes the run's
+-- length again from now. Row: mana 1000, amount 5000, durationMax 24000.
+local SONG_BY_MARK = {
+  [1] = { mana = 3000, heal = 10000 },   -- the script's player.mark == 1
+  [2] = { mana = 6000, heal = 20000 },   -- the script's player.mark == 2
+}
+
+function verbs.heal_run(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.healReach < 0 then return false end                        -- an NPC: silent, free
+  local byMark = SONG_BY_MARK[ctx.mark] or {}
+  local mana = byMark.mana or row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if ctx.healIsGhost then ctx:say("You need a different type of cure."); return false end
+  if not ctx:startHealRun("heal_run_tick", row.durationMax or 0) then return false end
+  ctx:debitMana(mana)
+  return true
+end
+
+-- The Song's beat (the script's while_cast), on the player or creature it holds.
+function verbs.heal_run_tick(ctx, row)
+  local byMark = SONG_BY_MARK[ctx.mark] or {}
+  ctx:healRunVictim(byMark.heal or row.amount or 0)
+  return true
+end

@@ -31,6 +31,10 @@
 # line changed.
 # The Do slice's third round (2026-10-26, Caleb's Q15: Blend as its RTK script) then moved blend from
 # verb=stance_stealth to verb=hide row: a SpellParams.csv row binds it to its own verb. No other line changed.
+# The Muse spells slice (2026-10-30) then moved four PC-subpath spells off verb=generic (the project owner's P5: RTK's
+# scripts; Song of the Goddess from RTK's TESTING copy on the project owner's answer of 2026-10-30), each bound by a
+# SpellParams.csv row: sacred_verse and tranquil_symphony to verb=map_sanctuary row, costume to verb=disguise row and
+# song_of_the_goddess to verb=heal_run row. warmusic stays on verb=generic. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -149,7 +153,7 @@ cooling_touch_mage	3039	verb=arch_heal
 cooling_touch_rogue	2024	verb=arch_heal
 corrupt	50024	verb=curse row
 corruption_mage	3111	verb=venom row
-costume	31604	verb=generic
+costume	31604	verb=disguise row
 cotw_caterpillar_poet	4701	verb=pet_summon
 cotw_fluffy_dog_poet	4702	verb=pet_summon
 cotw_giasomo_bird_poet	50052	verb=pet_summon
@@ -678,7 +682,7 @@ river_of_blood_mage	3133	verb=arch_damage
 rock_blessing_poet	4165	verb=ward row
 rodent_rogue	2033	Become what?
 sacred_soil_poet	4168	verb=arch_heal
-sacred_verse	31602	verb=generic
+sacred_verse	31602	verb=map_sanctuary row
 sages_wisdom	405	verb=sage_shout row
 salvation_warrior	1080	verb=arch_heal
 sanctification_warrior	1010	verb=arch_buff
@@ -739,7 +743,7 @@ snare_trap	501	verb=generic
 soften_skin	31113	verb=generic
 solace_mage	3153	verb=arch_heal
 son_kal	31507	verb=generic
-song_of_the_goddess	31601	verb=generic
+song_of_the_goddess	31601	verb=heal_run row
 sonhi_rage	30201	verb=generic
 soothe	101	verb=arch_heal
 soul_chasm_mage	3089	verb=area_zap
@@ -870,7 +874,7 @@ tossing_the_bones_poet	4110	verb=target_area_zap
 touch_of_health_warrior	1069	verb=arch_heal
 touch_of_the_bear_warrior	1044	verb=arch_buff
 toxic_spray	50044	verb=generic
-tranquil_symphony	31603	verb=generic
+tranquil_symphony	31603	verb=map_sanctuary row
 transport_rogue	2105	verb=leap
 tree_bark	30703	verb=generic
 tree_dart_mage	3046	verb=arch_damage

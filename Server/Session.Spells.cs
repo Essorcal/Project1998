@@ -2505,10 +2505,26 @@ public sealed partial class Session
     // It ends at logout like every run here, through EndSpellTicksIfLeaving, and its verb's one read of the world
     // (LuaHiddenNear) names nobody once the caster is leaving, so nothing is said to a player who has gone. RTK saves
     // a player's durations and would resume one after a relog; this server saves no run (no new persistence).
+    //
+    // A RUN ON ANOTHER PLAYER (the Muse slice's Song of the Goddess, RTK Spells/Subpaths/TESTING/
+    // muse_song_of_the_goddess.lua: target:setDuration(key, 24000, player.ID, 1), whose while_cast heals the target).
+    // Still held by the caster, keyed by spell and player (PlayerId), so the list stays this session's alone:
+    //   * the beat finds the player wherever they are (World.Online.ById), as RTK's timer runs on the player whatever
+    //     map either stands on, and its verb heals them inside their own monitor (Session.ReceiveRunHeal), the
+    //     ReceiveHeal shape; a player who has logged out ends the run;
+    //   * RTK runs the duration on the player's own timer, which ends it at the player's death and at their flushDuration
+    //     (the song's SplDispel is 0). The player's death, @dispel and a won Dispell count one more on that player's
+    //     _durationsEnded (ClearAllTimedEffects, FlushDurations, under their own monitor); a run remembers the count it
+    //     started at (Gen) and ends at the first beat that finds it moved. Nothing reaches into the caster's list from
+    //     the player's side;
+    //   * RTK's pc.c bl_duratimer takes 1,000 off every second and runs while_cast after each, so a 24 s run beats 24
+    //     times, the last as it reaches 0: a player run beats strictly before Until, so it is given one millisecond past
+    //     its last beat (Session.LuaStartHealRun).
 
     /// <summary>One running periodic tick: <see cref="Verb"/> runs every <see cref="EveryMs"/> while
     /// <see cref="Next"/> is before <see cref="Until"/>, against the creature <see cref="MobId"/> on <see cref="Map"/>,
-    /// or, for a <see cref="Self"/> run, on the caster (no creature, no map of its own).
+    /// or, for a <see cref="Self"/> run, on the caster (no creature, no map of its own), or against the player
+    /// <see cref="PlayerId"/> wherever they stand, while their <c>_durationsEnded</c> is still <see cref="Gen"/>.
     /// Written only under this session's monitor.</summary>
     private sealed class SpellTick
     {
@@ -2517,6 +2533,8 @@ public sealed partial class Session
         public uint MobId;
         public ushort Map;
         public bool Self;
+        public uint PlayerId;
+        public long Gen;
         public int EveryMs;
         public long Next;
         public long Until;
@@ -2534,7 +2552,13 @@ public sealed partial class Session
     /// <summary>A tick of <paramref name="key"/> on the creature <paramref name="mobId"/> that is still running, or null.
     /// Running is RTK's <c>hasDurationID</c>: the duration has time left, whether or not another beat falls in it.</summary>
     private SpellTick? LiveTick(string key, uint mobId, ushort map, long now) =>
-        _spellTicks.Find(t => !t.Ended && !t.Self && now < t.Until && t.MobId == mobId && t.Map == map
+        _spellTicks.Find(t => !t.Ended && !t.Self && t.PlayerId == 0 && now < t.Until && t.MobId == mobId && t.Map == map
+                              && t.SpellKey.Equals(key, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>This caster's run of <paramref name="key"/> on the player <paramref name="playerId"/> that is still
+    /// running, or null.</summary>
+    private SpellTick? LivePlayerTick(string key, uint playerId, long now) =>
+        _spellTicks.Find(t => !t.Ended && t.PlayerId == playerId && now < t.Until
                               && t.SpellKey.Equals(key, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>This caster's run of <paramref name="key"/> on themselves that is still running, or null.</summary>
@@ -2606,9 +2630,111 @@ public sealed partial class Session
             live.Until = run.Until;
             live.Verb = run.Verb;
             live.EveryMs = run.EveryMs;
+            live.Gen = run.Gen;   // a player run: the count its player's durations have ended at now (0 for the others)
         }
         PublishSpellTickDue();
         return live is null;
+    }
+
+    /// <summary>Start, or refresh, this caster's run of <paramref name="sp"/> on its heal target (<c>ctx:startHealRun</c>;
+    /// Song of the Goddess): <paramref name="verb"/> runs once a beat for <paramref name="durMs"/> / 1,000 beats, RTK's
+    /// timers taking 1,000 off a duration a beat. On a player, a beat every second, RTK's pc.c bl_duratimer; on a creature
+    /// every 1.5 s, RTK's mob_duratimer, which its 50 ms clock's 30-step cycle runs once a cycle (the periodic tick's note
+    /// above), so a creature's run lasts half as long again, as RTK's does. The last beat lands as the run reaches its end,
+    /// as RTK's does. A run already going on the same target takes the new length from now and keeps its beat, RTK's
+    /// <c>setDuration(key, ms, player.ID, 1)</c>. The spell's sound plays over the target at the cast, and a player other
+    /// than the caster reads the engine's "&lt;caster&gt; casts &lt;spell&gt; on you.". False, starting nothing, at an
+    /// NPC, at nobody, or for a run of no beat.</summary>
+    internal bool LuaStartHealRun(SpellDef sp, HealTarget target, string verb, int durMs)
+    {
+        AssertStateHeld("a spell tick's start");
+        int beats = durMs / RtkDurationStepMs;
+        if (beats <= 0 || string.IsNullOrEmpty(verb)) return false;
+        var fx = Content.FxFor(sp);
+        int snd = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        long now = Environment.TickCount64;
+        if (target.Pc is { } pc)
+        {
+            bool fresh = StartOrRefreshTick(LivePlayerTick(sp.Key, pc.PlayerId, now), new SpellTick
+            {
+                SpellKey = sp.Key, Verb = verb, PlayerId = pc.PlayerId, Gen = pc.DurationsEnded, EveryMs = PlayerBeatMs,
+                Next = now + PlayerBeatMs, Until = now + (long)beats * PlayerBeatMs + 1,
+            });
+            if (!ReferenceEquals(pc, this)) TellTarget(pc, sp);
+            BroadcastFx(pc.PlayerId, -1, snd);   // the script's target:playSound(4)
+            Log.Info($"      (lua) {sp.Name} -> run '{verb}' of {beats} beat(s) on player {pc.PlayerId} ({(fresh ? "started" : "refreshed")})");
+            return true;
+        }
+        if (target.Mob is { IsNpc: false } mob)
+        {
+            if (!LuaStartTick(sp, mob, _char.Map, verb, CreatureBeatMs, beats * CreatureBeatMs + 1)) return false;
+            BroadcastFx(mob.Id, -1, snd);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>What RTK's duration timers take off a duration each beat (pc.c bl_duratimer, mob.c mob_duratimer).</summary>
+    private const int RtkDurationStepMs = 1_000;
+    /// <summary>How often RTK's player duration timer runs: every second (pc.c pc_starttimer's 1,000 ms bl_duratimer).</summary>
+    private const int PlayerBeatMs = 1_000;
+    /// <summary>How often RTK's creature duration timer runs: once a 1.5 s cycle (mob.c, timercheck % 20 in a cycle of 30
+    /// steps of 50 ms; the periodic tick's note above).</summary>
+    private const int CreatureBeatMs = 1_500;
+
+    /// <summary>Heal the victim of a run's beat (<c>ctx:healRunVictim</c>; Song of the Goddess's while_cast): a player,
+    /// inside their own monitor (<see cref="ReceiveRunHeal"/>), which ends the run instead when their durations have ended
+    /// since it began (<paramref name="gen"/>) or they are leaving; a creature, healed as a heal cast heals one, its bar
+    /// redrawn, on the map it stands on. The spell's graphic and sound over either (the script's sendAnimation(66) and
+    /// playSound(4)). False when there is nothing to heal, or the caster is logging out.</summary>
+    internal bool LuaHealRunVictim(SpellDef sp, (Mob? mob, Session? pc) victim, ushort map, long gen, int amt)
+    {
+        // As LuaStrikeVictim: the Lua gate's slow path can let a logout run to its end while the beat waits.
+        if (_leaving) return false;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        if (victim.pc is { } pc)
+        {
+            if (pc.ReceiveRunHeal(amt, gen, anim, snd)) return true;
+            foreach (var t in _spellTicks)
+                if (!t.Self && t.PlayerId == pc.PlayerId && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+                    t.Ended = true;
+            PublishSpellTickDue();
+            Log.Info($"      (lua) {sp.Name} -> run on player {pc.PlayerId} ends: their durations ended, or they left");
+            return false;
+        }
+        if (victim.mob is not { IsNpc: false, Alive: true } mob) return false;
+        if (_world.HealMob(mob, amt))
+            _world.BroadcastWideArea(map, mob.X, mob.Y, p => p.DamageOver(mob.Id, HpPercent(mob), 0));   // its over-head bar
+        if (anim >= 0) _world.BroadcastWideArea(map, mob.X, mob.Y, p => { if (p.WantsMagicFx) p.EffectOver(mob.Id, anim); });
+        if (snd > 0) _world.BroadcastSameArea(map, mob.X, mob.Y, p => { if (p.WantsMagicFx) p.SoundAt(snd, mob.Id); });
+        Log.Info($"      (lua) {sp.Name} -> beat healed mob {mob.Id} '{mob.Name}' for {amt} -> {mob.Hp}/{mob.MaxHp}");
+        return true;
+    }
+
+    /// <summary>How many times this player's durations have been ended wholesale: death and <c>@dispel</c>
+    /// (<see cref="ClearAllTimedEffects"/>) and a won Dispell (<see cref="FlushDurations"/>), each under this player's
+    /// own monitor. A run another player holds on this one (Song of the Goddess) remembers it at its start and ends when
+    /// it has moved, as RTK's pc_diescript and flushDuration end a duration on the player. Not saved.</summary>
+    private long _durationsEnded;
+    internal long DurationsEnded => Volatile.Read(ref _durationsEnded);
+
+    /// <summary>A run's beat heals THIS player (<see cref="LuaHealRunVictim"/>), decided inside this player's own monitor:
+    /// false, changing nothing, when they are logging out or their durations have ended since the run began
+    /// (<paramref name="gen"/>), which ends the run. Otherwise <paramref name="amt"/> vita, capped, with the over-head bar
+    /// (<see cref="ReceiveHeal"/>, which heals no ghost, as RTK's addHealthExtend returns for one), and the spell's
+    /// <paramref name="anim"/> and <paramref name="sound"/> over them on their own map.
+    /// <para>Cross-session: called from the caster's beat, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the <see cref="ReceiveHeal"/>
+    /// shape.</para></summary>
+    internal bool ReceiveRunHeal(int amt, long gen, int anim, int sound)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || gen != _durationsEnded) return false;
+        ReceiveHeal(amt);
+        BroadcastFx(_char.Id, anim, sound);
+        return true;
     }
 
     /// <summary>End every run this caster holds on themselves: death and <c>@dispel</c> (<see cref="ClearAllTimedEffects"/>)
@@ -2644,7 +2770,7 @@ public sealed partial class Session
         AssertStateHeld("a spell tick's end");
         if (victim is null) return;
         foreach (var t in _spellTicks)
-            if (!t.Self && t.MobId == victim.Id && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            if (!t.Self && t.PlayerId == 0 && t.MobId == victim.Id && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
                 t.Ended = true;
         PublishSpellTickDue();
     }
@@ -2657,7 +2783,7 @@ public sealed partial class Session
         long now = Environment.TickCount64;
         var ids = new HashSet<uint>();
         foreach (var t in _spellTicks)
-            if (!t.Ended && !t.Self && now < t.Until && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
+            if (!t.Ended && !t.Self && t.PlayerId == 0 && now < t.Until && t.Map == map && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase))
                 ids.Add(t.MobId);
         if (ids.Count == 0) return 0;
         var (_, mobs) = _world.View(this, map);
@@ -2736,6 +2862,12 @@ public sealed partial class Session
             if (sp is null) { t.Ended = true; continue; }
             SpellContext ctx;
             if (t.Self) ctx = new SpellContext(this, sp, null, null);   // the caster alone: a self run has no creature
+            else if (t.PlayerId != 0)
+            {
+                var pc = _world.Online.ById(t.PlayerId);   // wherever they stand; null once they logged out
+                if (pc is null) { t.Ended = true; continue; }
+                ctx = new SpellContext(this, sp, pc, t.Gen);
+            }
             else
             {
                 var mob = _world.MobById(t.Map, t.MobId);   // living, on the map it was struck on; null once it died or left
@@ -2746,7 +2878,7 @@ public sealed partial class Session
             if (SpellScript.Run(t.Verb, ctx, row) != true)
             {
                 t.Ended = true;
-                Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on {(t.Self ? "its caster" : $"mob {t.MobId}")} " +
+                Log.Warn($"spell tick '{t.Verb}' of {t.SpellKey} on {(t.Self ? "its caster" : t.PlayerId != 0 ? $"player {t.PlayerId}" : $"mob {t.MobId}")} " +
                          "did not run to completion — the tick ends");
             }
             if (EndSpellTicksIfLeaving()) return;   // a logout that got in while the beat waited for the Lua gate
@@ -4063,12 +4195,238 @@ public sealed partial class Session
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (_morphLook == 0) return;
+        string key = _morphKey;
         BuffRemoveAll(b => b.Key == _morphKey);
         _morphLook = 0; _morphColor = 0; _morphUntil = 0; _morphKey = "";
-        BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
+        // A disguise as a creature (Costume) ends as its script's uncast ends it: the spell's own graphic over the
+        // player, no sound (Session.PlayDisguiseEnd). Every other morph keeps this server's exit "poof".
+        if (IsDisguiseSpell(key)) PlayDisguiseEnd(key);
+        else BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
         ShowPlayer(this);   // restore our own view too (same 0x07-self-id path we used to morph)
+    }
+
+    // ---- P3: the disguise (RTK clone.playerToPlayer and player.disguise; Costume, and Spy's Mimic and Ranger's Forest
+    // cover, which are its body with other numbers) --------------------------------------------------------------------
+    // RTK's three scripts (Spells/Subpaths/Muse/costume.lua, Spy/mimic.lua, Ranger/forest_cover.lua) take the first
+    // thing in the faced cell that is not dead (Scripts/scripts.lua getTargetFacing, priority 0) and then:
+    //   * a creature: player.disguise = target.look, disguiseColor = target.lookColor, state 4 (PC_DISGUISE). That is
+    //     this server's morph slot exactly (_morphLook/_morphColor, drawn as the 0x07 creature sprite to peers and to
+    //     self, IsMorphed being RTK's state 4), so a creature disguise rides it, keyed by the spell, and is saved and
+    //     restored through the morph's existing fields, as a morph is. RTK saves status.state and status.disguise too.
+    //   * a player in state 4: their disguise look, with colour 0 (RTK reads target.lookColor, which a player does
+    //     not have: sl.c pcl_getattr answers only an NPC's and a creature's).
+    //   * any other player: clone.playerToPlayer copies their gear's looks, face, hair and colours onto the caster's
+    //     gfx (gfxClone = 1), the name not (the script's gfxName line is commented out). RTK keeps that in memory only
+    //     (map.h's gfx is on the session, not in mmo.h's saved status), so it is here too: _disguiseRun, never saved,
+    //     gone at logout. What it copies is the target's REAL look, as playerToPlayer reads getEquippedItem, not a
+    //     disguise the target wears themselves.
+    //   * an NPC: no look at all, but the run, its graphic and its wait, as the script's two branches both miss it.
+    // The run ends at its time, at death, at @dispel and at a won Dispell (RTK's duration timer, pc_diescript and
+    // flushDuration all run the uncast: the costume's SplDispel is 0), each with the spell's graphic over the player.
+    // No lock is new: everything written is this session's own, under its own monitor; the target is only read, in
+    // its own monitor (LookForDisguise), as Snapshot reads it for every peer draw.
+
+    /// <summary>The look a player disguise copies from its target: the 4.95 appearance bytes (<see cref="SelfAppearance"/>'s
+    /// [0] and [2]-[6]; the form byte stays the wearer's own) and the hair colour 5.33 draws.</summary>
+    internal readonly record struct DisguiseLook(byte Sex, byte Face, byte Armor, byte ArmorDye, byte Weapon, byte Shield, byte HairColor);
+
+    /// <summary>A disguise run that is not a creature's form: a player's look (<see cref="Look"/>), or nothing at all
+    /// (cast at an NPC). Immutable, so the world tick can read the reference and its end bare, as it reads
+    /// <see cref="IsMorphExpired"/>.</summary>
+    private sealed record DisguiseRun(string Key, string Name, long Until, DisguiseLook? Look);
+    private DisguiseRun? _disguiseRun;
+
+    /// <summary>The player look a running disguise shows, or null.</summary>
+    private DisguiseLook? DisguisedAs => _disguiseRun?.Look;
+
+    /// <summary>Read by World.FlushTick's morph phase (outside the monitor, as <see cref="IsMorphExpired"/> is) to know
+    /// when to end a player-look or NPC disguise run.</summary>
+    public bool IsDisguiseExpired => _disguiseRun is { } r && Environment.TickCount64 >= r.Until;
+
+    /// <summary>Is <paramref name="key"/> a disguise spell, one whose SpellParams.csv row binds the <c>disguise</c> verb?
+    /// Its morph slot then ends with the spell's graphic (<see cref="RevertMorph"/>), and a won Dispell ends it.</summary>
+    private static bool IsDisguiseSpell(string key) =>
+        key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") == "disguise";
+
+    /// <summary>The disguise's end, as RTK's uncast plays it: <c>player:sendAnimation(16)</c>, the spell's own graphic
+    /// (its spell_effects.csv row), over the player, with no sound.</summary>
+    private void PlayDisguiseEnd(string key)
+    {
+        var sp = Content.SpellByKey(key);
+        var fx = sp is null ? null : Content.FxFor(sp);
+        if (fx is not null) BroadcastFx(_char.Id, Content.EffectAnim(fx, sp!.PathId), -1);
+    }
+
+    /// <summary>What a disguise caster reads off a player in front of them, in that player's own monitor: their real
+    /// look and, when they are in a creature's form (RTK state 4), that form. Null for a ghost (RTK's getTargetFacing
+    /// passes over state 1) or a player logging out.</summary>
+    internal (DisguiseLook Look, ushort FormLook)? LookForDisguise()
+    {
+        using var _ = EnterState();   // #29: a peer's read, as Snapshot takes it
+        if (_leaving || IsDead) return null;
+        var look = new DisguiseLook((byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), ArmorDye(), WeaponLook(),
+                                    ShieldLook(), _char.HairColor);
+        return (look, IsMorphed ? _morphLook : (ushort)0);
+    }
+
+    /// <summary>The disguise primitive (<c>ctx:disguise</c>): take the look of what stands on the faced tile for
+    /// <paramref name="durMs"/>, and say what it was: "creature", "player", "npc" (no look, but a run), or "none"
+    /// (nothing living there: the run, its graphic and its wait are the verb's not to start). A creature is looked
+    /// for first, as this server's damage resolver looks; an NPC only when no player stands there either.</summary>
+    internal string LuaDisguise(SpellDef sp, int durMs)
+    {
+        var (fx, fy) = FrontTile();
+        var mob = _world.MobAt(_char.Map, fx, fy);
+        if (mob is { IsNpc: false })
+        {
+            DisguiseAsCreature(sp, mob.Sprite, mob.Color, durMs);
+            Log.Info($"      {sp.Name}(lua) -> disguised as creature '{mob.Name}' look={mob.Sprite} color={mob.Color} for {durMs}ms");
+            return "creature";
+        }
+        var (peers, _) = _world.View(this, _char.Map);
+        foreach (var peer in peers)
+        {
+            if (peer.X != fx || peer.Y != fy || peer.Session.IsReplaced) continue;
+            if (peer.Session.LookForDisguise() is not { } seen) continue;   // a ghost, or leaving: passed over
+            if (seen.FormLook != 0) DisguiseAsCreature(sp, seen.FormLook, 0, durMs);
+            else DisguiseAsPlayer(sp, seen.Look, durMs);
+            Log.Info($"      {sp.Name}(lua) -> disguised as player {peer.Id} ({(seen.FormLook != 0 ? $"their form {seen.FormLook}" : "their look")}) for {durMs}ms");
+            return "player";
+        }
+        if (mob is not null)
+        {
+            StartDisguiseRun(new DisguiseRun(sp.Key, sp.Name, Environment.TickCount64 + durMs, null));
+            Log.Info($"      {sp.Name}(lua) -> faced an NPC: a run with no look for {durMs}ms");
+            return "npc";
+        }
+        return "none";
+    }
+
+    /// <summary>Wear a creature's look (RTK state 4) in the morph slot, keyed by the spell, as <see cref="LuaApplyMorph"/>
+    /// wears a morph: its buff-box marker, and the 0x07 creature redraw to peers and to self. A player-look run is ended
+    /// without a word first: RTK's uncast wipes the clone with the state, so one disguise is one run.</summary>
+    private void DisguiseAsCreature(SpellDef sp, ushort look, byte color, int durMs)
+    {
+        if (_disguiseRun is not null) { var had = _disguiseRun.Look; _disguiseRun = null; if (had is not null) RefreshAppearance(); }
+        BuffRemoveAll(b => b.Key == _morphKey);
+        _morphLook = look;
+        _morphColor = color;
+        _morphUntil = Environment.TickCount64 + durMs;
+        _morphKey = sp.Key;
+        BuffAdd(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
+        SendStats();
+        _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);
+        _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
+        ShowPlayer(this);
+    }
+
+    /// <summary>Wear another player's look (RTK gfxClone): every appearance the server draws of this player, to peers
+    /// (<see cref="Snapshot"/>, the 0x1d patch) and to self (<see cref="SelfAppearance"/>), takes it until the run ends.
+    /// The name and the form byte (ghost, mounted, faded) stay the wearer's.</summary>
+    private void DisguiseAsPlayer(SpellDef sp, DisguiseLook look, int durMs) =>
+        StartDisguiseRun(new DisguiseRun(sp.Key, sp.Name, Environment.TickCount64 + durMs, look));
+
+    private void StartDisguiseRun(DisguiseRun run)
+    {
+        _disguiseRun = run;
+        if (run.Look is not null) RefreshAppearance();
+    }
+
+    /// <summary>End a player-look or NPC disguise run: the real look back (a redraw, when there was a look) and the
+    /// spell's graphic over the player, as RTK's uncast plays both. No-op with no run.</summary>
+    private void EndDisguiseRun()
+    {
+        if (_disguiseRun is not { } run) return;
+        _disguiseRun = null;
+        if (run.Look is not null) RefreshAppearance();
+        PlayDisguiseEnd(run.Key);
+        Log.Info($"   -> {run.Name} ended for {_char.Name}");
+    }
+
+    /// <summary>End the disguise RTK's death, its <c>flushDuration</c> (a won Dispell) and @dispel end: a creature's
+    /// form worn by a disguise spell, and a player-look or NPC run. A morph from any other spell is left to its own
+    /// rules.</summary>
+    private void EndDisguise()
+    {
+        if (_morphLook != 0 && IsDisguiseSpell(_morphKey)) RevertMorph();
+        EndDisguiseRun();
+    }
+
+    /// <summary>World.FlushTick's deferred call for a player its morph phase found with a lapsed morph or disguise run,
+    /// made outside the world lock: each one that has lapsed is ended.</summary>
+    public void RevertLapsedLooks()
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (IsDisguiseExpired) EndDisguiseRun();
+        if (IsMorphExpired) RevertMorph();
+    }
+
+    // ---- P11: effects on everyone on the caster's map (RTK getObjectsInSameMap(BL_PC)) -----------------------------------
+    // The map-wide half of the plan's P11, for Sacred verse and Tranquil symphony here and for Monk's Mass resurrect and
+    // the like after them: every player on the caster's map, the caster included, read once from World.View (the peers,
+    // the caster left out, under the world lock) and the caster added; each one's change is decided and written inside
+    // that player's own monitor, entered from the caster's thread by StateRank, the ReceiveHeal/ReceiveRevive shape. No
+    // lock is new.
+
+    /// <summary>Every player on the caster's map, the caster first, as one read: the peers <see cref="World.View"/>
+    /// returns (a replaced session left out, as the revive sweep leaves it) and the caster.</summary>
+    private List<(Session Session, uint Id)> MapWidePlayers()
+    {
+        var (peers, _) = _world.View(this, _char.Map);
+        var all = new List<(Session, uint)>(peers.Length + 1) { (this, _char.Id) };
+        foreach (var peer in peers)
+            if (!peer.Session.IsReplaced) all.Add((peer.Session, peer.Id));
+        return all;
+    }
+
+    /// <summary>Sacred verse and Tranquil symphony (RTK <c>Spells/Subpaths/Muse/sacred_verse.lua:24-42</c>): every player
+    /// on the caster's map who is not already in a sanctuary takes the Sanctuary line's damage multiplier
+    /// <paramref name="mult"/> for <paramref name="durMs"/> under the spell's name, with the spell's graphic over them;
+    /// each but the caster also reads "You have found Sanctuary." and "&lt;caster&gt; casts &lt;spell&gt; on you.". The
+    /// spell's sound plays at the caster whoever it reaches. Returns how many it reached.
+    /// <para>"Already in a sanctuary" is RTK's <c>checkIfCast(sanctuaries)</c>, which here is the Sanctuary line's one
+    /// slot being held (<see cref="SancDeductActive"/>), the test the Sanctuary potions already make
+    /// (<see cref="ItemWardBlocked"/>): a Sanctuary, a Protect Soul, a potion, or either of these two.</para></summary>
+    internal int LuaMapSanctuary(double mult, int durMs, SpellDef sp)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        BroadcastFx(_char.Id, -1, snd);   // the script's player:playSound(5), before its sweep
+        string line = TargetLine(sp);
+        int reached = 0;
+        foreach (var (who, id) in MapWidePlayers())
+        {
+            bool self = ReferenceEquals(who, this);
+            if (!who.ReceiveMapSanctuary(mult, durMs, sp.Name, self ? null : line)) continue;   // in a sanctuary, or leaving
+            BroadcastFx(id, anim, -1);
+            reached++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> map sanctuary x{mult} for {durMs}ms on {reached} player(s) of map {_char.Map}");
+        return reached;
+    }
+
+    /// <summary>Sacred verse or Tranquil symphony lands on THIS player (<see cref="LuaMapSanctuary"/>), decided inside
+    /// this player's own monitor: nothing for a player already in a sanctuary (the Sanctuary line's slot held) or logging
+    /// out; else the slot takes <paramref name="mult"/> for <paramref name="durMs"/> under <paramref name="name"/>, and a
+    /// player other than the caster reads the script's two lines, <paramref name="line"/> second. Returns whether it
+    /// landed.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the <see cref="ReceiveHeal"/>
+    /// shape; for the caster it is the monitor already held.</para></summary>
+    internal bool ReceiveMapSanctuary(double mult, int durMs, string name, string? line)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || durMs <= 0 || SancDeductActive) return false;
+        ApplySanctuaryDeduction(mult, durMs, name);
+        if (line is not null)
+        {
+            SendMiniText("You have found Sanctuary.");
+            SendMiniText(line);
+        }
+        return true;
     }
 
     // These four read their graphic+sound from the same spell_effects.csv row every other spell uses, keyed by
@@ -4238,6 +4596,8 @@ public sealed partial class Session
     // from another player's cast only through ReceiveFlush, inside this player's monitor.
     private void FlushDurations()
     {
+        EndDisguise();             // Costume's run: RTK's flushDuration runs its uncast (SplDispel 0)
+        Interlocked.Increment(ref _durationsEnded);   // a Song of the Goddess run another player holds on us ends
         BuffClear();
         _rageUntil = 0;            _crRageTier = 0;   // see ClearAllTimedEffects: a STRIPPED fury owes no drain
         _stealthUntil = 0;
@@ -4255,6 +4615,8 @@ public sealed partial class Session
     private void ClearAllTimedEffects()
     {
         RevertMorph();      // restore the real look before we wipe the buff that named the disguise
+        EndDisguiseRun();   // a player-look or NPC disguise run (Costume): RTK's pc_diescript runs its uncast (SplDispel 0)
+        Interlocked.Increment(ref _durationsEnded);   // a Song of the Goddess run another player holds on us ends
         BreakStealth(tell: false);   // clears _stealthUntil + the faded (form-5) sprite; no fade line (see RevertStealth)
 
         BuffClear();
