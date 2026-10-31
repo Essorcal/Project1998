@@ -486,15 +486,18 @@ public sealed class SubpathTeacherTests
         Assert.False(Keeps(17, strike));   // @class Monk
     }
 
-    /// <summary>The most subpath spells a member can hold today is what their teacher sells (three, for a Druid), and
-    /// every PC subpath's rebuilt book with all of them, at every alignment and rank and every Sage rung, still fits
-    /// the client's 52 slots, keeping each. Red without the keep (they are not in the book). The worst case is written
-    /// to the output.</summary>
+    /// <summary>The most subpath spells a member can hold today is what their teacher sells (nine, for a Druid), and
+    /// every PC subpath's rebuilt book with all of them, at every alignment and rank and every Sage rung, keeps each and
+    /// holds everything else it is owed up to the client's 52 slots, no further. A rank-2 or rank-3 Druid is owed 53 or
+    /// 57: the base spells their book did not hold give way (the project owner, 2026-10-31, "Subpath spells stay";
+    /// <see cref="ARebuildPastTheCapKeepsEveryHeldSpell"/> pins which). Red without the keep (they are not in the book),
+    /// and with the rebuild's old order (a Druid's 53 and 57 slots). Each subpath's largest set owed is written to the
+    /// output.</summary>
     [Fact]
     public void TheMostAMemberCanHoldTodayFitsTheBook()
     {
         var problems = new List<string>();
-        var sizes = new List<(int Count, int Path, int Alignment, int Mark, int Held)>();
+        var sizes = new List<(int Count, int Owed, int Path, int Alignment, int Mark, int Held)>();
         foreach (var c in SubpathCircles.All)
         {
             var held = Content.SubpathTeacherSpells(c.Subpath, Content.MarkSpellLevel, Content.MaxMark);
@@ -504,17 +507,55 @@ public sealed class SubpathTeacherTests
                     var book = Content.RespecSpellSet(c.Subpath, Content.MarkSpellLevel, alignment, mark,
                                                       dogFlag: Content.CanLearnDogSpells(c.Subpath),
                                                       sageRung: Content.SageLadder.Length, held: held);
-                    sizes.Add((book.Count, c.Subpath, alignment, mark, held.Count));
+                    int owed = Content.RespecSpellSet(c.Subpath, Content.MarkSpellLevel, alignment, mark,
+                                                      dogFlag: Content.CanLearnDogSpells(c.Subpath),
+                                                      sageRung: Content.SageLadder.Length).Count + held.Count;
+                    sizes.Add((book.Count, owed, c.Subpath, alignment, mark, held.Count));
                     foreach (var sp in held.Where(h => book.All(b => b.Id != h.Id)))
                         problems.Add($"{Content.PathName(c.Subpath)} a{alignment} m{mark}: {sp.Key} not kept");
-                    if (book.Count > Content.SpellBookCap)
-                        problems.Add($"{Content.PathName(c.Subpath)} a{alignment} m{mark}: {book.Count} slots");
+                    if (book.Count != Math.Min(owed, Content.SpellBookCap))
+                        problems.Add($"{Content.PathName(c.Subpath)} a{alignment} m{mark}: {book.Count} slots of {owed} owed");
                 }
         }
-        foreach (var s in sizes.Where(s => s.Mark == Content.MaxMark && s.Alignment == 0).OrderByDescending(s => s.Count))
-            _out.WriteLine($"{Content.PathName(s.Path)}: {s.Count} of {Content.SpellBookCap} with {s.Held} held");
-        _out.WriteLine($"largest: {sizes.Max(s => s.Count)}");
+        foreach (var s in sizes.Where(s => s.Mark == Content.MaxMark && s.Alignment == 0).OrderByDescending(s => s.Owed))
+            _out.WriteLine($"{Content.PathName(s.Path)}: {s.Count} of {Content.SpellBookCap}, {s.Owed} owed, with {s.Held} held");
+        _out.WriteLine($"largest owed: {sizes.Max(s => s.Owed)}");
         Assert.True(problems.Count == 0, string.Join("\n", problems));
+    }
+
+    /// <summary>The rebuild past the cap (the project owner, 2026-10-31, "Subpath spells stay"): a rank-3 Druid holding
+    /// all nine Druid spells, who forgot as many Poet spells as made room for them (and two more, in the second case),
+    /// renounces (a shrine's rebuild at the alignment they have). All nine stay, every spell the book held stays, the
+    /// book is full at 52, and of the Poet spells they had forgotten only as many come back as there is room for, the
+    /// first in the rebuild's order. Red with the rebuild's old order (held subpath spells last, cut at 52): the last
+    /// Druid spells go.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void ARebuildPastTheCapKeepsEveryHeldSpell(int room)
+    {
+        int druid = Content.PathIdForClass("Druid");
+        var nine = Content.SubpathTeacherSpells(druid, Content.MarkSpellLevel, Content.MaxMark);
+        var owed = Content.RespecSpellSet(druid, 99, alignment: 0, mark: 3);
+        Assert.Equal(9, nine.Count);
+        Assert.True(owed.Count + nine.Count > Content.SpellBookCap,
+                    $"a rank-3 Druid is owed {owed.Count} + {nine.Count}, inside the {Content.SpellBookCap}-slot book");
+        int forgot = owed.Count + nine.Count - Content.SpellBookCap + room;
+        var forgotten = owed.Skip(owed.Count / 2).Take(forgot).ToList();   // from the middle of the Poet list
+        var book = owed.Where(sp => !forgotten.Contains(sp)).Concat(nine).Select(sp => sp.Id).ToList();
+        var (s, _, c) = Member("Druid", 99, ch => { ch.Mark = 3; ch.Spells.AddRange(book); });
+        Assert.Equal(Content.SpellBookCap - room, c.Spells.Count);
+        var shrineDef = Content.NpcById(188)!;   // the Kwi-Sin shrine's shaman
+        var ctx = new NpcContext(s, TeacherMob(shrineDef), shrineDef);
+
+        s.WithState(() => ctx.Devote(0));
+
+        var lost = book.Where(id => !c.Spells.Contains(id)).Select(id => Content.SpellById(id)!.Key).ToList();
+        var back = forgotten.Where(f => c.Spells.Contains(f.Id)).Select(f => f.Key).ToList();
+        Assert.True(lost.Count == 0 && c.Spells.Count == Content.SpellBookCap
+                    && back.SequenceEqual(forgotten.Take(room).Select(f => f.Key)),
+                    $"{c.Spells.Count} slots; lost [{string.Join(", ", lost)}]; back [{string.Join(", ", back)}] of forgotten " +
+                    $"[{string.Join(", ", forgotten.Select(f => f.Key))}]");
     }
 
     // ===== plumbing ==============================================================================================

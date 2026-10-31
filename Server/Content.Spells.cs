@@ -731,7 +731,8 @@ public static partial class Content
     /// forgotten until bought again, and a rebuild into another path (<c>@class</c>) drops them, since their path
     /// no longer matches. RTK has no rebuild; its alignment swap exchanges a fixed list of base spells and leaves
     /// these alone (<c>Scripts/swapAlignment.lua</c>). See <see cref="KeepHeldSubpathSpells"/> for where they
-    /// sit.</para></summary>
+    /// sit, and for what gives way when the set would pass the book's 52 slots: never one of them, and never an entry
+    /// the book already held.</para></summary>
     public static List<SpellDef> RespecSpellSet(int pathId, int maxLevel, int alignment, int mark,
                                                bool dogFlag = false, int sageRung = 0,
                                                IEnumerable<SpellDef>? held = null)
@@ -798,18 +799,29 @@ public static partial class Content
 
     /// <summary><see cref="RespecSpellSet"/>'s last step: the <paramref name="held"/> spells of
     /// <paramref name="pathId"/>'s own PC subpath, appended after the rebuilt set in the order the book held them,
-    /// each once. Nothing for any other path, or with no book given.
-    /// <para>Last is a position, not a priority. <c>Session.SyncSpellbook</c> keeps the first
-    /// <see cref="SpellBookCap"/> entries, so a set past the cap would lose these first; the most a member can hold
-    /// today stays inside it (<c>Tests/SubpathTeacherTests.cs</c> measures it). Which entries should give way
-    /// once a later spell slice can pass the cap is not decided here.</para></summary>
+    /// each once, and the set cut to <see cref="SpellBookCap"/>. Nothing for any other path, or with no book given.
+    /// <para><b>Past the cap, what the book did not hold gives way</b> (the project owner, 2026-10-31, "Subpath
+    /// spells stay"). A rank-2 or rank-3 Druid with all nine Druid spells is owed 53 or 57 entries, and the book keeps
+    /// 52 (<c>Session.SyncSpellbook</c> keeps the first <see cref="SpellBookCap"/>). So every held subpath spell stays,
+    /// and so does every entry of the rebuilt set the book already held; the entries the book did not hold (base spells
+    /// the member had forgotten, which the rebuild hands back) fill what is left, in the set's order, and the last of
+    /// them are the ones left out. The order of what stays is the set's order, so a rebuild that fits is unchanged.
+    /// RTK has no rebuild to follow: its book is 52 too (<c>rtk/src/common/mmo.h</c>, <c>MAX_SPELLS</c>) and its
+    /// alignment swap leaves subpath spells alone.</para></summary>
     private static List<SpellDef> KeepHeldSubpathSpells(List<SpellDef> rebuilt, int pathId, IEnumerable<SpellDef>? held)
     {
         if (held is null || !IsPcSubpath(pathId)) return rebuilt;
+        var book = held.ToList();
         var ids = rebuilt.Select(s => s.Id).ToHashSet();
-        foreach (var s in held)
+        foreach (var s in book)
             if (s.PathId == pathId && ids.Add(s.Id)) rebuilt.Add(s);
-        return rebuilt;
+        int over = rebuilt.Count - SpellBookCap;
+        if (over <= 0) return rebuilt;
+        var inBook = book.Select(s => s.Id).ToHashSet();
+        var leaveOut = new HashSet<int>();                          // indexes into rebuilt, the last unheld first
+        for (int i = rebuilt.Count - 1; i >= 0 && leaveOut.Count < over; i--)
+            if (!inBook.Contains(rebuilt[i].Id)) leaveOut.Add(i);
+        return rebuilt.Where((_, i) => !leaveOut.Contains(i)).ToList();
     }
 
     public static SpellDef? SpellById(int id) => SpellByIdIndex.TryGetValue(id, out var v) ? v : null;
