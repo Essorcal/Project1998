@@ -315,6 +315,12 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    - The row stores the key's SHA-256 in its own column, `key_hash` (schema migration 5); `nonce_hash` keeps
      its meaning, so the login and game servers on either side of the change consume each other's tokens
      during a deploy.
+   - **The exception: a row with no key.** A 4.95 port also accepts a row whose `key_hash` is NULL, on its
+     nonce, name and address alone, as long as the arrival's `klen` is 9; the nine bytes are then not compared
+     (`Shared/HandoffTokens.cs:215-218`; the `klen` test is `:258`). Such a row was minted without a key: by a
+     login server from before the key column, during a deploy, or for the 5.33 channel. So a token minted for
+     a 5.33 login can also be spent at a 4.95 port, with any nine bytes in the key field. The reverse is refused
+     (`:222-225`; the 5.33 bullet below).
    - A port the channel pairing does not name as 5.33 counts as 4.95 here, so an unknown port requires the key
      (`HandoffTokens.CarriesKey`).
    - The **5.33** hand-off is unchanged: `"NexonInc."` and no key, since its client was never checked for the
@@ -366,15 +372,16 @@ handled as plaintext by the client. Most importantly for the server, the **game-
    ```
    Only the body skips the cipher; the frame is split like any other (`TkPacket.Parse`,
    `Protocol.Tk495/TkPacket.cs:61-66`), and `body[0]` is the byte after the increment
-   (`Server/Session.cs:1119-1140`; corrected 2026-10-24, this block used to leave out the header).
+   (`Server/Session.cs:1120-1140`; corrected 2026-10-24, this block used to leave out the header).
    Parse the username from it: `klen = body[0]; ulen = body[1+klen]; user = body[2+klen .. +ulen]`. The key
    is `body[1 .. 1+klen]`, the redirect's key field returned whole (§4.1, hand-off key): on the 4.95 port
-   it must be the 9 bytes the hand-off carried, on the 5.33 port it is `"NexonInc."` and not read.
+   it must be the 9 bytes the hand-off carried (any 9 bytes for a row minted with no key, §4.1), on the 5.33
+   port it is `"NexonInc."` and not read.
    The trailing bytes are the **handoff token** (`body[2+klen+ulen ..]`); the game server
    **validates and single-use-consumes** it against the username (must exist, be unexpired, unconsumed,
-   and bound to this user *and this source address*, and on the 4.95 port carrying the same key) — otherwise
-   it **closes the connection**. This is what stops a client from connecting straight to the game port and
-   claiming any username.
+   and bound to this user *and this source address*, and on the 4.95 port carrying the same key unless the
+   row has none) — otherwise it **closes the connection**. This is what stops a client from connecting
+   straight to the game port and claiming any username.
    (`P1998_ENFORCE_HANDOFF=0` downgrades a failure to a warning as a fallback.)
    **The token is NOT always 5 bytes here** — it is however much the client's shared 13-byte field had
    room for after the name (§4.1), so compare only the first `11 - nameLen` bytes.
@@ -524,14 +531,14 @@ CONSTRUCTED"), and the client begins loading the map and sending game packets ba
 ## 6. World-entry packet sequence (the working burst)
 
 After the client's `0x10`, the server sends this sequence (all game-channel, all NexonInc-encrypted, no
-trailer), in this order (`Session.HandleArrival`, `Server/Session.cs:1251-1281`; corrected 2026-10-24, this
+trailer), in this order (`Session.HandleArrival`, `Server/Session.cs:1266-1296`; corrected 2026-10-24, this
 table used to stop at row 7 and gave the time as a constant `10 32`):
 
 | # | Opcode | Body (decrypted) | Purpose |
 |---|---|---|---|
 | 1 | `0x02` | `00` | **Enter-world trigger** — builds the world object (§5). Must be first. |
 | 2 | `0x1E` | `06 00 00` | Ack / handshake. |
-| 3 | `0x20` | `hour(u8) year(u8)` | Time-of-day (shows the day/night icon), read from the world clock (`World.Clock.Time`, `Server/Session.cs:1260`; `SendTime`, `Server/Session.Media.cs:243-244`), the same calendar as the hourly `0x20` broadcast (§11n). |
+| 3 | `0x20` | `hour(u8) year(u8)` | Time-of-day (shows the day/night icon), read from the world clock (`World.Clock.Time`, `Server/Session.cs:1275`; `SendTime`, `Server/Session.Media.cs:243-244`), the same calendar as the hourly `0x20` broadcast (§11n). |
 | 4 | `0x05` | `entityId(u32BE) 00 00 00 02 00 00 00 00` | **Your own entity id.** Binds camera/input to the self. Without it the client stays black and won't move even after the map loads. |
 | 5 | `0x15` | enter-map (see §7) | Opens the map's cache file `Maps\TK<mapId>.map` (§10.8). |
 | 6 | `0x04` | coords (see §7) | Sets camera scroll. |
@@ -713,9 +720,16 @@ entityId(u32) 00 00 00 02 00 00 00 00
 mapId(u16) width(u16) height(u16) flagA flagB nameLen name light(u16, e.g. 232=0x00E8)
 ```
 `flagA` is the render byte: **4 when the player's Weather setting is on, 5 when it is off**
-(`Server/Session.Dialog.cs:2225`), and a new character has Weather on (`Shared/Character.cs:210-212`, bit 6),
+(`Server/Session.Dialog.cs:2310`), and a new character has Weather on (`Shared/Character.cs:210-212`, bit 6),
 so most players get 4 (the `0x1F` weather block in §7.1 says why). `flagB` is the realm-centre byte, 0 or 1
-(`:2226`; §10.5). Corrected 2026-10-24: this used to give `flagA(=05) flagB(=00)`.
+(`Server/Session.Dialog.cs:2311`; §10.5). Corrected 2026-10-24: this used to give `flagA(=05) flagB(=00)`.
+
+`nameLen` is one byte, and `SendMapInfo` writes it without a check (`Server/Session.Dialog.cs:2315`): a title
+over 255 bytes would wrap it, and the byte would no longer match the name that follows. Nothing reaches that
+today. The title is the map's `map_index.csv` name with its SQL escapes undone (`Server/Content.Csv.cs:12-20`),
+at most 26 bytes in the shipped `game-data`. A map with no row gets `"Nexus"` from most callers (`MapTitle`,
+`Server/Session.Entity.cs:43-44`) and an empty title from the two leap spells (`LuaLeap` and `LuaAmbushLeap`,
+`Server/Session.Spells.cs:3244`, `:3601`). Content with a longer name would reach it.
 
 Opens the map's cache file `Maps\TK<mapId>.map`, which the `0x06` stream fills (§10.7, §10.8). Example
 working values: mapId 32, 33×33, name "Nexus", light 232.
@@ -1472,6 +1486,30 @@ layer through `[renderer+0xac]` with a 0.7 factor (`0x3f333333`), keeping the bo
 reaches every body pixel at index `0x30` or above, so on a mounted body it also shifts the horse's pixels
 at those indices.
 
+**Which pixels of a layer draw: the frame's stencil, not colour 0** *(static read of the 4.95 binary,
+2026-10-30)*. Every EPF frame stores a stencil beside its pixels (`pixOff, stencilOff`, the `Effect.epf` row of
+§7.2), and the three blits named above draw each layer by it:
+- the archive loader `0x430c30` turns both offsets into pointers for every frame (`0x430d53`–`0x430d60`), and
+  the frame fetch `0x430de0` hands the blit the stencil at `+0x20` (`0x430e4f`), so a frame from an EPF always
+  has one;
+- the player draw passes blit mode 1 (`push 1` at `0x4328fa` and `0x432919`). In mode 1 the plain blit
+  `[renderer+0x94]` (`0x427e50`, mode 1 at `0x4280ad`) and the tinted body blit `[renderer+0x98]` (`0x428c10`,
+  which draws only mode 1; stencil at `0x428d63`) walk the stencil a row at a time, and form 5's
+  `[renderer+0xac]` (`0x429960`) does the same in every mode and draws nothing for a frame without one
+  (`0x429af2`). The renderer's other pixel-format set (`0x42bda0`, `0x42cb40`, `0x42d860`) is the same code;
+- each stencil byte is a run of `byte & 0x7F` pixels, drawn when bit `0x80` is set and skipped when it is
+  clear, and `0x00` ends the row. Inside a drawn run every pixel goes through the palette, index 0 included;
+  outside one nothing is drawn, whatever its index. Index 0 is a colour key only in the blits' no-stencil
+  branches (`0x42824c`, `0x428e7c`), which no EPF frame reaches.
+
+In the 4.95 install's player sheets the stencil never marks an index-0 pixel as drawn, so a colour-key reading
+parts from the client's only where the stencil hides a non-zero index: all 80 frames of `FAN.EPF` (1,904
+pixels), 36 of the 1,900 of `SWORD.EPF` (1,286), 20 of the 620 of `SPEAR.EPF` (482), 23 of the 1,800 of
+`EMOTION.EPF` (23) and one of the 6,968 of `BODY.EPF` (1); never in `HEAD.EPF`, `SHIELD.EPF` or `GHOST.EPF`
+(counted from the install's `NexusTK.dat`, 2026-10-30). `re/render_player.py` and `re/render_weapons.py` skip
+index 0 and never read the stencil, so they draw those pixels; `re/render_maps.py` and `IconStudio/ItemArt.cs`
+draw by the stencil.
+
 **Not settled here.** A non-zero `[entity+0x1a8]` sends every layer through `[renderer+0x9c]` instead, and a
 pre-pass gated by `0x44f600` draws the same order through `[renderer+0xa0]` first; neither is decoded. None of
 this section was compared with a running client: a live look (or a Frida read of `0x433040`'s outputs) would
@@ -1835,7 +1873,7 @@ writing). Server side, **`0x49`** (`@askpic`) makes a client re-read the file an
 the player reopening the profile editor. It is safe for the client, since the failure path still replies,
 but **the server stores the answer** like any profile save: `HandleChangeProfile` replaces the stored picture,
 clears it when `picSize = 0`, replaces the blurb with the one the answer carries
-(`Server/Session.Dialog.cs:1650-1667`) and answers with the profile-save message. So an `@askpic` on a player
+(`Server/Session.Dialog.cs:1727-1760`) and answers with the profile-save message. So an `@askpic` on a player
 with no valid file clears the picture the server held for them.
 
 Which palette the client draws the picture with is **not** pinned; the generator defaults to `Item.pal`
@@ -2411,8 +2449,8 @@ Mobs persist on a map after everyone leaves (they belong to the map, not a sessi
 current map's world mobs for everyone. **Players are viewport-streamed like mobs** (corrected 2026-10-24; this
 used to say only mobs were): `Session.SyncPeers` (`Server/Session.WorldApi.cs:487`) runs the same show / despawn /
 re-show decision mobs get, so a peer is drawn with `0x33` as it comes into view and despawned as it leaves. It
-runs at world entry (`Server/Session.cs:1277`), after each of our own steps (`Server/Session.Movement.cs:370`),
-on a warp, and on every world tick (`World.ReconcileViews`, `Server/World.cs:3539`). See §11b.1 for the gate.
+runs at world entry (`Server/Session.cs:1292`), after each of our own steps (`Server/Session.Movement.cs:375`),
+on a warp, and on every world tick (`World.ReconcileViews`, `Server/World.cs:3552`). See §11b.1 for the gate.
 
 ---
 
@@ -3591,6 +3629,26 @@ live capture (`briefs/reports/server-close-box-read-opus.md` §3.2-§3.5).
   `0x46d4a0`/`0x46e030`, each calling `0x417780`. An awaited prompt therefore stays pending until something else
   replaces or clears it.
 
+**What lets go of a waiting prompt.** Since a close sends nothing, the server drops a conversation still waiting
+on the player's reply, without answering it, before any of these starts something new (`Session.DropWaitingDialog`,
+`Server/Session.Dialog.cs:707-714`):
+- an NPC click, F1's Central Functions menu included (`HandleClickInfo`, `:320` and `:334`);
+- speech that reaches an NPC with a speech handler in earshot, whether or not one answers (`DispatchSpeech`,
+  `Server/Session.Social.cs:1060`);
+- a step onto a floor trigger: the event-cave and Forever Tree entrances, and the fox spirit, crypt spirit,
+  crow, Watcher and Gauntlet altar encounters (`Server/Session.Navigation.cs`).
+
+A map change lets the prompt go as well (`EnterMap`, `Server/Session.Navigation.cs:1469`), and a new prompt
+replaces it (`AwaitReply`, `Server/Session.Dialog.cs:774-781`). Dropped means the flow that awaited it never resumes:
+nothing after its await runs, nothing is taken or given, and nothing is thrown into it. A merchant grid's pending
+reply is a second one, and only `DropWaitingDialog` lets it go (`:712`): after any of the causes listed above, a late
+pick in a grid left behind buys or sells nothing. A map change and a new prompt clear the dialog's reply alone, so a
+grid's reply stays pending after either, and a pick from that grid still completes it and its merchant flow goes on
+(`Server/Session.Shop.cs:233-235`). RTK frees a waiting script on the same NPC click, NPC speech and
+floor-NPC step (`sl_async_freeco`); its scripted tiles and map-entry scripts instead stay silent while a script
+waits, where ours drop the conversation and fire. Not changed: a reply still answers whichever prompt is pending,
+since its echoed entity id is not matched to the box it came from.
+
 ### Server-side design — async dialog + composable abilities
 
 There are no Lua coroutines, so the flow is **async/await**: each `Dlg*` primitive sends a `0x30` and awaits
@@ -4428,9 +4486,12 @@ term is not ported), so a caster whose Will is at least the target's is never de
 rolls.
 
 The roll lives in the cast primitives the spell verbs call: `ctx:magicDamage` (`arch_damage`), `ctx:damage`,
-`ctx:areaZap` (each creature or player it reaches rolls on its own) and `ctx:deflected` (`arch_debuff`, a
-creature target only). The player branches of the first two go through `HitPlayerWithSpell`, so PvP casts roll
-it too. **A deflected cast still costs its mana**, on every path:
+`ctx:areaZap` (each creature or player it reaches rolls on its own) and `ctx:deflected` (`arch_debuff`). The
+player branches of the first two go through `HitPlayerWithSpell`, so PvP casts roll it too. `ctx:deflected`
+(`Session.LuaDeflected`, `Server/Session.Spells.cs:1917-1928`) rolls at what the cast is aimed at: an id that
+names a creature on the caster's map is that creature (`RollDeflect`), and one that names a player there is
+that player (`RollDeflectPvp`); anything else (no id, or one for nobody there) takes the faced tile, the
+creature on it first, then a player. It never rolls at the caster. **A deflected cast still costs its mana**, on every path:
 - `ctx:magicDamage` and `HitPlayerWithSpell` debit before they roll.
 - Every verb that calls `ctx:damage` or `ctx:areaZap` spends the mana first.
 - `arch_debuff` debits on a deflect.
@@ -4623,11 +4684,12 @@ gate whisper uses), it iterates `World.Online.All()` (new — a server-wide rost
 than RTK's literal `type=11` (its "group" channel, reused for subpath) — **unconfirmed** whether 4.95
 renders `type=11` distinctly from `type=3`; if it turns out to matter, this is a one-line change.
 
-**Who may use it — the twelve PC subpaths only, as RTK.** RTK's way onto the channel is a whisper to the name
-`@` (`clif_parsewisp`), which calls `clif_sendsubpathmessage` only when `classdb_chat(class)` is set and
-otherwise answers `clif_sendbluemessage(sd, "You cannot do that.")`. `classdb_chat` is Paths.csv `PthChat`:
-non-zero on the twelve PC subpaths (10-21) and the GM row Archon, zero on the base classes and the four NPC
-subpaths. Ours now loads `PthChat` (`Content.HasSubpathChat`) and applies it the same way: `/sp`, `/subpathchat`
+**Who may use it — a path whose `PthChat` is non-zero, as RTK.** RTK's way onto the channel is a whisper to the
+name `@` (`clif_parsewisp`), which calls `clif_sendsubpathmessage` only when `classdb_chat(class)` is set and
+otherwise answers `clif_sendbluemessage(sd, "You cannot do that.")`. `classdb_chat` is Paths.csv `PthChat`, and
+the column decides, not a list of classes: in the shipped `game-data/Paths.csv` it is non-zero on the twelve PC
+subpaths (10-21) and the GM row Archon (22), and zero on the base classes and the four NPC subpaths. Ours loads
+`PthChat` (`Content.HasSubpathChat`, `Server/Content.Spells.cs:1020`) and applies it the same way: `/sp`, `/subpathchat`
 and a whisper to `@` (routed beside `!!` and `!` in `Session.DoWhisper`) all go through `DoSubpathChat`, which
 refuses anyone else with RTK's line on the blue channel (`0x0A` type 0) before its own other checks (the `@`
 route meets the whisper's mute and `cantalk` gates first, as in RTK's `clif_parsewisp`). F2 still toggles for
@@ -5344,7 +5406,7 @@ The client keeps each map as `Maps\TK<mapId>.map` (e.g. `Maps\TK32.map`), a cach
 
 The server's `0x15` (enter-map) tells the client which map id + dimensions to open; the cells then come
 from the server, which pushes the window on entry and the newly exposed strip after every step
-(`PrimeViewport`, `Server/Session.cs:1266`; `StreamViewport`, `:1503-1528`), and the client writes them into
+(`PrimeViewport`, `Server/Session.cs:1281`; `StreamViewport`, `:1532-1557`), and the client writes them into
 the memory-mapped `.map` (§10.7, §10.8). (Corrected 2026-10-24: this used to say the client reads the `.map`
 file itself.) For a test, pick a map whose server copy has content: `TK27` is a uniform "void" tile (renders
 black); `TK32` (33×33, ~180 distinct tiles, ~270 objects) renders a real area.
@@ -5497,7 +5559,7 @@ no-op. Four of the nine are fully decoded; five open a window whose body layout 
   `picSize(u16BE) pic[] blurbLen(u8) blurb[] 00` — byte-for-byte the packet it already sends when you save the
   profile editor, which `HandleChangeProfile` parses today. Any failure along the way still replies, with
   `picSize = 0`, so it is safe for the client; but the server stores the answer as a profile save, so a
-  `picSize = 0` answer clears the stored picture (§9.5a; `Server/Session.Dialog.cs:1650-1667`).
+  `picSize = 0` answer clears the stored picture (§9.5a; `Server/Session.Dialog.cs:1727-1760`).
 
 **`0x35` is the PAPER POPUP, not a mail reader.** Earlier notes had this wrong. Parse `0x468550` reads
 `00 width(u8) height(u8) 00 len(u16BE) text[len]` — four flag bytes then a length-prefixed message, which it
@@ -5909,6 +5971,14 @@ we send successfully, so they belong to a dispatcher not yet enumerated.
 | `0x44` | no-op | ⊘ client no-op | mov al,1; ret |
 
 **40 implemented · 7 decoded but not wired · 1 decoded and deliberately not wired · 6 still unread · 2 client no-ops** (of 56).
+
+Inbound (client -> server), the game server's dispatcher handles 39 opcodes (`Session.Dispatch`,
+`Server/Session.cs:681-855`): `03 05 06 07 08 09 0b 0e 0f 10 11 12 13 17 18 19 1a 1b 1c 1d 1f 20 24 29 2a 2d 2e 30
+32 38 39 3a 3b 3f 41 43 4a 4f 66`, the `0x10` arrival among them (§4.2). Any other opcode is logged with its body
+and dropped (`:843-846`). That side can't be enumerated exhaustively the way the send side can (it would mean
+finding every send site in the client), but the known gaps are the answers to the two probes this server never
+sends: `0x75`, to a `0x68` ping, and `0x45`, to a `0x3b` CRC-16 challenge (§13e). The login channel's opcodes
+are the login server's (§4.1).
 
 ---
 
