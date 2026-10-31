@@ -159,23 +159,7 @@ public sealed partial class Session
     {
         if (_pcSpellTarget is not { } target) return false;
         using var _ = target.EnterState();
-        for (int ended = 0; ; ended++)
-        {
-            if (target._leaving)
-            {
-                Log.Info($"      {sp.Name}(lua): '{target._char.Name}' logged out before the move — nobody moved");
-                return false;
-            }
-            if (target._trade is not { } open) break;
-            if (ended == SummonExchangeEndsMax)
-            {
-                Log.Info($"      {sp.Name}(lua): '{target._char.Name}' had an exchange open again after {ended} " +
-                         "were ended — nobody moved");
-                return false;
-            }
-            EndTrade(open, "Exchange cancelled.");   // EnterMap's own call; may drop and retake this monitor
-            SummonExchangeEndedProbeForTest?.Invoke(target, ended + 1);   // null except under test
-        }
+        if (!TargetFreeToMove(target, sp)) return false;
 
         ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
         string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
@@ -187,6 +171,33 @@ public sealed partial class Session
         }
         Log.Info($"      {sp.Name}(lua): '{target._char.Name}' -> '{_char.Name}' at map {map} ({x},{y})");
         return true;
+    }
+
+    /// <summary>The checks a spell makes before it moves another player, with <paramref name="target"/>'s monitor held
+    /// and kept until the move (<see cref="LuaSummonTarget"/>'s, and since the Barbarian slice Push's,
+    /// <see cref="LuaPushTarget"/>): false while the target is logging out; an open exchange ended here, by
+    /// <c>EnterMap</c>'s own call, and both asked again after each end, since ending one can drop and retake the monitor;
+    /// false once <see cref="SummonExchangeEndsMax"/> have been ended and another is open. True when the target is
+    /// neither leaving nor trading, so the move that follows has nothing left that gives the monitor up.</summary>
+    private bool TargetFreeToMove(Session target, SpellDef sp)
+    {
+        for (int ended = 0; ; ended++)
+        {
+            if (target._leaving)
+            {
+                Log.Info($"      {sp.Name}(lua): '{target._char.Name}' logged out before the move — nobody moved");
+                return false;
+            }
+            if (target._trade is not { } open) return true;
+            if (ended == SummonExchangeEndsMax)
+            {
+                Log.Info($"      {sp.Name}(lua): '{target._char.Name}' had an exchange open again after {ended} " +
+                         "were ended — nobody moved");
+                return false;
+            }
+            EndTrade(open, "Exchange cancelled.");   // EnterMap's own call; may drop and retake this monitor
+            SummonExchangeEndedProbeForTest?.Invoke(target, ended + 1);   // null except under test
+        }
     }
 
     /// <summary>How many of the target's exchanges one Summon ends before it gives up on the move. One is the

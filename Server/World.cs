@@ -2237,6 +2237,31 @@ public sealed partial class World
         }
     }
 
+    /// <summary>Every player standing on (x,y) of <paramref name="mapId"/>, in the map's player order, a replaced
+    /// session skipped as <see cref="PeerAt"/> skips it; empty for none. For a spell that reads the whole of a tile as
+    /// RTK's <c>getObjectsInCell</c> does (the Barbarian slice: the faced living player, the strikes, the area curse), so
+    /// a living player standing on a ghost's tile is not hidden behind the ghost (#414's review, F2). A snapshot taken
+    /// under <c>_lock</c> and returned with it released, so the caller reads each player (alive or dead) outside it.</summary>
+    public List<Session> PlayersAt(ushort mapId, int x, int y)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return new();
+            return m.Players.Where(p => p.PlayerX == x && p.PlayerY == y && !p.IsReplaced).ToList();
+        }
+    }
+
+    /// <summary>Every living mob (an NPC included) on (x,y) of <paramref name="mapId"/>, in the map's order; empty for
+    /// none. <see cref="MobAt"/>'s test for the whole tile, as <see cref="PlayersAt"/> is <see cref="PeerAt"/>'s.</summary>
+    public List<Mob> MobsAt(ushort mapId, int x, int y)
+    {
+        lock (_lock)
+        {
+            if (!_maps.TryGetValue(mapId, out var m)) return new();
+            return m.Mobs.Where(mo => mo.Alive && mo.X == x && mo.Y == y).ToList();
+        }
+    }
+
     /// <summary>The names of the players on <paramref name="mapId"/> who are invisible and stand within
     /// <paramref name="range"/> tiles of (<paramref name="x"/>, <paramref name="y"/>) on both axes, in the map's
     /// player order: Second Sight's scan (<c>Session.SecondSightScan</c>; RTK poet/second_sight.lua reads

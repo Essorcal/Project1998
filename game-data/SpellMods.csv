@@ -42,6 +42,12 @@ vipers_venom_warrior,,4,5000
 dragons_flame_warrior,,5,10000
 tigers_fortitude_rogue,,1.5,0
 baekhos_blade_rogue,,1.5,6000
+# Barbarian's fury and enchants as RTK's scripts (Spells/Subpaths/Barbarian/barbarian_rage.lua, wilderness_weapon.lua,
+# nomadic_blade.lua; the project owner, P5): Barbarian rage x3 (its 90 mana and 625 s are its spell_effects.csv row),
+# Wilderness weapon (mark 1) x4 and Nomadic blade (mark 2) x8, each for 10,000.
+barbarian_rage,3,,
+wilderness_weapon,,4,10000
+nomadic_blade,,8,10000
 spirit_blade,,10,10000
 # Do's enchants as RTK's scripts (Spells/Subpaths/Do/spirit_blade.lua, balance_weapon.lua, master_weapon.lua):
 # Spirit blade x10 on the project owner's word (2026-10-26, Q8), Balance weapon (mark 1) and Master weapon (mark 2) by P5.
