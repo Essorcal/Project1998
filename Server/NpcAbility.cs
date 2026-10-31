@@ -304,7 +304,7 @@ public sealed class NpcContext
     /// <summary>Make this NPC speak an over-head bubble (RTK npc:talk), rather than open a dialog box.</summary>
     public void Bubble(string text) => _s.NpcBubble(_npc, text);
 
-    /// <summary>Prompt the player for a line of text (RTK inputSeq); null if they cancelled.</summary>
+    /// <summary>Prompt the player for a line of text (RTK inputSeq); null for a reply that is not a submit.</summary>
     public Task<string?> Input(string prompt) => _s.DlgInput(_npc, prompt);
 
     // ---- class / path + title + spell-learning (used by ClassTrainerAbility; RTK *_trainer.lua) ---

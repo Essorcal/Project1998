@@ -403,13 +403,13 @@ public sealed partial class Session
     // chat toggled on (not map-scoped — this is a server-wide channel, unlike say/shout). Formatted
     // "<@Name> (ClassName) message" per RTK, rendered via the same mini-text channel as whisper/status text.
     //
-    // ONLY THE TWELVE PC SUBPATHS may speak on it: RTK's "@" route runs clif_sendsubpathmessage only when
-    // classdb_chat(class) is set — Paths.csv PthChat, non-zero on the PC subpaths and Archon alone — and answers
-    // everyone else "You cannot do that." So a base class or an NPC subpath is refused here, first. (On the "@"
-    // route DoWhisper's mute and cantalk gates run before this, which is RTK's order in clif_parsewisp too.)
-    // Since the audience is the speaker's own path, nobody outside the twelve can hear it either. (Every class
-    // could use it before the PC subpaths were joinable; the 2026-10-24 decision sheet, item 13, chose RTK's
-    // gate.)
+    // ONLY A PATH WHOSE Paths.csv PthChat IS NON-ZERO may speak on it (Content.HasSubpathChat): RTK's "@" route
+    // runs clif_sendsubpathmessage only when classdb_chat(class), that column, is set, and answers everyone else
+    // "You cannot do that." The column decides, not a list of classes; today it is non-zero on the twelve PC
+    // subpaths and Archon, so a base class or an NPC subpath is refused here, first. (On the "@" route DoWhisper's
+    // mute and cantalk gates run before this, which is RTK's order in clif_parsewisp too.) Since the audience is
+    // the speaker's own path, no other path can hear it either. (Every class could use it before the PC subpaths
+    // were joinable; the 2026-10-24 decision sheet, item 13, chose RTK's gate.)
     private void DoSubpathChat(string msg)
     {
         if (!Content.HasSubpathChat(CharClassId)) { SendBlueMessage(SubpathChatRefusal); return; }
@@ -735,8 +735,8 @@ public sealed partial class Session
     }
 
     /// <summary>The input-box twin of <see cref="DlgPush"/> — ask a free-text question on behalf of a speaker
-    /// that has no mob in the world (the Fox spirit, which is conjured by a step, never placed). Same
-    /// entity-id and portrait reasoning as DlgPush. Returns the typed string, or null if they cancelled.</summary>
+    /// that has no mob in the world (the Fox spirit, which is conjured by a step, never placed). Same entity-id
+    /// and portrait reasoning as DlgPush. Returns the typed string, or null for a reply that is not a submit.</summary>
     internal async Task<string?> DlgInputPush(int look, int color, string prompt)
     {
         var r = await AwaitReply(() => SendInputBox(_char.Id, DialogPortrait.Look(look, color), prompt));
@@ -745,7 +745,9 @@ public sealed partial class Session
 
     /// <summary>The menu twin of <see cref="DlgInputPush"/>: a menu with no NPC behind it (an item's own choice,
     /// the Qui hyang's "Where do you wish to go?"), on the player's own entity id, under
-    /// <paramref name="portrait"/>. Returns the 1-based pick, 0 if the box was closed.</summary>
+    /// <paramref name="portrait"/>. Returns the 1-based pick, or 0 for a reply that is not a menu pick. The 4.95
+    /// client sends nothing when a box is closed, so, as with <see cref="DlgMenu"/>, a closed box leaves this await
+    /// pending until a new prompt, a map change or <see cref="DropWaitingDialog"/> lets it go.</summary>
     private async Task<int> DlgMenuPush(DialogPortrait portrait, string prompt, IReadOnlyList<string> options)
     {
         var r = await AwaitReply(() => SendNpcMenuP(_char.Id, portrait, prompt, options));
@@ -2036,6 +2038,10 @@ public sealed partial class Session
         // A periodic run on the caster themselves (Hear footstep; Session.Spells.cs's spell ticks) is RTK's duration on
         // the player, which RTK's client lists by name and seconds. It lives outside _buffs too, so it is surfaced here.
         foreach (var (name, until) in RunningSelfTicks(now)) lines.Add($"{name} {Secs(until, now)}s");
+        // A disguise run as another player, or at an NPC (Costume; Session.LuaDisguise), is RTK's duration on the player
+        // too, kept outside _buffs because it is never saved. A disguise as a creature rides the morph slot and its
+        // _buffs marker, so it is already listed above.
+        if (_disguiseRun is { } run && now < run.Until) lines.Add($"{run.Name} {Secs(run.Until, now)}s");
 
         return BuffBoxJoin(lines);
     }
@@ -2307,6 +2313,9 @@ public sealed partial class Session
         // (Session.RefreshMapInPlace) so disabling weather clears it NOW instead of at the next map change.
         b.Add(_char.HasSetting(0x06) ? (byte)4 : (byte)5);
         b.Add(_realm);       // realm-center camera lock (0=off edge-aware, 1=on centered); toggled by F4
+        // The title's length is ONE byte, written unchecked: a title over 255 bytes would wrap it, and the byte would
+        // no longer match the title that follows. Nothing reaches that today: a title is a map_index.csv name of
+        // 26 bytes at most (Content.LoadMaps), "Nexus", or the "" LuaLeap and LuaAmbushLeap send for a map with no row.
         b.Add((byte)t.Length);
         b.AddRange(t);
         // light field — encoding chosen by P1998_LIGHT_FMT so 5.33's parse can be probed live.

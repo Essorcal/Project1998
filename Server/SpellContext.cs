@@ -90,6 +90,18 @@ public sealed class SpellContext
         _victimMap = tickMap;
     }
 
+    /// <summary>A run's beat on another player (Song of the Goddess; <c>Session.RunDueSpellTicks</c>): the victim is that
+    /// player, wherever they stand, given here and never resolved, and <paramref name="tickGen"/> is the count of their
+    /// ended durations the run began at, which <see cref="healRunVictim"/> hands on so a run their death or a Dispell has
+    /// ended heals no more.</summary>
+    internal SpellContext(Session s, SpellDef sp, Session tickPlayer, long tickGen)
+        : this(s, sp, null, null)
+    {
+        _victim = (null, tickPlayer);
+        _tickGen = tickGen;
+    }
+    private readonly long _tickGen;
+
     /// <summary>The map this cast's victim stands on: a tick's own map, else the caster's (every resolver here finds a
     /// victim on the caster's map only).</summary>
     private ushort VictimMap => _victimMap ?? _s.CharMap;
@@ -758,6 +770,84 @@ public sealed class SpellContext
     /// <summary>The name of the fury running now (the rage slot's, shown in the buff box); meaningful while
     /// <see cref="rageActive"/>. A climbing fury on a row ladder continues only its own climb (chungryong_rage).</summary>
     public string rageName    => _s.LuaRageName;
+
+    // ---- a typed answer and dialog boxes inside a cast (RTK inputSeq, dialogSeq; Read karma) -----------------------
+    // RTK runs these scripts as coroutines that wait for the player's reply. A verb here is one call, so a wait names
+    // the verb that runs once the reply comes (Session.LuaAsk; the run's beat names its verb the same way). See the
+    // note above Session.LuaAsk for what each box is, and its locks.
+    /// <summary>Ask the caster for a line of text (RTK <c>inputSeq</c>): an input box carrying <paramref name="prompt"/>,
+    /// with no portrait. A submitted answer runs the verb <paramref name="verb"/> for this caster and spell, against the
+    /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.</summary>
+    public void ask(string prompt, string verb) => _s.LuaAsk(_sp, prompt, verb);
+    /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
+    /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
+    /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
+    /// for look 0.</summary>
+    public void dialog(string text, double look = 0, double color = 0, string item = "") =>
+        _s.LuaDialog(text, (int)look, (int)color, item);
+    /// <summary>The caster's box with the next arrow, then, once the caster answers it, a box with no button to the
+    /// player <see cref="pcTargetNamed"/> resolved, their waiting conversation dropped first (RTK read_karma.lua:
+    /// <c>player:dialogSeq({t, text}, 1)</c>, <c>target:freeAsync()</c>, <c>target:dialogSeq({t, text2}, 0)</c>). Both
+    /// boxes take the one portrait, as <see cref="dialog"/> reads it. Nothing with no target; nothing to a target who
+    /// has logged out by then.</summary>
+    public void dialogThenTarget(string text, string targetText, double look = 0, double color = 0, string item = "") =>
+        _s.LuaDialogThenTarget(_sp, text, targetText, (int)look, (int)color, item);
+    /// <summary>The karma of the player <see cref="pcTargetNamed"/> (or <see cref="pcTarget"/>) resolved (RTK
+    /// <c>target.karma</c>); 0 with none. A bare read, never written.</summary>
+    public double targetKarma => _s.LuaPcTarget?.LuaKarma ?? 0;
+    /// <summary>The name of the player <see cref="pcTargetNamed"/> (or <see cref="pcTarget"/>) resolved (RTK
+    /// <c>target.name</c>); "" with none.</summary>
+    public string targetName  => _s.LuaPcTarget?.CharName ?? "";
+
+    // ---- the game's time (RTK curYear, curDay, curTime; Divine time) ------------------------------------------------
+    /// <summary>The in-game year (RTK <c>curYear()</c>): the world clock's (<c>World.WorldClock.ClockNow</c>).</summary>
+    public double gameYear  => _s.LuaGameClock.year;
+    /// <summary>The in-game day of the season, 1-91 (RTK <c>curDay()</c>).</summary>
+    public double gameDay   => _s.LuaGameClock.day;
+    /// <summary>The in-game hour, 0-23 (RTK <c>curTime()</c>), the <c>@clock</c> pin's when one is set.</summary>
+    public double gameHour  => _s.LuaGameClock.hour;
+    /// <summary>The real calendar's month, 1-12 (RTK's <c>os.date("%m")</c>, which Divine time's script names its
+    /// "Moon" by), at the world calendar's own UTC offset (<c>GameCalendar.Epoch</c>), so a host in another zone reads
+    /// the same month.</summary>
+    public double realMonth => DateTimeOffset.UtcNow.ToOffset(GameCalendar.Epoch.Offset).Month;
+
+    // ---- the disguise (P3; RTK clone.playerToPlayer and player.disguise) --------------------------------------------
+    /// <summary>Take the look of what stands on the faced tile for <paramref name="durationMs"/>, and say what it was
+    /// (RTK <c>Spells/Subpaths/Muse/costume.lua:21-37</c>; Spy's Mimic and Ranger's Forest cover are the same body):
+    /// "creature" (its look and colour, a creature's form: RTK state 4), "player" (their gear, face and colours, the
+    /// caster's own name; or, for a player in a creature's form, that form), "npc" (no look, but a run that ends with the
+    /// spell's graphic), or "none" (nothing living there, so nothing started). The run ends at its time, at death, at
+    /// @dispel and at a won Dispell, with the spell's graphic over the caster. See <c>Session.LuaDisguise</c>.</summary>
+    public string disguise(double durationMs) => _s.LuaDisguise(_sp, (int)durationMs);
+
+    // ---- effects on everyone on the caster's map (P11; RTK getObjectsInSameMap(BL_PC)) -----------------------------
+    /// <summary>Every player on the caster's map, the caster included, who is not already in a sanctuary takes the
+    /// Sanctuary line's incoming-damage multiplier <paramref name="mult"/> for <paramref name="durationMs"/> under this
+    /// spell's name, with its graphic over them; the others read "You have found Sanctuary." and "&lt;caster&gt; casts
+    /// &lt;spell&gt; on you."; its sound plays at the caster (RTK <c>Spells/Subpaths/Muse/sacred_verse.lua:21-42</c>).
+    /// Each is decided inside that player's own monitor. Returns how many it reached; 0 is still a cast. See
+    /// <c>Session.LuaMapSanctuary</c>.</summary>
+    public double mapSanctuary(double mult, double durationMs) => _s.LuaMapSanctuary(mult, (int)durationMs, _sp);
+
+    // ---- a heal run on the heal target (Song of the Goddess; RTK setDuration on the target and its while_cast) --------
+    /// <summary>The caster's rank within their path (RTK <c>player.mark</c>, <c>Character.Mark</c>): 0 for the base
+    /// rank, 1 Il san, 2 Ee san and up.</summary>
+    public double mark => _s.CharMark;
+    /// <summary>Start, or refresh, this caster's run on this cast's heal target (<see cref="HealTarget"/>, the one
+    /// <see cref="healReach"/> and <see cref="healIsGhost"/> read): the verb named <paramref name="verb"/> beats
+    /// <paramref name="durationMs"/> / 1,000 times, every second on a player and every 1.5 s on a creature (RTK's player
+    /// and creature duration timers), the last as the run ends; the spell's sound over the target now, and the engine's
+    /// line to a player other than the caster (RTK <c>Spells/Subpaths/TESTING/muse_song_of_the_goddess.lua:26-28</c>).
+    /// False at an NPC or nobody. See <c>Session.LuaStartHealRun</c>.</summary>
+    public bool startHealRun(string verb, double durationMs) =>
+        _s.LuaStartHealRun(_sp, HealTarget, verb, (int)durationMs);
+    /// <summary>In a heal run's beat: heal its victim for <paramref name="amount"/>, with the spell's graphic and sound
+    /// over them (RTK's while_cast: <c>addHealthExtend</c>, <c>playSound(4)</c>, <c>sendAnimation(66)</c>). A player is
+    /// healed inside their own monitor, and a player whose durations have ended since the run began (death, @dispel, a
+    /// won Dispell) or who is leaving ends the run instead. False when nothing was healed. See
+    /// <c>Session.LuaHealRunVictim</c>.</summary>
+    public bool healRunVictim(double amount) =>
+        _s.LuaHealRunVictim(_sp, Victim, VictimMap, _tickGen, (int)System.Math.Round(amount));
 
     // ---- login-only registry ---------------------------------------------------------------------------------------
     /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value

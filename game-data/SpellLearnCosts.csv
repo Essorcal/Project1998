@@ -642,6 +642,10 @@ master_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 ki_strike,18,99,500,acorn,70,amber,1,,,,,rtk-lua
 crossing_swords,18,99,50000,spike,1,chung_ryong_key,1,dragons_liver,1,,,rtk-lua
 assassinate,19,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
+read_karma_diviner,12,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
+hear_footstep_diviner,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+divine_time,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+vanish,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
 hailstorm,16,64,500,acorn,70,amber,1,,,,,rtk-lua
 ice_bombardment,16,99,500,acorn,70,amber,1,,,,,rtk-lua
 shamans_solace,20,99,10000,mountain_ginseng,1,,,,,,,rtk-lua
@@ -651,3 +655,7 @@ shamans_torment,20,0,0,,,,,,,,,rtk-lua
 lightning_storm,13,99,0,rat_meat,30,rabbit_meat,20,,,,,rtk-lua
 earth_strike,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
 natures_smite,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
+song_of_the_goddess,21,0,0,,,,,,,,,rtk-lua
+sacred_verse,21,30,0,scroll,1,ink,1,,,,,rtk-lua
+tranquil_symphony,21,30,0,scroll,1,ink,1,,,,,rtk-lua
+costume,21,0,0,,,,,,,,,rtk-lua

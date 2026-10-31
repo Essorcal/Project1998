@@ -1143,7 +1143,7 @@ public sealed partial class Session
         {
             // A body too short for its own length prefixes: a broken client or a probe. Treated as an empty
             // username and token, which the handoff check below refuses like any other bad credential.
-            Log.Warn($"{_remote} arrival body could not be parsed ({body.Length}B: {Convert.ToHexString(body).ToLowerInvariant()})", e);
+            Log.Warn($"{_remote} arrival body could not be parsed ({body.Length}B; key and token bytes not logged)", e);
         }
 
         // Validate the single-use handoff token the login server minted for this username (see
@@ -1162,7 +1162,7 @@ public sealed partial class Session
             if (enforce)
             {
                 Log.Info($"   -> ARRIVAL REJECTED: invalid/expired handoff token for user='{_user}' from {_remoteIp} " +
-                         $"(token {Log.Hex(token)}, {HandoffTokens.SurvivingBytes(_user)} byte(s) expected) — closing connection");
+                         $"(token {token.Length} byte(s), {HandoffTokens.SurvivingBytes(_user)} expected; bytes not logged) — closing connection");
                 CloseConnection("arrival rejected (bad handoff token)");
                 return;
             }

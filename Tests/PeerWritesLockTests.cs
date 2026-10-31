@@ -548,9 +548,15 @@ public sealed class PeerWritesLockTests
     }
 
     /// <summary>Two Poets in one party give each other mana and steal it back, again and again, while each sends the
-    /// other a party line, steps at the other's tile and the world ticks. Nothing may stall; every gift lands (its
-    /// target is told) or is refused for want of mana, and every steal lands; no write lands in a Poet's mana while
-    /// it holds its own monitor.
+    /// other a party line, steps at the other's tile and the world ticks. Nothing may stall; every gift and every
+    /// steal lands (its target is told); no write lands in a Poet's mana while it holds its own monitor.
+    /// <para>A steal takes ALL of its target's mana, and every verb runs under the one Lua gate, so whether a gift
+    /// found its caster any mana was the order the scheduler gave the casts. With the rounds taking turns, each
+    /// Poet's gift coming after the other's steal, every gift but the first was refused "Not enough mana." and the
+    /// fact read "no gift landed (1, 0)": the gift's write into the other Poet never ran. So each gift is cast with
+    /// the round already holding the gate (<c>Session.EnterScriptGate</c>, which the cast re-enters), and inside that
+    /// hold a Poet left with less than the gift's 30 mana is given 30. No verb can run between that and the gift's
+    /// own check, so every gift lands, whatever the order.</para>
     /// <para>Red on 93b079c in both builds: the writes land inside the other Poet's own section. It stalls with the
     /// write under <c>World._lock</c> or under a plain <c>lock</c>, the two cycles the Valor race names.</para></summary>
     [Fact]
@@ -558,6 +564,7 @@ public sealed class PeerWritesLockTests
     {
         var gift = Content.SpellByKey("inspire_poet")!;
         var steal = Content.SpellByKey("draw_energy_poet")!;
+        const uint giftMana = 30;   // the least mana_gift casts with: `row.mana or 30` (game-data/spell_verbs.lua)
         Action<Character> pool = ch => { ch.Mp = 5_000_000; ch.Grouped = true; };
         var (a, aOut, ac) = Poet(ManaRaceMap, 10, 10, new[] { gift, steal }, mp: 10_000_000, shape: pool);
         var (b, bOut, bc) = Poet(ManaRaceMap, 11, 10, new[] { gift, steal }, mp: 10_000_000, shape: pool);
@@ -574,7 +581,12 @@ public sealed class PeerWritesLockTests
                     Dwell();
                     if (mine.Mp != before) Interlocked.Increment(ref torn);
                 });
-                self.WithState(() => Cast(self, gift, other.PlayerId));
+                self.WithState(() =>
+                {
+                    using var _ = Session.EnterScriptGate();
+                    if (mine.Mp < giftMana) mine.Mp = giftMana;
+                    Cast(self, gift, other.PlayerId);
+                });
                 bool ok = false;
                 self.WithState(() => ok = Cast(self, steal, other.PlayerId));
                 if (ok) Interlocked.Increment(ref steals);
@@ -600,8 +612,8 @@ public sealed class PeerWritesLockTests
             Assert.NotEqual(TargetLine(gift, a), TargetLine(steal, a));
             int giftsA = bLines.Count(l => l == TargetLine(gift, a)), giftsB = aLines.Count(l => l == TargetLine(gift, b));
             int refusedA = aLines.Count(l => l == "Not enough mana."), refusedB = bLines.Count(l => l == "Not enough mana.");
-            Assert.Equal((Rounds, Rounds), (giftsA + refusedA, giftsB + refusedB));
-            Assert.True(giftsA > 0 && giftsB > 0, $"no gift landed ({giftsA}, {giftsB})");
+            Assert.Equal((0, 0), (refusedA, refusedB));
+            Assert.Equal((Rounds, Rounds), (giftsA, giftsB));
             Assert.Equal((Rounds, Rounds), (bLines.Count(l => l == TargetLine(steal, a)), aLines.Count(l => l == TargetLine(steal, b))));
             Assert.Equal((Rounds, Rounds), (aLines.Count(l => l == Ping), bLines.Count(l => l == Ping)));
             Assert.Equal(((ushort)10, (ushort)11), (a.PlayerX, b.PlayerX));
