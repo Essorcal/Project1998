@@ -579,7 +579,7 @@ public sealed partial class Session
             ushort startMap = _char.Map;
             var icon = DialogPortrait.Item(IconOf(scroll), _ver == ClientVersion.V533 ? scroll.IconColor : (byte)0);
             int choice = await DlgMenuPush(icon, SubpathScrollPrompt, SubpathScrollChoices);
-            if (choice < 1 || choice > SubpathScrollChoices.Length) return;   // closed: nothing spent, nobody moved
+            if (choice < 1 || choice > SubpathScrollChoices.Length) return;   // not a pick: nothing spent, nobody moved
             if (_char.Map != startMap || IsDead) return;
 
             var it = _char.Inventory.Where(i => i.ItemId == scroll.Id).OrderBy(i => i.Slot).FirstOrDefault();

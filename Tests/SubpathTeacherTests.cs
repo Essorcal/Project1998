@@ -109,7 +109,12 @@ public sealed class SubpathTeacherTests
     /// Phoenix flames, at their scripts' prices; torment's TESTING script has no <c>requirements()</c>, so it sells at its
     /// row's level, 0, for nothing (Caleb's P3). The Do spells slice then put Do's other seven on sale beside Ki strike
     /// and Spirit blade, each at its script's price, the borrowed ones as written (Hear footstep asks Blend's, Crossing
-    /// swords Chung ryong rage's).</summary>
+    /// swords Chung ryong rage's). The Diviner spells slice then put Read karma, Hear footstep, Divine time and Vanish on
+    /// sale, each at its script's price (Read karma's coins are its list's 0 item, 50; the other three ask Blend's, as
+    /// their scripts copy it).
+    /// The Muse spells slice then put Sacred verse and Tranquil symphony on sale at their
+    /// scripts' level 30 for a Scroll and an Ink, and Costume and Song of the Goddess (from RTK's TESTING copy), whose
+    /// scripts have no <c>requirements()</c>, at their rows' level, 0, for nothing (the project owner's P3).</summary>
     [Theory]
     // The Barbarian spells slice: fifteen of the sixteen at their scripts' prices; Push, whose script has no
     // requirements(), at its row's level, 0, for nothing; Survival challenge, with no script of its own, off sale.
@@ -141,7 +146,10 @@ public sealed class SubpathTeacherTests
     [InlineData("Merchant",  "")]
     [InlineData("Ranger",    "")]
     [InlineData("Spy",       "assassinate 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]")]
-    [InlineData("Diviner",   "")]
+    [InlineData("Diviner",   "divine_time 99 0 [1 fox_tail, 1 topaz]; " +
+                             "hear_footstep_diviner 99 0 [1 fox_tail, 1 topaz]; " +
+                             "read_karma_diviner 60 50 [20 light_fox_fur, 70 acorn]; " +
+                             "vanish 99 0 [1 fox_tail, 1 topaz]")]
     [InlineData("Geomancer", "hailstorm 64 500 [1 amber, 70 acorn]; ice_bombardment 99 500 [1 amber, 70 acorn]")]
     [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
     // The Druid spells slice: Control flames, Druid's rodent, Steed, Sea breeze, Nature's bloom and Energy bloom beside the
@@ -157,7 +165,7 @@ public sealed class SubpathTeacherTests
                              "sea_breeze 33 0 [20 rabbit_meat, 30 rat_meat]; " +
                              "steed 99 0 []")]
     [InlineData("Monk",      "")]
-    [InlineData("Muse",      "")]
+    [InlineData("Muse",      "costume 0 0 []; sacred_verse 30 0 [1 ink, 1 scroll]; song_of_the_goddess 0 0 []; tranquil_symphony 30 0 [1 ink, 1 scroll]")]
     public void EachTeacherSellsTheWorkingSpellsAtRtksScriptPrices(string subpath, string expected)
     {
         int path = Content.PathIdForClass(subpath);
@@ -406,16 +414,17 @@ public sealed class SubpathTeacherTests
         finally { _fx.World.LeaveMap(s, c.Map); }
     }
 
-    /// <summary>"Main Inn" is the scroll's old destination, a tavern, and spends one; closing the box moves nobody and
-    /// spends nothing.</summary>
+    /// <summary>"Main Inn" is the scroll's old destination, a tavern, and spends one; a reply that is not a pick (a
+    /// "next") moves nobody and spends nothing. That step is not a close: closing the box sends no reply at all, and
+    /// the menu's await stays pending.</summary>
     [Fact]
-    public void AMembersMainInnIsTheTavernAndClosingSpendsNothing()
+    public void AMembersMainInnIsTheTavernAndANonPickSpendsNothing()
     {
         var (s, _, c) = Scroller("Spy");
         try
         {
             s.Receive(SessionFixture.Frame(ClientOp.UseItem, new byte[] { 1 }));
-            s.Receive(NextFrame());   // the box closed
+            s.Receive(NextFrame());   // a "next", not a pick
             Assert.Equal((2, (ushort)SessionFixture.HomeMap), (Count(c, "qui_hyang"), c.Map));
 
             s.Receive(SessionFixture.Frame(ClientOp.UseItem, new byte[] { 1 }));
@@ -624,7 +633,7 @@ public sealed class SubpathTeacherTests
     private List<string> LearnSecretOptions(string subpath, int level, Action<Character>? configure = null)
     {
         var (s, o, _) = Member(subpath, level, configure ?? (_ => { }));
-        Converse(s, Teacher(subpath), "Learn Secret", NextFrame());   // close the picker
+        Converse(s, Teacher(subpath), "Learn Secret", NextFrame());   // a "next", not a pick: the picker ends
         return Menus(o).Single().Split('|').Skip(1).ToList();
     }
 

@@ -12,7 +12,8 @@ namespace Tests;
 /// The redirect key at the game door: <c>Session.HandleArrival</c> reading the key field of a real <c>0x10</c>
 /// arrival and the game server's two other <c>0x03</c> redirects. <see cref="HandoffTokenTests"/> pins the mint and
 /// consume themselves; these pin what the arrival does with them: the key it reads, the refusal and its line, the
-/// <c>P1998_ENFORCE_HANDOFF=0</c> downgrade, the 5.33 door, and the bounce that must keep <c>"NexonInc."</c>.
+/// <c>P1998_ENFORCE_HANDOFF=0</c> downgrade, the 5.33 door, and the bounce that must keep <c>"NexonInc."</c>. Two
+/// facts pin that neither the refusal's line nor an unparsable arrival's writes a key or nonce byte to the log.
 ///
 /// <para>Each arrival is the one the stock 4.95 client sent in the live check of 2026-10-26: <c>09</c>, the
 /// redirect's nine key bytes, then its 13-byte field (length byte, name, what fits of the token, a forced NUL),
@@ -143,6 +144,65 @@ public sealed class HandoffKeyArrivalTests : IDisposable
         AssertRefusedAsABadToken(Arrive(StockArrival(name, Array.Empty<byte>(), grant.Token)), sink, name, "klen 0");
         AssertRefusedAsABadToken(Arrive(StockArrival(name, grant.Key![..8], grant.Token)), sink, name, "klen 8");
         AssertEntered(Arrive(StockArrival(name, grant)), "the right key");
+    }
+
+    /// <summary>Every way a secret's bytes could be written as text in a log line: <see cref="Log.Hex"/>'s spaced
+    /// lower-case pairs, and <see cref="Convert.ToHexString(byte[])"/> in either case.</summary>
+    private static string[] Renderings(byte[] secret) =>
+        [string.Join(" ", secret.Select(b => b.ToString("x2"))),
+         Convert.ToHexString(secret).ToLowerInvariant(),
+         Convert.ToHexString(secret)];
+
+    private static void AssertNotLogged(LogLineSink sink, byte[] secret, string what)
+    {
+        foreach (var form in Renderings(secret))
+            Assert.False(sink.Has(form), $"{what} reached the log as \"{form}\"");
+    }
+
+    /// <summary>A refused arrival's line says what was refused, for whom, from where and how many token bytes came,
+    /// but not the bytes. The refusal below is a wrong key, which leaves the row unspent: the nonce in that arrival
+    /// is still live, and the right arrival enters on it afterwards.
+    /// <para>Red on master: the line carried the token as <c>Log.Hex</c>, so the live nonce was in the log.</para></summary>
+    [Fact]
+    public void A_refused_arrival_logs_its_refusal_without_the_token_bytes()
+    {
+        string name = Account(7);
+        var grant = HandoffTokens.Mint(name, Addr, Handoff.Game495);
+        byte[] nonce = grant.Token[..HandoffTokens.SurvivingBytes(name)];
+        byte[] right = StockArrival(name, grant);
+        byte[] wrong = (byte[])right.Clone();
+        wrong[1] = (byte)(wrong[1] == 0xFF ? 0x01 : wrong[1] + 1);
+
+        using var sink = LogLineSink.Acquire();
+        AssertRefusedAsABadToken(Arrive(wrong), sink, name, "a key wrong in one byte");
+        AssertNotLogged(sink, nonce, "the refused arrival's live nonce");
+        Assert.True(sink.Has($"(token 5 byte(s), {nonce.Length} expected; bytes not logged) — closing connection"),
+                    "the refusal line no longer says how many token bytes came and how many were expected");
+        AssertEntered(Arrive(right), "the right key, on the nonce the refusal left unspent");
+    }
+
+    /// <summary>An arrival whose name length runs past its body cannot be parsed. Its line still names the
+    /// connection, the body's size and the exception, but none of its bytes, though those bytes here are a live key
+    /// and nonce: the same hand-off enters afterwards.
+    /// <para>Red on master: the line carried the whole body as hex, key and nonce included.</para></summary>
+    [Fact]
+    public void An_unparsable_arrival_logs_its_size_without_its_key_or_nonce()
+    {
+        string name = Account(7);
+        var grant = HandoffTokens.Mint(name, Addr, Handoff.Game495);
+        byte[] nonce = grant.Token[..HandoffTokens.SurvivingBytes(name)];
+        byte[] right = StockArrival(name, grant);
+        byte[] broken = (byte[])right.Clone();
+        broken[1 + HandoffTokens.KeyBytes] = 40;   // the name's length byte now claims more than the body holds
+
+        using var sink = LogLineSink.Acquire();
+        // The name was never read, so the refusal names the session's placeholder, "?".
+        AssertRefusedAsABadToken(Arrive(broken), sink, "?", "a name length past the body");
+        AssertNotLogged(sink, grant.Key!, "the unparsable arrival's live key");
+        AssertNotLogged(sink, nonce, "the unparsable arrival's live nonce");
+        Assert.True(sink.Has($"arrival body could not be parsed ({broken.Length}B; key and token bytes not logged)"),
+                    "no parse-failure line, or it no longer gives the body's size");
+        AssertEntered(Arrive(right), "the same hand-off, whose key and nonce the refusal left unspent");
     }
 
     /// <summary><c>P1998_ENFORCE_HANDOFF=0</c> still downgrades the whole check, the key included: a wrong key

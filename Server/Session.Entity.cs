@@ -33,13 +33,13 @@ public sealed partial class Session
         Log.Info("   == burst sent; watching for client packets (walk/request = progress, disconnect = a packet was rejected) ==");
     }
 
-    /// <summary>The name the 0x15 map-info shows in the client's title bar, from Maps.csv.
+    /// <summary>The name the 0x15 map-info shows in the client's title bar, from map_index.csv.
     ///
     /// Four of the six SendMapInfo call sites passed the literal "Nexus" instead — login, both
     /// realm-center/weather in-place refreshes, and the hard refresh — so every map in the world
     /// announced itself as "Nexus", and map 41 in particular showed "Nexus" rather than "Mythic
     /// Nexus". Only the warp path and the (unused) alternate entry burst ever read the real name.
-    /// It reads like a placeholder that outlived its stub: the name has been in Maps.csv all along.</summary>
+    /// It reads like a placeholder that outlived its stub: the name has been in map_index.csv all along.</summary>
     private static string MapTitle(ushort mapId) =>
         Content.TryMap(mapId, out var md) && !string.IsNullOrWhiteSpace(md.Name) ? md.Name : "Nexus";
 
@@ -335,7 +335,8 @@ public sealed partial class Session
         //   0 for now)  [5]=weapon  [6]=shield
         // NOTE the old code put "Hair" in [1] = the FORM byte — that's what blanked the character.
         //   ... [5]=weapon (Honor sword/Flame blade/…), [6]=shield
-        SendLook(_char.Id, _char.X, _char.Y, dir: _facing, SelfAppearance(), renderKind: 1, _char.Name, "self(0x33)");
+        SendLook(_char.Id, _char.X, _char.Y, dir: _facing, SelfAppearance(), renderKind: 1, _char.Name, "self(0x33)",
+                 hairColor: DisguisedAs?.HairColor);   // a player disguise's hair colour (5.33 draws it); else our own
     }
 
     /// <summary>Our 7 appearance bytes. Shared by the 0x33 self look and the 0x30 dialog paperdoll head (the
@@ -345,13 +346,18 @@ public sealed partial class Session
     /// makes the Change Face browse a real try-on rather than a live mutation. An overridden portrait also
     /// forces the plain-human form byte: a preview should show a person, not the horse you happen to be
     /// sitting on (or, for a ghost at a shaman, nothing at all).</para></summary>
-    private byte[] SelfAppearance(int face = -1) => new byte[]
-    {
-        (byte)_char.Sex,
-        face < 0 ? MountForm() : (byte)0,
-        face < 0 ? FaceLook() : (byte)Math.Clamp(face, 0, FaceCount - 1),
-        ArmorWireLook(_char.Armor), ArmorDye(), WeaponLook(), ShieldLook(),
-    };
+    private byte[] SelfAppearance(int face = -1) =>
+        // A disguise as another player (Costume; Session.LuaDisguise) is our own view too, as RTK's gfx clone is drawn
+        // to the whole area: their look, our form byte. A face preview (the Change Face browse) shows our own.
+        face < 0 && DisguisedAs is { } d
+            ? new byte[] { d.Sex, MountForm(), d.Face, d.Armor, d.ArmorDye, d.Weapon, d.Shield }
+            : new byte[]
+            {
+                (byte)_char.Sex,
+                face < 0 ? MountForm() : (byte)0,
+                face < 0 ? FaceLook() : (byte)Math.Clamp(face, 0, FaceCount - 1),
+                ArmorWireLook(_char.Armor), ArmorDye(), WeaponLook(), ShieldLook(),
+            };
 
     /// <summary>Head/face sprite byte for appearance[2], forced into the range the client actually has art
     /// for. The 4.95 client ships exactly <see cref="FaceCount"/> heads (NexusTK.dat -> Head.tbl: "NumFaces
@@ -407,7 +413,7 @@ public sealed partial class Session
         if (Content.LookUpdateInPlace && !special && _peersHoldHumanLook)
         {
             var look = SelfAppearance();
-            byte hair = _char.HairColor;   // OUR colour, captured here — peers must not paint us with their own
+            byte hair = DisguisedAs?.HairColor ?? _char.HairColor;   // OUR colour (or a player disguise's), captured here — peers must not paint us with their own
             _world.Broadcast(_char.Map, p => p.UpdatePlayerLook(_char.Id, look, hair), except: this);
             return;
         }

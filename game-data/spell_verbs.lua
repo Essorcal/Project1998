@@ -1693,10 +1693,20 @@ end
 --   * A solace aimed at nothing heals its caster, as every "Which target?" heal here does (the 4.95 client casts with
 --     the slot alone, and you never face yourself). RTK's engine runs no script without a target.
 --   * RTK waives Reincarnate's wait for a GM; no verb here waives anything for staff.
---   * Torment's run is clock time, 5-20 s, as the venom's is; RTK counts a creature's duration down 1,000 every 1.5 s,
---     so its run lasts half as long again (the periodic tick's note in Server/Session.Spells.cs). A creature's threat from a beat is the blow it took, as from every blow
---     here; the script adds its figure before armour. A ghost casts nothing here (the engine's rule); the script's
---     canCast(0, ...) lets a ghost torment.
+--   * Torment's run is the script's roll of N seconds as RTK's creature timer counts it, N x 1.5 s, so 7.5-30 s
+--     (TORMENT_SECOND_MS, at verbs.torment). RTK's own run ends on its timer's step 20 (rtk/src/map/mob.c:653-655),
+--     so it is that long for a cast just after that step and up to 1.45 s shorter for the rest. RTK beats on step 30
+--     (mob.c:650-652), 0.05-1.5 s after the cast first, and N - 1 times in two casts of three, N in the third (a cast
+--     in the half second from step 20 to step 30). The beats here come 1.5 s apart from the cast, and a fresh run's
+--     count is RTK's (the project owner's choice, 2026-10-30): N - 1, strictly before the run's end, and in one fresh
+--     run in three an Nth at N x 1.5 s, the run then lasting 1 s past it (TORMENT_EARLY_STEPS, at verbs.torment); 4-20
+--     across rolls. A recast at a running run keeps its beat and rolls nothing, so from the recast on it strikes N
+--     times, every time, where RTK gives N in one recast of three and N - 1 otherwise. A creature counts toward
+--     another run's siphon count until its own run ends; each run here keeps its own beat, so another run's blow is
+--     divided by one more at about one beat more than the creature itself took, where RTK's beats all fall on one
+--     step. A creature's threat from a beat is the blow it took, as from every blow here; the script adds its figure
+--     before armour. A ghost casts nothing here (the engine's rule); the script's canCast(0, ...) lets a ghost
+--     torment.
 -- =========================================================================================================
 
 -- Shaman's solace (RTK Subpaths/Shaman/shamans_solace.lua): its target, a player or a creature, takes `amount` vita,
@@ -1732,8 +1742,9 @@ end
 -- Shaman's torment (RTK Subpaths/TESTING/shamans_torment.lua, an unfinished testing script, ported as written). The
 -- cast takes mana + coeff x max mana once max mana x amount is there (it can take more than that, down to 0), counts
 -- a creature into the caster's siphon count, and then: at a player, "This target's soul is too pure for this magic.";
--- at a creature, a run of rollRange(duration, durationMax) whole seconds whose beat (torment_tick) strikes it every
--- TORMENT_TICK_MS.
+-- at a creature, a run of rollRange(duration, durationMax) whole seconds, each as long as RTK's creature timer makes it
+-- (TORMENT_SECOND_MS), whose beat (torment_tick) strikes it every TORMENT_TICK_MS; one fresh run in three lands one
+-- beat more, at its rolled end (TORMENT_EARLY_STEPS).
 -- At nothing, or at an NPC, it casts nothing, silently and for free: RTK's engine runs no script without a target.
 -- The siphon count is RTK's player.registry "totalsiphon", kept here for the login only and never shown: the script's
 -- debug line "total siphon: N", sent on every cast, is dropped on the project owner's decision (2026-10-26). The beat
@@ -1741,6 +1752,25 @@ end
 local TORMENT_TICK_MS = 1500            -- the script's while_cast_1500
 local TORMENT_ANIM    = 84              -- its target:selfAnimation(player.ID, 84, 1), for the caster alone
 local TORMENT_SIPHON  = "totalsiphon"   -- its player.registry key
+-- One second of the script's duration as RTK's creature timer counts it, the project owner's choice (2026-10-26,
+-- "Match RTK"): mob_timer_spawns runs every 50 ms (rtk/src/map/map.c:1863) through a 30-step cycle
+-- (rtk/src/map/mob.c:633-689), and mob_duratimer, on the cycle's step 20, takes 1,000 off a creature's duration
+-- (mob.c:463-514). So 1,000 lasts 1.5 s, and the script's 5-20 s roll runs 7.5-30 s.
+local TORMENT_SECOND_MS = 1500
+-- RTK's beat count, the project owner's choice (2026-10-30, "Match RTK's count"). A cast falls somewhere in the
+-- timer's 30-step cycle. In the 10 steps from step 20 to step 30 (mob.c:650-655) it meets a beat before its first
+-- countdown, so a roll of N beats N times; anywhere else, N - 1. Here the beat comes 1.5 s apart from the cast and
+-- strictly before the run's end, so a run of N x 1.5 s beats N - 1 times. One fresh run in three is made long enough
+-- for the beat at N x 1.5 s to land: TORMENT_TAIL_MS past it, the 1 s from RTK's step 30 to its next step 20, which is
+-- how long every RTK run lasts after its last beat. That beat then lands inside the run, so it counts its own
+-- creature, as every beat does (the world heartbeat runs a beat up to one of its beats late). A recast that sets a
+-- running run's length again keeps that run's beat (ctx:startTick), so it rolls nothing here: the kept beat is less
+-- than 1.5 s off, so the run strikes N times from the recast on, every time. RTK sets a recast's duration against its
+-- one timer, so it gives N in one recast of three and N - 1 otherwise; this port does not match RTK's odds on a
+-- recast.
+local TORMENT_CYCLE_STEPS = 30
+local TORMENT_EARLY_STEPS = 10
+local TORMENT_TAIL_MS     = 1000
 
 function verbs.torment(ctx, row)
   if ctx.victimIsNpc or ctx.castAtNothing then return false end    -- silent, free: nothing to torment
@@ -1757,7 +1787,11 @@ function verbs.torment(ctx, row)
   end
   if creature then
     local secs = ctx:rollRange((row.duration or 0) / 1000, (row.durationMax or 0) / 1000)
-    ctx:startTick("torment_tick", TORMENT_TICK_MS, secs * 1000)
+    local ms = secs * TORMENT_SECOND_MS
+    if not ctx:tickRunning() and ctx:rollRange(1, TORMENT_CYCLE_STEPS) <= TORMENT_EARLY_STEPS then
+      ms = ms + TORMENT_TAIL_MS                                    -- the beat at secs x 1.5 s lands
+    end
+    ctx:startTick("torment_tick", TORMENT_TICK_MS, ms)
     ctx:selfAnimation(TORMENT_ANIM)
   else
     ctx:say("This target's soul is too pure for this magic.")
@@ -2086,6 +2120,236 @@ function verbs.confuse(ctx, row)
   if not ctx:enoughMana(mana) then ctx:say("Your will is too weak."); return false end
   if not ctx:confuseTarget(row.chance or 65) then return false end
   ctx:debitMana(mana)
+  return true
+end
+
+-- =========================================================================================================
+-- DIVINER (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Diviner/): Read karma and Divine time. The project owner's
+-- word, 2026-10-26 and again 2026-10-30: each spell as its RTK script (P5); Divine time kept, though a 2001 page calls
+-- it gone from the game (decision sheet item 17, the era rule's fail-open). Diviner's other two working spells bind to
+-- the Do verbs by their SpellParams.csv rows: Hear footstep to hear_footstep (its script is Do's under another key),
+-- Vanish to hide (its script is Blend's shape: invisible for 1,000 s, the next landed swing x9, no mana, no wait, and
+-- no line when it ends, so it has no SpellText.csv fade line). Each verb is the shape of its script, in that script's
+-- order; RTK is weight 0 for balance, and these numbers are its scripts'.
+--
+-- Read karma is three steps, because RTK's script waits twice for its player (an async script: inputSeq, then
+-- dialogSeq) and a verb here is one call: each wait names the verb that runs once the reply comes (ctx:ask, then
+-- ctx:dialogThenTarget; the note above Session.LuaAsk). Monk's and Geomancer's read_karma.lua are this script under
+-- their own keys, so their rows can bind here too: the wait is armed under ctx.spellKey.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * A wait is checked first, with this file's own line (subpath_waiting): RTK's engine refuses a cast inside its
+--     aethers before the script runs.
+--   * The cast pose is the engine's, on a cast that lands, as for every spell; neither script sends one. Their boxes
+--     and lines replace the central "You cast X." line, as Assess opponent's readout does.
+--   * A ghost or a mounted caster casts nothing here, the engine's rule for every spell; Read karma's
+--     canCast(0, 1, 0) lets a ghost cast it.
+--   * The input box carries the script's question alone. Its two lines either side of the entry field ("The one
+--     known as", "shall be examined.") are not sent: no input box here sends them (Session.SendInputBox), and the
+--     4.95 client's drawing of them is unread.
+--   * A typed name is looked up as every typed name here is (ctx:pcTargetNamed: any map, any case, trimmed); RTK's
+--     Player(name) matches any case and does not trim.
+-- =========================================================================================================
+
+-- Read karma's ladder (RTK read_karma.lua:45-115), best first: the band a karma of at least `from` falls in, the
+-- portrait both boxes carry (a creature look in its palette, or the Angel's tear's item icon), what the caster reads
+-- after the target's name, and what the target reads. Below the cat the two open bands: the rat above -3, the snake at
+-- -3 and below. The script's own words, its doubled "and and" (the bear) included.
+local KARMA_LADDER = {
+  { from = 30, look = 49,  color = 5,  them = " is one with the Gods, and their soul is worthy to dwell among them.",
+    you = "You are one with the Gods, and your soul is worthy to dwell among them." },
+  { from = 24, item = "angels_tear",
+    them = "'s journey has been long; they have achieved inner peace and tranquility; they speak with the Gods.",
+    you = "Your journey has been long; you have achieved inner peace and tranquility; you speak with the Gods." },
+  { from = 19, look = 167, color = 24, them = " has reached the threshold of immortality; they put aside mortal possessions and passions.",
+    you = "You have reached the threshold of immortality; you put aside mortal possessions and passions." },
+  { from = 14, look = 108, color = 2,  them = " is at the pinnacle of mortal grace; their soul is noble, beautiful and fearsome to behold.",
+    you = "You are at the pinnacle of mortal grace; your soul is noble, beautiful and fearsome to behold." },
+  { from = 11, look = 29,  color = 9,  them = " has entered the nobility of souls -- fierce, wise and just.",
+    you = "You have entered the nobility of souls -- fierce, wise and just." },
+  { from = 8,  look = 24,  color = 9,  them = " holds quiet power and and great wisdom, confidence and fortitude.",
+    you = "You hold quiet power and and great wisdom, confidence and fortitude." },
+  { from = 6,  look = 27,  color = 9,  them = " is stalwart and honest, worthy of trust, strong of heart.",
+    you = "You are stalwart and honest, worthy of trust, strong of heart." },
+  { from = 4,  look = 126, color = 5,  them = " is clever and good-hearted; the Gods smile upon them.",
+    you = "You are clever and good-hearted; the Gods smile upon you." },
+  { from = 3,  look = 18,  color = 12, them = " is faithful to the teachings of the Gods.",
+    you = "You are faithful to the teachings of the Gods." },
+  { from = 2,  look = 21,  color = 3,  them = "'s soul moves ever quicker toward its goal.",
+    you = "Your soul moves ever quicker toward its goal." },
+  { from = 1,  look = 25,  color = 9,  them = "'s education progresses; they store knowledge for the ordeals to come.",
+    you = "Your education progresses; you store knowledge for the ordeals to come." },
+  { from = 0,  look = 182, color = 30, them = " has begun the journey to perfection.",
+    you = "You have begun the journey to perfection." },
+}
+local KARMA_RAT = { look = 91, color = 10,
+  them = " is out of favor with the Gods; they must purify their soul and cleanse their spirit.",
+  you = "You are out of favor with the Gods; you must purify your soul and cleanse your spirit." }
+local KARMA_SNAKE = { look = 184, color = 25,
+  them = " is among the cursed of the earth; they crawl alone in shame.",
+  you = "You are among the cursed of the earth; you crawl alone in shame." }
+
+local function karma_band(karma)
+  if karma <= -3 then return KARMA_SNAKE end
+  for _, band in ipairs(KARMA_LADDER) do
+    if karma >= band.from then return band end
+  end
+  return KARMA_RAT
+end
+
+-- Read karma (RTK Subpaths/Diviner/read_karma.lua): asks a name and shows that player's karma. The cast: its wait;
+-- short of `mana`, "You do not have enough mana.", for free; then the input box, "Who's karma shall you read?", and
+-- nothing spent yet. The answer runs read_karma_named.
+function verbs.read_karma(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("You do not have enough mana."); return false end
+  ctx:ask("Who's karma shall you read?", "read_karma_named")
+  ctx:narrated()
+  return true
+end
+
+-- Read karma's answer (the script after its inputSeq). Anything but letters, spaces and an apostrophe: "You can only
+-- enter letters and spaces." (RTK inputLetterCheck's box; its script would then say the next line too, once that box
+-- was answered, and a box with no button gets no answer from this client). Nobody online by that name: "Player is not
+-- online or unavailable.". Neither costs anything. Otherwise, yourself included (the script's own check is commented
+-- out): the `mana` is taken (what there is, down to 0, as every debit here), the `duration` ms wait is armed, and the
+-- caster reads "<name>" and the band's words in a box with the band's portrait; once they answer it, the player read
+-- gets their own box, "You ..." (ctx:dialogThenTarget). The script checks the mana before its question and takes it
+-- after, with no second check.
+function verbs.read_karma_named(ctx, row)
+  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces."); return false end
+  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("Player is not online or unavailable."); return false end
+  ctx:debitMana(row.mana or 0)
+  local band = karma_band(ctx.targetKarma)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:dialogThenTarget(ctx.targetName .. band.them, band.you, band.look or 0, band.color or 0, band.item or "")
+  return true
+end
+
+-- RTK's ordinal ending for a number, as general_npc_funcs.time writes it: 1st, 2nd, 3rd, and "th" for every number
+-- from 4 up (so the 21st day of the season reads "21th", as the script writes it).
+local function rtk_ordinal(n)
+  if n == 1 then return "st" elseif n == 2 then return "nd" elseif n == 3 then return "rd" elseif n >= 4 then return "th" end
+  return ""
+end
+
+local DIVINE_DAY_NAMES = { "Mon", "Tue", "Wed", "Thurs", "Fri", "Sat", "Sun" }
+
+-- Divine time (RTK Subpaths/Diviner/divine_time.lua, which calls the inn keeper's general_npc_funcs.time): tells the
+-- game's time in two lines, "Yuri <year>, <month><ending> Moon, <day><ending>" and "<weekday> <hour> <a.m./p.m.>". The
+-- year, the day of the season (1-91) and the hour are the world clock's (RTK curYear, curDay, curTime); the "Moon" is
+-- the real calendar's month, as the script reads os.date("%m"); the weekday is the day of the season mod 7 into Mon to
+-- Sun; hours 0-12 are a.m. as they stand, 13-23 p.m. less 12 (so noon is "12 a.m." and midnight "0 a.m.", as the
+-- script writes them). Short of `mana`, "Your will is too weak.", for free. Row: mana 5.
+function verbs.divine_time(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  local month, day, hour = ctx.realMonth, ctx.gameDay, ctx.gameHour
+  local half = "a.m."
+  if hour > 12 then half = "p.m."; hour = hour - 12 end
+  ctx:say("Yuri " .. ctx.gameYear .. ", " .. month .. rtk_ordinal(month) .. " Moon, " .. day .. rtk_ordinal(day))
+  ctx:say(DIVINE_DAY_NAMES[(day % 7) + 1] .. " " .. hour .. " " .. half)
+  ctx:narrated()                                                   -- the two lines replace "You cast Divine time."
+  return true
+end
+
+-- =========================================================================================================
+-- MUSE (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Muse/): Sacred verse, Tranquil symphony and Costume, and Song of
+-- the Goddess from RTK's TESTING copy (Subpaths/TESTING/muse_song_of_the_goddess.lua; Muse's own folder has none). The
+-- project owner's P5 (each spell as its RTK script) and P3 (on sale at its script's level and items), and for the Song
+-- the project owner's 2026-10-30 answer, "Port RTK's testing copy", sold at its row's level with no items. WarMusic (no
+-- script) stays as it is, and RTK's Lullaby has no row. Each verb is bound by its SpellParams.csv row, which carries
+-- its numbers, and is the shape of its script, in that script's order. The graphic and sound are the spell's
+-- spell_effects.csv row, a Utility row, so there is no cast delay. RTK is weight 0 for balance; these numbers are its
+-- scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * The cast pose is the engine's, on a cast that lands, and so is the central "You cast X." line. Sacred verse's
+--     and Tranquil symphony's scripts send both themselves; Costume's sends neither, and the Song's only the pose.
+--   * A player the Song reaches reads the engine's one line, "<caster> casts Song of the Goddess on you."; the script
+--     says "cast", and sends it to a caster who sings to themselves too. A Song aimed at nothing sings to its caster,
+--     the rule every "Which target?" heal here has; RTK's engine runs the script with a nil target, which stops after
+--     its mana check (the ghost check reads the missing target).
+--   * The Song's run is held by its caster: it ends when either player logs out (RTK saves the duration on the player
+--     and resumes it after their relog; a logged-out caster's beat lands nothing in RTK either), and the healed
+--     player's buff box does not list it.
+--   * "Already in a sanctuary" is the Sanctuary line's one slot being held, so a player under Tranquil symphony is in
+--     one. RTK's `sanctuaries` table lists `sacred_symphony`, a name no spell has, and not `tranquil_symphony`, so RTK
+--     lets either song land again on a Tranquil symphony holder, and its two halves then sum to a deduction of 0,
+--     which RTK's damage code reads as no reduction at all while both run. One slot here cannot hold two.
+--   * A player you may attack is one on a PvP map, this server's canPK (RTK also counts a PK flag and a kill list).
+-- =========================================================================================================
+
+-- Sacred verse and Tranquil symphony (RTK Subpaths/Muse/sacred_verse.lua and tranquil_symphony.lua, one body but the
+-- name and the times): every player on the caster's map, the caster included, who is not already in a sanctuary takes
+-- `amount` of every blow (the scripts' deduction - .5) for `durationMax` ms, or `pcDurMs` ms where the caster may attack
+-- them; each but the caster reads "You have found Sanctuary." and "<caster> casts <spell> on you.", with the spell's
+-- graphic over every one it reaches and its sound at the caster (ctx:mapSanctuary). Short of `mana`, "Your will is too
+-- weak.", for free. No wait. Rows: mana 60, amount 0.5, durationMax 120000 / 300000, pcDurMs 60000 / 185000.
+function verbs.map_sanctuary(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  local dur = row.durationMax or 0
+  if ctx:mapPvp(ctx.map) then dur = row.pcDurMs or dur end         -- the scripts' player:canPK(pcs[i])
+  ctx:mapSanctuary(row.amount or 1, dur)                            -- 0 reached is still a cast
+  return true
+end
+
+-- Costume (RTK Subpaths/Muse/costume.lua; Spy's mimic.lua and Ranger's forest_cover.lua are its body with other
+-- numbers, so their rows can bind here): for `mana` the caster takes the look of what stands on the faced tile for
+-- `durationMax` ms (ctx:disguise): a creature's form and colour, or a player's gear, face and colours under the caster's
+-- own name (a player in a creature's form gives that form). Then the spell's graphic over the caster and the `duration`
+-- ms wait. At an NPC there is no look, but the rest, as the script's two branches both miss one. When it ends, at its
+-- time, death, @dispel or a won Dispell, the spell's graphic plays over the caster again (its uncast). Short of `mana`,
+-- "Your will is too weak.", for free. Facing nothing living, the script takes the mana and then stops with a Lua error
+-- (it indexes the nil target), so the mana is gone and nothing else happens: no graphic, no wait, no line, no pose.
+-- Row: mana 1600, duration 225000 (the wait), durationMax 150000 (the run).
+function verbs.disguise(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if ctx:disguise(row.durationMax or 0) == "none" then return false end   -- RTK's script errors here, the mana spent
+  ctx:fxSelf()
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  return true
+end
+
+-- Song of the Goddess (RTK Subpaths/TESTING/muse_song_of_the_goddess.lua, ported as written): its "Which target?" heal
+-- target, a player or a creature, gets a `durationMax` ms run (24 s) whose beat (heal_run_tick) heals it, one beat for
+-- each 1,000 ms of the run, as RTK's duration timers take 1,000 off a beat: every second on a player (24 heals), every
+-- 1.5 s on a creature (RTK's creature timer, so 24 heals over 36 s). The mana and the heal go by the caster's rank, the
+-- script's two if-chains, which name ranks 1 and 2 only: `mana` and `amount` (1,000 and 5,000) at any other rank. At
+-- an NPC it casts nothing, silently and for free (RTK's engine runs no script for one). Short of the mana, "Your will
+-- is too weak.", for free; at a ghost, "You need a different type of cure.", for free. The cast plays the spell's sound
+-- over the target (its playSound(4)); each beat its graphic and sound (sendAnimation(66), playSound(4)). The heal
+-- reads the caster's rank on each beat, as the script's while_cast does. A recast on the same target takes the run's
+-- length again from now. Row: mana 1000, amount 5000, durationMax 24000.
+local SONG_BY_MARK = {
+  [1] = { mana = 3000, heal = 10000 },   -- the script's player.mark == 1
+  [2] = { mana = 6000, heal = 20000 },   -- the script's player.mark == 2
+}
+
+function verbs.heal_run(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.healReach < 0 then return false end                        -- an NPC: silent, free
+  local byMark = SONG_BY_MARK[ctx.mark] or {}
+  local mana = byMark.mana or row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if ctx.healIsGhost then ctx:say("You need a different type of cure."); return false end
+  if not ctx:startHealRun("heal_run_tick", row.durationMax or 0) then return false end
+  ctx:debitMana(mana)
+  return true
+end
+
+-- The Song's beat (the script's while_cast), on the player or creature it holds.
+function verbs.heal_run_tick(ctx, row)
+  local byMark = SONG_BY_MARK[ctx.mark] or {}
+  ctx:healRunVictim(byMark.heal or row.amount or 0)
   return true
 end
 
