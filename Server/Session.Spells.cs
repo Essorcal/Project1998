@@ -573,7 +573,7 @@ public sealed partial class Session
         // good Damage rows, so arch_damage hit exactly one thing instead of five. Unlike the 4-way, the 5-way
         // stays inside this dispatch instead of returning ahead of it, so it shares the tail below, gated on its
         // verb's verdict like every archetype. The tail is where the Inferno ladder's whole-pool drain and 70 s
-        // aether live, and returning first skipped both (Caleb, 2026-09-29). The rest of the family has no drain
+        // aether live, and returning first skipped both (owner, 2026-09-29). The rest of the family has no drain
         // entry and no aether, so the tail does nothing for them. `mana` is the row's: 120 / 210 for the dog
         // pair, and 600 for the Inferno ladder, RTK's minimum to cast (mage/inferno.lua:11-14): below it the verb
         // refuses the cast for free, and from it the drain then takes the rest.
@@ -766,7 +766,7 @@ public sealed partial class Session
 
     /// <summary>May <see cref="LuaDamageTarget"/> strike this cast's victim here? <c>magic_damage</c> asks before it
     /// spends, because its blow comes after its debit and returns nothing the verb reads.
-    /// <para><b>Off a PvP map, nothing is no target</b> (Caleb, 2026-10-21, decision sheet item 9a): refused, silently,
+    /// <para><b>Off a PvP map, nothing is no target</b> (owner, 2026-10-21, decision sheet item 9a): refused, silently,
     /// as <see cref="LuaDamageTarget"/> already refused it after the spend. Bolt cost 4 mana and Freeze 800, with the
     /// pose and "You cast X.", for a blow that struck nothing. RTK's zap returns at a missing target before it spends
     /// (<c>Spells/common/global_zap.lua:8-10</c>).</para>
@@ -778,7 +778,7 @@ public sealed partial class Session
     /// already sends its own wording of that line for this case, so that wording is kept. The blow still asks again
     /// when it lands.</para>
     /// <para><b>On a PvP map it answers yes.</b> A cast at nothing never reaches it from <c>magic_damage</c> now: the
-    /// verb asks <see cref="LuaCastAtNothing"/> first, on every map and before the mana (Caleb, 2026-10-21: Bolt and
+    /// verb asks <see cref="LuaCastAtNothing"/> first, on every map and before the mana (owner, 2026-10-21: Bolt and
     /// Freeze at nothing on a PvP map are free and silent as in RTK, and "silent like RTK" with too little
     /// mana).</para></summary>
     internal bool LuaCanStrike(SpellDef sp, (Mob? mob, Session? pc) victim)
@@ -799,11 +799,11 @@ public sealed partial class Session
     /// pose. RTK's zap returns at a missing target before anything else (<c>Spells/common/global_zap.lua:8-10</c>).
     /// <para><b>Nothing</b> is no victim at all (an id that finds nobody, or nothing faced off a PvP map), and, on a
     /// PvP map, the caster when <see cref="ResolveDamageTarget"/> gave them only as its fallback for a cast aimed at
-    /// nothing (the slot alone, nothing faced). Caleb, 2026-10-21: on a PvP map Bolt and Freeze at nothing are free
+    /// nothing (the slot alone, nothing faced). The project owner, 2026-10-21: on a PvP map Bolt and Freeze at nothing are free
     /// and silent, as RTK is. They used to land on their caster there by the slot alone, and to pay 4 or 800 mana for
     /// a blow that struck nobody when aimed at an id that found nobody. A cast aimed at the caster's own id is aimed,
     /// and is not nothing: it still strikes them where PvP is on.</para>
-    /// <para><b>Whatever the mana</b> (Caleb, 2026-10-21: "silent like RTK"): a caster too short to pay used to hear
+    /// <para><b>Whatever the mana</b> (owner, 2026-10-21: "silent like RTK"): a caster too short to pay used to hear
     /// "Not enough mana to cast Bolt." for a cast at nothing. RTK asks for the target before the mana
     /// (global_zap.lua:8-10, then :14-17), so it says nothing. At a real target the mana line stays, before the PvP
     /// refusal, as RTK orders it.</para>
@@ -1807,15 +1807,15 @@ public sealed partial class Session
     /// nothing, off a PvP map, a hostile cast resolves to nobody and fails quietly. Inside an arena every
     /// self-status play still works exactly as before.</para></param>
     /// <remarks>An id reaches only a player on the caster's own map: #342's rule for
-    /// <see cref="ResolvePcCastTarget"/>, which Caleb extended to this resolver on 2026-10-11 (#342's review, F2:
+    /// <see cref="ResolvePcCastTarget"/>, which the project owner extended to this resolver on 2026-10-11 (#342's review, F2:
     /// "Fix as a slice"). The roster lookup used to take an id to a player on any map. From an arena that put a
     /// curse, a venom or a Doze on a player standing in a town, because every hostile gate here reads the
     /// caster's map; and a heal, a buff or a ward reached anyone anywhere. A player on another map is now
-    /// answered by the faced tile, as a cast with no id is (the fallback Caleb kept for #342, "Merge as is
+    /// answered by the faced tile, as a cast with no id is (the fallback the project owner kept for #342, "Merge as is
     /// (fallback)"). With nothing faced it resolves to nobody: the caster line below is for a cast aimed at
     /// nothing, and this one was aimed, at someone who is not here. Before, that line answered it as it answers an
     /// id nobody has, so in an arena a Venom or a curse aimed at a player who had just left landed on its caster
-    /// (#343's mutant M5, which Caleb sent to the follow-up slice to be considered). An id nobody has, and a cast
+    /// (#343's mutant M5, which the project owner sent to the follow-up slice to be considered). An id nobody has, and a cast
     /// with no id, keep the line. The map is a bare read of the other session's character, as #342's is.</remarks>
     /// <param name="toCaster">True when the caster came from the <paramref name="selfIfUnaimedInPvp"/> line: a cast
     /// aimed at nothing, not one aimed at the caster.</param>
@@ -2122,7 +2122,7 @@ public sealed partial class Session
     // Validate a curse target the way RTK pestilence.lua does: a PC (incl. YOURSELF) is only a legal curse target
     // in a PvP map (approximates RTK canPK); a creature is always fair game; nothing faced -> a silent refusal.
     //
-    // An NPC is no curse target (Caleb, 2026-10-21, decision sheet item 9c): refused here, silently and before the
+    // An NPC is no curse target (owner, 2026-10-21, decision sheet item 9c): refused here, silently and before the
     // verb spends anything, as a cast that finds nothing is. It used to pass, so a curse from the book and the five
     // curse procs (the Cursed, Corrupted, Tainted and Forsaken blades, the Frost sabre) charged their mana and put
     // the curse's slot on an NPC, or lost the roll and said "Something went wrong." for the same mana. RTK never
@@ -2334,7 +2334,7 @@ public sealed partial class Session
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
-        // A WARD BLOCKS THE TICK'S HP LOSS (#82; Caleb, 2026-10-21, decision sheet item 14). Harden Body, its
+        // A WARD BLOCKS THE TICK'S HP LOSS (#82; owner, 2026-10-21, decision sheet item 14). Harden Body, its
         // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
         // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
         // and the PvP foe mark. The venom itself runs on: the timer above was not touched, the flash has already
@@ -2343,7 +2343,7 @@ public sealed partial class Session
         // and its line outside that call.
         //
         // NOT RTK's low-HP branch. venom.lua sets `health = 1` directly when the tick would not leave 1, which
-        // never reaches the ward check, so RTK drops a warded player on 5 HP to 1. Caleb, 2026-10-21: "82: ward
+        // never reaches the ward check, so RTK drops a warded player on 5 HP to 1. The project owner, 2026-10-21: "82: ward
         // blocks every tick". The ward blocks that drop too: `dam` above is already the never-kill clamp, and a
         // warded tick takes none of it.
         //
@@ -3327,7 +3327,7 @@ public sealed partial class Session
     /// <c>StateRank</c> like every peer write (<see cref="ReceiveSleep"/>, <see cref="ReceiveParalysis"/>). On
     /// yourself it is the monitor the cast already holds. The verb decided the cast (its mana and its roll)
     /// under the caster's monitor; nothing here decides it again.
-    /// <para><paramref name="endHolds"/> (Caleb, 2026-10-10 for another player, and 2026-10-11 for yourself:
+    /// <para><paramref name="endHolds"/> (owner, 2026-10-10 for another player, and 2026-10-11 for yourself:
     /// "Same rules on self"): inside the same section, also end the two holds that run on timers of their own and
     /// so outlive their slot entries. A Doze's sleep ends through <see cref="WakeUp"/> ("You wake up."), and the
     /// harder next hit the Doze armed goes with it, since a sleep is the only thing that arms one on a player (the
@@ -4095,7 +4095,7 @@ public sealed partial class Session
         // was stashed and struck anyway: the strike's HP cost, its animation and an HP bar over the NPC, and at a
         // later EraDate the overkill off the NPC's 1 HP, splashed onto the creatures beside it or refunded to the
         // caster. An NPC in front is now nothing in front, RTK's reading (its strikes look for a BL_MOB only), as
-        // Caleb chose on 2026-10-19: the verb still spends its mana and aether, and strikes nothing. It ends the
+        // the project owner chose on 2026-10-19: the verb still spends its mana and aether, and strikes nothing. It ends the
         // search, so the strike never falls through to a player on its tile.
         if (m is { IsNpc: true }) { _frontStrikeMob = null; return false; }
         _frontStrikeMob = (m is not null && m.Alive) ? m : null;
@@ -4506,7 +4506,7 @@ public sealed partial class Session
     private bool _stealthShown;
     private string _stealthName = "Invisible";   // the specific stealth spell cast (Invisible/Spirit's Form/…) — shown in the buff box
 
-    // BLEND (Do; RTK Spells/Subpaths/Do/blend.lua), on Caleb's word (2026-10-26, Q15: "As RTK's script"): the same
+    // BLEND (Do; RTK Spells/Subpaths/Do/blend.lua), on the project owner's word (2026-10-26, Q15: "As RTK's script"): the same
     // stealth state, armed by the `hide` verb (ctx:hide) with its own sneak multiplier, the script's `invis = 9`, and
     // its own line when it ends, the script's uncast "You are no longer invisible." (its SpellText.csv fade line).
     // The rogue's four stealths keep everything they had: x5 (InvisibleTimes, above) and no line, so a stealth armed by
@@ -5019,7 +5019,7 @@ public sealed partial class Session
     // Resolve a spell's PLAYER target: an explicit targetId (client-supplied entity id, same convention as
     // ResolveCastTarget's mob lookup) or else whoever's standing on the tile directly faced.
     //
-    // An id reaches only a player on the caster's own map (Caleb, 2026-10-11, on PR #340's review, F2). The
+    // An id reaches only a player on the caster's own map (owner, 2026-10-11, on PR #340's review, F2). The
     // lookup is the whole online roster, so an id used to reach a player on any map: a frame carrying one
     // Dispelled, drained, filled, raised or read a player who was nowhere near. A player elsewhere is now
     // answered as an id that names nobody: the faced tile, and with nobody there, no target, which every caller
@@ -5225,7 +5225,7 @@ public sealed partial class Session
     /// <summary>Runs on the PROPOSEE's own session (called cross-session — same pattern as Trade/Party):
     /// shows the accept/decline prompt and, on accept, engages both parties.
     /// <para><b>The proposer gives <paramref name="propose"/> up on "yes", and only then</b> (#345's pre-existing
-    /// item 5c; Caleb, 2026-10-21). RTK removes it in the accept branch alone (propose.lua:102, and again at :118),
+    /// item 5c; owner, 2026-10-21). RTK removes it in the accept branch alone (propose.lua:102, and again at :118),
     /// and its decline (:120-124) keeps it. This port used to forget it at the cast, before this prompt opened, so
     /// anything but "yes" cost the proposer the spell, and a new ring (4000 gold, a 24-hour wait) to get it back.
     /// What each answer does, before and after:</para>
@@ -5237,10 +5237,10 @@ public sealed partial class Session
     ///   orphaned reply) and the proposer is told nothing, as before; the spell was lost, and is now kept.</item>
     /// <item>The beloved never answers: the same; there is no timeout. Lost before, kept now.</item>
     /// </list>
-    /// <para>Keeping it is why the verb now enforces a 20-minute wait from the cast (<c>verbs.propose</c>; Caleb,
+    /// <para>Keeping it is why the verb now enforces a 20-minute wait from the cast (<c>verbs.propose</c>; owner,
     /// 2026-10-21): without it a proposer could ask again at once after a "no", or ask two people at the same moment.
     /// RTK's script intends that wait (propose.lua:11-12) but never applies it; the verb says why.</para>
-    /// <para><b>"Yes" checks again that neither player is already engaged or married</b> (Caleb, 2026-10-21). The
+    /// <para><b>"Yes" checks again that neither player is already engaged or married</b> (owner, 2026-10-21). The
     /// cast checked both, but a box can stay up for as long as the beloved leaves it, and either player can be
     /// committed by then: a second proposal the proposer made after the aether, accepted first, is the ordinary way.
     /// Neither RTK's accept branch nor this one used to look again, so both "yes"es engaged, and one beloved was left
@@ -5256,7 +5256,7 @@ public sealed partial class Session
     /// <see cref="RunMarriageCeremony"/>): the same two monitors in the same order, held across the decision, so two
     /// beloveds saying "yes" to one proposer at once are taken one after the other and the second finds the first's
     /// engagement. Nothing in the section enters the Lua gate or <c>World._lock</c>.</para>
-    /// <para><b>"Yes" engages nobody if either player is going away</b> (PR #358's review, F3; Caleb, 2026-10-22,
+    /// <para><b>"Yes" engages nobody if either player is going away</b> (PR #358's review, F3; owner, 2026-10-22,
     /// decision 27), by the rule the wedding uses (<see cref="GoingAway"/>). The box stays up while the proposer
     /// logs out, or logs out and back in. The "yes" then ran on the session the proposer had left: back at once, that
     /// session is fenced, so the beloved was engaged and lost the ring while the proposer's row stayed unengaged and
@@ -5312,7 +5312,7 @@ public sealed partial class Session
         }
         else
         {
-            // The proposer's line goes out inside the proposer's monitor (PR #368's review, N4; Caleb, 2026-10-22,
+            // The proposer's line goes out inside the proposer's monitor (PR #368's review, N4; owner, 2026-10-22,
             // decision 32): this is the beloved's thread, and #29's rule 2 enters another player's session under that
             // player's monitor. The proposer's logout teardown takes the same monitor, so the line is handed over
             // before that teardown can start, or, if it has already started, after it ends. The beloved's line is
@@ -5346,7 +5346,7 @@ public sealed partial class Session
 
         // From here on this is the FIANCÉ's thread, under his monitor: his reply resumed the ceremony. A line to the
         // bride is therefore sent inside her monitor, as #29's rule 2 enters another player's session (PR #365's
-        // review, O2; Caleb, 2026-10-22, decision 32). Her logout teardown takes the same monitor, so a line to her
+        // review, O2; owner, 2026-10-22, decision 32). Her logout teardown takes the same monitor, so a line to her
         // is handed over before that teardown can start, or, if it has already started, after it ends. His lines are
         // under his.
         var bride = this;
@@ -5362,7 +5362,7 @@ public sealed partial class Session
         // ceremony runs on the FIANCÉ's thread (their dialog reply is what resumed us). One critical section
         // across the pair, in the usual rank order, so neither half can be saved or read mid-wedding (#29).
         //
-        // The section reads the engagement again before it writes anything (PR #355's review, O1; Caleb,
+        // The section reads the engagement again before it writes anything (PR #355's review, O1; owner,
         // 2026-10-21). The question waits as long as the fiancé takes to answer, and the bride's own dialog is
         // free meanwhile: she could break it off at the Chapel, paying for it and ending both halves, and his
         // "I do" then married them anyway. Now both halves must still name each other and neither may hold a
@@ -5374,7 +5374,7 @@ public sealed partial class Session
         // section: made before it, it could pass while a break that holds the bride's monitor has not yet ended
         // her half, and this thread would then wait for that monitor and marry what the break had ended.
         //
-        // Before that, the section refuses a wedding if either of the two is going away (Caleb, 2026-10-22,
+        // Before that, the section refuses a wedding if either of the two is going away (owner, 2026-10-22,
         // decision 17; PR #365's review, O1). The bride can log out while the question waits, and log back in.
         // The wedding then ran on the session she had left: the fiancé ended married in memory and in his row
         // while her new session and her row stayed engaged, and a bride who stayed out was married with nothing
@@ -5386,7 +5386,7 @@ public sealed partial class Session
         // is not seen: the wedding is written and that player's lines are lost, as the ends' own rule says.
         //
         // The two "I now pronounce you (married)" lines go out inside the section too, after the writes (PR #365's
-        // review, O2; Caleb, 2026-10-22, decision 32). Sent after it, the bride's line left this thread without her
+        // review, O2; owner, 2026-10-22, decision 32). Sent after it, the bride's line left this thread without her
         // monitor: her logout's teardown could take that monitor between the section and the send, and close her
         // connection after it, so she was married and her line was lost. Inside the section her teardown waits for
         // the send. The fiancé's line moves with hers and stays second, so the two go out in the order they always
@@ -5534,10 +5534,10 @@ public sealed partial class Session
     // to face); with no id we hit the faced tile, mob first then a peer. At most one of (mob, pc) is non-null.
     //
     // The one exception: an id reaches only a player on the caster's own map (#342's rule for
-    // ResolvePcCastTarget, extended here by Caleb on 2026-10-11, #342's review F2: "Fix as a slice"). The roster
+    // ResolvePcCastTarget, extended here by the project owner on 2026-10-11, #342's review F2: "Fix as a slice"). The roster
     // lookup used to take an id to a player on any map, and HitPlayerWithSpell's PvP gate reads the caster's map,
     // so a nuke thrown from an arena landed on a player standing in a town. A player on another map is answered
-    // by the faced tile, mob first then a peer, as #342 answers it (Caleb kept that fallback: "Merge as is
+    // by the faced tile, mob first then a peer, as #342 answers it (the project owner kept that fallback: "Merge as is
     // (fallback)"); with nothing faced, by no target, as an id that names nobody is. Not by the caster: the PvP
     // self-fallback below is for a cast aimed at nothing, and this one was aimed. The map is a bare read of the
     // other session's character, as #342's is.

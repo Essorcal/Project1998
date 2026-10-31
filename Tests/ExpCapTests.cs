@@ -8,7 +8,7 @@ namespace Tests;
 
 /// <summary>
 /// Experience stops at 4,294,967,295 instead of wrapping (RTK <c>player.lua</c> <c>giveXPStacked</c>, lines
-/// 4285-4290; Caleb, 2026-10-24, decision 9: "As RTK").
+/// 4285-4290; owner, 2026-10-24, decision 9: "As RTK").
 ///
 /// <para><c>Character.Exp</c> is a <c>uint</c>, and <c>AwardExp</c> added to it with nothing checking the sum,
 /// in a build with no overflow checking. A level-99 already holds 2 to 3 billion (<c>game-data/LevelExp.csv</c>,

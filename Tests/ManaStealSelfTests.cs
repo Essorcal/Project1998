@@ -6,7 +6,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Mana Steal refuses a cast aimed at yourself, as Mana Gift does. Caleb, 2026-10-11 ("Refuse self"), on #341's
+/// Mana Steal refuses a cast aimed at yourself, as Mana Gift does. The project owner, 2026-10-11 ("Refuse self"), on #341's
 /// review (probe P6, "Pre-existing"): the <c>mana_steal</c> verb asks only whether the target is in your group, and
 /// you are in your own group whenever you have one. So Draw Energy aimed at yourself in a party set your mana to
 /// your mana plus "the target's", then set "the target's" to zero, on the same player: your pool went to 0 and you

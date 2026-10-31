@@ -16,7 +16,7 @@ namespace Tests;
 /// poet. Mage Bolt, the family's Ming-Ken name, casts through <c>verbs.magic_damage</c>, the verb that carries its
 /// refusals (<see cref="NpcDamageVerbTests"/>), but takes its numbers from the same row as the seven: its
 /// <c>game-data/SpellParams.csv</c> row binds the verb and nothing else, and the verb reads the spell_effects.csv row's
-/// amount and mana (<c>ctx.spellAmount</c>, <c>ctx.spellMana</c>), 50 + level/2 for 20 mana (Caleb, 2026-10-22,
+/// amount and mana (<c>ctx.spellAmount</c>, <c>ctx.spellMana</c>), 50 + level/2 for 20 mana (owner, 2026-10-22,
 /// decision sheet item 3; #200). The SpellParams row used to give it 2 + 1.5 x Will for 4 mana, which no source has:
 /// the 2002-12-30 and live Atlas mage pages and RTK's <c>spark.lua</c> all give Bolt as Spark's Ming-Ken name at 20
 /// mana. The Bolt facts pin the row, the base, the Will it no longer reads, and its half at the one floor (#78).</para>
@@ -129,7 +129,7 @@ public sealed class SparkFamilyBaseTests
     }
 
     /// <summary>Mage Bolt's self-cast nets the same carried half against its caster's own armour, through
-    /// <c>ctx:damage</c> and the player intake. On a PvP map an unaimed Bolt at nobody is free and silent (Caleb,
+    /// <c>ctx:damage</c> and the player intake. On a PvP map an unaimed Bolt at nobody is free and silent (owner,
     /// 2026-10-21), so this one is aimed at the caster's own id, which is aimed and still strikes them.
     /// <para>Red on 2874006: 4 mana, not 20.</para></summary>
     [Theory]
@@ -155,7 +155,7 @@ public sealed class SparkFamilyBaseTests
 
     /// <summary>Will does not move the base: two level-30 casters 40 Will apart land the same figure, for Spark through
     /// the archetype and for mage Bolt through its own verb. The probe: "a +1 will item changed nothing"; the decision
-    /// (Caleb, 2026-10-21, decision sheet item 13) takes level/2 alone, and Bolt is on that row (2026-10-22, item 3).
+    /// (owner, 2026-10-21, decision sheet item 13) takes level/2 alone, and Bolt is on that row (2026-10-22, item 3).
     /// <para>Red on 6de1d24 for Spark: 60 and 70 (the old row moved by a quarter of the Will). Red on 2874006 for Bolt:
     /// 17 and 77 (2 + 1.5 x Will).</para></summary>
     [Theory]
@@ -184,7 +184,7 @@ public sealed class SparkFamilyBaseTests
         Assert.Equal(new[] { 65, 65 }, landed);
     }
 
-    /// <summary>Mage Bolt is on the Spark row (Caleb, 2026-10-22, decision sheet item 3; #200). Its
+    /// <summary>Mage Bolt is on the Spark row (owner, 2026-10-22, decision sheet item 3; #200). Its
     /// <c>game-data/SpellParams.csv</c> row still binds <c>verbs.magic_damage</c>, the verb whose refusals
     /// <see cref="NpcDamageVerbTests"/> pins, and carries no number of its own: the verb reads its spell_effects.csv
     /// row, which is Spark's in archetype, mana, formula and aether. At level 50, Will 30 and AC 0 that is 75 for 20

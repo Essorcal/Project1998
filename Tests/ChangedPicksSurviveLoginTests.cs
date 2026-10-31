@@ -10,7 +10,7 @@ namespace Tests;
 
 /// <summary>
 /// What a character picked at creation and later changed in play survives a logout and a login: the nation, the
-/// face, the sex and the totem (the PR #325 re-check 3, finding F7; Caleb, 2026-10-08, and the same day's "fold into
+/// face, the sex and the totem (the PR #325 re-check 3, finding F7; owner, 2026-10-08, and the same day's "fold into
 /// this PR" for face, gender and totem).
 ///
 /// <para><b>Before.</b> Every arrival ran <c>CharacterFactory.ApplyAppearance</c> on the loaded character, and that

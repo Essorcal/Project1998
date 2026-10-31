@@ -509,7 +509,7 @@ they are the same systems the greater alliances and the Sam san Sage gate wait o
 it (`@mark 3`, its 48 spells). tswolf's San quests page lists only the marks "Il San, Ee San" (Wayback
 2001-01-29 and 2001-06-27), its spell pages link no Sam San through 2001-08-21, and Nexus Atlas first documents
 it on its "Sam San, 3rd Mark" quest page (first capture 2002-10-05). It is kept as today anyway, with no era
-gate (Caleb, 2026-10-24), and its promotion is to be built after Il san's and Ee san's; RTK has no script for
+gate (owner, 2026-10-24), and its promotion is to be built after Il san's and Ee san's; RTK has no script for
 it, and the 2002 Atlas trials need greater alliances (below) and event-game wins. **Sa san stays out:** its
 Atlas quest page is first captured 2008-10-15, and `MaxMark = 3` keeps mark 4 unreachable.
 

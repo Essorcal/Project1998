@@ -50,7 +50,7 @@ wilderness_weapon,,4,10000
 nomadic_blade,,8,10000
 spirit_blade,,10,10000
 # Do's enchants as RTK's scripts (Spells/Subpaths/Do/spirit_blade.lua, balance_weapon.lua, master_weapon.lua):
-# Spirit blade x10 on Caleb's word (2026-10-26, Q8), Balance weapon (mark 1) and Master weapon (mark 2) by P5.
+# Spirit blade x10 on the project owner's word (2026-10-26, Q8), Balance weapon (mark 1) and Master weapon (mark 2) by P5.
 balance_weapon,,15,15000
 master_weapon,,20,25000
 blades_charm_rogue,,3,0

@@ -323,7 +323,7 @@ public sealed class PeerSweepLockTests
     private const string NotOnline = "Player is not valid or not online.";
 
     /// <summary>
-    /// <b>A "yes" while one of the two is going away engages nobody</b> (PR #358's review, F3, probe R4; Caleb,
+    /// <b>A "yes" while one of the two is going away engages nobody</b> (PR #358's review, F3, probe R4; owner,
     /// 2026-10-22, decision 27; the wedding's rule from PR #365). The real cast and name put the box up on the beloved;
     /// then, before the beloved says "yes", one of the two starts to go away (<paramref name="away"/>):
     /// <list type="bullet">
@@ -505,7 +505,7 @@ public sealed class PeerSweepLockTests
     }
 
     /// <summary>
-    /// <b>A cast of Propose arms a 20-minute aether, and a cast inside it asks nobody</b> (Caleb, 2026-10-21). RTK's
+    /// <b>A cast of Propose arms a 20-minute aether, and a cast inside it asks nobody</b> (owner, 2026-10-21). RTK's
     /// script intends the wait (propose.lua:11-12) but never applies it: its <c>setAether</c> is a dot call, which
     /// RTK's binding drops, and its engine checks only aethers. The port enforces it. The real cast, and then either a
     /// declined proposal ("declined") or a name prompt answered with nothing ("no name": the script sets the wait before
@@ -563,10 +563,10 @@ public sealed class PeerSweepLockTests
     }
 
     /// <summary>
-    /// <b>The 20 minutes survive a relog</b> (PR #358 review, F1; Caleb, 2026-10-21). The proposer casts, the beloved
+    /// <b>The 20 minutes survive a relog</b> (PR #358 review, F1; owner, 2026-10-21). The proposer casts, the beloved
     /// says "no", and the proposer logs out (the real teardown, whose save captures the timed effects into the row).
     /// A fresh session is built from that saved row, its timed effects restored as the arrival restores them, and it
-    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. The wait is the port's, on Caleb's
+    /// casts again: "Propose isn't ready yet.", no name prompt, no box on the beloved. The wait is the port's, on the project owner's
     /// word: RTK's script intends it (propose.lua:11-12) but never applies it, since its <c>setAether</c> is a dot call
     /// that RTK's binding drops and its engine checks only aethers. The port keeps it across a relog through line 11's
     /// <c>setDuration</c>, a status flag the row carries.
@@ -631,7 +631,7 @@ public sealed class PeerSweepLockTests
     private const string YouAreCommitted = "You are already committed to someone else!";
 
     /// <summary>
-    /// <b>"Yes" from or to a player who has become engaged or married since the cast is refused, for free</b> (Caleb,
+    /// <b>"Yes" from or to a player who has become engaged or married since the cast is refused, for free</b> (owner,
     /// 2026-10-21). The real cast and name put the box up on the beloved; then one of the two (<paramref name="who"/>)
     /// becomes committed to a third player (<paramref name="vow"/>: engaged, both halves, or a marriage legend),
     /// standing in for however that came about while the box was up; then the beloved says "yes". Nobody is engaged

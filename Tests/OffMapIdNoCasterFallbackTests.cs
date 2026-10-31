@@ -9,7 +9,7 @@ namespace Tests;
 /// A hostile status aimed by id at a player on another map, with nothing faced, no longer falls back to its caster.
 /// This is M5 of #343: the third of the alternatives to #343's fallback that its author pinned with a mutant, and
 /// the one its review found to be the only one that stops "aim at someone who just left the map, poison yourself".
-/// Caleb sent it to this slice to be considered ("M5 is considered there"); whether it ships is his call at merge.
+/// The project owner sent it to this slice to be considered ("M5 is considered there"); whether it ships is his call at merge.
 ///
 /// <para>#343 answered such a cast, with nothing faced, as it answers an id nobody has. In the buff resolver that is
 /// its last line, which gives the caster to a hostile status on a PvP map (<c>selfIfUnaimedInPvp</c>). So in an arena

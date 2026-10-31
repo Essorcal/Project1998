@@ -135,7 +135,7 @@ MAGE_OVERRIDES = {
     "electrocute": (64, "70 Acorns, 1 Amber, 500 Coins"),
 }
 
-# ---- Lua-fallback levels the era pages correct (Caleb, 2026-10-21, decision sheet item 4) ---------------------
+# ---- Lua-fallback levels the era pages correct (owner, 2026-10-21, decision sheet item 4) ---------------------
 # The Rogue Wolf's Fury's Kwi-Sin, Ming-Ken and Ohaeng names are learned at Wolf's Fury's own level, 30, not at
 # the 34 their RTK requirements() give: the 2002 Nexus Atlas rogue page lists Soul's Rage, Spirit of the Forest and
 # Augmentation as Wolf's Fury's other names at "Level 30", the live Atlas page says the same, and tswolf's July
@@ -149,7 +149,7 @@ LUA_LEVEL_OVERRIDES = {
 }
 LUA_LEVEL_OVERRIDE_SOURCE = "tswolf-2001-spells-classes|atlas-2002-12-30-spells-classes"
 
-# ---- Sam san learn rows the live Nexus Atlas pages print (Caleb, 2026-10-22, decision sheet item 6) ------------
+# ---- Sam san learn rows the live Nexus Atlas pages print (owner, 2026-10-22, decision sheet item 6) ------------
 # The one exception to the tier exclusion in the docstring. Siege and Focused Blow are Sam san spells, with no
 # character level, so the ARCHIVE tables below skip them, and Lua has no requirements() for them (RTK has no script
 # for either). Their rows were hand-written at the end of game-data/SpellLearnCosts.csv, with a Sam san weapon
@@ -163,7 +163,7 @@ LUA_LEVEL_OVERRIDE_SOURCE = "tswolf-2001-spells-classes|atlas-2002-12-30-spells-
 # reads as spike. Level 99 is the level the hand rows gave these Sam san spells. The source is written as the
 # game-data/Sources.csv ids, as LUA_LEVEL_OVERRIDE_SOURCE is, so SpellLearnCosts.csv carries these rows byte for byte.
 #
-# ---- More rank learn rows from the same pages (Caleb, 2026-10-24, decision sheet items 8 and 9) -----------------
+# ---- More rank learn rows from the same pages (owner, 2026-10-24, decision sheet items 8 and 9) -----------------
 # The fourteen rows after those five. Six are the other hand-written Sam san rows, which cited
 # extrapolated-from-ee-san and asked costs neither source prints. Each now costs what its live Atlas page prints
 # (atlas-warrior-spells, atlas-rogue-spells, atlas-mage-spells), and the tutor-board tier tables print the same for

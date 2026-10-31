@@ -25,7 +25,7 @@ namespace Tests;
 /// Kamikaze silently, its answer to no target.</para>
 ///
 /// <para>Unchanged: the slot alone (the stock 4.95 client's frame, which takes the faced creature), a creature's own
-/// id, and the id of a player on another map, which #343 sends to the faced tile (Caleb: "keeping the worker's
+/// id, and the id of a player on another map, which #343 sends to the faced tile (the project owner: "keeping the worker's
 /// fallback for off-map ids"). The stock client sends no id; a Kamikaze weapon proc passes the faced creature's
 /// id, which both resolvers read alike.</para>
 ///

@@ -191,7 +191,7 @@ public sealed class DispellTargetLockTests
     /// <summary>The casts that clear the caster's own buffs are unchanged. A Dispell on yourself, through the real
     /// frame with your own id, clears your buff list and your fury, takes 200 mana, says "You cast Dispell." and
     /// tells you nothing else. (Against yourself the rate is at most 95%, so a lost roll is cast again. Since
-    /// Caleb's "Same rules on self" of 2026-10-11 a lost roll on yourself costs nothing, as at another player, so
+    /// the project owner's "Same rules on self" of 2026-10-11 a lost roll on yourself costs nothing, as at another player, so
     /// the whole run costs the won cast's 200: <c>DispellRulesTests</c>.) Cure Paralysis clears the caster's own
     /// <c>paras</c> entry, Purge its <c>venoms</c> entry and Atone its <c>curses</c> entry, each for its row's mana.
     /// Not a guard of this fix: green before and after it, in both builds.
@@ -264,7 +264,7 @@ public sealed class DispellTargetLockTests
     /// each step takes the stepper's monitor and then <c>World._lock</c>, and is refused (the tile is taken); the
     /// tick's regen beat takes each monitor to expire buffs. Nothing may stall (<see cref="StallWatch"/>). Every
     /// self-buff and party line goes through; every Dispell either wins (the cast goes through and its target is
-    /// told) or loses (it is refused, at no cost, and its caster is told, Caleb's rule of 2026-10-10); no self-buff
+    /// told) or loses (it is refused, at no cost, and its caster is told, the project owner's rule of 2026-10-10); no self-buff
     /// disappears inside its own caster's critical section (held a fifth of a millisecond past the cast, as a
     /// handler's other work would), which is what a write from outside the monitor does; and each buff list ends
     /// whole, its expiry hint the real minimum.

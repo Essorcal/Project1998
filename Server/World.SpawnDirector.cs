@@ -214,7 +214,7 @@ public sealed partial class World
         /// filed under its row's map, as before #333. Gim Yi's Den (1308) is the one case: <c>gimyi</c>'s room
         /// is 1308:2:5 and the Den's own group (<c>AreaSpawns.csv</c>) keeps one Gim Yi anywhere on it. Filed
         /// under 1308, the point added a second on every first entry, because a map's groups fill before its
-        /// points. Caleb's word (2026-10-21): one Gim Yi in its den, as before. The test is the creature's id
+        /// points. The project owner's word (2026-10-21): one Gim Yi in its den, as before. The test is the creature's id
         /// among the members of a group on one of its rooms' maps, which <see cref="Build"/> files before any
         /// point for this.</para></summary>
         private void AddSpawn(ushort mapId, Spawn sp)
@@ -289,7 +289,7 @@ public sealed partial class World
         /// that today: <c>monkey_avenger</c>'s 4164:24:32, which is RTK's warp, on a map the 4.95 client draws
         /// 20x30. A room only just outside its map keeps its place in both, because a tile of the map is within
         /// reach and <c>FreeSpawnTile</c> builds the boss there: <c>divine_sheep</c>'s 3472:11:8 and
-        /// <c>sheep_avenger</c>'s 4472:10:8, both on 10-wide maps. Caleb's rule (2026-10-21): skip only a room
+        /// <c>sheep_avenger</c>'s 4472:10:8, both on 10-wide maps. The project owner's rule (2026-10-21): skip only a room
         /// with no tile on its map within 2 of it. A map with no dimensions has no edge to be outside of. Reads
         /// only <see cref="Content"/>.</para></summary>
         private static bool OffItsMap((ushort Map, ushort X, ushort Y) room) =>

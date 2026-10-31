@@ -115,7 +115,7 @@ public sealed class DamageIntake
     /// RAW figure precisely because of that assumption, so turning AC on means re-deriving Sute's whole kit.
     /// (#78) RTK's three damage helpers all run amplifier, deduction, THEN armor; every intake here applied
     /// armor before the deduction, and the mob swing also amplified on the wrong side of it. That one is
-    /// settled now (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"): the terms are one
+    /// settled now (owner, 2026-10-21: "multiply everything, round down once, minimum 1"): the terms are one
     /// product with one floor, so their order no longer matters. See <see cref="Terms"/>.</para>
     ///
     /// <para><b>Two damage paths this pipeline does not reach</b>, both in files owned by #26 while it is in
@@ -132,9 +132,9 @@ public sealed class DamageIntake
     /// sixth damage path that never went through any of the five and so was outside #28's scope — it
     /// hand-rolls this very epilogue (HP, WakeUp, SendStats, mini-text, the over-head bar, the foe mark),
     /// which makes #28's "five copies" really six. RTK's equivalent ticks (burn/venom <c>while_cast</c>) are
-    /// ward-gated like everything else, and since #82 (Caleb, 2026-10-21) so is ours: <c>TickPoison</c> asks
+    /// ward-gated like everything else, and since #82 (owner, 2026-10-21) so is ours: <c>TickPoison</c> asks
     /// <see cref="Session.DamageImmune"/> itself, on the heartbeat, and a warded tick takes no HP, the low-HP
-    /// drop to 1 included (RTK's own branch for that skips its ward; ours does not, on Caleb's word). It still
+    /// drop to 1 included (RTK's own branch for that skips its ward; ours does not, on the project owner's word). It still
     /// does not come through here, deliberately: the tick has no blow, no attacker and no terms, and this
     /// pipeline's foe mark enters another session's monitor.</para>
     /// </summary>
@@ -202,7 +202,7 @@ public sealed class DamageIntake
     /// and THEN applied the sleep-family amplifier, a player's spell the other way round, and each step was
     /// rounded, so at AC -50 with a 1.5x amplifier a raw 101 landed 75 one way and 76 the other. Neither
     /// order was RTK's, whose three helpers multiply amplifier, deduction and armor UNROUNDED and floor once
-    /// (swingDamage.lua:92, :101-102, :105-108; player.lua:210-244). #78, decided by Caleb on 2026-10-21
+    /// (swingDamage.lua:92, :101-102, :105-108; player.lua:210-244). #78, decided by the project owner on 2026-10-21
     /// ("multiply everything, round down once, minimum 1"): every term is one product and is floored once,
     /// so the order of the terms cannot change a result and the column has nothing left to say. The floor
     /// is the live-proven one (the Spark probe, <c>Combat.ApplyArmor</c>), not RTK's spell ceiling. The rear
@@ -280,7 +280,7 @@ public sealed partial class Session
         double net = intake.Raw;
         if (terms.FloorRawToOne && net < 1) net = 1;
 
-        // ONE PRODUCT, ONE FLOOR (#78; Caleb, 2026-10-21: "multiply everything, round down once, minimum 1").
+        // ONE PRODUCT, ONE FLOOR (#78; owner, 2026-10-21: "multiply everything, round down once, minimum 1").
         // Each term below multiplies the unrounded figure, and Combat.FloorOnce floors it once at the end and
         // raises it to 1. Every step used to round on its own (the armor floor, then Math.Round, half to even,
         // after the amplifier and again after the deduction), so the order of the steps changed results by up
@@ -308,7 +308,7 @@ public sealed partial class Session
         int dmg = Combat.FloorOnce(net);
 
         // The positional rear x2 comes AFTER the one floor and its minimum of 1, as RTK's swingDamage.lua doubles
-        // its floored figure (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a hit
+        // its floored figure (:147-150). The project owner, 2026-10-21: "Round down once (minimum 1), then double for a hit
         // from behind. Ordinary hits from behind stay exactly as today." Doubling a whole number rounds nothing.
         if (intake.DoubleForRear) dmg *= 2;
 

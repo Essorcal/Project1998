@@ -6,7 +6,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The Inferno ladder takes the whole pool and arms its 70 s aether (Caleb, 2026-09-29, "1 yes").
+/// The Inferno ladder takes the whole pool and arms its 70 s aether (owner, 2026-09-29, "1 yes").
 ///
 /// <para>Inferno and its three alignment reskins (Death's Door, Nature's Denial, Steel Storm) are target-area
 /// zaps: <c>Session.ApplyCast</c> sends them to the <c>target_area_zap</c> verb. That branch used to return
@@ -23,7 +23,7 @@ namespace Tests;
 /// hit. The other seven 5-way spells (the dog fire family, Volcanic Blast, the Earthquake ladder) carry no drain
 /// entry and no aether, so the shared tail leaves them exactly as they were.</para>
 ///
-/// <para>The 600-mana gate (Caleb, 2026-10-21, decision sheet item 2). The same RTK body refuses a cast below 600
+/// <para>The 600-mana gate (owner, 2026-10-21, decision sheet item 2). The same RTK body refuses a cast below 600
 /// mana before it sweeps anything (<c>inferno.lua:11-14</c>, "You do not have enough mana."), and the live Nexus Atlas
 /// mage page gives Inferno "Mana Cost - 600". The four rows said 0, which the cast reads as 5, so a 50-mana Inferno
 /// fired and started the full 70 s wait. The rows now say 600: the verb refuses below it for free, with no aether,

@@ -306,7 +306,7 @@ public sealed partial class Session
     // The cast goes through the normal ApplyCast dispatcher so a proc behaves exactly like casting the
     // spell by hand (mana, cooldowns, fx) rather than a parallel code path that could drift.
     //
-    // NO PROC AT A PLAYER YOU MAY NOT ATTACK (Caleb, 2026-10-22, decision sheet item 2: "no proc there, as RTK").
+    // NO PROC AT A PLAYER YOU MAY NOT ATTACK (owner, 2026-10-22, decision sheet item 2: "no proc there, as RTK").
     // RTK asks canPK in the on_swing itself, after the roll and before the cast — `math.random(1, 100) <= 4 and
     // player:canPK(pc)` (Items/Weapons/poet_whip.lua:14; the same line in blood.lua, frost_sabre.lua,
     // corrupted_blade.lua, cursed_blade.lua, tainted_blade.lua, forsaken_blade.lua, forsaken_staff.lua,

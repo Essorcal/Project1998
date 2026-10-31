@@ -179,7 +179,7 @@ public sealed partial class Session
     // taking damage does not restart anything, and two players in a fight always tick together. This
     // server had drifted to a per-player accumulator that was reset at the topped-off check, so the
     // first tick after damage was always exactly 25s later and a player chipped every 20s never
-    // regenerated at all. Caleb decided on 2026-09-19 to go back to the original game's global clock,
+    // regenerated at all. The project owner decided on 2026-09-19 to go back to the original game's global clock,
     // and that is the ONLY player-visible change in this pass: the amount, the caps, the dead check,
     // the topped-off skip and the stats packet are all untouched.
     //
@@ -1195,7 +1195,7 @@ public sealed partial class Session
     /// <para>Ends in <c>SaveChar</c> for the reason given on <see cref="ReviveAt"/> (#196): the death this
     /// undoes saved itself, so a revive that only marked the character dirty left the corpse on disk until
     /// the next autosave sweep.</para>
-    /// <para><b>A player who is logging out is not revived</b> (#330's class; PR #358 review, R5; Caleb,
+    /// <para><b>A player who is logging out is not revived</b> (#330's class; PR #358 review, R5; owner,
     /// 2026-10-21), the check <see cref="ReviveAt"/> makes, in the same place: <c>_leaving</c>, read under this
     /// monitor before the heal. <c>@rez &lt;name&gt;</c> looks its target up on the GM's thread with no monitor,
     /// so the target's whole logout can run before this <c>EnterState</c>; the heal then landed on the departed

@@ -15,7 +15,7 @@ namespace Tests;
 
 /// <summary>
 /// The messenger's "Receive Parcel" loop (<c>Session.ParcelReceiveFlow</c>) when a claim does not commit (wave 2
-/// queue row 16, the persist-gate report's follow-up 1; Caleb, 2026-09-29, "4 yes").
+/// queue row 16, the persist-gate report's follow-up 1; owner, 2026-09-29, "4 yes").
 ///
 /// <para><b>Before.</b> The loop listed the queue again whenever a claim came back without a parcel, and that
 /// happens in two different ways. The claim step ran and <c>Parcel.ClaimIn</c> found the parcel already gone:

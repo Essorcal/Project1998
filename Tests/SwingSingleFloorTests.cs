@@ -7,13 +7,13 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// #78 on the player's own swing (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"). The swing's
+/// #78 on the player's own swing (owner, 2026-10-21: "multiply everything, round down once, minimum 1"). The swing's
 /// armor, rear x2 and reach used to be floored step by step on the attacker's side (<c>Session.PlayerSwingDamage</c>:
 /// <c>Combat.ApplyArmor</c>'s floor, then x2, then a second floor for reach), and a PvP swing then went through the
 /// defender's intake, which rounded its own amplifier and deduction again. Now the swing is one product of armor and
 /// reach (<c>Session.PlayerSwingRaw</c>): a creature target floors it once, and a PvP swing hands it UNFLOORED to the
 /// defender's intake, which multiplies its own terms in and floors once. A hit from behind is doubled after that
-/// floor, in RTK's order (Caleb, 2026-10-21: "Round down once (minimum 1), then double for a hit from behind.
+/// floor, in RTK's order (owner, 2026-10-21: "Round down once (minimum 1), then double for a hit from behind.
 /// Ordinary hits from behind stay exactly as today.").
 ///
 /// <para>The swings are real 0x13 frames through <c>Session.Receive</c>. The hit and crit rolls and the bare hand's

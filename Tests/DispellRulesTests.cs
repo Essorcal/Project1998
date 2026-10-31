@@ -8,9 +8,9 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Caleb's three rules of 2026-10-10 for the Dispell family (Dispell, Remove Magic, Return Natural, Restore Balance)
+/// The project owner's three rules of 2026-10-10 for the Dispell family (Dispell, Remove Magic, Return Natural, Restore Balance)
 /// cast at ANOTHER player. The sources are surveyed in the coordination workspace's
-/// <c>briefs/reports/dispell-sources-survey-2026-10-10.md</c>; the rules are Caleb's, made on that survey.
+/// <c>briefs/reports/dispell-sources-survey-2026-10-10.md</c>; the rules are the project owner's, made on that survey.
 /// <list type="number">
 /// <item><b>Staff are exempt.</b> A cast at a GM fizzles: "Fizzle.", no mana, nothing cleared, whoever casts it.</item>
 /// <item><b>A won cast ends sleep and venom.</b> Besides the buff list PR #339 clears, the target wakes from a Doze
@@ -18,7 +18,7 @@ namespace Tests;
 /// <item><b>A lost roll matches RTK</b> (<c>poet/dispell.lua:37-40</c>): "Something went wrong." alone, no "You cast
 ///   X.", no cast pose, and no mana.</item>
 /// </list>
-/// On 2026-10-11 Caleb made the second and third hold for a Dispell on yourself too ("Same rules on self", section 4
+/// On 2026-10-11 the project owner made the second and third hold for a Dispell on yourself too ("Same rules on self", section 4
 /// below). The first stays a rule about another player: a GM's Dispell on themselves still lands.
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, from a caster who casts once, so the
@@ -379,7 +379,7 @@ public sealed class DispellRulesTests
 
     /// <summary>Each of the four, cast on yourself through the real frame with your own id and lost: you read
     /// "Something went wrong." and nothing else, show no cast pose and keep all 200 mana, and your buff, fury and
-    /// venom stay. Caleb, 2026-10-11: "Same rules on self". RTK's <c>dispell.lua</c> and its three twins make no
+    /// venom stay. The project owner, 2026-10-11: "Same rules on self". RTK's <c>dispell.lua</c> and its three twins make no
     /// difference between yourself and another player before the roll, which returns ahead of the pose and the
     /// debit (<c>poet/dispell.lua:37-40</c>). Each attempt is a fresh caster with AC -60, so the rate on yourself is
     /// 30% and every attempt is one frame from a full action budget; a won attempt is put aside for the next.
@@ -424,7 +424,7 @@ public sealed class DispellRulesTests
 
     /// <summary>Each of the four, cast on yourself through the real frame with your own id and won, ends your venom
     /// and the harder next hit a Doze left armed, as well as your buff and fury, the same as at another player.
-    /// Caleb, 2026-10-11: "Same rules on self". You read "The poison passes." and "You cast X.", nothing that ends
+    /// The project owner, 2026-10-11: "Same rules on self". You read "The poison passes." and "You cast X.", nothing that ends
     /// "on you.", and pay 200.
     /// <para>The Doze is the realistic one a caster can still cast under: a venom tick has woken them ("The pain
     /// wakes you.", <c>TickPoison</c>), which ends the sleep and leaves the multiplier the Doze armed for its

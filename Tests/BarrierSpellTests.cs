@@ -16,7 +16,7 @@ namespace Tests;
 /// <c>atlas-2002-12-30-spells-classes</c>): "4 Way Invisible Blockade surrounds the caster, disabling any animals
 /// from walking next to them. If an animal is in one of those spaces, they are paralyzed until the barrier wears
 /// off." Human Barrier reads the same with "players". 300 mana and 22 s each, and Human Barrier an 86 s aether,
-/// as tswolf (<c>tswolf-2001-spells-classes</c>) says too. Caleb's reading (2026-10-08): what stands on the four
+/// as tswolf (<c>tswolf-2001-spells-classes</c>) says too. The project owner's reading (2026-10-08): what stands on the four
 /// tiles at the cast is held, nothing else may step onto them for the 22 s, the tiles stay where they were cast,
 /// the caster is never held, and Human Barrier holds any player, in towns too.</para>
 ///
@@ -63,7 +63,7 @@ public sealed class BarrierSpellTests
 
     /// <summary>Barrier's Kwi-Sin twin is named "Spirit Body", the name the 2002 Nexus Atlas Poet page gives it
     /// (<c>atlas-2002-12-30-spells-classes</c>, the highest-weight dated source; every other twin name matches it).
-    /// The live Atlas pages say "Spirit barrier"; Caleb chose the 2002 name on 2026-10-21 (decision sheet item 5). Only
+    /// The live Atlas pages say "Spirit barrier"; the project owner chose the 2002 name on 2026-10-21 (decision sheet item 5). Only
     /// the name moved: the key stays <c>spirit_barrier_poet</c> and the id 4098, which saved spell books store. Red on
     /// 6de1d24: "Spirit Barrier".</summary>
     [Fact]
@@ -596,7 +596,7 @@ public sealed class BarrierSpellTests
     ///
     /// <para>Dooms Fire: "Mana Cost - 15,275", "Aethers - 65 Seconds", "Takes all mana and does 2.5x mana damage to
     /// the target at 0 AC" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; Sources.csv
-    /// <c>atlas-mage-spells</c>; Caleb, 2026-10-22, decision sheet item 5). spell_effects.csv has no Sources column,
+    /// <c>atlas-mage-spells</c>; owner, 2026-10-22, decision sheet item 5). spell_effects.csv has no Sources column,
     /// so this fact is where the row cites it. The row's 15,275 is the bar: <c>arch_damage</c> refuses below it with
     /// "You do not have enough mana." before it spends or strikes anything, and <c>ApplyCast</c>'s tail arms nothing
     /// for a refused cast. From it the cast still takes the whole pool and hits for 2.5 times the pool it was cast

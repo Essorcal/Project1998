@@ -548,7 +548,7 @@ public sealed partial class Session
     internal const string SubpathScrollPrompt = "Where do you wish to go?";
 
     /// <summary>The Qui hyang for a member of one of the twelve PC subpaths (<c>item_verbs.lua</c>
-    /// <c>quihyang</c>, through <see cref="ItemContext.askSubpathCircle"/>; Caleb, 2026-10-26, "Circle, via scroll"):
+    /// <c>quihyang</c>, through <see cref="ItemContext.askSubpathCircle"/>; owner, 2026-10-26, "Circle, via scroll"):
     /// put up RTK's menu under the scroll's own icon (RTK's <c>npcGraphic</c> is the item's graphic) and return
     /// true. False, with nothing sent, for anyone else, whose scroll the verb then uses as it always has.
     /// <para>The use has returned by the time the answer comes, declined, so nothing was spent then. The answer
@@ -1085,14 +1085,14 @@ public sealed partial class Session
     }
 
     /// <summary><see cref="PlayerSwingDamage"/>'s figure before its one floor, for the PvP swing: the defender's
-    /// intake multiplies its own amplifier and deduction in before it floors (#78; Caleb, 2026-10-21: "multiply
+    /// intake multiplies its own amplifier and deduction in before it floors (#78; owner, 2026-10-21: "multiply
     /// everything, round down once, minimum 1"). It used to receive this already floored, at least 1, and rounded
     /// it again after each of its own terms. A swing at a world creature (<c>ResolveSwing</c>,
     /// <c>LuaAmbushStrike</c>) hands it to <see cref="World.TryDamage"/> the same way, which multiplies in the
     /// creature's sleep-family amplifier before its one floor (#363); only a session-local debug dummy still goes
     /// through <see cref="PlayerSwingDamage"/>. <c>hit</c> is false on a miss, which deals nothing; a
     /// landed hit may net below 1 here and is raised to 1 at the end. <c>rear</c> is the positional x2, which is
-    /// NOT in <c>raw</c>: it doubles the floored figure, in RTK's order (Caleb, 2026-10-21: "Round down once
+    /// NOT in <c>raw</c>: it doubles the floored figure, in RTK's order (owner, 2026-10-21: "Round down once
     /// (minimum 1), then double for a hit from behind").</summary>
     private (bool hit, double raw, bool crit, bool rear) PlayerSwingRaw(SwingTarget target, double reach = 1.0)
     {
@@ -1191,7 +1191,7 @@ public sealed partial class Session
         // (Session.SwingTargets) — "Strikes an enemy behind you" / "Enables to Attack to the Warrior's Sides"
         // — not damage ones, and Combat.IsBackstabAngle/IsFlankAngle are retired. Do not re-add them here.
         byte attackDir = Combat.AttackDir(_char.X, _char.Y, target.X, target.Y);
-        // Doubled AFTER the one floor (by the caller, which floors), not here: Caleb, 2026-10-21, "Round down once
+        // Doubled AFTER the one floor (by the caller, which floors), not here: the project owner, 2026-10-21, "Round down once
         // (minimum 1), then double for a hit from behind. Ordinary hits from behind stay exactly as today."
         bool rear = Combat.IsBehindTarget(attackDir, target.Dir, _char.X, _char.Y, target.X, target.Y);
 

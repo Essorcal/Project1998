@@ -9,7 +9,7 @@ namespace Tests;
 
 /// <summary>
 /// Bon-Hwa's "Il San" branch (<c>Server/BonHwa.cs</c>, RTK <c>NPCs/wilderness/bon_hwa.lua</c>), and <c>@mark</c>
-/// giving no stats (Caleb's decision sheet of 2026-10-24, items 1-4 and 21).
+/// giving no stats (the project owner's decision sheet of 2026-10-24, items 1-4 and 21).
 ///
 /// <para><b>The path.</b> Each player stands beside Bon-Hwa on map 1229 and talks to him through the real
 /// <c>0x43</c> click and <c>0x3A</c> replies, on a thread of its own with no synchronization context, so every
@@ -195,7 +195,7 @@ public sealed class BonHwaIlSanTests
 
     /// <summary>A player short of the coins, or holding fewer than 5 ambers, is refused with RTK's line (:339-356)
     /// and keeps everything. No amber has a source in this world, so the second case is where every player stops:
-    /// nobody can finish Il san in play until crafting exists (Caleb's item 2, "A, as RTK").</summary>
+    /// nobody can finish Il san in play until crafting exists (the project owner's item 2, "A, as RTK").</summary>
     [Theory]
     [InlineData(599_999u, 5, "Return to me when you have the gold.")]
     [InlineData(600_000u, 4, "Return to me when you have the 5 well crafted white ambers.")]
@@ -375,7 +375,7 @@ public sealed class BonHwaIlSanTests
     // ===== @mark =============================================================================================
 
     /// <summary><c>@mark n</c> gives exactly what <c>@lvl 99</c> gives in every deterministic stat (Might, Grace,
-    /// Will and AC), whatever n is: a rank adds no growth (Caleb's item 3, "A, no stats, as RTK"). It still sets the
+    /// Will and AC), whatever n is: a rank adds no growth (the project owner's item 3, "A, no stats, as RTK"). It still sets the
     /// mark and keeps level 99. Vita and mana are re-rolled by every rebuild, so they get only a sanity bound: the
     /// range 98 level-up rolls of the class curve (<c>PathGrowth.csv</c>) can give. That bound cannot tell 98 rolls
     /// from 99 (with the old extra LevelUp per rank every value still fell inside it); the deterministic
