@@ -3214,7 +3214,7 @@ public sealed partial class World
                 PreSweepProbeForTest?.Invoke(PhMorphs);
                 foreach (var (_, pm) in _maps)
                     foreach (var p in pm.Players)
-                        if (p.IsMorphExpired) q.ExpiredMorphs.Add(p);
+                        if (p.IsMorphExpired || p.IsDisguiseExpired) q.ExpiredMorphs.Add(p);   // a lapsed morph, or a Costume run
                 foreach (var (_, pm) in _maps)
                     foreach (var p in pm.Players)
                         if (p.IsStealthExpired) q.ExpiredStealth.Add(p);   // faded (invisible-spell) look lapsed with no hit — revert
@@ -3468,9 +3468,9 @@ public sealed partial class World
         foreach (var ep in q.ExpiredPets)
             Try(() => DespawnMob(ep.map, ep.mob), "DespawnMob (expired pet)");
 
-        // Expired morphs queued above — revert the peer-visible disguise back to our real human look.
+        // Expired morphs and disguise runs queued above — revert the peer-visible disguise back to our real human look.
         foreach (var mp in q.ExpiredMorphs)
-            Try(() => mp.RevertMorph(), "RevertMorph");
+            Try(() => mp.RevertLapsedLooks(), "RevertLapsedLooks");
 
         // Expired stealth queued above — restore the normal look once the invisible-spell timer lapses w/o a hit.
         foreach (var sp in q.ExpiredStealth)

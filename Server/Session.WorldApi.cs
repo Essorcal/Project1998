@@ -27,6 +27,11 @@ public sealed partial class Session
     public PlayerSnapshot Snapshot()
     {
         using var _ = EnterState();
+        // A disguise as another player (Costume; Session.LuaDisguise) is every peer's view of us while it runs: their
+        // look, our name, position and form.
+        if (DisguisedAs is { } d)
+            return new(_char.Id, _char.X, _char.Y, _facing, d.Sex, d.Face, d.Armor, d.Weapon, d.Shield, _char.Mounted, IsDead, _char.Name,
+                       d.ArmorDye, _morphLook, _morphColor, Stealthed, d.HairColor);
         return new(_char.Id, _char.X, _char.Y, _facing, (byte)_char.Sex, FaceLook(), ArmorWireLook(_char.Armor), WeaponLook(), ShieldLook(), _char.Mounted, IsDead, _char.Name,
                    ArmorDye(), _morphLook, _morphColor, Stealthed, _char.HairColor);
     }
