@@ -144,7 +144,18 @@ public sealed class SubpathTeacherTests
     [InlineData("Diviner",   "")]
     [InlineData("Geomancer", "hailstorm 64 500 [1 amber, 70 acorn]; ice_bombardment 99 500 [1 amber, 70 acorn]")]
     [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
-    [InlineData("Druid",     "earth_strike 99 0 [1 gold_acorn, 1 topaz]; lightning_storm 99 0 [20 rabbit_meat, 30 rat_meat]; natures_smite 99 0 [1 gold_acorn, 1 topaz]")]
+    // The Druid spells slice: Control flames, Druid's rodent, Steed, Sea breeze, Nature's bloom and Energy bloom beside the
+    // three, each at its script's price, the copied lists as written (Sea breeze asks Druid's rodent's, Nature's bloom
+    // Control flames'); Steed's list is empty; Efflorescence, with no script, off sale.
+    [InlineData("Druid",     "control_flames 99 20000 [1 wicked_staff, 20 antler]; " +
+                             "druids_rodent 33 0 [20 rabbit_meat, 30 rat_meat]; " +
+                             "earth_strike 99 0 [1 gold_acorn, 1 topaz]; " +
+                             "energy_bloom 99 0 [1 gold_acorn, 1 topaz]; " +
+                             "lightning_storm 99 0 [20 rabbit_meat, 30 rat_meat]; " +
+                             "natures_bloom 99 20000 [1 wicked_staff, 20 antler]; " +
+                             "natures_smite 99 0 [1 gold_acorn, 1 topaz]; " +
+                             "sea_breeze 33 0 [20 rabbit_meat, 30 rat_meat]; " +
+                             "steed 99 0 []")]
     [InlineData("Monk",      "")]
     [InlineData("Muse",      "")]
     public void EachTeacherSellsTheWorkingSpellsAtRtksScriptPrices(string subpath, string expected)
@@ -247,9 +258,10 @@ public sealed class SubpathTeacherTests
         var (s, o, c) = Member("Druid", 99, ch => Give(ch, "topaz", 1));
         int before = c.Spells.Count;
 
-        Converse(s, Teacher("Druid"), "Learn Secret", Pick(1), Pick(1), Pick(1));
+        Converse(s, Teacher("Druid"), "Learn Secret", Pick(4), Pick(1), Pick(1));
 
-        Assert.Equal("Which secret shall I teach you?|Earth strike|Lightning storm|Nature's smite", Menus(o)[0]);
+        Assert.Equal("Which secret shall I teach you?|Druid's rodent|Sea breeze|Control flames|Earth strike|Lightning storm|" +
+                     "Nature's bloom|Nature's smite|Steed", Menus(o)[0]);
         Assert.Equal(new[] { "Paying for what you want is a sign of devotion. Return when you have what is required for this." }, Boxes(o));
         Assert.Equal((1, before), (Count(c, "topaz"), c.Spells.Count));
     }
@@ -270,7 +282,7 @@ public sealed class SubpathTeacherTests
         });
         Assert.Equal(Content.SpellBookCap, c.Spells.Count);
 
-        Converse(s, Teacher("Druid"), "Learn Secret", Pick(3), Pick(1), Pick(1));
+        Converse(s, Teacher("Druid"), "Learn Secret", Pick(7), Pick(1), Pick(1));
 
         Assert.StartsWith("The fee to learn Nature's smite is:", Menus(o)[2]);
         Assert.Equal(new[] { "Your mind cannot hold any more secrets right now." }, Boxes(o));

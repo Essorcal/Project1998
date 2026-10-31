@@ -243,6 +243,11 @@ public sealed partial class Session
         SendAction(_char.Id, ActionType.Drop, 20, 0);                                        // our drop crouch + sound
         _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Drop, 20, 0), except: this);   // peers see it too
 
+        // A spell's drop hook (RTK clif_parsedropitem's on_drop_while_aether): while Control flames' or Nature's bloom's
+        // wait runs, an acorn or a flower dropped is the spell's to spend, and nothing lands but what it puts down. After
+        // the crouch, as RTK sends its drop pose before it runs the hooks. See Session.RunDropHooks.
+        if (RunDropHooks(def)) return;
+
         int count = dropAll ? it.Amount : 1;
         int remaining = it.Amount - count;
         if (remaining <= 0) { _char.Inventory.Remove(it); SendDelItem((byte)slot, DelReason.Dropped); }
