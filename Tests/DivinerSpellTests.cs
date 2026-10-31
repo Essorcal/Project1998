@@ -232,6 +232,31 @@ public sealed class DivinerSpellTests
         finally { Leave(KarmaMap, poor, typo, stranger, again); }
     }
 
+    /// <summary>A reply to the input box that is not a submit (here the client's "next", 0x3A kind 1) runs nothing: no
+    /// box, no line, nothing spent and no wait armed; only a submit (kind 4, step 2) is an answer. No 4.95 reply is known
+    /// to reach this (a close sends nothing), so it pins <c>ctx:ask</c>'s documented branch. #411's review probe P4. Red
+    /// with the non-submit guard taken out of <c>Session.RunSpellAnswerAsync</c> (the step then runs with "" and says
+    /// "Player is not online or unavailable.").</summary>
+    [Fact]
+    public void AReplyThatIsNotASubmitRunsNothing()
+    {
+        var (caster, cOut, cc) = Diviner("read_karma_diviner", KarmaMap, CX + 16, CY + 8);
+        try
+        {
+            OnOwnThread(() =>
+            {
+                caster.Receive(SpellCastSupport.CastFrame(0));
+                cOut.Clear();
+                caster.Receive(NextFrame());
+            });
+            string lines = string.Join(" | ", SpellCastSupport.MiniTexts(cOut));
+            Assert.True(Boxes(cOut).Count == 0 && lines == "" && cc.Mp == Mana
+                        && SpellCastSupport.AetherLeft(caster, "read_karma_diviner") == 0,
+                        $"boxes [{string.Join(" / ", Boxes(cOut))}], lines [{lines}], spent {Mana - cc.Mp}");
+        }
+        finally { _fx.World.LeaveMap(caster, KarmaMap); }
+    }
+
     /// <summary>Yourself, as the script allows (its own check is commented out): the first box names you in the third
     /// person, with the next arrow; once you answer it, the second box tells you, "You ...", with no button. 250 spent and
     /// the wait armed, as for anyone. Red on 912ba3c (no box).</summary>

@@ -2828,8 +2828,12 @@ public sealed partial class Session
     //     button to the player this cast's typed name resolved (target:freeAsync(); target:dialogSeq(..., 0)).
     // Each box is the prompt every dialog here is (AwaitReply): a new one replaces a box still waiting, and a box the
     // player closes leaves its wait pending, since the 4.95 client sends nothing on a close; the verb named after it
-    // then never runs, as RTK's coroutine never resumes. RTK's async refuses to start while another of the player's
-    // scripts waits (sl_async); this server's dialogs replace the waiting one instead, as Propose's does.
+    // then never runs, as RTK's coroutine never resumes. RTK's cast handler frees the caster's waiting script just before
+    // it runs any spell's cast script (clif_parsemagic's sl_async_freeco, rtk/src/map/clif.c), so a second Read karma
+    // whose box replaces the first one's is RTK's behaviour too. Where this server parts from RTK: no cast here drops a
+    // waiting dialog, so another spell cast while Read karma waits leaves Read karma live (its answer still reads and
+    // charges, its next arrow still tells the player read), where RTK's cast would have freed it and nothing would
+    // follow. Matching that is an engine change to every cast and every waiting dialog, not this one.
     //
     // Locks. The cast's half runs where every verb runs, in the caster's monitor and the Lua gate. An answer and a next
     // arrive as the caster's 0x3A, on the caster's thread inside the caster's monitor (Handle wraps Dispatch), and resume
