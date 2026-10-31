@@ -2310,8 +2310,8 @@ public sealed partial class Session
         b.Add(_char.HasSetting(0x06) ? (byte)4 : (byte)5);
         b.Add(_realm);       // realm-center camera lock (0=off edge-aware, 1=on centered); toggled by F4
         // The title's length is ONE byte, written unchecked: a title over 255 bytes would wrap it, and the byte would
-        // no longer match the title that follows. Nothing reaches that today. Every title is a map_index.csv name
-        // (Content.LoadMaps: its SQL escapes undone, "Map <id>" when blank; the longest is 26 bytes) or "Nexus".
+        // no longer match the title that follows. Nothing reaches that today: a title is a map_index.csv name of
+        // 26 bytes at most (Content.LoadMaps), "Nexus", or the "" LuaLeap and LuaAmbushLeap send for a map with no row.
         b.Add((byte)t.Length);
         b.AddRange(t);
         // light field — encoding chosen by P1998_LIGHT_FMT so 5.33's parse can be probed live.

@@ -727,8 +727,9 @@ so most players get 4 (the `0x1F` weather block in §7.1 says why). `flagB` is t
 `nameLen` is one byte, and `SendMapInfo` writes it without a check (`Server/Session.Dialog.cs:2315`): a title
 over 255 bytes would wrap it, and the byte would no longer match the name that follows. Nothing reaches that
 today. The title is the map's `map_index.csv` name with its SQL escapes undone (`Server/Content.Csv.cs:12-20`),
-at most 26 bytes in the shipped `game-data`, or `"Nexus"` for a map with no row (`MapTitle`,
-`Server/Session.Entity.cs:43-44`); content with a longer name would reach it.
+at most 26 bytes in the shipped `game-data`. A map with no row gets `"Nexus"` from most callers (`MapTitle`,
+`Server/Session.Entity.cs:43-44`) and an empty title from the two leap spells (`LuaLeap` and `LuaAmbushLeap`,
+`Server/Session.Spells.cs:3244`, `:3601`). Content with a longer name would reach it.
 
 Opens the map's cache file `Maps\TK<mapId>.map`, which the `0x06` stream fills (§10.7, §10.8). Example
 working values: mapId 32, 33×33, name "Nexus", light 232.
@@ -3638,9 +3639,12 @@ on the player's reply, without answering it, before any of these starts somethin
   crow, Watcher and Gauntlet altar encounters (`Server/Session.Navigation.cs`).
 
 A map change lets the prompt go as well (`EnterMap`, `Server/Session.Navigation.cs:1469`), and a new prompt
-replaces it (`AwaitReply`). Dropped means the flow that awaited it never resumes: nothing after its await runs,
-nothing is taken or given, and nothing is thrown into it. A merchant grid's pending reply goes with it, so a late
-pick in a grid left behind buys or sells nothing. RTK frees a waiting script on the same NPC click, NPC speech and
+replaces it (`AwaitReply`, `Server/Session.Dialog.cs:774-781`). Dropped means the flow that awaited it never resumes:
+nothing after its await runs, nothing is taken or given, and nothing is thrown into it. A merchant grid's pending
+reply is a second one, and only `DropWaitingDialog` lets it go (`:712`): after any of the causes listed above, a late
+pick in a grid left behind buys or sells nothing. A map change and a new prompt clear the dialog's reply alone, so a
+grid's reply stays pending after either, and a pick from that grid still completes it and its merchant flow goes on
+(`Server/Session.Shop.cs:233-235`). RTK frees a waiting script on the same NPC click, NPC speech and
 floor-NPC step (`sl_async_freeco`); its scripted tiles and map-entry scripts instead stay silent while a script
 waits, where ours drop the conversation and fire. Not changed: a reply still answers whichever prompt is pending,
 since its echoed entity id is not matched to the box it came from.
