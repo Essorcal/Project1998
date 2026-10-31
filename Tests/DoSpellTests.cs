@@ -349,7 +349,11 @@ public sealed class DoSpellTests
 
     /// <summary>A Blend that runs through a relog keeps its x9 and its end line, read back from the stealth's saved name
     /// with nothing new saved: the saved effects hold the deadline and "Blend" only. Red without the restore's lookup
-    /// (<c>Session.RestoreHideRule</c>): x5 and no line, as the rogue's.</summary>
+    /// (<c>Session.RestoreHideRule</c>): x5 and no line, as the rogue's.
+    /// <para>The one landed swing that ends the stealth is a crit 3% of the time (<c>Combat.RollPlayerSwingRtk</c>),
+    /// and a crit's figure is not the x9 one. So a relog whose swing crits is made again, a fresh session from the same
+    /// saved effects, until one lands clean, as <see cref="StealthSwings"/> casts again past a crit. Every relog must
+    /// still come back x9, land once and say the end line once.</para></summary>
     [Fact]
     public void ABlendThatRunsThroughARelogKeepsItsRule()
     {
@@ -364,25 +368,36 @@ public sealed class DoSpellTests
         }
         finally { _fx.World.LeaveMap(before, EndMap); }
 
-        var (after, aOut, _) = Swinger(EndMap, CX + 1, CY + 8, "blend", configure: ch => ch.Effects = saved);
-        try
+        const int MaxRelogs = 20;   // all 20 swings crit: 0.03^20, about 3.5e-31
+        double? clean = null;
+        var plain = new SortedSet<double>();
+        int relogs = 0;
+        while (clean is null && relogs < MaxRelogs)
         {
-            after.WithState(() => RestoreMi.Invoke(after, null));
-            Assert.True(after.IsInvisible && StealthTimes(after) == BlendTimes, $"restored: invisible {after.IsInvisible}, x{StealthTimes(after)}");
-            double? clean = null;
-            int landed = 0;
-            for (int i = 0; i < 200 && after.IsInvisible; i++)
+            relogs++;
+            var (after, aOut, _) = Swinger(EndMap, CX + 1, CY + 8, "blend", configure: ch => ch.Effects = saved);
+            try
             {
-                var (hit, raw, crit) = SwingOnce(after);
-                if (hit) { landed++; if (!crit) clean = raw; }
+                after.WithState(() => RestoreMi.Invoke(after, null));
+                Assert.True(after.IsInvisible && StealthTimes(after) == BlendTimes,
+                            $"relog {relogs} restored: invisible {after.IsInvisible}, x{StealthTimes(after)}");
+                int landed = 0;
+                (double Raw, bool Crit) last = default;
+                for (int i = 0; i < 200 && after.IsInvisible; i++)
+                {
+                    var (hit, raw, crit) = SwingOnce(after);
+                    if (hit) { landed++; last = (raw, crit); }
+                }
+                int said = SpellCastSupport.MiniTexts(aOut).Count(l => l == "You are no longer invisible.");
+                Assert.True(landed == 1 && said == 1, $"after relog {relogs}: landed {landed}, end line said {said}");
+                if (last.Crit) continue;
+                clean = last.Raw;
+                plain = PlainSwings(after);   // the same swinger, the stealth now ended by that swing
             }
-            var plain = PlainSwings(after);   // the same swinger, the stealth now ended by that swing
-            int said = SpellCastSupport.MiniTexts(aOut).Count(l => l == "You are no longer invisible.");
-            Assert.True(landed == 1 && clean is double c && plain.Contains(Math.Round(c / BlendTimes, 6)) && said == 1,
-                        $"after the relog: landed {landed}, clean swing {clean} against plain [{string.Join(", ", plain)}] (want x{BlendTimes}), " +
-                        $"end line said {said}");
+            finally { _fx.World.LeaveMap(after, EndMap); }
         }
-        finally { _fx.World.LeaveMap(after, EndMap); }
+        Assert.True(clean is double c && plain.Contains(Math.Round(c / BlendTimes, 6)),
+                    $"after {relogs} relog(s): clean swing {clean} against plain [{string.Join(", ", plain)}] (want x{BlendTimes})");
     }
 
     /// <summary>The rogue's Invisible still arms no wait and keeps the set's own refusal, "You already cast that spell.",
