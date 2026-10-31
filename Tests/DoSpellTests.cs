@@ -347,6 +347,39 @@ public sealed class DoSpellTests
         finally { _fx.World.LeaveMap(caster, EndMap); }
     }
 
+    /// <summary>A rogue stealth cast after a Blend by the same player ends without Blend's line: the rogue's arming
+    /// (<c>Session.LuaSetStealth</c>) clears the end-line key a Blend left behind, as it resets the multiplier to
+    /// x5. Only a player holding both spells meets this, which takes a GM grant (a Do cannot learn a rogue stealth).
+    /// Red with that key reset taken out of the rogue's arming: the Invisible's end says "You are no longer
+    /// invisible.".</summary>
+    [Fact]
+    public void ARogueStealthAfterABlendEndsWithoutBlendsLine()
+    {
+        const string Line = "You are no longer invisible.";
+        var (caster, cOut, _) = Swinger(EndMap, CX + 3, CY + 10, "blend", "invisible_rogue");
+        int EndAtItsTime()
+        {
+            cOut.Clear();
+            caster.WithState(() => StealthUntilField.SetValue(caster, Environment.TickCount64 - 1));
+            _fx.World.TickOnceForTest();
+            return SpellCastSupport.MiniTexts(cOut).Count(l => l == Line);
+        }
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(caster.IsInvisible, "Blend did not hide its caster");
+            int blendSaid = EndAtItsTime();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(1));
+            Assert.True(caster.IsInvisible, "invisible_rogue did not hide its caster");
+            int rogueSaid = EndAtItsTime();
+            Assert.True(blendSaid == 1 && rogueSaid == 0 && !caster.IsInvisible,
+                        $"Blend's end said the line {blendSaid} times (want 1); the Invisible's after it said it " +
+                        $"{rogueSaid} (want 0); invisible {caster.IsInvisible}");
+        }
+        finally { _fx.World.LeaveMap(caster, EndMap); }
+    }
+
     /// <summary>A Blend that runs through a relog keeps its x9 and its end line, read back from the stealth's saved name
     /// with nothing new saved: the saved effects hold the deadline and "Blend" only. Red without the restore's lookup
     /// (<c>Session.RestoreHideRule</c>): x5 and no line, as the rogue's.</summary>
