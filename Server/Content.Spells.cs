@@ -806,8 +806,11 @@ public static partial class Content
     /// and so does every entry of the rebuilt set the book already held; the entries the book did not hold (base spells
     /// the member had forgotten, which the rebuild hands back) fill what is left, in the set's order, and the last of
     /// them are the ones left out. The order of what stays is the set's order, so a rebuild that fits is unchanged. An
-    /// entry on a ladder counts as held when the book held any rung of that ladder: the set keeps only the top rung, so a
-    /// held lower rung stays as the top (#417's review, F3). RTK has no rebuild to follow: its book is 52 too (<c>rtk/src/common/mmo.h</c>, <c>MAX_SPELLS</c>) and its
+    /// entry counts as held when the book held it in any alignment's version: a devote or a renounce rebuilds at the new
+    /// alignment, and a held spell comes back as that alignment's version (#417's re-check, F4; the four versions are one
+    /// alignment family, <see cref="BuildAlignFamilies"/>). And an entry on a ladder counts as held when the book held
+    /// any rung of that ladder: the set keeps only the top rung, so a held lower rung stays as the top (#417's review,
+    /// F3). RTK has no rebuild to follow: its book is 52 too (<c>rtk/src/common/mmo.h</c>, <c>MAX_SPELLS</c>) and its
     /// alignment swap leaves subpath spells alone.</para></summary>
     private static List<SpellDef> KeepHeldSubpathSpells(List<SpellDef> rebuilt, int pathId, IEnumerable<SpellDef>? held)
     {
@@ -818,15 +821,21 @@ public static partial class Content
             if (s.PathId == pathId && ids.Add(s.Id)) rebuilt.Add(s);
         int over = rebuilt.Count - SpellBookCap;
         if (over <= 0) return rebuilt;
-        // Held means held as a spell or as its ladder (#417's review, F3): the rebuilt set keeps only a ladder's top rung,
-        // so a book that held a lower rung holds that ladder's rung in the set, the top, and it stays as the rung did.
+        // Held means held as a spell, in any alignment's version of it, or as its ladder. A devote or a renounce rebuilds
+        // at the new alignment, so a spell the book held comes back as that alignment's version, under another id (#417's
+        // re-check, F4): the content's own alignment families (BuildAlignFamilies, the map the ladders are expanded by)
+        // say which rows are one spell. And the rebuilt set keeps only a ladder's top rung, so a book that held a lower
+        // rung holds that ladder's rung in the set, the top, and it stays as the rung did (#417's review, F3).
         var inBook = book.Select(s => s.Id).ToHashSet();
+        var family = BuildAlignFamilies(Spells);
+        string Family(SpellDef s) => family.GetValueOrDefault(s.Key, s.Key);
+        var heldFamilies = book.Select(Family).ToHashSet(StringComparer.OrdinalIgnoreCase);
         LadderOf.TryGetValue(PathBaseOf(pathId), out var ladders);
         var heldLadders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (ladders is not null)
             foreach (var s in book)
                 if (ladders.TryGetValue(s.Key, out var rung)) heldLadders.Add(rung.Ladder);
-        bool Held(SpellDef s) => inBook.Contains(s.Id)
+        bool Held(SpellDef s) => inBook.Contains(s.Id) || heldFamilies.Contains(Family(s))
                                  || (ladders is not null && ladders.TryGetValue(s.Key, out var r) && heldLadders.Contains(r.Ladder));
         var leaveOut = new HashSet<int>();                          // indexes into rebuilt, the last unheld first
         for (int i = rebuilt.Count - 1; i >= 0 && leaveOut.Count < over; i--)

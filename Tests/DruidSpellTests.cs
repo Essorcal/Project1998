@@ -32,7 +32,9 @@ public sealed class DruidSpellTests
                          SteedMap = 63274, BreezeMap = 63275, BloomMap = 63276, EdgeMap = 63277, WindowMap = 63278;
     // Fix round 1 (#417's review): content-free too, claimed by no other class.
     private const ushort KickMap = 63279, TradeMap = 63280, KickBloomMap = 63281, RelogMap = 63282;
-    private const byte ExchangeIn = 0x4a, ExcOpen = 0, ExcItem = 1, ExcConfirm = 5;
+    // Fix round 2 (#417's re-check): content-free too.
+    private const ushort PartialMap = 63283;
+    private const byte ExchangeIn = 0x4a, ExcOpen = 0, ExcItem = 1, ExcItemAmount = 2, ExcConfirm = 5;
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(10);
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
@@ -563,6 +565,51 @@ public sealed class DruidSpellTests
         }
     }
 
+    /// <summary>A drop-all decided after the gap drops what the stack holds then (#417's re-check, F5). A Druid in Control
+    /// flames' window holds five Roses in one stack, offers three of them and confirms, then drops the whole stack (D)
+    /// while another thread holds the Lua gate (the flames hook declines a Rose). The partner's confirm finishes the
+    /// exchange in the gap: three Roses leave that same stack, in place, and two stay. The drop then lands the two. Five
+    /// Roses stay five: the partner 3, the Druid none, the floor 2. Red with the count read before the gap: five land, and
+    /// five Roses become eight (the re-check's probe N2, ported).</summary>
+    [Fact]
+    public void ADropAllAfterAnExchangeTookPartOfTheStackInTheGapLandsWhatIsLeft()
+    {
+        var (o, _, oc) = CasterNamed($"DruidPartO{Interlocked.Increment(ref _serial)}", "control_flames", PartialMap, 5, 5,
+                                     ch => Give(ch, 1, "rose", 5));
+        var (p, _, pc) = Player(PartialMap, 6, 5);
+        var gap = new GateGap();
+        Thread? confirm = null;
+        Exception? confirmFault = null;
+        try
+        {
+            o.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(SpellCastSupport.AetherLeft(o, "control_flames") > 0, "no window");
+            o.Receive(ExchangeRequest(ExcOpen, p.PlayerId));
+            o.Receive(ExchangeRequest(ExcItemAmount, p.PlayerId, new byte[] { 2, 3 }));   // wire slot 2 = bag slot 1, three of five
+            o.Receive(ExchangeRequest(ExcConfirm, p.PlayerId));
+            bool waited = gap.DropWhileHeld(o, DropAllFrame(1));
+            confirm = new Thread(() => { try { p.Receive(ExchangeRequest(ExcConfirm, o.PlayerId)); } catch (Exception e) { confirmFault = e; } })
+                      { IsBackground = true, Name = "partner confirm" };
+            confirm.Start();
+            bool inGap = confirm.Join(TimeSpan.FromSeconds(2)) && gap.DropAlive;
+            gap.Release();
+            Assert.True(confirm.Join(Bound), "the confirm never finished");
+            Assert.Null(confirmFault);
+
+            int partner = Count(pc, "rose"), druid = Count(oc, "rose"), onFloor = Floor(PartialMap, "rose");
+            Assert.True(waited && inGap && partner == 3 && druid == 0 && onFloor == 2,
+                        $"drop waited at the gate {waited}, exchange finished in the gap {inGap}; roses: partner {partner}, " +
+                        $"Druid {druid}, on the floor {onFloor} (of 5)");
+        }
+        finally
+        {
+            gap.Close();
+            confirm?.Join(Bound);
+            foreach (var i in _fx.World.ItemsOn(PartialMap)) _fx.World.PickUp(PartialMap, i.X, i.Y);
+            Leave(PartialMap, o, p);
+        }
+    }
+
     // ===== fix round 1: the stag across a relog (#417's review, F2; the project owner's Q-G, "As RTK") ===========
 
     /// <summary>A Druid rides Arawn's stag and logs in again: the row keeps the creature ridden (Character.MountKey, as
@@ -650,6 +697,9 @@ public sealed class DruidSpellTests
     }
 
     private static byte[] DropFrame(int slot) => SessionFixture.Frame(ClientOp.DropItem, new byte[] { (byte)(slot + 1), 0, 0 });
+
+    /// <summary>The drop-all (D) frame: the all flag set.</summary>
+    private static byte[] DropAllFrame(int slot) => SessionFixture.Frame(ClientOp.DropItem, new byte[] { (byte)(slot + 1), 1, 0 });
 
     private static byte[] RideFrame() => SessionFixture.Frame(ClientOp.Setting, new byte[] { 0x00, 0x01, 0x00 });
 

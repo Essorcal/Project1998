@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using Server;
 using Shared;
@@ -592,6 +593,55 @@ public sealed class SubpathTeacherTests
         var lost = book.Where(b => rebuilt.All(r => r.Id != b.Id)).Select(b => b.Key).ToList();
         Assert.True(keepsTop && lost.SequenceEqual(new[] { lower }) && rebuilt.Count == Content.SpellBookCap,
                     $"book {book.Count}, rebuilt {rebuilt.Count}; top {top} kept {keepsTop}; held and lost [{string.Join(", ", lost)}]");
+    }
+
+    /// <summary>A devote or a renounce past the cap keeps every spell the book held, in the new alignment's version
+    /// (#417's re-check, F4). The rebuild runs at the new alignment, so a held spell comes back as that alignment's
+    /// version, under another id. A rank-3 Druid in alignment <paramref name="from"/> holds all nine Druid spells and that
+    /// alignment's Poet set owed, less as many entries as made room for them (52 in all), and devotes at the Kwi-Sin
+    /// shrine to <paramref name="to"/> (to 0: a renounce; <c>NpcContext.Devote</c>, <c>Session.SwapAlignment</c>,
+    /// <c>SyncSpellbook</c>). Of what the new alignment owes, nothing whose spell the book held (in any version, by the
+    /// content's alignment families) is cut; all nine stay; the book is full at 52. From 0 to 1 the pairs are named:
+    /// Resurrect becomes Return Spirit (<c>game-data/Spells.csv</c> ids 4138, 4139) and Ensure becomes Spirit Shield
+    /// (4162, 4163). Red with a spell counted held by its own id only: the cut takes the new versions of held level-99
+    /// spells and hands the forgotten ones back (the re-check's probe, ported).</summary>
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(0, 2)]
+    [InlineData(0, 3)]
+    [InlineData(1, 0)]
+    public void ADevoteOrRenouncePastTheCapKeepsEveryHeldSpellInItsNewAlignment(int from, int to)
+    {
+        int druid = Content.PathIdForClass("Druid");
+        var nine = Content.SubpathTeacherSpells(druid, Content.MarkSpellLevel, Content.MaxMark);
+        var owedFrom = Content.RespecSpellSet(druid, 99, alignment: from, mark: 3);
+        var owedTo = Content.RespecSpellSet(druid, 99, alignment: to, mark: 3);
+        int forgot = owedFrom.Count + nine.Count - Content.SpellBookCap;
+        Assert.True(forgot > 0, $"a rank-3 Druid in alignment {from} is owed {owedFrom.Count} + {nine.Count}, inside the book");
+        var forgotten = owedFrom.Take(forgot).ToList();
+        var book = owedFrom.Where(sp => !forgotten.Contains(sp)).Concat(nine).Select(sp => sp.Id).ToList();
+        var (s, _, c) = Member("Druid", 99, ch => { ch.Mark = 3; ch.Alignment = (byte)from; ch.Spells.AddRange(book); });
+        Assert.Equal(Content.SpellBookCap, c.Spells.Count);
+        var shrineDef = Content.NpcById(188)!;   // the Kwi-Sin shrine's shaman
+        var ctx = new NpcContext(s, TeacherMob(shrineDef), shrineDef);
+
+        s.WithState(() => ctx.Devote(to));
+
+        var family = (Dictionary<string, string>)typeof(Content)
+            .GetMethod("BuildAlignFamilies", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, new object[] { Content.Spells })!;
+        string F(SpellDef sp) => family.TryGetValue(sp.Key, out var leader) ? leader : sp.Key;
+        var bookF = book.Select(id => F(Content.SpellById(id)!)).ToHashSet();
+        var nowF = c.Spells.Select(id => F(Content.SpellById(id)!)).ToHashSet();
+        var heldCut = owedTo.Where(sp => bookF.Contains(F(sp)) && !nowF.Contains(F(sp))).Select(sp => $"{sp.Key}(lv{sp.Level})").ToList();
+        var lostNine = nine.Where(n => !c.Spells.Contains(n.Id)).Select(n => n.Key).ToList();
+        var named = from == 0 && to == 1
+            ? new[] { "return_spirit_poet", "spirit_shield_poet" }.Where(k => !c.Spells.Contains(Content.SpellByKey(k)!.Id)).ToList()
+            : new List<string>();
+        Assert.True(c.Alignment == to && heldCut.Count == 0 && lostNine.Count == 0 && named.Count == 0
+                    && c.Spells.Count == Content.SpellBookCap,
+                    $"{from} to {to}: alignment now {c.Alignment}, {c.Spells.Count} slots; held but cut [{string.Join(", ", heldCut)}]; " +
+                    $"Druid spells lost [{string.Join(", ", lostNine)}]; named versions missing [{string.Join(", ", named)}]");
     }
 
     // ===== plumbing ==============================================================================================
