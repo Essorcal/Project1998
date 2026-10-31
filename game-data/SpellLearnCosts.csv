@@ -655,3 +655,7 @@ shamans_torment,20,0,0,,,,,,,,,rtk-lua
 lightning_storm,13,99,0,rat_meat,30,rabbit_meat,20,,,,,rtk-lua
 earth_strike,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
 natures_smite,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
+song_of_the_goddess,21,0,0,,,,,,,,,rtk-lua
+sacred_verse,21,30,0,scroll,1,ink,1,,,,,rtk-lua
+tranquil_symphony,21,30,0,scroll,1,ink,1,,,,,rtk-lua
+costume,21,0,0,,,,,,,,,rtk-lua

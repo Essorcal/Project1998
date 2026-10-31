@@ -2038,6 +2038,10 @@ public sealed partial class Session
         // A periodic run on the caster themselves (Hear footstep; Session.Spells.cs's spell ticks) is RTK's duration on
         // the player, which RTK's client lists by name and seconds. It lives outside _buffs too, so it is surfaced here.
         foreach (var (name, until) in RunningSelfTicks(now)) lines.Add($"{name} {Secs(until, now)}s");
+        // A disguise run as another player, or at an NPC (Costume; Session.LuaDisguise), is RTK's duration on the player
+        // too, kept outside _buffs because it is never saved. A disguise as a creature rides the morph slot and its
+        // _buffs marker, so it is already listed above.
+        if (_disguiseRun is { } run && now < run.Until) lines.Add($"{run.Name} {Secs(run.Until, now)}s");
 
         return BuffBoxJoin(lines);
     }

@@ -90,6 +90,18 @@ public sealed class SpellContext
         _victimMap = tickMap;
     }
 
+    /// <summary>A run's beat on another player (Song of the Goddess; <c>Session.RunDueSpellTicks</c>): the victim is that
+    /// player, wherever they stand, given here and never resolved, and <paramref name="tickGen"/> is the count of their
+    /// ended durations the run began at, which <see cref="healRunVictim"/> hands on so a run their death or a Dispell has
+    /// ended heals no more.</summary>
+    internal SpellContext(Session s, SpellDef sp, Session tickPlayer, long tickGen)
+        : this(s, sp, null, null)
+    {
+        _victim = (null, tickPlayer);
+        _tickGen = tickGen;
+    }
+    private readonly long _tickGen;
+
     /// <summary>The map this cast's victim stands on: a tick's own map, else the caster's (every resolver here finds a
     /// victim on the caster's map only).</summary>
     private ushort VictimMap => _victimMap ?? _s.CharMap;
@@ -798,6 +810,44 @@ public sealed class SpellContext
     /// "Moon" by), at the world calendar's own UTC offset (<c>GameCalendar.Epoch</c>), so a host in another zone reads
     /// the same month.</summary>
     public double realMonth => DateTimeOffset.UtcNow.ToOffset(GameCalendar.Epoch.Offset).Month;
+
+    // ---- the disguise (P3; RTK clone.playerToPlayer and player.disguise) --------------------------------------------
+    /// <summary>Take the look of what stands on the faced tile for <paramref name="durationMs"/>, and say what it was
+    /// (RTK <c>Spells/Subpaths/Muse/costume.lua:21-37</c>; Spy's Mimic and Ranger's Forest cover are the same body):
+    /// "creature" (its look and colour, a creature's form: RTK state 4), "player" (their gear, face and colours, the
+    /// caster's own name; or, for a player in a creature's form, that form), "npc" (no look, but a run that ends with the
+    /// spell's graphic), or "none" (nothing living there, so nothing started). The run ends at its time, at death, at
+    /// @dispel and at a won Dispell, with the spell's graphic over the caster. See <c>Session.LuaDisguise</c>.</summary>
+    public string disguise(double durationMs) => _s.LuaDisguise(_sp, (int)durationMs);
+
+    // ---- effects on everyone on the caster's map (P11; RTK getObjectsInSameMap(BL_PC)) -----------------------------
+    /// <summary>Every player on the caster's map, the caster included, who is not already in a sanctuary takes the
+    /// Sanctuary line's incoming-damage multiplier <paramref name="mult"/> for <paramref name="durationMs"/> under this
+    /// spell's name, with its graphic over them; the others read "You have found Sanctuary." and "&lt;caster&gt; casts
+    /// &lt;spell&gt; on you."; its sound plays at the caster (RTK <c>Spells/Subpaths/Muse/sacred_verse.lua:21-42</c>).
+    /// Each is decided inside that player's own monitor. Returns how many it reached; 0 is still a cast. See
+    /// <c>Session.LuaMapSanctuary</c>.</summary>
+    public double mapSanctuary(double mult, double durationMs) => _s.LuaMapSanctuary(mult, (int)durationMs, _sp);
+
+    // ---- a heal run on the heal target (Song of the Goddess; RTK setDuration on the target and its while_cast) --------
+    /// <summary>The caster's rank within their path (RTK <c>player.mark</c>, <c>Character.Mark</c>): 0 for the base
+    /// rank, 1 Il san, 2 Ee san and up.</summary>
+    public double mark => _s.CharMark;
+    /// <summary>Start, or refresh, this caster's run on this cast's heal target (<see cref="HealTarget"/>, the one
+    /// <see cref="healReach"/> and <see cref="healIsGhost"/> read): the verb named <paramref name="verb"/> beats
+    /// <paramref name="durationMs"/> / 1,000 times, every second on a player and every 1.5 s on a creature (RTK's player
+    /// and creature duration timers), the last as the run ends; the spell's sound over the target now, and the engine's
+    /// line to a player other than the caster (RTK <c>Spells/Subpaths/TESTING/muse_song_of_the_goddess.lua:26-28</c>).
+    /// False at an NPC or nobody. See <c>Session.LuaStartHealRun</c>.</summary>
+    public bool startHealRun(string verb, double durationMs) =>
+        _s.LuaStartHealRun(_sp, HealTarget, verb, (int)durationMs);
+    /// <summary>In a heal run's beat: heal its victim for <paramref name="amount"/>, with the spell's graphic and sound
+    /// over them (RTK's while_cast: <c>addHealthExtend</c>, <c>playSound(4)</c>, <c>sendAnimation(66)</c>). A player is
+    /// healed inside their own monitor, and a player whose durations have ended since the run began (death, @dispel, a
+    /// won Dispell) or who is leaving ends the run instead. False when nothing was healed. See
+    /// <c>Session.LuaHealRunVictim</c>.</summary>
+    public bool healRunVictim(double amount) =>
+        _s.LuaHealRunVictim(_sp, Victim, VictimMap, _tickGen, (int)System.Math.Round(amount));
 
     // ---- login-only registry ---------------------------------------------------------------------------------------
     /// <summary>Read a per-caster integer kept for this login only (0 if unset): RTK <c>player.registry</c> for a value
