@@ -6,7 +6,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Siege and Focused Blow hit, cost and wait what the Nexus Atlas pages say (#328; Caleb, 2026-10-21, decision sheet
+/// Siege and Focused Blow hit, cost and wait what the Nexus Atlas pages say (#328; owner, 2026-10-21, decision sheet
 /// item 6).
 ///
 /// <para>Siege (<c>siege_warrior</c>), its three alignment names (<c>souls_freedom_warrior</c>,

@@ -6,7 +6,7 @@ namespace Tests;
 
 /// <summary>
 /// The twelve sacrifice reskins hold the shared cast/swing slot for a second, as Lethal Strike, Desperate Attack,
-/// Berserk and Whirlwind do: the six Rogue ones on Caleb's word of 2026-09-29 ("2 yes"), the six Warrior ones on his
+/// Berserk and Whirlwind do: the six Rogue ones on the project owner's word of 2026-09-29 ("2 yes"), the six Warrior ones on his
 /// word of 2026-10-21 (decision sheet item 1).
 ///
 /// <para>Afterlife's Embrace, Ming-Ken's Judgement and Calculating Blow are Lethal Strike under the other three

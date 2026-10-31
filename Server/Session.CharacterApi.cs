@@ -640,7 +640,7 @@ public sealed partial class Session : QuestState.ISessionStore
         // holds 2 to 3 billion of the 4,294,967,295 it can, so banking for the rank trials' 1.2 billion apiece
         // could carry it over the top and leave a small number. RTK stops at 4294967295 instead, and an award
         // that REACHES the cap, not only one that would pass it (its test is >=), reads RTK's own line in
-        // place of "N experience!" and returns without the level check. Ported as is (Caleb, 2026-10-24,
+        // place of "N experience!" and returns without the level check. Ported as is (owner, 2026-10-24,
         // decision 9: "As RTK"). The sum is taken in 64 bits so the test itself cannot wrap. "Sell" means the
         // shadow-stat vendors, which spend banked exp. Below the cap nothing here changes.
         if ((ulong)_char.Exp + amount >= uint.MaxValue)
@@ -1189,7 +1189,7 @@ public sealed partial class Session : QuestState.ISessionStore
     /// inside that side's monitor, and only if it still names the other side (PR #341 review, F1): a fiancé who has
     /// since got engaged to someone else keeps that engagement, and a half the fiancé already ended is not ended
     /// again. An online fiancé whose half this ends is told so, with the line their next login would have sent them
-    /// (PR #344's Follow-ups; Caleb, 2026-10-18); the clicker reads the Chapel's own. A fiancé found here who is
+    /// (PR #344's Follow-ups; owner, 2026-10-18); the clicker reads the Chapel's own. A fiancé found here who is
     /// already going away, their logout under way or their connection closed by the server, is left as an offline one
     /// is: their next login ends the half and tells them (PR #350 review, F1, and its re-check, Finding 1;
     /// <see cref="EndEngagement"/>).</para></summary>
@@ -1208,7 +1208,7 @@ public sealed partial class Session : QuestState.ISessionStore
     /// monitor already held; on the fiancé it is a cross-session entry from the clicker's thread, which holds the
     /// clicker's monitor and never <c>World._lock</c>, so it is taken by <c>StateRank</c>. The fiancé is read inside
     /// that section, so the check and the clear are one decision on this player's own state.</para>
-    /// <para>Why the check (PR #341 review, F1; Caleb, 2026-10-11, rule 1): the half the clicker's partner holds can
+    /// <para>Why the check (PR #341 review, F1; owner, 2026-10-11, rule 1): the half the clicker's partner holds can
     /// be stale. A broke it off while B was offline, so B's row kept "engaged to A"; A got engaged to C; B came back
     /// and broke off with A, and B's call cleared A's engagement to C on A's side only. Now a half that names someone
     /// else, or nobody, is not touched. The clicker's own half takes the same check against the name it read a moment
@@ -1294,7 +1294,7 @@ public sealed partial class Session : QuestState.ISessionStore
 
     /// <summary>
     /// End, at login and for free, any vow half whose partner no longer names this player back (PR #341 review, F1;
-    /// Caleb, 2026-10-11, rule 2). The arrival's last step (<c>HandleArrival</c>).
+    /// owner, 2026-10-11, rule 2). The arrival's last step (<c>HandleArrival</c>).
     ///
     /// <para><b>Why.</b> The Chapel ends both halves when the partner is online and only the clicker's when they are
     /// not, so an offline partner's row keeps "engaged to A" or "married to A" after A has ended it. Nothing read that

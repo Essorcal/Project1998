@@ -16,7 +16,7 @@ namespace Tests;
 /// and handed back half the pool (#351's review, hunt 1). At the shipped date (2001-07-09) both are off, so only the
 /// strike's own cost showed; <see cref="NpcDamageVerbTests"/> pins that date.</para>
 ///
-/// <para><b>Now</b> an NPC in front is nothing in front, RTK's reading, as Caleb chose (2026-10-19): the strike costs
+/// <para><b>Now</b> an NPC in front is nothing in front, RTK's reading, as the project owner chose (2026-10-19): the strike costs
 /// what a strike at nothing costs and strikes nothing, so there is no overkill to spend.</para>
 ///
 /// <para><b>Why a collection that runs alone.</b> The era date is read from <c>ServerTuning.csv</c> through

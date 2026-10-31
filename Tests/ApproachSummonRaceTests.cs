@@ -294,7 +294,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
     /// <summary>
     /// <b>Summoning someone mid-exchange cancels the exchange for both traders</b>, and each sees the client's
     /// "Exchange cancelled." box, the line every other cancelled exchange gets. The partner is not in the group
-    /// and is not moved. The rule is #57's: any move ends an exchange. Caleb kept this at PR #325's merge
+    /// and is not moved. The rule is #57's: any move ends an exchange. The project owner kept this at PR #325's merge
     /// (2026-10-06), rather than have Summon fizzle on a trader; this pins it.
     /// </summary>
     [Fact]
@@ -483,7 +483,7 @@ public sealed class ApproachSummonRaceTests : IClassFixture<SessionFixture>
 
     /// <summary>
     /// <b>A <c>@rez</c> waiting on a ghost who logs out revives nobody and saves no revived row</b> (#330's class through
-    /// <c>ReviveInPlace</c>; PR #358 review, R5; Caleb, 2026-10-21). The ghost's own thread holds its monitor; the GM's
+    /// <c>ReviveInPlace</c>; PR #358 review, R5; owner, 2026-10-21). The ghost's own thread holds its monitor; the GM's
     /// <c>@rez &lt;name&gt;</c> finds them by name and waits on that monitor inside <c>ReviveInPlace</c>; the ghost
     /// disconnects (the real teardown, off the map, the corpse saved). The revive must find them leaving before its
     /// heal: still a ghost in memory and in the row, nothing sent to them, and the GM reads the lookup's own line.

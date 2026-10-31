@@ -27,7 +27,7 @@ once and raised to 1 (`Combat.FloorOnce`); a hit from behind then doubles that w
 1.3, Sleep 1.5) is one more term of that product: the swing hands its figure to `World.TryDamage` unfloored, and
 `TryDamage` multiplies the amplifier in, floors once and then doubles, as RTK multiplies by `target.sleep` (:92) before
 its one floor (:108). Until #363 it was applied after the floor and the x2, rounded half to even, so that hit was
-rounded twice. Caleb: "multiply everything, round down once, minimum 1",
+rounded twice. The project owner: "multiply everything, round down once, minimum 1",
 and "Round down once (minimum 1), then double for a hit from behind. Ordinary hits from behind stay exactly as
 today." The reach scale sits inside the floor, and #363 left it there. Against a **player**, the swing's figure is handed over unfloored
 (`Session.PlayerSwingRaw`) with the rear x2 as a flag, and the defender's intake (`Session.TakeDamage`) multiplies in
@@ -1159,12 +1159,12 @@ class.
 weaker than Singe. One cast confirms or kills it: predicts **464** on a squirrel at level 16 / will 16.
 
 **Spark, since 2026-10-21 (#200):** the seven Spark-family rows (Spark, Glimpse of the Void and Nature's Ire for
-mage; all four for poet) read the live probe's `50 + level/2`, with Will out (Caleb's ruling, decision sheet item
+mage; all four for poet) read the live probe's `50 + level/2`, with Will out (the project owner's ruling, decision sheet item
 13). The archived "Spark = 50 + level/2, 19/19 exact" and the `(L+W)/4` shape above agree only when Will equals
 level, and the probe's "a +1 will item changed nothing" was the measurement on the table. The half is kept to the
 armor step: `Session.CastArch` no longer rounds the evaluated amount, and the spell path carries a double to
 `Combat.ApplyArmor`, so a level-15 self-cast at AC 85 lands floor(57.5 × 1.85) = 106 as read live (rounded first, it
-was 107). Mage Bolt, Spark's Ming-Ken name, has been on this row since 2026-10-22 (Caleb, decision sheet item 3;
+was 107). Mage Bolt, Spark's Ming-Ken name, has been on this row since 2026-10-22 (owner, decision sheet item 3;
 #200): 50 + level/2 for 20 mana, read from its spell_effects.csv row by `verbs.magic_damage`, the verb its
 `game-data/SpellParams.csv` row still binds for Bolt's refusals, with #78's single floor. It used to be
 2 + 1.5 × Will for 4 mana, which no source gives. Singe and Ignite are unchanged.

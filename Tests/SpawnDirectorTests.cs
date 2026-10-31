@@ -768,7 +768,7 @@ public class SpawnDirectorRoomTests
                      onChamber.OrderBy(k => k, StringComparer.Ordinal));
     }
 
-    /// <summary>Caleb's rule for a room off its map (2026-10-21): a room with no tile of its map within two of it
+    /// <summary>The project owner's rule for a room off its map (2026-10-21): a room with no tile of its map within two of it
     /// is left out of the filing and the pick, and only such a room. <c>monkey_avenger</c>'s rooms are 4163:6:5,
     /// 4164:24:32 and 4167:18:22; the second is RTK's warp, and map 4164 is 20x30, so <c>FreeSpawnTile</c>
     /// found no tile of it within reach and built the boss at (24,32), outside the map, where nobody could kill
@@ -850,7 +850,7 @@ public class SpawnDirectorRoomTests
     /// and the boss is built on it. RTK's script puts that room at 4258:7:13 (<c>mythic_dragon.lua</c>,
     /// <c>spirit_dragon</c>'s <c>on_spawn</c>). On the 4.95 map that tile is open ground walled in on all four
     /// sides, so the boss stood where nobody could walk to it or swing at it (#357's review, F1). The row names the
-    /// corridor tile two east instead, 4258:9:13, on Caleb's word (2026-10-22): a deliberate deviation for the
+    /// corridor tile two east instead, 4258:9:13, on the project owner's word (2026-10-22): a deliberate deviation for the
     /// 4.95 terrain, noted beside the row in <c>MobSpawnRules.csv</c>.
     ///
     /// <para>The terrain half is the review's check (<see cref="WalkableFromItsLandings"/>). The room tile is
@@ -1062,7 +1062,7 @@ public class SpawnDirectorRoomTests
     /// <summary>Gim Yi's Den (1308) is the one room map with a batch group of the same creature
     /// (<c>AreaSpawns.csv</c>: one <c>gimyi</c>, a 300 s clock, anywhere on the map). A map's first entry runs
     /// its groups before its points, so a <c>gimyi</c> point filed under 1308 added a second Gim Yi to the
-    /// group's on every first visit. Caleb's word (2026-10-21): one Gim Yi in its den, as before #333. So the
+    /// group's on every first visit. The project owner's word (2026-10-21): one Gim Yi in its den, as before #333. So the
     /// point stays filed under map 4, its row's map; the Den's first entry finds the group's one Gim Yi and no
     /// other.
     ///

@@ -8,7 +8,7 @@ namespace Tests;
 
 /// <summary>
 /// #82: a Harden Body ward (the poet spell, its three alignment reskins, or the Scroll of Immortality's flag) blocks
-/// a venom tick's HP loss. Caleb, 2026-10-21 (decision sheet item 14, and "82: ward blocks every tick").
+/// a venom tick's HP loss. The project owner, 2026-10-21 (decision sheet item 14, and "82: ward blocks every tick").
 ///
 /// <para>RTK's <c>Player.removeHealthExtend</c> opens on the ward check (player.lua:164-169), and venom.lua's tick goes
 /// through it, so a warded player loses nothing; the animation and "Poison is spreading through your veins." are sent
@@ -73,7 +73,7 @@ public sealed class VenomWardTests
         finally { _fx.World.LeaveMap(p, Field); }
     }
 
-    /// <summary>The low-HP drop is blocked too (Caleb: "ward blocks every tick"). On 5 HP a 10 tick would leave 1,
+    /// <summary>The low-HP drop is blocked too (the project owner: "ward blocks every tick"). On 5 HP a 10 tick would leave 1,
     /// and RTK's branch for that skips its ward and sets 1. Here the ward holds: 5 stays 5.
     /// <para>Red on 88d179d: 1.</para></summary>
     [Theory]

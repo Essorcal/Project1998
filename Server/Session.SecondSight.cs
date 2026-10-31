@@ -14,7 +14,7 @@ namespace Server;
 /// once a second and <c>pc_scripttimer</c> advances the counter every 500 ms (rtk/src/map/pc.c:192, :197, :2955), so
 /// once in every 15 s. It looks at the players on the same map within 9 tiles on both axes
 /// (<c>distanceSquare</c>, Scripts/scripts.lua:378) who are invisible (<c>state == 2</c>, <c>PC_INVIS</c>, which
-/// rogue/invisible.lua sets). Caleb chose the era pages' numbers on 2026-10-08.</para>
+/// rogue/invisible.lua sets). The project owner chose the era pages' numbers on 2026-10-08.</para>
 ///
 /// <para><b>Data and engine.</b> The four spell_effects.csv rows carry the cast: 140 mana, a 325 s run and the
 /// <see cref="SecondSightSlot"/> slot, which <c>arch_buff</c> fills as it fills any slot-only buff. That entry is

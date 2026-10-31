@@ -62,7 +62,7 @@ public class DamageIntakeTests
 
     // ---- the damage math, one intake at a time ------------------------------------------------------------
     //
-    // #78 (Caleb, 2026-10-21: "multiply everything, round down once, minimum 1"). Every term multiplies the
+    // #78 (owner, 2026-10-21: "multiply everything, round down once, minimum 1"). Every term multiplies the
     // unrounded figure and the product is floored once and raised to 1 (Combat.FloorOnce); a hit from behind is
     // then doubled ("Round down once (minimum 1), then double for a hit from behind"). Each step used to
     // round on its own: the armor floor, then Math.Round (half to even) after the amplifier and again after the
@@ -157,7 +157,7 @@ public class DamageIntakeTests
     }
 
     /// <summary>The positional rear x2 belongs to the mob swing alone, and doubles the figure AFTER the one floor,
-    /// as RTK's swingDamage.lua does (:147-150). Caleb, 2026-10-21: "Round down once (minimum 1), then double for a
+    /// as RTK's swingDamage.lua does (:147-150). The project owner, 2026-10-21: "Round down once (minimum 1), then double for a
     /// hit from behind. Ordinary hits from behind stay exactly as today." Same facing, attacker to the south of a
     /// north-facing victim: floor(101 x 0.5) = 50, doubled to 100, as on 6de1d24. Under a 1.5x amplifier,
     /// floor(101 x 0.5 x 1.5) = 75, doubled to 150 (6de1d24 also 150, by its own rounding).

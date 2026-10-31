@@ -8,7 +8,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The Shaman spells slice (Caleb, 2026-10-26: P5 "each spell as its RTK script"; Q7 "Port RTK's testing copy"): Shaman's
+/// The Shaman spells slice (owner, 2026-10-26: P5 "each spell as its RTK script"; Q7 "Port RTK's testing copy"): Shaman's
 /// solace, Reincarnate and Shaman's torment do what their RTK scripts do, and the Shaman teacher sells them. Before, all
 /// three fell to the <c>generic</c> verb: 5 mana and nothing else (<c>Tests/Fixtures/spell-dispatch-routes.txt</c> had
 /// them on <c>verb=generic</c>).

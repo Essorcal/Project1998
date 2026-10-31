@@ -18,7 +18,7 @@ namespace Tests;
 /// that frame is computed from the cached gear sum from BEFORE the swap: it shows the old weapon's max HP (and
 /// clamps current HP against it) and is corrected by the stats push at the end of the swap. Moving the drop
 /// changes that interim frame (and, depending on where it lands, the frame order), which the HUD shows. That is a
-/// player-visible change and Caleb's call, so these facts pin master's exact sequence: any reordering of the swap
+/// player-visible change and the project owner's call, so these facts pin master's exact sequence: any reordering of the swap
 /// goes red here, and the diff of the expectation is the change to be decided on.</para>
 ///
 /// <para>Each recording is every frame the player's own client receives for one 0x1C equip (or 0x1F unequip),

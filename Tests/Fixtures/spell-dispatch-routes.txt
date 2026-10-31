@@ -11,25 +11,25 @@
 # own rage rows in game-data/SpellMods.csv. No other line changed.
 # The spell-rulings slice (2026-10-21) then moved cotw_wind_master_poet from verb=misc to
 # verb=not_castable row: a SpellParams.csv row binds Wind master to a verb that refuses every cast, for free
-# and silently, until a source names its creature (Caleb's decision sheet item 3). No other line changed.
+# and silently, until a source names its creature (the project owner's decision sheet item 3). No other line changed.
 # The subpath damage-spells slice (2026-10-24) then moved eight PC-subpath spells from verb=generic to their
 # own verbs, each bound by a SpellParams.csv row: assassinate to verb=assassinate row; ki_strike, hailstorm and
 # ice_bombardment to verb=splash_strike row; phoenix_flames to verb=ring_strike row; earth_strike and
-# natures_smite to verb=ranged_strike row; lightning_storm to verb=storm_strike row (Caleb's decision sheet
+# natures_smite to verb=ranged_strike row; lightning_storm to verb=storm_strike row (the project owner's decision sheet
 # item 18, RTK's scripts). control_flames stays on verb=generic. No other line changed.
 # The aligned Sam san rows slice (2026-10-24) then added thirty lines: the Kwi-Sin, Ming-Ken and Ohaeng rows of
-# ten Sam san families (Caleb's decision sheet item 7), each on its base spell's branch (verb=arch_heal,
+# ten Sam san families (the project owner's decision sheet item 7), each on its base spell's branch (verb=arch_heal,
 # verb=sacrifice, verb=arch_damage, verb=mend_equipment, verb=ward row or verb=not_castable row). No other line changed.
 # The Shaman spells slice (2026-10-26) then moved three PC-subpath spells from verb=generic to their own verbs,
 # each bound by a SpellParams.csv row: shamans_solace to verb=ranged_heal row, reincarnate to verb=revive_around row
-# and shamans_torment to verb=torment row (Caleb's P5 and Q7: RTK's scripts, torment from its TESTING copy). No
+# and shamans_torment to verb=torment row (the project owner's P5 and Q7: RTK's scripts, torment from its TESTING copy). No
 # other line changed.
-# The Do spells slice (2026-10-26) then moved seven PC-subpath spells off verb=generic (Caleb's P5: RTK's scripts):
+# The Do spells slice (2026-10-26) then moved seven PC-subpath spells off verb=generic (the project owner's P5: RTK's scripts):
 # dash_do to verb=dash row, hear_footstep_do to verb=hear_footstep row, assess_opponent_do to verb=assess row and
 # crossing_swords to verb=chungryong_rage row, each bound by a SpellParams.csv row; blend to verb=stance_stealth (the
 # stealth set); balance_weapon and master_weapon to verb=stance_enchant (their SpellMods.csv enchant rows). No other
 # line changed.
-# The Do slice's third round (2026-10-26, Caleb's Q15: Blend as its RTK script) then moved blend from
+# The Do slice's third round (2026-10-26, the project owner's Q15: Blend as its RTK script) then moved blend from
 # verb=stance_stealth to verb=hide row: a SpellParams.csv row binds it to its own verb. No other line changed.
 # The Diviner spells slice (2026-10-30, the project owner's P5: RTK's scripts) then moved four PC-subpath spells off
 # verb=generic, each bound by a SpellParams.csv row: read_karma_diviner to verb=read_karma row, divine_time to

@@ -71,7 +71,7 @@ public readonly record struct FromTile(ushort Map, ushort X, ushort Y);
 /// <para><b>Every arrival in the tree uses one of these two, and the default is the original game's own
 /// behaviour.</b> The source check #99 waited on is answered: when a warp put a player on a tile another
 /// player already stood on, the game stacked them — it neither refused the warp nor moved the arriver to a
-/// neighbouring tile (Caleb, from play, 2026-09-06; <c>game-data/Sources.csv</c>
+/// neighbouring tile (the project owner, from play, 2026-09-06; <c>game-data/Sources.csv</c>
 /// <c>live-2026-09-06-arrival-stack</c>; structurally consistent with RTK's <c>pc_warp</c>, which applies
 /// no occupancy test, and with its per-cell player list holding several — docs/4.x/Protocol.md §11g). So
 /// <see cref="Clamp"/> is the game-faithful default, there is deliberately no Refuse and no "step aside on
@@ -332,7 +332,7 @@ public sealed partial class World
     /// together. Ours had drifted to a per-player accumulator that restarted whenever the player dropped
     /// below full, which made the first tick after damage always exactly 25 s later and meant a player
     /// chipped every 20 s never regenerated at all. This is the return to the original behaviour, decided by
-    /// Caleb on 2026-09-19, and it is the reason <c>RegenTick</c> can decide from thread-local state whether
+    /// the project owner on 2026-09-19, and it is the reason <c>RegenTick</c> can decide from thread-local state whether
     /// it has anything to do this beat.</para>
     ///
     /// <para>Tick-thread-owned: written and read only inside <see cref="FlushTick"/>.</para></summary>

@@ -9,7 +9,7 @@ namespace Tests;
 /// Spirit Blade arms its enchant (the test client's spell census, defect 1).
 ///
 /// <para><c>spirit_blade</c> is one of the <c>EnchantFor</c> spells (<c>game-data/SpellMods.csv</c>: x10 for 10000
-/// mana, RTK's <c>Spells/Subpaths/Do/spirit_blade.lua</c>, on Caleb's word of 2026-10-26; it was x9 by the
+/// mana, RTK's <c>Spells/Subpaths/Do/spirit_blade.lua</c>, on the project owner's word of 2026-10-26; it was x9 by the
 /// earliest-source rule, <c>Content.EnchantSpells</c>' note) and, with Do's Balance and Master weapon, one of the three
 /// with no <c>spell_effects.csv</c> row. <c>Session.ApplyCast</c> used to send every
 /// spell without a row to the keyword fallback (the <c>generic</c> verb) before it reached the enchant

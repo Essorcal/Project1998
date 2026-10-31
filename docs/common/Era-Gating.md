@@ -122,7 +122,7 @@ for the same reason.
 
 Not every late arrival gets a gate. **Ranger** (PthId 15, the rogue's second PC subpath) is dated after
 2001-07-09 by the pages we have, and is kept as RTK and today have it: no row in `EraFeatures.csv`, no gate
-(Caleb, 2026-10-24). This is a source note, not a feature date.
+(owner, 2026-10-24). This is a source note, not a feature date.
 
 - tswolf's Classes/Subpaths page (tswolf.com/classes/, Wayback 2001-01-26, 2001-06-15 and 2001-08-05) names
   Merchant, **Shadow** and Spy in the Rogue column. Ranger is not there.

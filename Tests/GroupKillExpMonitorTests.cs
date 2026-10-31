@@ -78,7 +78,7 @@ public sealed class GroupKillExpMonitorTests
     }
 
     /// <summary>#168: a group share decided BEFORE a member's teardown, and paid after it, is kept — in the row
-    /// the member's logout leaves, and across a fast re-login of the same account. That is Caleb's constraint
+    /// the member's logout leaves, and across a fast re-login of the same account. That is the project owner's constraint
     /// ("a plain logout keeps its share"), and the reason the held patch that refused writes after the
     /// teardown was rejected: it lost this share in every order.
     ///

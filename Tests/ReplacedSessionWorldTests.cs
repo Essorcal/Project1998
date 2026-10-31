@@ -14,7 +14,7 @@ namespace Tests;
 /// found it. The harmful case is a death in the window: <c>Die()</c> spills coins and part of the bag onto the
 /// floor while the new session, which loaded before the death, still carries them. That is a duplication.</para>
 ///
-/// <para><b>What changed</b> (the design is Caleb's, option 5b of the #168 decision sheet): <c>World.PeerAt</c>,
+/// <para><b>What changed</b> (the design is the project owner's, option 5b of the #168 decision sheet): <c>World.PeerAt</c>,
 /// <c>World.RetargetByThreat</c>'s three player reads and the three <c>MobAiTick</c> reads the sheet names skip a
 /// replaced session, and <c>Session.TakeDamage</c> lands nothing on one. Every read is a volatile field read
 /// with no session monitor, the #183 shape, so it is legal under <c>World._lock</c>.</para>

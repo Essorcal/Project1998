@@ -1083,7 +1083,7 @@ public sealed partial class Session
     /// consume returns false on a database fault, so the arrival is refused as a bad token; the ban check reads
     /// "not banned" on a database fault too; and the ban notice's send ends in the outbound channel's
     /// <c>TryWrite</c>. The close was widened to that span to cover an unexpected throw there (PR #311 review F2, on
-    /// Caleb's decision of 2026-09-29), and the widening changes nothing a player sees today. Without this close, a
+    /// the project owner's decision of 2026-09-29), and the widening changes nothing a player sees today. Without this close, a
     /// throw on either side of the claim would reach the handler guard in <see cref="Handle"/>, which keeps the
     /// session, and the client would sit on the loading screen until it gave up.</para>
     ///

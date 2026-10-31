@@ -477,7 +477,7 @@ public static partial class Content
     /// mark needs that rank, as at every trainer here (<see cref="SpellsForClass"/>'s <c>s.Mark &lt;= mark</c>).
     /// Ordered by level, then name. Not <see cref="SpellsForClass"/>: that one drops these rows and would pin their
     /// level to <see cref="MarkSpellLevel"/>.
-    /// <para>The price row is the gate (Caleb, 2026-10-26, "Only working spells"): a subpath's spells go on sale
+    /// <para>The price row is the gate (owner, 2026-10-26, "Only working spells"): a subpath's spells go on sale
     /// one spell slice at a time, as each slice gives them real behaviour and adds their rows at RTK's script
     /// prices. A subpath with no rows yet sells nothing, and its teacher says so. Empty for any path that is not a
     /// PC subpath.</para>
@@ -593,7 +593,7 @@ public static partial class Content
     /// (Wayback 2001-01-29 and 2001-06-27), its spell pages link Il San and Ee San and no Sam San through
     /// 2001-08-21, and Wayback holds no tswolf.com/spells/samsan.shtml at all; Nexus Atlas first documents it
     /// on its "Sam San, 3rd Mark" quest page (nexusatlas.com/quests/samsan.php, first capture 2002-10-05).
-    /// Sam san stays at 3 anyway, as today and with no era gate (Caleb, 2026-10-24), and its promotion is to
+    /// Sam san stays at 3 anyway, as today and with no era gate (owner, 2026-10-24), and its promotion is to
     /// be built after Il san's and Ee san's. Sa san is later still: its Atlas quest page's first capture is
     /// 2008-10-15.</para>
     /// <para>KNOWN CONSEQUENCE: the 34 mark-4 items stay unwearable, since the ItmMark gear gate reads the
@@ -725,7 +725,7 @@ public static partial class Content
     /// <see cref="DogSpellsFor"/>. They cannot arrive through <see cref="SpellsForClass"/>, which is also the
     /// tutor menu and must never show one, so this is the single place a rebuild can pick them up.</para>
     /// <para><paramref name="held"/> is the book being rebuilt, as it stands before the rebuild clears it. Every
-    /// entry of it that is one of <paramref name="pathId"/>'s own PC-subpath spells is kept (Caleb, 2026-10-26,
+    /// entry of it that is one of <paramref name="pathId"/>'s own PC-subpath spells is kept (owner, 2026-10-26,
     /// "Keep what the book holds"): a member bought those at their teacher, and no trainer list or rebuild can
     /// hand them back (<see cref="IsPcSubpathSpell"/>). Nothing is saved for them, so one the member forgot stays
     /// forgotten until bought again, and a rebuild into another path (<c>@class</c>) drops them, since their path
@@ -1116,8 +1116,8 @@ public static partial class Content
     // WHAT WE SHIP (earliest of each, but Spirit Blade):
     //     Enchant 1.5 | Infuse 2 | Ingress 3 | Viper's Venom 4 | Dragon's Flame 5 | Spirit Blade 10
     //     Baekho's Blade (rogue, Ee San) 1.5
-    // SPIRIT BLADE FOLLOWS RTK, ON CALEB'S WORD: x10, RTK's Spells/Subpaths/Do/spirit_blade.lua (`player.enchant = 10`),
-    // chosen by Caleb on 2026-10-26 (the PC-subpath Do slice, Q8: "x10, as RTK"; the option read "About 11% more weapon
+    // SPIRIT BLADE FOLLOWS RTK, ON THE PROJECT OWNER'S WORD: x10, RTK's Spells/Subpaths/Do/spirit_blade.lua (`player.enchant = 10`),
+    // chosen by the project owner on 2026-10-26 (the PC-subpath Do slice, Q8: "x10, as RTK"; the option read "About 11% more weapon
     // damage while it's active, matching RTK's script and later guides."). It shipped at 9 by the earliest-source rule,
     // which still sets every other enchant here. Do's two marked enchants take their RTK scripts' figures by the same slice (P5): Balance weapon
     // x15 for 15,000 mana and Master weapon x20 for 25,000 (Subpaths/Do/balance_weapon.lua, master_weapon.lua); no
@@ -1150,7 +1150,7 @@ public static partial class Content
     // see Session.PlayerSwingRaw). NOTE: this only ports the DAMAGE multiplier, not real invisibility —
     // RTK's PC_INVIS state also hides the player's sprite from other clients (clif.c), which would need
     // viewport/ShowPlayer changes this pass doesn't touch.
-    // Blend (Do; RTK Spells/Subpaths/Do/blend.lua) is NOT here: on Caleb's word (2026-10-26, Q15, "As RTK's script")
+    // Blend (Do; RTK Spells/Subpaths/Do/blend.lua) is NOT here: on the project owner's word (2026-10-26, Q15, "As RTK's script")
     // it casts through its own `hide` verb (its SpellParams.csv row), on the same stealth state but with its script's
     // rules: x9, "Your will is too weak.", a cast while invisible casts again, and "You are no longer invisible." when
     // it ends (Session.LuaHide, Session.RevertStealth). This family keeps x5 and its rules.
@@ -1174,7 +1174,7 @@ public static partial class Content
     // aethers (#328). Siege's three alignment names are below; the live Atlas warrior page lists them
     // (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21). So are Focused Blow's, which the live
     // Atlas rogue page lists in Focused Blow's own block (https://www.nexusatlas.com/spells/rogue.php, fetched
-    // 2026-10-10; Caleb, 2026-10-24, decision sheet item 7).
+    // 2026-10-10; owner, 2026-10-24, decision sheet item 7).
     public enum SacrificeFamily { LethalStrike, DesperateAttack, Berserk, Whirlwind, FocusedBlow, Siege }
     private static readonly Dictionary<string, SacrificeFamily> SacrificeAliases = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -1280,7 +1280,7 @@ public static partial class Content
     // Sam San one-offs that fit no existing archetype (nexusatlas 2004; the 2002-10-01 TSWolf announcement
     // names Mend Equipment "Luster return" and Spirit Salvation, i.e. these are alignment aliases). The live
     // Nexus Atlas warrior page names all three of Mend Equipment's: Kwi-Sin "Restore equipment", Ming-Ken "Luster
-    // return", Ohaeng "Reforge" (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21; Caleb,
+    // return", Ohaeng "Reforge" (https://www.nexusatlas.com/spells/warrior.php, fetched 2026-10-21; owner,
     // 2026-10-24, decision sheet item 7). They repair as Mend Equipment does, so all four keys take its verb.
     private static readonly HashSet<string> MendEquipmentSpells = new(StringComparer.Ordinal)
     {
@@ -1315,10 +1315,10 @@ public static partial class Content
     //   would change nothing here: the verb's 600 comes out of a pool of at least 600 and the drain takes the
     //   whole pre-cast reading from what is left, so the cast ends at 0 either way. They stay false. Dooms
     //   Fire's row takes the same gate at the live Nexus Atlas mage page's "Mana Cost - 15,275" and its
-    //   "Aethers - 65 Seconds" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; Caleb,
+    //   "Aethers - 65 Seconds" (https://www.nexusatlas.com/spells/mage.php, fetched 2026-10-10; owner,
     //   2026-10-22, decision sheet item 5): arch_damage refuses below 15,275 for free, and from it the cast
     //   ends at 0 for the same reason, so it stays false too. RTK has no script for it. Its three alignment
-    //   names on that page, Deaths awakening, Soul rip and Final blow (Caleb, 2026-10-24, decision sheet item 7),
+    //   names on that page, Deaths awakening, Soul rip and Final blow (owner, 2026-10-24, decision sheet item 7),
     //   carry its row and take the same entry, as Inferno's reskins take Inferno's. Retribution and its
     //   three reskins (RTK poet/retribution.lua, `player.magic = 0` after a successful global_zap) are the
     //   same thing one tier down: "deals 34% of current mana to target", and it empties you doing it.
@@ -1593,7 +1593,7 @@ public static partial class Content
     // and Ohaeng names). RTK makes each a one-line wrapper over its original's cast (rogue/lethal_strike.lua,
     // desperate_attack.lua, warrior/berserk.lua, whirlwind.lua), and the sacrifice verb runs all sixteen alike, but
     // the export gave the twelve reskins bare Utility rows where the originals have Damage rows, so the archetype
-    // test in CastDelayMs gave the reskins no delay at all. Caleb: they share the originals' 1s (the Rogue six on
+    // test in CastDelayMs gave the reskins no delay at all. The project owner: they share the originals' 1s (the Rogue six on
     // 2026-09-29, the Warrior six on 2026-10-21). Named key by key rather than by sacrifice family, so a spell that
     // joins the family later does not take a delay no decision gave it.
     private static readonly HashSet<string> SacrificeReskins = new(StringComparer.OrdinalIgnoreCase)
@@ -1920,7 +1920,7 @@ public static partial class Content
     // the three Champions and Wind warrior with the three Avatars, cost no mana and have an 8-minute
     // (480000 ms) cooldown; every lower tier costs a flat 10 mana with no cooldown. Source: Nexus Atlas's poet
     // page (Sources.csv atlas-poet-spells). RTK agrees on the cooldown (cotw_wind_dancer.lua:6,
-    // cotw_wind_warrior.lua:5) but charges the dancer tier 10 mana (cotw_wind_dancer.lua:3); Caleb chose 0 on
+    // cotw_wind_warrior.lua:5) but charges the dancer tier 10 mana (cotw_wind_dancer.lua:3); the project owner chose 0 on
     // 2026-09-29. The gold in RTK's requirements() is the trainer's learn price (SpellLearnCosts.csv), which
     // every tier has, not a cast cost.
     // Loaded from game-data/Pets.csv in Load() — see LoadPets.

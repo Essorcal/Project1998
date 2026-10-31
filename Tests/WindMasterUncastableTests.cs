@@ -6,7 +6,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// Wind master is not castable until a source names its creature (Caleb, 2026-10-21, decision sheet item 3).
+/// Wind master is not castable until a source names its creature (owner, 2026-10-21, decision sheet item 3).
 ///
 /// <para>The Poet's Sam San summon (<c>cotw_wind_master_poet</c>) has no Pets.csv row: RTK has no script for it,
 /// <c>mobs.csv</c> has no creature for it, and the live Nexus Atlas poet page describes it as "Summons a ??? vita

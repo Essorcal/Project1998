@@ -13,7 +13,7 @@ namespace Tests;
 /// <summary>
 /// A broken-off engagement or a divorce clears only the vow that names the player who asked for it, and a half whose
 /// partner no longer names it back ends at that player's next login, for free (PR #341's tier A review,
-/// <c>reviews/PR341-by-fable.md</c>, F1; Caleb, 2026-10-11, "Fix it", with two rules).
+/// <c>reviews/PR341-by-fable.md</c>, F1; owner, 2026-10-11, "Fix it", with two rules).
 ///
 /// <para><b>Before.</b> The Chapel ends a vow on both sides when the partner is online, and on the clicker's side only
 /// when they are offline: the partner's saved row keeps its legend, its fiancé or spouse and its keepsake. Nothing read
@@ -31,7 +31,7 @@ namespace Tests;
 /// and from their saved row through the arrival's own store when they are not. A consistent pair, and a partner whose
 /// row cannot be read, are left as they are.</para>
 ///
-/// <para><b>And then</b> (#344's Follow-ups; Caleb, 2026-10-18, "As recommended"). A confirm whose vow the partner
+/// <para><b>And then</b> (#344's Follow-ups; owner, 2026-10-18, "As recommended"). A confirm whose vow the partner
 /// already ended is free: the dialog re-checks the clicker's own half, under the clicker's own monitor, before it
 /// charges, and Crystal says "Your marriage to X has already ended." (or engagement) instead; she says the same to a
 /// "No" there, to a Marriage picked from a menu built before the end, and to either answer to the ceremony's question
@@ -41,21 +41,21 @@ namespace Tests;
 /// closed, reads it once, at their next login; and a partner whose half names someone else, or nobody, reads
 /// nothing.</para>
 ///
-/// <para><b>And the ceremony</b> (PR #355's review, O1; Caleb, 2026-10-21, "8: fix it now"). The fiancé's "I do"
+/// <para><b>And the ceremony</b> (PR #355's review, O1; owner, 2026-10-21, "8: fix it now"). The fiancé's "I do"
 /// marries only an engagement that still holds. Inside the pair's section, before it writes anything, the ceremony
 /// reads both halves again: a pair who no longer name each other, or of whom either is married, is written nothing,
 /// and each reads the "has already ended." line naming the other. Before that it refuses a wedding if either of the two
-/// is going away, logging out or with a connection the server has closed (Caleb, 2026-10-22, decision 17): nothing is
+/// is going away, logging out or with a connection the server has closed (owner, 2026-10-22, decision 17): nothing is
 /// written, and the one still present reads "Both parties must be present for the ceremony to commence".</para>
 ///
-/// <para><b>And the lines to the other player</b> (PR #365's review, O2, and PR #368's, N4; Caleb, 2026-10-22, decision
+/// <para><b>And the lines to the other player</b> (PR #365's review, O2, and PR #368's, N4; owner, 2026-10-22, decision
 /// 32). The fiancé's answer resumes the ceremony on his thread, and the beloved's answer resumes the proposal on
 /// theirs, so a line to the bride, or to the proposer, is a send into another player. Each is now sent inside that
 /// player's monitor: the wedding's "I now pronounce you (married)" inside the pair's section, after the writes, and the
 /// two declines inside the receiver's own. A bride whose logout follows the wedding has her line handed to her
 /// connection before her teardown runs, and so before its close.</para>
 ///
-/// <para><b>And the prices past the top of a uint</b> (Caleb, 2026-10-26: "As RTK"). A divorce costs <c>MaxHp *
+/// <para><b>And the prices past the top of a uint</b> (owner, 2026-10-26: "As RTK"). A divorce costs <c>MaxHp *
 /// 2550</c> experience and a broken engagement <c>MaxMp * 1000</c>, both now taken in 64 bits as RTK's Lua numbers are.
 /// Past base Vita 1,684,300 the divorce is quoted in full, more than anyone can hold, so "Yes" leads to the sacrifice;
 /// past base Mana 4,294,967 a broken engagement takes all banked experience. Before, both wrapped to a small
@@ -704,7 +704,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
         }
     }
 
-    // ===== the prices past the top of a uint (Caleb, 2026-10-26: "As RTK") ===================================
+    // ===== the prices past the top of a uint (owner, 2026-10-26: "As RTK") ===================================
 
     /// <summary>
     /// <b>A divorce at base vita past the wrap quotes its whole cost and leads to the sacrifice.</b> A, a level 99
@@ -1894,7 +1894,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// hash of the bodies, the names put back to &lt;A&gt; and &lt;B&gt;), for a reader comparing two builds.
     /// <para>Every one of those frames, the lines among them, is handed over by a thread that held that player's
     /// monitor (both log in on a <see cref="HeldOutbound"/>), in both <c>StateRank</c> orders (PR #365's review, O2;
-    /// Caleb, 2026-10-22, decision 32). B's answer resumes the ceremony on B's thread, so every frame to A is a send
+    /// owner, 2026-10-22, decision 32). B's answer resumes the ceremony on B's thread, so every frame to A is a send
     /// into another player, and from B's thread A's monitor is entered ascending in one order and descending in the
     /// other.</para>
     /// <para>Green on 7d21d8c. The re-check the "I do" now makes (<see cref="AnIDoToAnEngagementThatNoLongerHoldsMarriesNobody"/>)
@@ -2027,7 +2027,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     }
 
     /// <summary>
-    /// <b>An "I do" while one of the two is going away marries nobody</b> (Caleb, 2026-10-22, decision 17; PR #365's
+    /// <b>An "I do" while one of the two is going away marries nobody</b> (owner, 2026-10-22, decision 17; PR #365's
     /// review, O1). A, the proposee, stands beside Crystal engaged to B, the wait over; A picks Marriage and answers
     /// "Yes", and the ceremony asks B. While that question waits, one of them starts to go away
     /// (<see cref="GoingAwayAtTheAnswer"/>), and then B answers "I do". Nothing is written: the vows (legend text
@@ -2220,7 +2220,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     // ===== the proposal: the decline's line to the proposer ==================================================
 
     /// <summary>
-    /// <b>A declined proposal tells the proposer inside the proposer's monitor</b> (PR #368's review, N4; Caleb,
+    /// <b>A declined proposal tells the proposer inside the proposer's monitor</b> (PR #368's review, N4; owner,
     /// 2026-10-22, decision 32). P casts "propose" (the real <c>0x0F</c>) and names B, who holds the ring; B's box asks
     /// "P proposes marriage. Do you accept?" and B answers "I must decline.". P reads "B regretably must decline." once
     /// and B "What but love can last forever?" once, B's box is closed and nobody is engaged, as always. B's answer
@@ -2660,7 +2660,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     }
 
     /// <summary>
-    /// <b>The fiancé's "I do" racing the bride's logout never marries her without her being told</b> (Caleb,
+    /// <b>The fiancé's "I do" racing the bride's logout never marries her without her being told</b> (owner,
     /// 2026-10-22, decision 17). Each round A, the proposee, and B are engaged, the wait over, and log in beside
     /// Crystal, in alternating order so that both <c>StateRank</c> orders run. A picks Marriage and answers "Yes", so
     /// the ceremony asks B. Then A logs out through the read loop's real exit on one thread while B answers "I do" on
@@ -2680,7 +2680,7 @@ public sealed class VowHalvesTests : IClassFixture<SessionFixture>
     /// from B's thread, without A's monitor (PR #365's review, O2). A round in which A's whole teardown, and the close
     /// after it, landed between the section and that send married A and lost her line, and failed here: one round in
     /// 64, once, in master's CI on 1ba65ae. The line is now sent inside the section, which holds A's monitor, so A's
-    /// teardown waits for it (Caleb, 2026-10-22, decision 32), and that round cannot happen. The send moved back out
+    /// teardown waits for it (owner, 2026-10-22, decision 32), and that round cannot happen. The send moved back out
     /// is pinned by <see cref="AnAnswerToTheCeremonyWhoseEngagementHoldsDoesWhatItAlwaysDid"/>, which sees it every
     /// time.</para>
     /// </summary>

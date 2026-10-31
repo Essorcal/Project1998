@@ -33,7 +33,7 @@ namespace Tests;
 /// </list>
 ///
 /// <para>The party-invite, <c>@kick</c> and exchange facts pin the other visible effects the same skip has at
-/// those callers inside the duplicate-login window. Caleb accepted them (option B, 2026-09-24).</para>
+/// those callers inside the duplicate-login window. The project owner accepted them (option B, 2026-09-24).</para>
 ///
 /// <para><b>What is NOT skipped.</b> A session closed for any other reason — a GM <c>@kick</c> or <c>@ban</c>, the
 /// slow-client drop — is still found by every lookup until its own teardown takes it off the map, exactly as on

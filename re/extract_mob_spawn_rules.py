@@ -24,7 +24,7 @@ file has more, and has been edited by hand since the first run, so the extractor
   it: such a row is the file's own, and one RTK stopped yielding is removed by editing the file, not by this;
 * the `#` comment lines, which sit above the row they explain;
 * rooms the file deliberately holds against RTK's warp: ROOM_DEVIATIONS below. #367 moved spirit_dragon's middle
-  room from RTK's 4258:7:13 (open ground walled in on all four sides on the 4.95 map) to 4258:9:13, on Caleb's
+  room from RTK's 4258:7:13 (open ground walled in on all four sides on the 4.95 map) to 4258:9:13, on the project owner's
   word (2026-10-22). Written bare, from RTK alone, this script would put the boss back in the sealed niche.
 
 So the result is RTK's five columns with everything above carried over from the file. Nothing is carried that
@@ -74,7 +74,7 @@ EXTRACTED = ["MobKey", "Rooms", "MaxAlive", "CapMaps", "HpJitter"]
 ROOM_DEVIATIONS = {
     # #367: RTK's mythic_dragon.lua spirit_dragon on_spawn warps to 4258:7:13, which on the 4.95 map (Jeweled
     # Dragon 3, 18x36) is open ground walled in on all four sides. 4258:9:13 is the corridor two tiles east.
-    # Caleb's word, 2026-10-22. Pinned by TheSpiritDragonsJeweledDragonRoomIsOnTheCorridorAPlayerWalks.
+    # The project owner's word, 2026-10-22. Pinned by TheSpiritDragonsJeweledDragonRoomIsOnTheCorridorAPlayerWalks.
     ("spirit_dragon", "4258:7:13"): "4258:9:13",
 }
 

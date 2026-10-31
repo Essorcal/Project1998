@@ -268,9 +268,9 @@ end
 -- Direct magic damage to the current target. A row with numbers of its own strikes for base + Will*coeff and costs
 -- `mana` (Freeze, the Poet whip's proc: a flat 112 for 800). A row that only binds the verb takes both from the
 -- spell's spell_effects.csv row instead, ctx.spellAmount and ctx.spellMana, read as the Damage archetype reads them:
--- mage Bolt, on the Spark family's row since #200 (Caleb, 2026-10-22), 50 + level/2 for 20 mana, where its own row
+-- mage Bolt, on the Spark family's row since #200 (owner, 2026-10-22), 50 + level/2 for 20 mana, where its own row
 -- used to say 2 + 1.5 x Will for 4, which no source gives. Bolt keeps this verb and not the archetype's because the
--- refusals below are Bolt's, by Caleb's decisions; the archetype answers several of them differently.
+-- refusals below are Bolt's, by the project owner's decisions; the archetype answers several of them differently.
 -- A row with a mana but no base or coeff mixes the two: its own mana, and the export row's amount (ctx.spellAmount).
 -- No such row exists today. For a spell with no spell_effects.csv row, ctx.spellAmount has no amount to give and
 -- raises, before the spend, so the cast fails free with "<spell> isn't working right now." (SpellScript.Run).
@@ -283,10 +283,10 @@ end
 --
 -- A cast at nothing is refused the same way, on every map and whatever the caster's mana: no mana, no line, no pose.
 -- RTK's zap returns at a missing target before anything else (Spells/common/global_zap.lua:8-10). Off a PvP map that
--- was Caleb's 2026-10-21 decision sheet item 9a, and it used to cost 4 or 800 mana, the pose and "You cast X." for a
--- blow that struck nothing. On a PvP map (Caleb, 2026-10-21) the unaimed cast used to land on its caster, by the
+-- was the project owner's 2026-10-21 decision sheet item 9a, and it used to cost 4 or 800 mana, the pose and "You cast X." for a
+-- blow that struck nothing. On a PvP map (owner, 2026-10-21) the unaimed cast used to land on its caster, by the
 -- resolver's fallback, and a cast aimed at an id that found nobody paid for nothing; both are free and silent now.
--- With too little mana (Caleb: "silent like RTK") it used to say "Not enough mana to cast Bolt."; it says nothing.
+-- With too little mana (the project owner: "silent like RTK") it used to say "Not enough mana to cast Bolt."; it says nothing.
 -- An id aimed at the caster is not nothing, and still strikes them where PvP is on. ctx.castAtNothing asks it.
 --
 -- A player off a PvP map is refused before the spend too (item 9b): "You can't attack that target.", the line the
@@ -715,7 +715,7 @@ end
 
 -- Mana Steal (RTK poet inspiration): drain a GROUP member's entire mana into your own pool (capped at your max).
 -- No cast cost — the "cost" is taking their mana. Target must be in your party and not a ghost.
--- Never yourself (Caleb, 2026-10-11: "Refuse self"). You are in your own group whenever you have one, so the group
+-- Never yourself (owner, 2026-10-11: "Refuse self"). You are in your own group whenever you have one, so the group
 -- test alone let a cast at your own id through: setMana(mp + targetMana) then setTargetMana(0) on the same player
 -- left you at 0 with "You cast X." (#341's review, probe P6). Mana Gift's refusal, word for word and at the same
 -- point: "It doesn't work.", nothing spent (RTK inspire.lua:23-26). RTK's inspiration.lua has no self test.
@@ -754,7 +754,7 @@ end
 
 -- Cleanse (RTK poet dispell): chance-based FULL buff/debuff wipe on a targeted player (self-castable). Success =
 -- (120 + clamp(targetAC,-60,70) - floor((targetWill-casterWill)/10)) / 2, floored at 10%. 200 mana, no cooldown.
--- It keeps three rules Caleb set on 2026-10-10 for a cast at another player, on the source survey
+-- It keeps three rules the project owner set on 2026-10-10 for a cast at another player, on the source survey
 -- (briefs/reports/dispell-sources-survey-2026-10-10.md in the coordination workspace). On 2026-10-11 he made the
 -- second and third hold on yourself too ("Same rules on self"): RTK's dispell.lua and its three twins treat
 -- yourself as any target, but for the target's own line (dispell.lua:53-55).
@@ -962,12 +962,12 @@ end
 --     person to you", Mana Cost 30, Aethers 0, Target "Type in Name"; the person must be "in an area that allows
 --     approaching, citizenship in the same kingdom, and be in your group ... or else a "Fizzle" message is seen."
 -- The kingdom rule here is "the same nation", two Neutrals (0) included. Read literally, the lines above leave two
--- Neutrals out; Caleb chose to allow them (#325, 2026-10-06). His ruling, not a sourced fact (same_group_and_kingdom).
+-- Neutrals out; the project owner chose to allow them (#325, 2026-10-06). His ruling, not a sourced fact (same_group_and_kingdom).
 -- RTK agrees on the group, the 30 mana and "Fizzle.", and adds the map checks below. Its ORDER is kept: it decides
 -- which line a player reads when more than one applies ("That does not work here." comes before the later fizzles).
 -- The cost, animation and sound are the spell_effects.csv rows (ctx.spellMana, ctx:fxSelf()).
 -- The "area that allows approaching" is Maps.csv MapCanSummon (RTK map[m].summon, which its scripts read as
--- canSummon), through ctx:mapCanSummon: 0 is "Fizzle." at no cost. Which map counts is Caleb's ruling
+-- canSummon), through ctx:mapCanSummon: 0 is "Fizzle." at no cost. Which map counts is the project owner's ruling
 -- (2026-10-06, the follow-up to #325):
 --   * Approach reads the person's map, where the caster would land: RTK approach.lua checks target.canSummon,
 --     and the Atlas line asks that the PERSON be in such an area.
@@ -992,17 +992,17 @@ end
 --   * the PK-status and PK-grudge halves of RTK's canPK: not modelled. The PvP-map half is checked.
 --   * Approach's dead-caster check: HandleCast refuses a ghost's cast before any verb runs.
 -- The mover lands on @approach's and @bring's tile: the first free one north, east, south or west of the other
--- person, else that person's own tile. RTK searches in facing order instead; Caleb kept this one at #325's merge
+-- person, else that person's own tile. RTK searches in facing order instead; the project owner kept this one at #325's merge
 -- (2026-10-06).
 -- Neither verb tells the moved person anything: RTK's scripts send them no line. One exception, Summon's: a person
 -- summoned mid-exchange has the exchange cancelled, and both traders see the client's "Exchange cancelled." box,
--- as for any move (#57). Caleb kept this at #325's merge (2026-10-06), rather than have Summon fizzle on a trader.
+-- as for any move (#57). The project owner kept this at #325's merge (2026-10-06), rather than have Summon fizzle on a trader.
 
 local function travel_fizzle(ctx) ctx:say("Fizzle."); return false end
 
 -- The two people's own standing, checked last, where RTK checks the group. The kingdom half is "the same
 -- nation", Neutral (0) included. Read literally, "citizenship in the same kingdom" excludes two Neutrals, since a
--- Neutral holds no citizenship; Caleb chose to allow them (2026-10-06). A Neutral and a citizen of a kingdom, or
+-- Neutral holds no citizenship; the project owner chose to allow them (2026-10-06). A Neutral and a citizen of a kingdom, or
 -- citizens of two kingdoms, still fizzle.
 local function same_group_and_kingdom(ctx)
   if not ctx.targetInGroup then return false end
@@ -1163,7 +1163,7 @@ end
 
 -- Propose (RTK common/propose.lua): a marriage proposal — kicks off a scripted async dialog (ask beloved's name,
 -- then prompt them). No mana; the real outcome resolves asynchronously. Blocked if already engaged/married.
--- A 20-minute wait from the cast, which RTK's script intends and this port enforces (Caleb, 2026-10-21, and again
+-- A 20-minute wait from the cast, which RTK's script intends and this port enforces (owner, 2026-10-21, and again
 -- for #358: "Keep the saved 20-minute limit as built"). propose.lua:11-12 sets setDuration and setAether, both
 -- 1200000, at the cast, before the name is even asked. RTK never applies it: line 12 is a dot call
 -- (player.setAether), so RTK's binding gets no player and does nothing (sl.c, typel_boundfunc), and its engine's
@@ -1225,14 +1225,14 @@ end
 -- NOTE: casting at empty air still spends the mana + arms the cooldown (RTK), but costs no HP (nothing landed).
 -- An NPC in front is empty air too (ctx:sacFrontMob answers false for one): no blow can hurt it, and RTK's strikes
 -- look for a BL_MOB only. So it costs the mana and aether, the swing and the shout, and strikes nothing: no HP cost,
--- and no overkill to splash or refund at a later era (Caleb, 2026-10-19).
+-- and no overkill to splash or refund at a later era (owner, 2026-10-19).
 --
--- FOCUSED BLOW and SIEGE (#328; Caleb, 2026-10-21, decision sheet item 6). RTK has no script for either, so their
+-- FOCUSED BLOW and SIEGE (#328; owner, 2026-10-21, decision sheet item 6). RTK has no script for either, so their
 -- numbers are the Nexus Atlas pages': Focused Blow "Takes 2/3 of current Vita in a Strong Attack. The attack does 2
 -- times current vitality in damage at 0 AC", Mana Cost 3,000, Aethers 38 Seconds (live rogue page); Siege "leaves the
 -- caster with 25% vita left. Damage to target is 1.875 times current vitality plus 0.5 current mana at 0 AC", Mana
 -- Cost 8,000, Aethers 43 Seconds (live warrior page, fetched 2026-10-21). Siege's three alignment names run the same
--- branch, and so do Focused Blow's (Burial dance, Flowing energy, Freeform; Caleb, 2026-10-24, decision sheet item 7).
+-- branch, and so do Focused Blow's (Burial dance, Flowing energy, Freeform; owner, 2026-10-24, decision sheet item 7).
 -- Before this both fell to the `else` arms: 60 mana, a 60 s wait, 0 damage (raised to 1) and no vita cost.
 -- Their overkill still takes the ctx:overflow arm below, unchanged. That is off at our date; whether Focused Blow, a
 -- rogue strike, refunded or splashed at a later era no source says, so it is left for that era's own decision.
@@ -1319,7 +1319,7 @@ end
 -- false return before anything is spent, so ApplyCast charges no mana, arms no aether and summons nothing, and
 -- HandleCast prints no "You cast X." line and plays no pose. Today only Wind master (cotw_wind_master_poet): the
 -- live Nexus Atlas poet page says "Summons a ??? vita creature", RTK has no script for it and mobs.csv no
--- creature, so it routed to `misc` and charged 10 mana and an 8-minute wait for nothing (Caleb, 2026-10-21,
+-- creature, so it routed to `misc` and charged 10 mana and an 8-minute wait for nothing (owner, 2026-10-21,
 -- decision sheet item 3: not castable until a source names its creature). Its three alignment names on that page
 -- (Kwi-Sin master, Ming-Ken master, Ohaeng master) are bound here the same way (decision sheet item 7, 2026-10-24).
 function verbs.not_castable(ctx, row)
@@ -1427,7 +1427,7 @@ local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration
 --     tier-6 caster takes 25 AC more damage, as the script has it (#407's review, F1). Chung Ryong's own table keeps
 --     its tutor-sourced hardening (negative), which predates this ladder.
 --   * gated: a cast inside the wait is refused ("<name> isn't ready yet."), as RTK's engine refuses one inside its
---     aethers before the script runs. Both ladders are gated. Chung Ryong's was not until Caleb's word of 2026-10-26
+--     aethers before the script runs. Both ladders are gated. Chung Ryong's was not until the project owner's word of 2026-10-26
 --     (Q16, "As RTK"): it armed its 120 s wait and nothing checked it, so a climb could run 1 to 6 back to back.
 --   * weak: the line for too little mana. Chung Ryong's is ctx:enoughMana's "You do not have enough mana.".
 --   * top: what a cast at the top tier does. "hold": nothing, silently and for free (the scripts have no branch for
@@ -1536,7 +1536,7 @@ end
 -- =========================================================================================================
 -- PC-SUBPATH DAMAGE SPELLS (RTK rtklua/Accepted/Spells/Subpaths/): Assassinate (Spy), Ki strike (Do), Hailstorm and
 -- Ice bombardment (Geomancer), Phoenix flames (Shaman), Earth strike, Nature's smite and Lightning storm (Druid).
--- Caleb, 2026-10-22 ("the nine subpath spells get their RTK scripts") and 2026-10-24 (decision sheet item 18). They
+-- The project owner, 2026-10-22 ("the nine subpath spells get their RTK scripts") and 2026-10-24 (decision sheet item 18). They
 -- have no spell_effects archetype, so they fell to `generic` above: 5 mana for 1 + 4*Will + 3*Grace at a creature.
 -- Each is bound by its SpellParams.csv row, which carries its numbers; each verb below is the shape of one RTK
 -- script, in that script's order. The graphic and sound over a victim are the spell's spell_effects.csv row, a
@@ -1557,7 +1557,7 @@ end
 --     never for a self-cast (type 5) spell, though its table gives canfail 1 to most of these. So Assassinate's and
 --     Phoenix flames' Spells.csv rows carry SplCanFail 0, which every deflect roll here reads first. The aimed spells
 --     roll it at the blow, after the spend, so a deflect costs what a cast that lands costs (the server's rule for
---     every spell, kept by Caleb on 2026-10-24): Earth strike and Nature's smite inside ctx:damage after the 600, and
+--     every spell, kept by the project owner on 2026-10-24): Earth strike and Nature's smite inside ctx:damage after the 600, and
 --     Ki strike and Ice bombardment through ctx:deflected() after the mana and Ki strike's wait, then strike nothing,
 --     neither the target nor its four sides. Theirs is RTK's roll at whatever they strike: a creature by its protection
 --     and its Will over the caster's, a player on a PvP map by their Will over the caster's (RTK adds a player's
@@ -1677,7 +1677,7 @@ end
 
 -- =========================================================================================================
 -- SHAMAN (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Shaman/, and Subpaths/TESTING/ for Shaman's torment):
--- Shaman's solace, Reincarnate and Shaman's torment. Caleb, 2026-10-26: each spell as its RTK script (P5), and
+-- Shaman's solace, Reincarnate and Shaman's torment. The project owner, 2026-10-26: each spell as its RTK script (P5), and
 -- torment built from RTK's unfinished TESTING script and sold like the others (Q7). Phoenix flames, the fourth, is
 -- ring_strike above. Each is bound by its SpellParams.csv row, which carries its numbers, and each verb is the shape
 -- of its script, in that script's order. The graphic and sound over a target are the spell's spell_effects.csv row, a
@@ -1981,7 +1981,7 @@ function verbs.curse_around(ctx, row)
 end
 
 -- =========================================================================================================
--- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Blend, Hear footstep and Assess opponent. Caleb,
+-- DO (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Do/): Dash, Blend, Hear footstep and Assess opponent. The project owner,
 -- 2026-10-26: each spell as its RTK script (P5), Spirit blade x10 as RTK's (Q8), Blend as its script rather than as the
 -- rogue's Invisible (Q15). The other five Do spells ride families that already exist: Ki strike is splash_strike above;
 -- Spirit blade, Balance weapon and Master weapon are enchants (x10, x15, x20 in game-data/SpellMods.csv, the

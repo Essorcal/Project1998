@@ -7,7 +7,7 @@ using Xunit;
 namespace Tests;
 
 /// <summary>
-/// The eight PC-subpath damage spells with an RTK script this server can run land RTK's numbers (Caleb, 2026-10-22: "the
+/// The eight PC-subpath damage spells with an RTK script this server can run land RTK's numbers (owner, 2026-10-22: "the
 /// nine subpath spells get their RTK scripts"; 2026-10-24 decision sheet item 18). Each is bound by its
 /// <c>game-data/SpellParams.csv</c> row to a verb in <c>game-data/spell_verbs.lua</c> that follows its script under
 /// <c>RTK-Server/rtklua/Accepted/Spells/Subpaths/</c>. Before, none had a spell_effects archetype, so all of them fell to

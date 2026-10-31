@@ -1240,7 +1240,7 @@ public sealed class TeardownSlotLeakTests
     private const string ArrivalThrewNoSlotLine = "threw before entering the world, holding no slot — closing the connection";
 
     /// <summary>
-    /// The loading-screen close, widened to a throw BEFORE the slot claim (the PR #311 review's F2; Caleb, 2026-09-29:
+    /// The loading-screen close, widened to a throw BEFORE the slot claim (the PR #311 review's F2; owner, 2026-09-29:
     /// "6 widen it in that slice"). Nothing ahead of <c>ClaimAccountSlot</c> throws in today's code (the PR #321
     /// review's F1): the handoff token's consume returns false on a database fault and the arrival is refused as a bad
     /// token, the ban check reads "not banned" on one too, and the ban notice's send ends in a <c>TryWrite</c>. So this

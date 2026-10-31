@@ -31,7 +31,7 @@ namespace Tests;
 ///
 /// <para>Each verb now refuses an NPC with its own answer to "nothing there", before it spends anything: silence for
 /// Bolt, Freeze, the <c>generic</c> damage spells and the Damage archetype, and Venom's "It doesn't work.". The
-/// sacrifice strikes take RTK's reading instead, as Caleb chose (2026-10-19): an NPC in front is nothing in front. It
+/// sacrifice strikes take RTK's reading instead, as the project owner chose (2026-10-19): an NPC in front is nothing in front. It
 /// costs exactly what a strike at nothing costs, the mana, the aether, the swing and the shout, and strikes
 /// nothing.</para>
 ///
@@ -40,12 +40,12 @@ namespace Tests;
 /// skip an NPC and strike the creatures around it, and the rogue's Ambush, which spends nothing, still leaps behind an
 /// NPC.</para>
 ///
-/// <para>Caleb's decision of 2026-10-21 (decision sheet item 9) added three refusals, each before anything is spent:
+/// <para>The project owner's decision of 2026-10-21 (decision sheet item 9) added three refusals, each before anything is spent:
 /// Bolt and Freeze at nothing off a PvP map, silently (9a); Bolt and Freeze, the Poet whip's proc included, at a player
 /// off a PvP map, with "You can't attack that target." (9b); and every curse, from the book or one of the five curse
 /// procs, at an NPC, silently (9c). On a PvP map a cast at a player is unchanged.</para>
 ///
-/// <para>Caleb's decision of 2026-10-22 (decision sheet item 2) moved the procs' half of 9b earlier, as RTK has it: a
+/// <para>The project owner's decision of 2026-10-22 (decision sheet item 2) moved the procs' half of 9b earlier, as RTK has it: a
 /// proc at a player the wielder may not attack is not cast at all, so it no longer reaches the spell's refusal. On a PvP
 /// map it is cast as before.</para>
 ///
@@ -160,7 +160,7 @@ public sealed class NpcDamageVerbTests
         }
     }
 
-    /// <summary>With an NPC faced, or aimed at by its id, a curse refuses before it spends anything (Caleb, 2026-10-21,
+    /// <summary>With an NPC faced, or aimed at by its id, a curse refuses before it spends anything (owner, 2026-10-21,
     /// decision sheet item 9c), and says nothing, the curse's answer to a cast that finds nothing. No mana, no pose, no
     /// animation, no "You cast X."; the NPC carries nothing, and neither does the caster: the NPC ends the search for a
     /// target, so on the arena the cast never falls through to its caster. Through #343's fallback as well, where an id
@@ -249,7 +249,7 @@ public sealed class NpcDamageVerbTests
     /// The NPC is untouched and carries no venom and no curse.
     /// <para>Red on 63efdd8: Freeze cost 800 a proc; the first Venom or Burn proc cost 60 or 200 and venomed the NPC,
     /// and each later one said "You already cast that spell.".</para>
-    /// <para>The curse procs were added for Caleb's decision of 2026-10-21 (decision sheet item 9c). Red on 6de1d24:
+    /// <para>The curse procs were added for the project owner's decision of 2026-10-21 (decision sheet item 9c). Red on 6de1d24:
     /// the first proc cost the curse's mana (40 to 500) and cursed the NPC, or lost the curse's roll and said "Something
     /// went wrong." for the same mana; each later one said "You already cast that spell." once the NPC carried
     /// it.</para></summary>
@@ -302,7 +302,7 @@ public sealed class NpcDamageVerbTests
     }
 
     /// <summary>A sacrifice strike at a faced NPC costs exactly what the same strike at nothing costs, RTK's reading
-    /// (Caleb, 2026-10-19): the same lines ("You cast X."), mana, aether, swing and shout, and the caster's HP kept. The
+    /// (owner, 2026-10-19): the same lines ("You cast X."), mana, aether, swing and shout, and the caster's HP kept. The
     /// strike lands nothing on the NPC: no animation and no HP bar over it, and the NPC untouched and carrying nothing.
     /// The control is the same strike, by a fresh caster, with nothing in front.
     /// <para>Red on 63efdd8: the strike's HP cost (Whirlwind left its caster on 10, Desperate Attack took all the mana),
@@ -486,7 +486,7 @@ public sealed class NpcDamageVerbTests
     };
 
     /// <summary>What a cast at nothing costs, off a PvP map and with the mana to pay for it. Bolt and Freeze
-    /// (<c>magic_damage</c>) cost nothing and say nothing (Caleb, 2026-10-21, decision sheet item 9a): by the slot alone
+    /// (<c>magic_damage</c>) cost nothing and say nothing (owner, 2026-10-21, decision sheet item 9a): by the slot alone
     /// with nothing faced, and aimed at a player on another map with nothing faced, which #343 answers as nothing. A
     /// sacrifice strike still charges its mana and aether for nothing in front (RTK's order, kept on purpose; see the
     /// verb), on either map.
@@ -513,7 +513,7 @@ public sealed class NpcDamageVerbTests
         { "freeze", Arena, 799 },
     };
 
-    /// <summary>With too little mana, Bolt or Freeze at nothing says nothing, on either map (Caleb, 2026-10-21:
+    /// <summary>With too little mana, Bolt or Freeze at nothing says nothing, on either map (owner, 2026-10-21:
     /// "silent like RTK"). RTK's zap returns at a missing target before it looks at the mana
     /// (<c>Spells/common/global_zap.lua:8-10</c>, then <c>:14-17</c>). No line, no mana, no pose.
     /// <para>Red on e651252 (this branch's merge of fc14434): "Not enough mana to cast Bolt." (or Freeze), because the
@@ -567,7 +567,7 @@ public sealed class NpcDamageVerbTests
         { "bolt_mage", Aim.OffMapPlayerId },
     };
 
-    /// <summary>On a PvP map a cast at nothing is free and silent (Caleb, 2026-10-21), as RTK's zap is: it returns at a
+    /// <summary>On a PvP map a cast at nothing is free and silent (owner, 2026-10-21), as RTK's zap is: it returns at a
     /// missing target before anything else (<c>Spells/common/global_zap.lua:8-10</c>). No line, no mana, no pose, no
     /// aether, the caster's HP kept, and the player on the other map neither hit nor told anything. This replaces #356's
     /// <c>OnAPvpMapACastAtNothingIsUnchanged</c>, which pinned the old answer on purpose and left the change to this
@@ -693,7 +693,7 @@ public sealed class NpcDamageVerbTests
         }
     }
 
-    /// <summary>Bolt and Freeze at a faced player. Off a PvP map they are refused for free (Caleb, 2026-10-21, decision
+    /// <summary>Bolt and Freeze at a faced player. Off a PvP map they are refused for free (owner, 2026-10-21, decision
     /// sheet item 9b), with the line the blow's PvP gate has always sent, "You can't attack that target."
     /// (<c>Session.HitPlayerWithSpell</c>): no mana, no pose, no "You cast X.", and the player keeps their HP and is
     /// told nothing. On a PvP map, the control, the blow lands as it did: "You cast X.", the mana, the pose, and the
@@ -790,7 +790,7 @@ public sealed class NpcDamageVerbTests
     /// nothing to them.</summary>
     private static readonly byte[] SwingOnly = { ServerOp.Action, ServerOp.Audio };
 
-    /// <summary>A proc at a faced player the wielder may not attack is not cast (Caleb, 2026-10-22, decision sheet item
+    /// <summary>A proc at a faced player the wielder may not attack is not cast (owner, 2026-10-22, decision sheet item
     /// 2: "no proc there, as RTK"). RTK asks <c>player:canPK(pc)</c> after the roll and before the cast
     /// (<c>Items/Weapons/poet_whip.lua:14</c>, and the same line in each of these rows' scripts but the Charm weapons',
     /// which never proc at a player), and this server's canPK is <c>Content.IsPvpMap</c>, the test every spell makes of
