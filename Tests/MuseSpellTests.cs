@@ -23,14 +23,15 @@ namespace Tests;
 /// tick (<c>Session.LuaStartHealRun</c>), whose clock a fact moves on by moving the run's deadlines back.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Muse facing east. The maps
-/// are content-free (no Maps.csv row, so PvP is off, as in a town), 63160-63169, which no other class uses; the PvP facts
+/// are content-free (no Maps.csv row, so PvP is off, as in a town), 63158-63169, which no other class uses; the PvP facts
 /// stand on the Forsaken Arena (2591, a PvP map with spells allowed), as <c>NpcDamageVerbTests</c> does.</para>
 /// </summary>
 [Collection("world")]
 public sealed class MuseSpellTests
 {
     private const ushort SongMap = 63160, HalfMap = 63161, AgainMap = 63162, HeldMap = 63163, CostumeMap = 63164,
-                         EndMap = 63165, NpcMap = 63166, RefuseMap = 63167, SongRunMap = 63168;
+                         EndMap = 63165, NpcMap = 63166, RefuseMap = 63167, SongRunMap = 63168, SongBeatHeldMap = 63169,
+                         SongDecideMap = 63159, CunningMap = 63158;
     private const ushort Arena = 2591;
     private const ushort CX = 16, CY = 16;
     private const uint MaxMana = 20_000, Mana = 20_000, Hp = 10_000;
@@ -250,6 +251,79 @@ public sealed class MuseSpellTests
         {
             if (run.Settled) Leave(HeldMap, caster, near);
         }
+    }
+
+    /// <summary>"Already in a sanctuary" is decided inside each player's own monitor: a third thread holds a player's
+    /// monitor and, inside it, a Sanctuary lands on them while the song waits; once the monitor is free the song finds
+    /// them in a sanctuary and leaves that Sanctuary as it was, in both <c>StateRank</c> orders. Red with
+    /// <c>Session.ReceiveMapSanctuary</c>'s <c>EnterState</c> taken out: the song decides before it waits, and then
+    /// writes its own 120 s over the Sanctuary. (#413's review, F2; its probe P3b.)</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ASongDecidesThePlayersSlotInsideTheirOwnMonitor(bool casterRanksFirst)
+    {
+        Session caster, near;
+        if (casterRanksFirst)
+        {
+            (caster, _, _) = Caster("sacred_verse", SongDecideMap);
+            (near, _, _) = Player(SongDecideMap, CX + 1, CY);
+        }
+        else
+        {
+            (near, _, _) = Player(SongDecideMap, CX + 1, CY);
+            (caster, _, _) = Caster("sacred_verse", SongDecideMap);
+        }
+        Assert.Equal(casterRanksFirst, caster.StateRank < near.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            WhileAnotherThreadHolds(run, near, () => caster.Receive(SpellCastSupport.CastFrame(0)),
+                                    untouched: () => near.SancDeductName == "Sanctuary",
+                                    landing: () => near.ApplySanctuaryDeduction(0.5, 30_000, "Sanctuary"));
+            long left = near.SancDeductUntil - Environment.TickCount64;
+            Assert.True(run.HolderFault is null && run.ActorFault is null && !run.FinishedWhileHeld && run.UntouchedWhileHeld
+                        && near.SancDeductName == "Sanctuary" && left <= 30_000 && caster.SancDeductName == "Sacred verse",
+                        $"faults {run.HolderFault?.GetType().Name}/{run.ActorFault?.GetType().Name}, finished while held " +
+                        $"{run.FinishedWhileHeld}, near's slot '{near.SancDeductName}' {left} ms (want 'Sanctuary' <= 30000), " +
+                        $"caster's '{caster.SancDeductName}'");
+        }
+        finally
+        {
+            if (run.Settled) Leave(SongDecideMap, caster, near);
+        }
+    }
+
+    /// <summary>A song over Baekho's Cunning holds the Sanctuary slot at its own 0.5 whatever the Cunning tier, and the
+    /// Cunning runs on beneath it. That is RTK's combination: <c>pc_calcstat</c> starts the deduction at 1 and runs each
+    /// duration's recast (<c>rtk/src/map/pc.c:821</c>, <c>:888-900</c>); the song's takes .5 off
+    /// (<c>sacred_verse.lua:45-47</c>), and Cunning's takes its share off only when no <c>sanctuaries</c> duration runs
+    /// (<c>Spells/Subpaths/Baekho/baekhos_cunning.lua:147-149</c>; the set holds <c>sacred_verse</c>, and
+    /// <c>tranquil_symphony</c> by the coordinator's reading of RTK's slip). A guard: this is the Sanctuary slot's existing
+    /// rule over Cunning (#413's review, F1, read against those lines). This server's Cunning is the archive's 1.00 /
+    /// 0.85 / 0.70 / 0.45 / 0.15 (<c>game-data/spell_verbs.lua</c>'s CUNNING), so at tiers 4 and 5 the song, like a
+    /// Sanctuary, takes more than Cunning alone, as the archive's tutor post says a Sanctuary does.</summary>
+    [Theory]
+    [InlineData(1.00)]
+    [InlineData(0.85)]
+    [InlineData(0.70)]
+    [InlineData(0.45)]
+    [InlineData(0.15)]
+    public void ASongOverBaekhosCunningHoldsTheSlotAsRtksCunningStepsAside(double cunning)
+    {
+        var (rogue, _, _) = Player(CunningMap, CX + 3, CY);
+        var (caster, _, _) = Caster("sacred_verse", CunningMap);
+        try
+        {
+            rogue.WithState(() => rogue.ApplyCunningDeduction(cunning, 600_000));
+            Assert.Equal(cunning, rogue.EffDeduction);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(rogue.EffDeduction == 0.5 && rogue.SancDeductName == "Sacred verse" && rogue.CunningDeductActive,
+                        $"Cunning {cunning}: under the song x{rogue.EffDeduction} '{rogue.SancDeductName}', Cunning still running " +
+                        $"{rogue.CunningDeductActive}");
+        }
+        finally { Leave(CunningMap, caster, rogue); }
     }
 
     // ===== Costume ==============================================================================================
@@ -672,6 +746,50 @@ public sealed class MuseSpellTests
         finally { Leave(SongRunMap, caster, target); }
     }
 
+    /// <summary>Whether a beat still heals is decided inside the player's own monitor: a third thread holds the healed
+    /// player's monitor and, inside it, a won Dispell lands on them while the beat waits; once the monitor is free the
+    /// beat finds their durations ended, heals nothing and ends the run, in both <c>StateRank</c> orders. Red with
+    /// <c>Session.ReceiveRunHeal</c>'s <c>EnterState</c> taken out: the beat compares the count before it waits, and then
+    /// heals 5,000 after the Dispell. (#413's review, F2; its probe P3.)</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ASongBeatDecidesInsideTheHealedPlayersOwnMonitor(bool casterRanksFirst)
+    {
+        Session caster, target;
+        Character tc;
+        if (casterRanksFirst)
+        {
+            (caster, _, _) = Caster("song_of_the_goddess", SongBeatHeldMap);
+            (target, _, tc) = Player(SongBeatHeldMap, CX + 1, CY, hp: 1_000, maxHp: 1_000_000);
+        }
+        else
+        {
+            (target, _, tc) = Player(SongBeatHeldMap, CX + 1, CY, hp: 1_000, maxHp: 1_000_000);
+            (caster, _, _) = Caster("song_of_the_goddess", SongBeatHeldMap);
+        }
+        Assert.Equal(casterRanksFirst, caster.StateRank < target.StateRank);
+
+        var run = new HeldRun();
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(Ticks(caster).SingleOrDefault() is { Ended: false } started && started.Player == target.PlayerId,
+                        "the Song started no run");
+            WhileAnotherThreadHolds(run, target, () => Advance(caster, 1_000),
+                                    untouched: () => tc.Hp == 1_000,
+                                    landing: () => target.ReceiveFlush(endHolds: true));
+            Assert.True(run.HolderFault is null && run.ActorFault is null && !run.FinishedWhileHeld && run.UntouchedWhileHeld
+                        && tc.Hp == 1_000 && Ticks(caster).Count == 0,
+                        $"faults {run.HolderFault?.GetType().Name}/{run.ActorFault?.GetType().Name}, finished while held " +
+                        $"{run.FinishedWhileHeld}, vita after {tc.Hp} (want 1000), runs left {Ticks(caster).Count}");
+        }
+        finally
+        {
+            if (run.Settled) Leave(SongBeatHeldMap, caster, target);
+        }
+    }
+
     /// <summary>The run reaches its player wherever they go, as RTK's timer runs on the player: on another map the beat
     /// still heals them. Once they have left the world the next beat ends the run.</summary>
     [Fact]
@@ -965,9 +1083,11 @@ public sealed class MuseSpellTests
 
     /// <summary>A third thread takes <paramref name="target"/>'s monitor; then <paramref name="act"/> runs on a thread of
     /// its own until it finishes or sits blocked for 100 ms; then, still inside the third thread's section,
-    /// <paramref name="untouched"/> says whether the target's state is as it was. Then the third thread lets go and both
-    /// are joined.</summary>
-    private static void WhileAnotherThreadHolds(HeldRun run, Session target, Action act, Func<bool> untouched)
+    /// <paramref name="landing"/> (when given) changes the target's state, as another player's action landing in that
+    /// gap would, and <paramref name="untouched"/> says whether the target's state is as the third thread left it. Then
+    /// the third thread lets go and both are joined.</summary>
+    private static void WhileAnotherThreadHolds(HeldRun run, Session target, Action act, Func<bool> untouched,
+                                                Action? landing = null)
     {
         var held = new ManualResetEventSlim();
         var letGo = new ManualResetEventSlim();
@@ -979,6 +1099,7 @@ public sealed class MuseSpellTests
                 {
                     held.Set();
                     letGo.Wait();
+                    landing?.Invoke();
                     run.UntouchedWhileHeld = untouched();
                 });
             }

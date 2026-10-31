@@ -2065,7 +2065,8 @@ end
 --     and Tranquil symphony's scripts send both themselves; Costume's sends neither, and the Song's only the pose.
 --   * A player the Song reaches reads the engine's one line, "<caster> casts Song of the Goddess on you."; the script
 --     says "cast", and sends it to a caster who sings to themselves too. A Song aimed at nothing sings to its caster,
---     the rule every "Which target?" heal here has; RTK's engine runs no script without a target.
+--     the rule every "Which target?" heal here has; RTK's engine runs the script with a nil target, which stops after
+--     its mana check (the ghost check reads the missing target).
 --   * The Song's run is held by its caster: it ends when either player logs out (RTK saves the duration on the player
 --     and resumes it after their relog; a logged-out caster's beat lands nothing in RTK either), and the healed
 --     player's buff box does not list it.
