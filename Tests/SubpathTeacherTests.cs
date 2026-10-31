@@ -116,7 +116,23 @@ public sealed class SubpathTeacherTests
     /// scripts' level 30 for a Scroll and an Ink, and Costume and Song of the Goddess (from RTK's TESTING copy), whose
     /// scripts have no <c>requirements()</c>, at their rows' level, 0, for nothing (the project owner's P3).</summary>
     [Theory]
-    [InlineData("Barbarian", "")]
+    // The Barbarian spells slice: fifteen of the sixteen at their scripts' prices; Push, whose script has no
+    // requirements(), at its row's level, 0, for nothing; Survival challenge, with no script of its own, off sale.
+    [InlineData("Barbarian", "barbarian_cry 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
+                             "barbarian_rage 99 20000 [1 dragons_liver, 1 electra, 1 spike]; " +
+                             "break_jaw 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
+                             "dash_barbarian 99 25000 [1 blood, 1 splendid_tiger_pelt]; " +
+                             "dishonor 99 0 [1 forsaken_staff, 2 forsaken_blade]; " +
+                             "envigorate 9 100 [1 aged_wine]; " +
+                             "insult 70 1000 [2 amber, 80 acorn]; " +
+                             "mount 99 0 []; " +
+                             "nomadic_blade 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
+                             "push 0 0 []; " +
+                             "rend 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
+                             "sonhi_rage 99 50000 [1 chung_ryong_key, 1 dragons_liver, 1 spike]; " +
+                             "tigers_might 99 5000 [10 bears_liver, 10 tiger_meat, 5 antler]; " +
+                             "wilderness_guise 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "wilderness_weapon 99 40000 [1 il_san_spike, 2 dragons_liver, 2 electra]")]
     [InlineData("Chongun",   "")]
     [InlineData("Do",        "assess_opponent_do 99 5000 [3 fox_blade, 5 fine_rabbit_meat, 80 red_fox_fur]; " +
                              "balance_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
@@ -316,12 +332,13 @@ public sealed class SubpathTeacherTests
         Assert.Equal((1, 1), (Count(c, "gold_acorn"), Count(c, "topaz")));
     }
 
-    /// <summary>A teacher with nothing priced yet says so to its member (Barbarian, one of the seven).</summary>
+    /// <summary>A teacher with nothing priced yet says so to its member (Merchant, one of those still unpriced; it was
+    /// Barbarian's until the Barbarian spells slice priced Barbarian's).</summary>
     [Fact]
     public void ATeacherWithNothingToSellSaysSo()
     {
-        var (s, o, _) = Member("Barbarian", 99, _ => { });
-        Converse(s, Teacher("Barbarian"), "Learn Secret");
+        var (s, o, _) = Member("Merchant", 99, _ => { });
+        Converse(s, Teacher("Merchant"), "Learn Secret");
         Assert.Equal(new[] { SubpathTeacherAbility.NothingYet }, Boxes(o));
     }
 
