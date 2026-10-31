@@ -30,6 +30,10 @@ public sealed class DruidSpellTests
     private const ushort GuideMap = 3631;
     private const ushort FlameMap = 63270, FlameItemsMap = 63271, FlameShortMap = 63272, RodentMap = 63273,
                          SteedMap = 63274, BreezeMap = 63275, BloomMap = 63276, EdgeMap = 63277, WindowMap = 63278;
+    // Fix round 1 (#417's review): content-free too, claimed by no other class.
+    private const ushort KickMap = 63279, TradeMap = 63280, KickBloomMap = 63281, RelogMap = 63282;
+    private const byte ExchangeIn = 0x4a, ExcOpen = 0, ExcItem = 1, ExcConfirm = 5;
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(10);
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
     private const int Creature = 1_000_000;
@@ -434,6 +438,176 @@ public sealed class DruidSpellTests
         finally { Leave(EdgeMap, caster); }
     }
 
+    // ===== fix round 1: the drop in the Lua gate's gap (#417's review, F1) =======================================
+
+    /// <summary>A drop that waits at the Lua gate lets the dropper's monitor go while it waits (the gate's slow path), and
+    /// a second login's kick can run in that gap: it writes the row with the item still in the bag and closes the session.
+    /// A Druid in Control flames' window drops a Rose (the hook declines it) while another thread holds the gate; the kick
+    /// runs in the gap; the gate is let go. One Rose stays one: in the saved row, and not on the floor. Red without the
+    /// going-away check after the hooks: the drop lands the Rose it read before the gap, one in the row and one on the
+    /// floor (the review's probe, ported).</summary>
+    [Fact]
+    public void ADropRacingARelogInTheGatesGapKeepsOneRose()
+    {
+        string name = $"DruidKick{Interlocked.Increment(ref _serial)}";
+        var (caster, _, _) = CasterNamed(name, "control_flames", KickMap, CX, CY, ch => Give(ch, 1, "rose", 1));
+        var gap = new GateGap();
+        Thread? kick = null;
+        Exception? kickFault = null;
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(SpellCastSupport.AetherLeft(caster, "control_flames") > 0, "no window");
+            bool waited = gap.DropWhileHeld(caster, DropFrame(1));
+            kick = new Thread(() => { try { caster.KickForReplacement(); } catch (Exception e) { kickFault = e; } })
+                   { IsBackground = true, Name = "kick" };
+            kick.Start();
+            bool inGap = kick.Join(TimeSpan.FromSeconds(2)) && gap.DropAlive;
+            gap.Release();
+            Assert.True(kick.Join(Bound), "the kick never finished");
+            Assert.Null(kickFault);
+
+            int rose = Item("rose").Id;
+            int inRow = _fx.Store.Load(name).Character!.Inventory.Where(i => i.ItemId == rose).Sum(i => i.Amount);
+            int onFloor = Floor(KickMap, "rose");
+            Assert.True(waited && inGap && inRow + onFloor == 1 && onFloor == 0,
+                        $"drop waited at the gate {waited}, kick ran in the gap {inGap}; roses: in the saved row {inRow}, on the floor {onFloor}");
+        }
+        finally
+        {
+            gap.Close();
+            kick?.Join(Bound);
+            foreach (var i in _fx.World.ItemsOn(KickMap)) _fx.World.PickUp(KickMap, i.X, i.Y);
+            Leave(KickMap, caster);
+        }
+    }
+
+    /// <summary>The same gap with an exchange: the Druid has offered the Rose and confirmed; the drop waits at the gate; the
+    /// partner's confirm finishes the exchange in the gap (the pair takes the Druid's monitor) and the Rose goes to the
+    /// partner. One Rose stays one: the partner's, none on the floor. Red without the slot read again after the hooks: the
+    /// drop lands the stack the exchange had moved (the review's probe, ported).</summary>
+    [Fact]
+    public void ADropRacingAnExchangeInTheGatesGapKeepsOneRose()
+    {
+        var (o, _, oc) = CasterNamed($"DruidTradeO{Interlocked.Increment(ref _serial)}", "control_flames", TradeMap, 5, 5,
+                                     ch => Give(ch, 1, "rose", 1));
+        var (p, _, pc) = Player(TradeMap, 6, 5);
+        var gap = new GateGap();
+        Thread? confirm = null;
+        Exception? confirmFault = null;
+        try
+        {
+            o.Receive(SpellCastSupport.CastFrame(0));
+            o.Receive(ExchangeRequest(ExcOpen, p.PlayerId));
+            o.Receive(ExchangeRequest(ExcItem, p.PlayerId, new byte[] { 2 }));     // wire slot 2 = bag slot 1, the Rose
+            o.Receive(ExchangeRequest(ExcConfirm, p.PlayerId));
+            bool waited = gap.DropWhileHeld(o, DropFrame(1));
+            confirm = new Thread(() => { try { p.Receive(ExchangeRequest(ExcConfirm, o.PlayerId)); } catch (Exception e) { confirmFault = e; } })
+                      { IsBackground = true, Name = "partner confirm" };
+            confirm.Start();
+            bool inGap = confirm.Join(TimeSpan.FromSeconds(2)) && gap.DropAlive;
+            gap.Release();
+            Assert.True(confirm.Join(Bound), "the confirm never finished");
+            Assert.Null(confirmFault);
+
+            int partner = Count(pc, "rose"), druid = Count(oc, "rose"), onFloor = Floor(TradeMap, "rose");
+            Assert.True(waited && inGap && partner + druid + onFloor == 1 && partner == 1,
+                        $"drop waited at the gate {waited}, exchange finished in the gap {inGap}; roses: partner {partner}, " +
+                        $"Druid {druid}, on the floor {onFloor}");
+        }
+        finally
+        {
+            gap.Close();
+            confirm?.Join(Bound);
+            foreach (var i in _fx.World.ItemsOn(TradeMap)) _fx.World.PickUp(TradeMap, i.X, i.Y);
+            Leave(TradeMap, o, p);
+        }
+    }
+
+    /// <summary>A hook that runs after the gap on a session a kick has closed spends nothing and puts nothing down: a Druid
+    /// in Nature's bloom's window drops a Rose, the kick runs while the drop waits at the gate, and then the hook runs. The
+    /// saved row keeps the Rose and no Rose lies on the floor. Red without the going-away check in
+    /// <c>Session.LuaTakeDropped</c>: the hook spends the Rose the row still holds and scatters Roses.</summary>
+    [Fact]
+    public void AKickedSessionScattersNothing()
+    {
+        string name = $"DruidKickBloom{Interlocked.Increment(ref _serial)}";
+        var (caster, _, _) = CasterNamed(name, "natures_bloom", KickBloomMap, CX, CY, ch => Give(ch, 1, "rose", 1));
+        var gap = new GateGap();
+        Thread? kick = null;
+        Exception? kickFault = null;
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            bool waited = gap.DropWhileHeld(caster, DropFrame(1));
+            kick = new Thread(() => { try { caster.KickForReplacement(); } catch (Exception e) { kickFault = e; } })
+                   { IsBackground = true, Name = "kick" };
+            kick.Start();
+            bool inGap = kick.Join(TimeSpan.FromSeconds(2)) && gap.DropAlive;
+            gap.Release();
+            Assert.True(kick.Join(Bound), "the kick never finished");
+            Assert.Null(kickFault);
+
+            int rose = Item("rose").Id;
+            int inRow = _fx.Store.Load(name).Character!.Inventory.Where(i => i.ItemId == rose).Sum(i => i.Amount);
+            int onFloor = Floor(KickBloomMap, "rose");
+            Assert.True(waited && inGap && inRow == 1 && onFloor == 0,
+                        $"drop waited at the gate {waited}, kick ran in the gap {inGap}; roses: in the saved row {inRow}, on the floor {onFloor}");
+        }
+        finally
+        {
+            gap.Close();
+            kick?.Join(Bound);
+            foreach (var i in _fx.World.ItemsOn(KickBloomMap)) _fx.World.PickUp(KickBloomMap, i.X, i.Y);
+            Leave(KickBloomMap, caster);
+        }
+    }
+
+    // ===== fix round 1: the stag across a relog (#417's review, F2; the project owner's Q-G, "As RTK") ===========
+
+    /// <summary>A Druid rides Arawn's stag and logs in again: the row keeps the creature ridden (Character.MountKey, as
+    /// RTK keeps it in the saved registry), so the next login, mounted, sets a stag down. An older row with no such field
+    /// loads as a horse. Red with the field left out of the row: the stag comes back a horse (the review's probe,
+    /// ported).</summary>
+    [Fact]
+    public void AStagRiddenAcrossARelogIsSetDownAStag()
+    {
+        string name = $"DruidRelog{Interlocked.Increment(ref _serial)}";
+        var (caster, _, cc) = CasterNamed(name, "steed", RelogMap, CX, CY);
+        Session? again = null;
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.Equal("arawns_stag", _fx.World.MobAt(RelogMap, CX + 1, CY)?.Key);
+            caster.Receive(RideFrame());
+            Assert.True(cc.Mounted, "not mounted");
+            caster.KickForReplacement();
+            Leave(RelogMap, caster);
+
+            var row = _fx.Store.Load(name).Character!;
+            (again, _, _) = _fx.PlayerWith(name + "b", ch =>
+            {
+                ch.Mounted = row.Mounted;
+                ch.MountKey = row.MountKey;
+                ch.ClassName = "Druid"; ch.Level = 99; ch.Dir = 1; Size(ch, RelogMap);
+            }, RelogMap, CX, CY);
+            again.Receive(RideFrame());
+            var down = _fx.World.MobAt(RelogMap, CX + 1, CY);
+
+            string json = CharacterStore.Serialize(row);
+            var old = CharacterStore.Deserialize(json.Replace(",\"MountKey\":\"arawns_stag\"", ""));
+            Assert.True(row.Mounted && row.MountKey == "arawns_stag" && down?.Key == "arawns_stag" && old.Mounted && old.MountKey == "",
+                        $"row Mounted {row.Mounted}, MountKey '{row.MountKey}'; after the relog's ride key: set down {down?.Key ?? "nothing"}; " +
+                        $"a row without the field: Mounted {old.Mounted}, MountKey '{old.MountKey}'");
+        }
+        finally
+        {
+            foreach (var m in new[] { _fx.World.MobAt(RelogMap, CX + 1, CY), _fx.World.MobAt(RelogMap, CX, CY) })
+                if (m is not null) _fx.World.DespawnMob(RelogMap, m);
+            if (again is not null) Leave(RelogMap, again);
+        }
+    }
+
     // ===== the teacher =========================================================================================
 
     /// <summary>The Druid teacher's list by rank, each at its script's level: eight from mark 0 (Druid's rodent and Sea
@@ -478,6 +652,54 @@ public sealed class DruidSpellTests
     private static byte[] DropFrame(int slot) => SessionFixture.Frame(ClientOp.DropItem, new byte[] { (byte)(slot + 1), 0, 0 });
 
     private static byte[] RideFrame() => SessionFixture.Frame(ClientOp.Setting, new byte[] { 0x00, 0x01, 0x00 });
+
+    private static byte[] Be32(uint v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
+
+    /// <summary>An exchange request frame (0x4a): the sub-command, the other player's id, then its tail.</summary>
+    private static byte[] ExchangeRequest(byte sub, uint targetId, byte[]? tail = null) =>
+        SessionFixture.Frame(ExchangeIn, new byte[] { sub }.Concat(Be32(targetId)).Concat(tail ?? new byte[] { 0 }).ToArray());
+
+    /// <summary>The Lua gate held by a thread of its own, and a drop sent on another while it is held, so the drop's hook
+    /// waits at the gate with the dropper's monitor let go (the gate's slow path): the gap #417's review found.</summary>
+    private sealed class GateGap
+    {
+        private readonly ManualResetEventSlim _held = new(), _release = new();
+        private Thread? _holder, _drop;
+        private Exception? _dropFault;
+
+        public bool DropAlive => _drop?.IsAlive ?? false;
+
+        /// <summary>Take the gate, send <paramref name="frame"/> through <paramref name="s"/> on its own thread and answer
+        /// whether that drop is now waiting (blocked and still running).</summary>
+        public bool DropWhileHeld(Session s, byte[] frame)
+        {
+            _holder = new Thread(() => { using (Session.EnterScriptGate()) { _held.Set(); _release.Wait(Bound); } })
+                      { IsBackground = true, Name = "gate holder" };
+            _holder.Start();
+            Assert.True(_held.Wait(Bound), "the gate was never taken");
+            _drop = new Thread(() => { try { s.Receive(frame); } catch (Exception e) { _dropFault = e; } })
+                    { IsBackground = true, Name = "drop" };
+            _drop.Start();
+            return SpinWait.SpinUntil(() => (_drop.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0 || !_drop.IsAlive, Bound)
+                   && _drop.IsAlive;
+        }
+
+        /// <summary>Let the gate go and wait for the drop to finish, which must end without a fault.</summary>
+        public void Release()
+        {
+            Close();
+            if (_drop is not null) Assert.False(_drop.IsAlive, "the drop never finished");
+            Assert.Null(_dropFault);
+        }
+
+        /// <summary>Let the gate go and wait for both threads, asserting nothing (for a <c>finally</c>).</summary>
+        public void Close()
+        {
+            _release.Set();
+            _holder?.Join(Bound);
+            _drop?.Join(Bound);
+        }
+    }
 
     /// <summary>The 0x0F cast frame for a "Become what?" spell: the slot byte, then the typed answer, NUL-terminated
     /// (RTK clif_parsemagic, <c>Session.HandleCast</c>).</summary>
@@ -543,7 +765,12 @@ public sealed class DruidSpellTests
     /// slot 0 of the book. On a map with terrain, the map's own size; elsewhere a wide one.</summary>
     private (Session session, RecordingOutbound outbound, Character c) Caster(string key, ushort map, int x, int y,
                                                                             uint mana = Mana, Action<Character>? configure = null) =>
-        _fx.PlayerWith($"Druid{Interlocked.Increment(ref _serial)}", ch =>
+        CasterNamed($"Druid{Interlocked.Increment(ref _serial)}", key, map, x, y, configure, mana);
+
+    /// <summary><see cref="Caster"/> under a name the fact chooses, for a fact that reads the saved row back.</summary>
+    private (Session session, RecordingOutbound outbound, Character c) CasterNamed(string name, string key, ushort map, int x, int y,
+                                                                                 Action<Character>? configure = null, uint mana = Mana) =>
+        _fx.PlayerWith(name, ch =>
         {
             ch.ClassName = "Druid";
             ch.Level = 99;

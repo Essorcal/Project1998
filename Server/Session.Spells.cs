@@ -4086,6 +4086,14 @@ public sealed partial class Session
     // another player's line and heal land inside their own monitor (WithState, ReceiveHeal), taken by StateRank, one at a
     // time; a creature and a floor item are written through World's own methods, which take World._lock inside. The bag is
     // the caster's own.
+    //
+    // THE GATE'S GAP (#417's review, F1). Waiting for a contended Lua gate lets the caster's monitor go and takes it back
+    // after (Session.State.cs, the one exception Session.Handle documents). A drop that enters Lua is therefore two
+    // critical sections, and a second login's kick or an exchange partner's confirm can take the item between them. So
+    // the drop is decided again after the gap: RunDropHooks enters the gate only when a running wait's spell has a drop
+    // verb (looked up without the gate); a hook spends nothing for a session going away and nothing it no longer holds
+    // (LuaTakeDropped); and HandleDropItem, after a hook declines, drops nothing for a session going away and only the
+    // stack the slot still holds.
 
     /// <summary>The drop hook (P4; RTK <c>clif_parsedropitem</c>, <c>clif.c:6628-6640</c>, which runs the
     /// <c>on_drop_while_aether</c> of every spell whose aether is still running, before the item leaves the bag). For each
@@ -4098,7 +4106,10 @@ public sealed partial class Session
     /// to 0 would drop the item a hook before it had taken over; and it runs the item's own <c>on_drop</c> first, whose
     /// <c>fakeDrop</c> a hook resets the same way. Here the first hook to take the drop over keeps it, and the C# drops
     /// that take an item over (the harvest tools, the rites) are asked before any hook, so neither reset happens. The two
-    /// hooks there are never both wanted: no item is both an acorn and a flower.</para></summary>
+    /// hooks there are never both wanted: no item is both an acorn and a flower.</para>
+    /// <para>The drop verb is looked up without the Lua gate (<see cref="SpellScript.HasVerbUngated"/>), so a drop with no
+    /// such wait running never enters Lua and stays one critical section; only a hook that is there to run waits for the
+    /// gate, and may lose the monitor while it does (the gate's gap, above). The caller decides the drop again after it.</para></summary>
     private bool RunDropHooks(ItemDef def)
     {
         if (_aether.Count == 0) return false;
@@ -4107,7 +4118,7 @@ public sealed partial class Session
         {
             if (until <= now || !Content.SpellParams.TryGetValue(key, out var row)) continue;
             string hook = row.GetValueOrDefault("verb", "") + "_drop";
-            if (!SpellScript.HasVerb(hook) || Content.SpellByKey(key) is not { } sp) continue;
+            if (!SpellScript.HasVerbUngated(hook) || Content.SpellByKey(key) is not { } sp) continue;
             if (SpellScript.Run(hook, new SpellContext(this, sp, def.Key), row) != true) continue;
             Log.Info($"      {sp.Name}(lua): the drop of '{def.Key}' taken over by {hook}");
             return true;
@@ -4119,9 +4130,12 @@ public sealed partial class Session
     /// (<c>ctx:takeDropped</c>; <c>sl.c:8534-8600</c>): from the first stack of it, in slot order, with no engraved name
     /// that is not full, else from the first with no engraved name. A stack that empties goes with reason 1, "You dropped
     /// &lt;item&gt;." (the script's third argument); one that does not is redrawn with its new count. False, taking
-    /// nothing, when the caster holds none.</summary>
+    /// nothing, when the caster holds none (an exchange took it in the gate's gap) or is going away (a kick or a logout
+    /// came in the gap: the row they leave with is already written, so nothing spent now would stay spent); the hook then
+    /// does nothing more (#417's review, F1).</summary>
     internal bool LuaTakeDropped(string itemKey)
     {
+        if (GoingAway(this)) return false;
         if (Content.ItemByKey(itemKey) is not { } def) return false;
         var plain = _char.Inventory.Where(i => i.ItemId == def.Id && string.IsNullOrEmpty(i.CustomName))
                                    .OrderBy(i => i.Slot).ToList();

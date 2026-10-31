@@ -567,6 +567,33 @@ public sealed class SubpathTeacherTests
                     $"[{string.Join(", ", forgotten.Select(f => f.Key))}]");
     }
 
+    /// <summary>A rung of a ladder the book held stays at the cut (#417's review, F3). A rank-3 Druid's book holds all nine
+    /// Druid spells and the Poet set owed less as many entries as made room for them, with a lower rung in place of its
+    /// ladder's top. The rebuild keeps only the top rung of a ladder, so it hands back the top, which the book did not hold
+    /// as a spell; it holds its ladder, so the top counts as held and stays, and the lower rung is the only entry of the
+    /// book the rebuild leaves out (it is the top's ladder). Red with a ladder not counted: the cut leaves the top out too,
+    /// and the member holds neither rung (the review's theory, ported).</summary>
+    [Theory]
+    [InlineData("water_of_life_poet", "revitalize_poet")]
+    [InlineData("heavens_kiss_poet", "remedy_poet")]
+    [InlineData("flare_poet", "earthquake_poet")]
+    public void ARebuildPastTheCapKeepsARungOfAHeldLadder(string top, string lower)
+    {
+        int druid = Content.PathIdForClass("Druid");
+        var nine = Content.SubpathTeacherSpells(druid, Content.MarkSpellLevel, Content.MaxMark);
+        var owed = Content.RespecSpellSet(druid, 99, alignment: 0, mark: 3);
+        var t = owed.FirstOrDefault(sp => sp.Key == top);
+        var l = Content.SpellByKey(lower);
+        Assert.True(t is not null && l is not null, $"top {top} owed {t is not null}, lower {lower} exists {l is not null}");
+        var forgotten = owed.Where(sp => sp.Id != t!.Id).Take(owed.Count + nine.Count - Content.SpellBookCap).ToList();
+        var book = owed.Where(sp => sp.Id != t!.Id && !forgotten.Contains(sp)).Append(l!).Concat(nine).ToList();
+        var rebuilt = Content.RespecSpellSet(druid, 99, alignment: 0, mark: 3, held: book);
+        bool keepsTop = rebuilt.Any(sp => sp.Id == t!.Id);
+        var lost = book.Where(b => rebuilt.All(r => r.Id != b.Id)).Select(b => b.Key).ToList();
+        Assert.True(keepsTop && lost.SequenceEqual(new[] { lower }) && rebuilt.Count == Content.SpellBookCap,
+                    $"book {book.Count}, rebuilt {rebuilt.Count}; top {top} kept {keepsTop}; held and lost [{string.Join(", ", lost)}]");
+    }
+
     // ===== plumbing ==============================================================================================
 
     private static NpcDef Teacher(string subpath)

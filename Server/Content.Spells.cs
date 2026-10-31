@@ -805,8 +805,9 @@ public static partial class Content
     /// 52 (<c>Session.SyncSpellbook</c> keeps the first <see cref="SpellBookCap"/>). So every held subpath spell stays,
     /// and so does every entry of the rebuilt set the book already held; the entries the book did not hold (base spells
     /// the member had forgotten, which the rebuild hands back) fill what is left, in the set's order, and the last of
-    /// them are the ones left out. The order of what stays is the set's order, so a rebuild that fits is unchanged.
-    /// RTK has no rebuild to follow: its book is 52 too (<c>rtk/src/common/mmo.h</c>, <c>MAX_SPELLS</c>) and its
+    /// them are the ones left out. The order of what stays is the set's order, so a rebuild that fits is unchanged. An
+    /// entry on a ladder counts as held when the book held any rung of that ladder: the set keeps only the top rung, so a
+    /// held lower rung stays as the top (#417's review, F3). RTK has no rebuild to follow: its book is 52 too (<c>rtk/src/common/mmo.h</c>, <c>MAX_SPELLS</c>) and its
     /// alignment swap leaves subpath spells alone.</para></summary>
     private static List<SpellDef> KeepHeldSubpathSpells(List<SpellDef> rebuilt, int pathId, IEnumerable<SpellDef>? held)
     {
@@ -817,10 +818,19 @@ public static partial class Content
             if (s.PathId == pathId && ids.Add(s.Id)) rebuilt.Add(s);
         int over = rebuilt.Count - SpellBookCap;
         if (over <= 0) return rebuilt;
+        // Held means held as a spell or as its ladder (#417's review, F3): the rebuilt set keeps only a ladder's top rung,
+        // so a book that held a lower rung holds that ladder's rung in the set, the top, and it stays as the rung did.
         var inBook = book.Select(s => s.Id).ToHashSet();
+        LadderOf.TryGetValue(PathBaseOf(pathId), out var ladders);
+        var heldLadders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (ladders is not null)
+            foreach (var s in book)
+                if (ladders.TryGetValue(s.Key, out var rung)) heldLadders.Add(rung.Ladder);
+        bool Held(SpellDef s) => inBook.Contains(s.Id)
+                                 || (ladders is not null && ladders.TryGetValue(s.Key, out var r) && heldLadders.Contains(r.Ladder));
         var leaveOut = new HashSet<int>();                          // indexes into rebuilt, the last unheld first
         for (int i = rebuilt.Count - 1; i >= 0 && leaveOut.Count < over; i--)
-            if (!inBook.Contains(rebuilt[i].Id)) leaveOut.Add(i);
+            if (!Held(rebuilt[i])) leaveOut.Add(i);
         return rebuilt.Where((_, i) => !leaveOut.Contains(i)).ToList();
     }
 

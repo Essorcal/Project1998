@@ -928,7 +928,9 @@ public sealed class SpellContext
     public string dropped { get; } = "";
     /// <summary>Take one of the item being dropped from the bag, as RTK's <c>player:removeItem(yname, 1, 1)</c> takes it:
     /// from the first stack of it, in slot order, that is not full, else from the first; a stack that empties reads "You
-    /// dropped &lt;item&gt;.". False, taking nothing, when there is none to take. See <c>Session.LuaTakeDropped</c>.</summary>
+    /// dropped &lt;item&gt;.". False, taking nothing, when there is none to take or the caster is going away (a kick or an
+    /// exchange that came while the hook waited for the Lua gate); the hook then does nothing more. See
+    /// <c>Session.LuaTakeDropped</c>.</summary>
     public bool takeDropped() => _s.LuaTakeDropped(dropped);
     /// <summary>Control flames' flames: every creature (never an NPC) on each of the caster's four sides, north, east,
     /// south, west, every one on each, takes <paramref name="amount"/>, netted against its armour, with this spell's

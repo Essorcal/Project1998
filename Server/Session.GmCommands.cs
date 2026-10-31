@@ -366,7 +366,7 @@ public sealed partial class Session
     private void ToggleMount(CommandArgs a)
     {
         _char.Mounted = a.Toggle(0, _char.Mounted);
-        _mountKey = "horse";                                              // the toggle's mount is always a horse
+        _char.MountKey = "";                                              // the toggle's mount is always a horse
         RefreshAppearance();                                              // redraw self on the horse + everyone watching
         Reply(_char.Mounted ? "The powerful steed takes you where you want to go."   // same lines as the
                                    : "You precariously step again onto the ground.");       // real 'r' ride key
@@ -597,7 +597,8 @@ public sealed partial class Session
     // first free tile clockwise from the one you face (see DismountTile).
     // ARAWN'S STAG RIDES TOO (Druid's Steed): RTK's onMount takes either a `horse` or an `arawns_stag`
     // (RTK Scripts/on_event.lua:353-377), and its onDismount sets down again the creature that was ridden, by the
-    // mount's id it kept (:379-465). So the creature ridden is kept here (_mountKey) and set down at the dismount.
+    // mount's id it kept in its saved registry (:379-465). So the creature ridden is kept with the character
+    // (Character.MountKey, saved: the project owner, 2026-10-31, "As RTK") and set down at the dismount, after a relog too.
     // On 4.95 a rider on either is drawn on a horse: the mounted form is one horse-and-rider frame of the worn body
     // art, with no second mount to draw (RTK draws the stag's rider as look 126).
     private void TryRideHorse()
@@ -612,10 +613,10 @@ public sealed partial class Session
             if (horse is null) { SendMiniText("Good try, but there is nothing here that you can ride."); return; }
             _world.DespawnMob(_char.Map, horse);
             _char.Mounted = true;
-            _mountKey = horse.Key;
+            _char.MountKey = horse.Key;
             RefreshAppearance();
             SendMiniText("The powerful steed takes you where you want to go.");
-            Log.Info($"   -> MOUNT on (rode away world {_mountKey} {horse.Id})");
+            Log.Info($"   -> MOUNT on (rode away world {horse.Key} {horse.Id})");
         }
         else
         {
@@ -623,8 +624,8 @@ public sealed partial class Session
             RefreshAppearance();
             SendMiniText("You precariously step again onto the ground.");
 
-            string key = _mountKey;
-            _mountKey = "horse";
+            string key = _char.MountKey is { Length: > 0 } ridden ? ridden : "horse";   // empty: a horse (the GM toggle, an older row)
+            _char.MountKey = "";
             var def = Content.Mobs.FirstOrDefault(m => m.Key == key);
             if (def is not null)
             {
@@ -636,12 +637,6 @@ public sealed partial class Session
             else Log.Info($"   -> MOUNT off (no '{key}' MobDef — nothing set down)");
         }
     }
-
-    /// <summary>The creature this rider sits on, which the dismount sets down again (RTK's <c>registry["mountMobId"]</c>):
-    /// <c>horse</c> or <c>arawns_stag</c>, set when the ride key mounts and back to <c>horse</c> at the dismount and at the
-    /// GM toggle, whose mount is a horse. Kept for this login only, as <c>Character.Mounted</c> is: nothing new is
-    /// saved.</summary>
-    private string _mountKey = "horse";
 
     /// <summary>Where to set the horse down when dismounting: the first free CARDINAL neighbour, checked
     /// CLOCKWISE from the tile the player faces (faced, right, behind, left — dir, dir+1, dir+2, dir+3 in

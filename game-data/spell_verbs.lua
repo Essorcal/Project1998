@@ -2395,8 +2395,10 @@ end
 -- nothing lands. On a `chance`% roll (the script's math.random(1, 4) == 1), with `flat` mana there, every creature on
 -- the caster's four sides takes `amount`, netted against its armour, with the spell's graphic over it, and when any
 -- stood there the spell's sound plays, the `flat` mana goes and the script's own line is said (ctx:strikeAround). Short
--- of `flat` on that roll, "Your will is too weak." and nothing struck. Any other item drops as always. Row: mana 1000,
--- duration 62000 (the window), amount 1200, chance 25, flat 800 (the drop's own mana).
+-- of `flat` on that roll, "Your will is too weak." and nothing struck. Any other item drops as always. With no acorn
+-- left to spend, or the caster going away (an exchange or a kick in the Lua gate's gap, Session.LuaTakeDropped),
+-- nothing happens and nothing lands. Row: mana 1000, duration 62000 (the window), amount 1200, chance 25, flat 800
+-- (the drop's own mana).
 local FLAME_ITEM = "acorn"                      -- control_flames.lua: item.yname == "acorn"
 local FLAME_LINE = "You cast Wall of flames."   -- its line when the flames rise
 
@@ -2406,7 +2408,7 @@ end
 
 function verbs.flame_window_drop(ctx, row)
   if ctx.dropped ~= FLAME_ITEM then return false end
-  ctx:takeDropped()
+  if not ctx:takeDropped() then return true end              -- nothing to spend: nothing happens
   if not ctx:roll(row.chance or 0) then return true end
   local mana = row.flat or 0
   if ctx.mp < mana then ctx:say("Your will is too weak."); return true end
@@ -2463,7 +2465,8 @@ end
 -- sixteen, is spent, one of it, and nothing lands but what the spell scatters: one of that flower on the caster's tile,
 -- then over every tile within `amount` of them on both axes one more on a `chance`% roll, where the tile carries no map
 -- object, is passable and is no warp (ctx:scatter, with the script's clamp at the map's edge). No line, no graphic. Any
--- other item drops as always. Row: mana 200, duration 625000 (the window), amount 4, chance 50.
+-- other item drops as always. With no flower left to spend, or the caster going away (Session.LuaTakeDropped), nothing
+-- is scattered and nothing lands. Row: mana 200, duration 625000 (the window), amount 4, chance 50.
 local BLOOM_FLOWERS = {
   daffodil = true, dawn_tulip = true, dusk_blossom = true, fallen_star = true, golden_sunset = true,
   greater_tulip = true, heavens_bell = true, lemon_flower = true, mango_floret = true, midnights_reign = true,
@@ -2477,7 +2480,7 @@ end
 function verbs.bloom_window_drop(ctx, row)
   local flower = ctx.dropped
   if not BLOOM_FLOWERS[flower] then return false end
-  ctx:takeDropped()
+  if not ctx:takeDropped() then return true end              -- nothing to spend: nothing scattered
   ctx:scatter(flower, row.amount or 0, row.chance or 0)
   return true
 end
