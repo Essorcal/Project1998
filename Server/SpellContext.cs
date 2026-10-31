@@ -775,10 +775,11 @@ public sealed class SpellContext
     /// warrior strikes give: Barbarian cry's "TOWNIE~~!"). <see cref="talk"/> puts the caster's name in front.</summary>
     public void shout(string msg) => _s.Shout(msg);
     /// <summary>Strike what stands on the faced tile for <paramref name="amount"/>, netted against its armour, with no
-    /// deflect roll, with this spell's graphic over it: "each" strikes the creature there (not an NPC) and the player there
-    /// when the caster may attack them (RTK's getTargetFacing(BL_MOB) and (BL_PC), Barbarian cry); "first" strikes the
-    /// first of them, a living player before a creature, as RTK's getTargetFacing(BL_ALL) lists a cell (Rend). A dead
-    /// player is passed over. Returns how many were struck; 0 is still a cast. See <c>Session.LuaStrikeFaced</c>.</summary>
+    /// deflect roll, with this spell's graphic over it: "each" strikes the first creature there (never an NPC) and the
+    /// first living player there when the caster may attack them (RTK's getTargetFacing(BL_MOB) and (BL_PC), Barbarian
+    /// cry); "first" strikes the first living thing, a player before a creature, as RTK's getTargetFacing(BL_ALL) lists a
+    /// cell (Rend). A ghost on the tile is passed over to a living player behind it. Returns how many were struck; 0 is
+    /// still a cast. See <c>Session.LuaStrikeFaced</c>.</summary>
     public double strikeFaced(double amount, string mode) => _s.LuaStrikeFaced(_sp, amount, mode);
     /// <summary>Spawn the mobs.csv creature <paramref name="mobKey"/>, unowned, on the faced tile when RTK's spawn test finds
     /// it free (no map object, passable, no warp, nothing standing or lying there, inside RTK's bounds), else on the
@@ -794,13 +795,14 @@ public sealed class SpellContext
     /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
     /// row does not list.</summary>
     public bool morphTo(string answer) => _s.LuaMorphTo(_sp, answer);
-    /// <summary>Resolve the living player on the faced tile, on any map, as this cast's player target (RTK
-    /// <c>getTargetFacing(player, BL_PC)</c>, which passes over the dead); no aimed id is read. False, and silent, with
-    /// nobody there. <see cref="pushTarget"/>, <see cref="speechStatus"/> and <see cref="tellTargetLine"/> act on it.</summary>
+    /// <summary>Resolve the first living player on the faced tile, on any map, as this cast's player target (RTK
+    /// <c>getTargetFacing(player, BL_PC)</c>, which passes over the dead, so a living player standing on a ghost's tile
+    /// is found); no aimed id is read. False, and silent, with nobody living there. <see cref="pushTarget"/>, <see cref="speechStatus"/> and <see cref="tellTargetLine"/> act on it.</summary>
     public bool facedPlayer() => _s.LuaFacedPlayer(_sp);
     /// <summary>Push's move: the resolved player target one tile on in the caster's facing, or two when the first is taken,
-    /// when RTK's test finds the tile free, inside the target's own monitor (Summon's checks first). This spell's graphic
-    /// over them before and after. False, and nobody moves, when neither tile is free.</summary>
+    /// when RTK's test finds the tile free, inside the target's own monitor (the landing tile first, then Summon's checks,
+    /// so a push that moves nobody leaves an open exchange alone). This spell's graphic over them before and after. False,
+    /// and nobody moves, when neither tile is free (or the target is logging out).</summary>
     public bool pushTarget() => _s.LuaPushTarget(_sp);
     /// <summary>Send <paramref name="line"/> to the resolved player target's status box, inside their monitor.</summary>
     public void tellTargetLine(string line) => _s.LuaTellTargetLine(line);
@@ -809,12 +811,12 @@ public sealed class SpellContext
     /// this spell's name and key, with this spell's graphic over them and its SpellText.csv fade line at the end. False,
     /// changing nothing, when this spell's status already holds them (RTK <c>hasDuration</c>). See Session.Chat.cs.</summary>
     public bool speechStatus(string kind, double ms) => _s.LuaSpeechStatus(_sp, kind, (int)ms);
-    /// <summary>The area curse (Insult, Dishonor): on each of the caster's four sides, north, east, south, west, the
-    /// player the caster may attack and the creature (not an NPC) there take <paramref name="category"/>'s curse of
+    /// <summary>The area curse (Insult, Dishonor): on each of the caster's four sides, north, east, south, west, every
+    /// player there the caster may attack and every creature (not an NPC) there take <paramref name="category"/>'s curse of
     /// <paramref name="stat"/> <paramref name="amount"/> for <paramref name="durMs"/>, with this spell's graphic, unless
     /// they already carry a status of a category in <paramref name="blockedBy"/> ('|' between them). A player reads
     /// <paramref name="line"/>; a creature redraws <paramref name="beatAnim"/> every <paramref name="beatMs"/>. A dead
-    /// player ends the walk. Returns how many were cursed.</summary>
+    /// player met on the walk ends it there. Returns how many were cursed.</summary>
     public double curseAround(string category, string stat, double amount, double durMs, string blockedBy, string line,
                               double beatAnim, double beatMs) =>
         _s.LuaCurseAround(_sp, category, stat, (int)System.Math.Round(amount), (int)durMs, blockedBy, line,

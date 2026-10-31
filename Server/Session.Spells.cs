@@ -3513,29 +3513,43 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>Strike the faced tile (<c>ctx:strikeFaced</c>). <paramref name="mode"/> "each" is Barbarian cry's two
-    /// lookups, <c>getTargetFacing(player, BL_PC)</c> and <c>(player, BL_MOB)</c>, each struck through
-    /// <c>global_zap</c> (<c>Spells/Subpaths/Barbarian/barbarian_cry.lua:31-39</c>): the player when the caster may attack
-    /// them (a PvP map, the #351/#356 reading of <c>canPK</c>), and the creature, not an NPC. "first" is Rend's one lookup,
-    /// <c>getTargetFacing(player, BL_ALL)</c> (<c>rend.lua:30-46</c>), which lists a cell's players before its creatures
-    /// (RTK <c>map_foreachincell</c>): a living player there takes it when the caster may attack them and else nothing
-    /// does; with no player, the creature, unless it is an NPC. A dead player is passed over, as RTK's lookup passes over
-    /// <c>state == 1</c>. Each blow is netted against the target's own armour, with no deflect roll: RTK rolls a deflect
-    /// only for a cast with a target, and these are self-cast (type 5) spells. The spell's graphic and sound play over
-    /// each target struck. Returns how many were struck.</summary>
+    /// <summary>The first living player on (x,y) of the caster's map, the caster left out, or null: RTK's
+    /// <c>getTargetFacing</c> walks the cell's list and passes over <c>state == 1</c> to the next
+    /// (<c>Scripts/scripts.lua:474-481</c>), so a living player standing on a ghost's tile is found whatever order the two
+    /// are listed in (#414's review, F2). Each player is read outside <c>World._lock</c>, as <see cref="LuaTargetIsDead"/>
+    /// reads one.</summary>
+    private Session? LivingPeerAt(int x, int y)
+    {
+        foreach (var p in _world.PlayersAt(_char.Map, x, y))
+            if (!p.IsDead && !ReferenceEquals(p, this)) return p;
+        return null;
+    }
+
+    /// <summary>Strike the faced tile (<c>ctx:strikeFaced</c>), each lookup as its script reads the tile. <paramref name="mode"/>
+    /// "each" is Barbarian cry's two lookups, each struck through <c>global_zap</c>
+    /// (<c>Spells/Subpaths/Barbarian/barbarian_cry.lua:31-39</c>): <c>getTargetFacing(player, BL_PC)</c>, the first living
+    /// player on the tile (a ghost listed before them passed over), struck when the caster may attack them (a PvP map, the
+    /// #351/#356 reading of <c>canPK</c>; RTK looks no further when that one is not attackable); and
+    /// <c>getTargetFacing(player, BL_MOB)</c>, the first creature, which is never an NPC (RTK's NPCs are <c>BL_NPC</c>).
+    /// "first" is Rend's one lookup, <c>getTargetFacing(player, BL_ALL)</c> (<c>rend.lua:30-46</c>): the first living thing in
+    /// the cell's list, which RTK's <c>map_foreachincell</c> builds with its players (and NPCs and floor items) before its
+    /// creatures. So a living player there takes it when the caster may attack them, and else nothing does; with none, the
+    /// first creature, unless it is an NPC. Each blow is netted against the target's own armour, with no deflect roll: RTK
+    /// rolls a deflect only for a cast with a target, and these are self-cast (type 5) spells. The spell's graphic and sound
+    /// play over each target struck. Returns how many were struck.</summary>
     internal int LuaStrikeFaced(SpellDef sp, double amount, string mode)
     {
         if (amount < 1) amount = 1;
         var (fx, fy) = FrontTile();
-        var mob = _world.MobAt(_char.Map, fx, fy);
-        var peer = _world.PeerAt(_char.Map, fx, fy);
-        if (peer is not null && (peer.IsDead || ReferenceEquals(peer, this))) peer = null;
+        bool first = mode == "first";
+        var mobs = _world.MobsAt(_char.Map, fx, fy);
+        var mob = first ? mobs.FirstOrDefault() : mobs.FirstOrDefault(m => !m.IsNpc);
+        var peer = LivingPeerAt(fx, fy);
         bool pvp = Content.IsPvpMap(_char.Map);
         var row = Content.FxFor(sp);
         int anim = row is not null ? Content.EffectAnim(row, sp.PathId) : -1;
         int snd  = row is not null ? Content.EffectSound(row, sp.PathId) : -1;
         int struck = 0;
-        bool first = mode == "first";
         if (peer is not null && pvp)
         {
             BroadcastFx(peer._char.Id, anim, snd);
@@ -3614,15 +3628,18 @@ public sealed partial class Session
         return true;
     }
 
-    /// <summary>The living player on the faced tile, on any map, as this cast's player target (<c>ctx:facedPlayer</c>;
-    /// RTK <c>getTargetFacing(player, BL_PC)</c>, which passes over <c>state == 1</c>). No aimed id is read: a self-cast
-    /// spell's script looks only at the faced tile. Silent when nobody is there, as a cast that finds nothing is.</summary>
+    /// <summary>The first living player on the faced tile, on any map, as this cast's player target
+    /// (<c>ctx:facedPlayer</c>; RTK <c>getTargetFacing(player, BL_PC)</c> for Push, which passes over <c>state == 1</c> to
+    /// the next in the cell's list, <see cref="LivingPeerAt"/>): a living player standing on a ghost's tile is found
+    /// (#414's review, F2). Break jaw's script asks <c>getTargetFacing(player, BL_ALL)</c>, whose list puts a cell's players
+    /// (and NPCs) before its creatures, so a creature on the tile never comes first; an NPC sharing the tile is not looked
+    /// at here. No aimed id is read: a self-cast spell's script looks only at the faced tile. Silent when nobody is there,
+    /// as a cast that finds nothing is.</summary>
     internal bool LuaFacedPlayer(SpellDef sp)
     {
         _approachPlace = null;
         var (fx, fy) = FrontTile();
-        var peer = _world.PeerAt(_char.Map, fx, fy);
-        _pcSpellTarget = peer is not null && !peer.IsDead && !ReferenceEquals(peer, this) ? peer : null;
+        _pcSpellTarget = LivingPeerAt(fx, fy);
         if (_pcSpellTarget is null) { LogNoTarget(sp); return false; }
         return true;
     }
@@ -3641,8 +3658,12 @@ public sealed partial class Session
     /// before it looks, and again where they land.
     /// <para><b>Locks.</b> Summon's sequence (<see cref="LuaSummonTarget"/>): the target's monitor, taken by StateRank,
     /// held from the checks through the move, so a target who logged out or traded meanwhile is seen
-    /// (<see cref="TargetFreeToMove"/>); where they stand is read inside it; <c>EnterMap</c> moves them on their own map
-    /// and takes World._lock inside, as for Summon. Nothing else of theirs is written.</para></summary>
+    /// (<see cref="TargetFreeToMove"/>); where they stand is read inside it, so their own walk lands before the read or
+    /// after the move, never between; <c>EnterMap</c> moves them on their own map and takes World._lock inside, as for
+    /// Summon. Nothing else of theirs is written.</para>
+    /// <para><b>A push that moves nobody ends nothing</b> (#414's review, F1): the landing tile is found before Summon's
+    /// checks, which end an open exchange, so a target with no free tile beyond them keeps theirs, as RTK's Push touches
+    /// nothing but the warp. A push that moves ends it, as every move here does (#57, <c>EnterMap</c>'s step).</para></summary>
     internal bool LuaPushTarget(SpellDef sp)
     {
         if (_pcSpellTarget is not { } target || ReferenceEquals(target, this)) return false;
@@ -3660,23 +3681,38 @@ public sealed partial class Session
         return moved;
     }
 
-    /// <summary>The move inside the target's monitor (<see cref="LuaPushTarget"/>).</summary>
+    /// <summary>The move inside the target's monitor (<see cref="LuaPushTarget"/>). The landing tile first, so a push that
+    /// moves nobody returns before anything is ended (F1); then Summon's checks, which can drop and retake the monitor while
+    /// they end an exchange; then the landing tile again, from where the target stands now. A target who walked in that gap
+    /// so that nothing beyond them is free has had their exchange ended and is not moved: the one way an exchange ends with
+    /// no move, and only when there was an exchange to end.</summary>
     private bool PushMove(Session target, SpellDef sp, int dx, int dy)
     {
+        if (PushLanding(target, sp, dx, dy) is null) return false;
         if (!TargetFreeToMove(target, sp)) return false;
+        if (PushLanding(target, sp, dx, dy) is not { } landing) return false;
+        var (map, xs, ys, x, y) = landing;
+        string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
+        if (target.EnterMap(map, xs, ys, (ushort)x, (ushort)y, mapName) is null) return false;
+        Log.Info($"      {sp.Name}(lua): pushed '{target._char.Name}' to ({x},{y}) on map {map}");
+        return true;
+    }
+
+    /// <summary>Where Push would land <paramref name="target"/>, read from where they stand now, inside their monitor: the
+    /// tile one on in the caster's facing, else the one after it, each by <see cref="RtkTileFree"/>
+    /// (<c>Spells/Subpaths/Barbarian/push.lua:19-83</c>); null, with a log line, when neither is free or the target is no
+    /// longer on the caster's map.</summary>
+    private (ushort Map, ushort Xs, ushort Ys, int X, int Y)? PushLanding(Session target, SpellDef sp, int dx, int dy)
+    {
         ushort map = target._char.Map, xs = target._char.MapXs, ys = target._char.MapYs;
-        if (map != _char.Map) { Log.Info($"      {sp.Name}(lua): '{target._char.Name}' left the map — nobody moved"); return false; }
+        if (map != _char.Map) { Log.Info($"      {sp.Name}(lua): '{target._char.Name}' left the map — nobody moved"); return null; }
         for (int step = 1; step <= 2; step++)
         {
             int x = target._char.X + dx * step, y = target._char.Y + dy * step;
-            if (!RtkTileFree(map, xs, ys, x, y)) continue;
-            string mapName = Content.TryMap(map, out var md) ? md.Name : "Nexus";
-            if (target.EnterMap(map, xs, ys, (ushort)x, (ushort)y, mapName) is null) return false;
-            Log.Info($"      {sp.Name}(lua): pushed '{target._char.Name}' to ({x},{y}) on map {map}");
-            return true;
+            if (RtkTileFree(map, xs, ys, x, y)) return (map, xs, ys, x, y);
         }
         Log.Info($"      {sp.Name}(lua): nowhere to push '{target._char.Name}' — nobody moved");
-        return false;
+        return null;
     }
 
     /// <summary>Give the resolved player target a speech status (<c>ctx:speechStatus</c>): "garbled"
@@ -3712,8 +3748,12 @@ public sealed partial class Session
     private static readonly (int dx, int dy)[] AroundNesw = { (0, -1), (1, 0), (0, 1), (-1, 0) };
 
     /// <summary>The area curse (<c>ctx:curseAround</c>; RTK <c>Spells/Subpaths/Barbarian/insult.lua:26-60</c> and
-    /// <c>dishonor.lua</c>). The four sides in RTK's order; on each, a cell's player before its creature, as RTK lists a
-    /// cell. A dead player met there ends the walk (the scripts' <c>if targets[i].state == 1 then return end</c>). A player
+    /// <c>dishonor.lua</c>). The four sides in RTK's order, and on each the whole cell, as the scripts walk every object
+    /// <c>getObjectsInCell(BL_ALL)</c> lists: its players first, then every creature on it (RTK's <c>map_foreachincell</c>
+    /// lists a cell's players, NPCs and floor items before its creatures). The players come in the map's player order: RTK
+    /// lists them in its block list's order, head-inserted as each enters the block (<c>map_addblock</c>), which this server
+    /// does not keep. A dead player met on the walk ends it there, the rest of that cell and the sides after it untouched
+    /// (the scripts' <c>if targets[i].state == 1 then return end</c>, before their type test). A player
     /// the caster may attack (a PvP map), and a creature that is not an NPC, take the curse unless they carry a status of a
     /// category in <paramref name="blockedBy"/> already (RTK <c>checkIfCast(curses)</c>, <c>cursed == 0</c>,
     /// <c>checkIfCast(protections)</c>): the curse's slot and stat, the spell's graphic over them, and for a player
@@ -3728,14 +3768,17 @@ public sealed partial class Session
         var blocks = blockedBy.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         bool pvp = Content.IsPvpMap(_char.Map);
         int cursed = 0;
+        bool ended = false;
         foreach (var (dx, dy) in AroundNesw)
         {
             int cx = _char.X + dx, cy = _char.Y + dy;
             if (cx < 0 || cy < 0 || cx >= _char.MapXs || cy >= _char.MapYs) continue;
-            var peer = _world.PeerAt(_char.Map, cx, cy);
-            if (peer is not null && peer.IsDead) break;
-            if (peer is not null && pvp && !ReferenceEquals(peer, this))
+            // The whole cell, as getTargetsAround's getObjectsInCell lists it: its players, then its creatures. A dead
+            // player ends the walk where it is met (#414's review, F2: every player of the cell is read, not the first).
+            foreach (var peer in _world.PlayersAt(_char.Map, cx, cy))
             {
+                if (peer.IsDead) { ended = true; break; }
+                if (!pvp || ReferenceEquals(peer, this)) continue;
                 bool landed = peer.WithState(() =>
                 {
                     if (blocks.Any(peer.HasStatusCategory)) return false;
@@ -3745,15 +3788,18 @@ public sealed partial class Session
                 });
                 if (landed) { BroadcastFx(peer._char.Id, anim, snd); cursed++; }
             }
-            var mob = _world.MobAt(_char.Map, cx, cy);
-            if (mob is null || mob.IsNpc) continue;
-            if (blocks.Any(c => _world.MobHasStatus(mob, CatFamily(c)) || (CatFamily(c) == "curses" && _world.MobHasStatus(mob, "minorcurses"))))
-                continue;
-            if (!_world.ApplyMobStatus(mob, CatFamily(category), durMs, hold: false, blind: false,
-                                       fxAnim: beatAnim, fxSound: 0, fxEveryMs: beatMs, spellKey: sp.Key)) continue;
-            if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
-            BroadcastFx(mob.Id, anim, snd);
-            cursed++;
+            if (ended) break;
+            foreach (var mob in _world.MobsAt(_char.Map, cx, cy))
+            {
+                if (mob.IsNpc) continue;
+                if (blocks.Any(c => _world.MobHasStatus(mob, CatFamily(c)) || (CatFamily(c) == "curses" && _world.MobHasStatus(mob, "minorcurses"))))
+                    continue;
+                if (!_world.ApplyMobStatus(mob, CatFamily(category), durMs, hold: false, blind: false,
+                                           fxAnim: beatAnim, fxSound: 0, fxEveryMs: beatMs, spellKey: sp.Key)) continue;
+                if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
+                BroadcastFx(mob.Id, anim, snd);
+                cursed++;
+            }
         }
         Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} around ({_char.X},{_char.Y}): {cursed} cursed");
         return cursed;

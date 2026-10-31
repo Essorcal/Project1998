@@ -31,6 +31,8 @@ public sealed class BarbarianSpellTests
     private const ushort GuideMap = 3511, Arena = 3018;
     private const ushort RageMap = 63240, CryMap = 63241, RendMap = 63242, MountMap = 63243, GuiseMap = 63244,
                          PushMap = 63245, JawMap = 63246, CurseMap = 63247, SelfMap = 63248;
+    // Fix round 1 (#414's review): content-free too, claimed by no other class.
+    private const ushort TradePushMap = 63249, GhostMap = 63250, RaceMap = 63251, CellMap = 63252;
     private const ushort CX = 16, CY = 16;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -49,6 +51,14 @@ public sealed class BarbarianSpellTests
         typeof(Session).GetField("_nextActionTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo ActionCount =
         typeof(Session).GetField("_actionCount", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo TradeField =
+        typeof(Session).GetField("_trade", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo StartTrade =
+        typeof(Session).GetMethod("TryStartTrade", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo StateField =
+        typeof(Session).GetField("_state", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo EnterMapMethod =
+        typeof(Session).GetMethod("EnterMap", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -492,6 +502,154 @@ public sealed class BarbarianSpellTests
         finally { Leave(PushMap, caster, other); _fx.World.DespawnMob(PushMap, block); }
     }
 
+    // ===== Fix round 1 (#414's review, F1-F3) ===================================================================
+
+    /// <summary>F1: a push that moves nobody leaves the target's exchange alone, as RTK's Push touches nothing but the
+    /// warp: a trader with both tiles beyond them taken stays where they are, "You can't push it." and the 600 spent, and
+    /// the exchange stays open for both, with no box. A push that moves a trader ends the exchange, as every move here does
+    /// (#57): "Exchange cancelled." to both. Red at 691e923: the exchange ended with nobody moved.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void APushThatMovesNobodyLeavesTheTargetsExchangeAlone(bool blocked)
+    {
+        int y = blocked ? CY : CY + 4;
+        var (caster, cOut, cc) = Caster("push", TradePushMap, CX, y);
+        var (target, tOut, _) = Player(TradePushMap, CX + 1, y, ch => ch.Exchange = true);
+        var (partner, pOut, _) = Player(TradePushMap, CX + 1, y + 1, ch => ch.Exchange = true);
+        var blocks = blocked ? new[] { AddCreature(TradePushMap, CX + 2, y, 1_000), AddCreature(TradePushMap, CX + 3, y, 1_000) }
+                             : Array.Empty<Mob>();
+        try
+        {
+            target.WithState(() => StartTrade.Invoke(target, new object[] { partner }));
+            Assert.True(TradeField.GetValue(target) is not null, "the exchange did not open");
+            cOut.Clear(); tOut.Clear(); pOut.Clear();
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            bool open = TradeField.GetValue(target) is not null && TradeField.GetValue(partner) is not null;
+            var boxes = (ExchangeBoxes(tOut), ExchangeBoxes(pOut));
+            if (blocked)
+                Assert.True(target.PlayerX == CX + 1 && Lines(cOut) == "You can't push it." && cc.Mp == Mana - 600 && open
+                            && boxes.Item1.Count == 0 && boxes.Item2.Count == 0,
+                            $"blocked: target at {target.PlayerX}, caster [{Lines(cOut)}], open {open}, " +
+                            $"boxes [{string.Join(" | ", boxes.Item1)}] / [{string.Join(" | ", boxes.Item2)}]");
+            else
+                Assert.True(target.PlayerX == CX + 2 && Lines(cOut) == "You cast Push." && !open
+                            && boxes.Item1.Contains("Exchange cancelled.") && boxes.Item2.Contains("Exchange cancelled."),
+                            $"moved: target at {target.PlayerX}, caster [{Lines(cOut)}], open {open}, " +
+                            $"boxes [{string.Join(" | ", boxes.Item1)}] / [{string.Join(" | ", boxes.Item2)}]");
+        }
+        finally { Leave(TradePushMap, caster, target, partner); foreach (var b in blocks) _fx.World.DespawnMob(TradePushMap, b); }
+    }
+
+    /// <summary>F2: a ghost who stood on the tile first does not hide the living player standing on it, as RTK's
+    /// <c>getTargetFacing</c> passes over <c>state == 1</c> to the next in the cell's list: Push from the west moves the
+    /// living player (the ghost stays), and Break jaw from the north, cast before it, jaws them. Red at 691e923: the first
+    /// player on the tile was read, the ghost, so nobody was pushed or jawed.</summary>
+    [Fact]
+    public void APlayerStandingOnAGhostIsStillTheFacedPlayer()
+    {
+        var (ghost, _, _) = Player(GhostMap, CX + 1, CY, ch => ch.Hp = 0);
+        var (living, lOut, _) = Player(GhostMap, CX + 1, CY);
+        var (jawer, _, _) = Caster("break_jaw", GhostMap, CX + 1, CY - 1, configure: ch => ch.Dir = 2);
+        var (pusher, pOut, pc) = Caster("push", GhostMap, CX, CY);
+        try
+        {
+            Assert.Same(ghost, _fx.World.PeerAt(GhostMap, CX + 1, CY));   // the ghost is the tile's first player
+            jawer.Receive(SpellCastSupport.CastFrame(0));
+            var jaw = SpellCastSupport.BuffEntry(living, "break_jaw");
+            pusher.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(jaw is not null && living.PlayerX == CX + 2 && ghost.PlayerX == CX + 1 && pc.Mp == Mana - 600
+                        && Lines(pOut) == "You cast Push.",
+                        $"jaw {jaw?.ToString() ?? "none"}; living at {living.PlayerX}, ghost at {ghost.PlayerX}, " +
+                        $"pusher [{Lines(pOut)}] spent {Mana - pc.Mp}; living's lines [{Lines(lOut)}]");
+        }
+        finally { Leave(GhostMap, ghost, living, jawer, pusher); }
+    }
+
+    /// <summary>F2 for the strike: on a PvP map, Barbarian cry reaches the living player standing on a ghost's tile
+    /// (RTK's <c>getTargetFacing(player, BL_PC)</c>), and the ghost takes nothing. Red at 691e923: the ghost was the tile's
+    /// player, passed over, and nobody was struck.</summary>
+    [Fact]
+    public void BarbarianCryStrikesALivingPlayerStandingOnAGhost()
+    {
+        var (x, y) = ArenaSpot(3);
+        var (ghost, _, gc) = Player(Arena, x + 1, y, ch => ch.Hp = 0);
+        var (living, _, lc) = Player(Arena, x + 1, y);
+        var (caster, _, _) = Caster("barbarian_cry", Arena, x, y);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(lc.Hp == 100_000 - 30_000 && gc.Hp == 0, $"living {lc.Hp}, ghost {gc.Hp}");
+        }
+        finally { Leave(Arena, ghost, living, caster); }
+    }
+
+    /// <summary>F2 for the area curse, which walks every object on each cell (RTK's <c>getObjectsInCell(BL_ALL)</c>): every
+    /// creature on a side is cursed, not only the first; and a cell's players are all read, so a living player listed before
+    /// a ghost is cursed and the ghost then ends the walk, leaving the creature east of the caster alone. Red at 691e923:
+    /// one creature of the two, and the ghost behind the living player never seen, so the walk went on east.</summary>
+    [Fact]
+    public void TheCurseReadsEveryOneOnACell()
+    {
+        var (caster, _, _) = Caster("insult", CellMap, CX, CY);
+        var pair = new[] { AddCreature(CellMap, CX + 1, CY, 1_000), AddCreature(CellMap, CX + 1, CY, 1_000) };
+        var (x, y) = ArenaSpot(4);
+        var (living, lOut, _) = Player(Arena, x, y - 1);
+        var (ghost, _, _) = Player(Arena, x, y - 1, ch => ch.Hp = 0);
+        var (walker, _, _) = Caster("insult", Arena, x, y);
+        var east = AddCreature(Arena, x + 1, y, 1_000);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(pair.All(m => m.Ac == 30 && _fx.World.MobStatusKey(m, "curses") == "insult"),
+                        "the cell's two creatures: " + string.Join(", ", pair.Select(m => $"AC {m.Ac}")));
+            walker.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(SpellCastSupport.BuffEntry(living, "insult") is not null && east.Ac == 0
+                        && _fx.World.MobStatusKey(east, "curses") == "",
+                        $"living {SpellCastSupport.BuffEntry(living, "insult")?.ToString() ?? "uncursed"} [{Lines(lOut)}], " +
+                        $"east creature AC {east.Ac}");
+        }
+        finally
+        {
+            Leave(CellMap, caster); Leave(Arena, living, ghost, walker);
+            foreach (var m in pair) _fx.World.DespawnMob(CellMap, m);
+            _fx.World.DespawnMob(Arena, east);
+        }
+    }
+
+    /// <summary>F3: Push holds the target's monitor from reading where they stand to the move, so the target's own walk
+    /// lands before the read or after the move, never between (Summon's race facts' shape). The target's thread holds its
+    /// monitor, mid-packet; Push parks on it with the target resolved; the target then steps one tile east, under that same
+    /// monitor, and lets go. The push must be worked out from the tile they stepped to: one on from it. Red with Push's
+    /// <c>using (target.EnterState())</c> taken out: the push read the old tile bare, worked out the tile they had just
+    /// stepped onto, and put them back on it.</summary>
+    [Fact]
+    public void APushWaitsForTheTargetsOwnMoveAndPushesFromWhereTheyStepped()
+    {
+        var (target, _, _) = Player(RaceMap, CX + 1, CY);
+        var (caster, cOut, _) = Caster("push", RaceMap, CX, CY);
+        using var held = new ManualResetEventSlim();
+        using var go = new ManualResetEventSlim();
+        var own = Run("target", () => target.WithState(() =>
+        {
+            held.Set();
+            go.Wait();
+            EnterMapMethod.Invoke(target, new object[] { RaceMap, (ushort)100, (ushort)100, (ushort)(CX + 2), (ushort)CY, "", ArrivalPolicy.Clamp });
+        }));
+        try
+        {
+            Assert.True(held.Wait(5000), "the target's thread never took its monitor");
+            var cast = Run("caster", () => caster.Receive(SpellCastSupport.CastFrame(0)));
+            Assert.True(Stable(() => Parked(cast) && ReferenceEquals(caster.LuaPcTarget, target) && !MonitorFree(target)),
+                        "the push never parked on the target's monitor");
+            go.Set();
+            Assert.True(cast.Join(5000) && own.Join(5000), "deadlock: the push or the target's step never finished");
+            Assert.True((target.PlayerX, target.PlayerY) == (CX + 3, CY) && Lines(cOut) == "You cast Push.",
+                        $"target at ({target.PlayerX},{target.PlayerY}) (want ({CX + 3},{CY})), caster [{Lines(cOut)}]");
+        }
+        finally { go.Set(); own.Join(5000); Leave(RaceMap, caster, target); }
+    }
+
     // ===== Break jaw ============================================================================================
 
     /// <summary>The faced player, off a PvP map (Q4), speaks garbled for 60 s: a "Break jaw" entry in their buff list, the
@@ -852,6 +1010,49 @@ public sealed class BarbarianSpellTests
     }
 
     private static void FreeSlot(Session s) => s.WithState(() => { NextActionTick.SetValue(s, 0L); ActionCount.SetValue(s, 0); });
+
+    /// <summary>The text of every exchange message box (0x42 sub-4: <c>4, 0, len(u8), text</c>), as
+    /// <c>ApproachSummonRaceTests</c> reads them.</summary>
+    private static List<string> ExchangeBoxes(RecordingOutbound o)
+    {
+        var boxes = new List<string>();
+        foreach (var body in o.BodiesOf(ServerOp.Exchange))
+            if (body.Length >= 3 && body[0] == 4 && body.Length >= 3 + body[2])
+                boxes.Add(Encoding.ASCII.GetString(body, 3, body[2]));
+        return boxes;
+    }
+
+    // The race harness, as ApproachSummonRaceTests forces its interleavings: a thread is "parked" when it is blocked and
+    // the monitors are in the expected state, held without a break for 200 ms.
+    private static bool Parked(Thread t) => (t.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0;
+
+    private static bool MonitorFree(Session s)
+    {
+        var gate = StateField.GetValue(s)!;
+        if (!Monitor.TryEnter(gate)) return false;
+        Monitor.Exit(gate);
+        return true;
+    }
+
+    private static bool Stable(Func<bool> cond)
+    {
+        var total = System.Diagnostics.Stopwatch.StartNew();
+        System.Diagnostics.Stopwatch? held = null;
+        while (total.ElapsedMilliseconds < 10_000)
+        {
+            if (cond()) { held ??= System.Diagnostics.Stopwatch.StartNew(); if (held.ElapsedMilliseconds >= 200) return true; }
+            else held = null;
+            Thread.Sleep(1);
+        }
+        return false;
+    }
+
+    private static Thread Run(string name, Action body)
+    {
+        var t = new Thread(() => body()) { IsBackground = true, Name = name };
+        t.Start();
+        return t;
+    }
 
     /// <summary>Run <paramref name="body"/> on a thread of its own, with no synchronisation context, as a read loop runs a
     /// packet: an await inside it (the menu's) then resumes inline on the thread that answers it, as on the server, rather
