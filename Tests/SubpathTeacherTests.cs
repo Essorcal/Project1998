@@ -179,7 +179,17 @@ public sealed class SubpathTeacherTests
                              "natures_smite 99 0 [1 gold_acorn, 1 topaz]; " +
                              "sea_breeze 33 0 [20 rabbit_meat, 30 rat_meat]; " +
                              "steed 99 0 []")]
-    [InlineData("Monk",      "")]
+    // The Monk spells slice: eight of the nine at their scripts' prices, the copied lists as written (Forgive asks Read
+    // karma's, Son-Kal Assassinate's); Second life, whose script has no requirements(), at its row's level, 0, for nothing;
+    // Bless drink, with no script of its own (its file is Enhanced drink's), off sale.
+    [InlineData("Monk",      "awe 62 500 [1 ambrosia, 20 antler]; " +
+                             "bless_food 99 1000 [1 aqua_potion, 1 brown_potion, 1 muddy_potion]; " +
+                             "faiths_call 99 0 [10 rabbit_meat, 20 acorn]; " +
+                             "forgive 60 50 [20 light_fox_fur, 70 acorn]; " +
+                             "mass_resurrect 99 10000 [2 red_potion, 200 acorn, 5 dark_amber]; " +
+                             "read_karma_monk 60 50 [20 light_fox_fur, 70 acorn]; " +
+                             "second_life 0 0 []; " +
+                             "son_kal 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]")]
     [InlineData("Muse",      "costume 0 0 []; sacred_verse 30 0 [1 ink, 1 scroll]; song_of_the_goddess 0 0 []; tranquil_symphony 30 0 [1 ink, 1 scroll]")]
     public void EachTeacherSellsTheWorkingSpellsAtRtksScriptPrices(string subpath, string expected)
     {

@@ -884,8 +884,10 @@ public sealed class SpellContext
     /// with no portrait (RTK <c>player:menuString</c> from a spell), and return at once. A pick runs the verb named
     /// <paramref name="verb"/> for this spell, with this spell's SpellParams.csv row and the picked option as
     /// <see cref="answer"/>, on the caster's own thread and monitor, unless they have died or are leaving by then. A closed
-    /// box runs nothing. See <c>Session.LuaSpellMenu</c>.</summary>
-    public void menu(string prompt, string options, string verb) => _s.LuaSpellMenu(_sp, prompt, options, verb);
+    /// box runs nothing. <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Forgive's target's
+    /// name, which its pick's step needs). See <c>Session.LuaSpellMenu</c>.</summary>
+    public void menu(string prompt, string options, string verb, string carry = "") =>
+        _s.LuaSpellMenu(_sp, prompt, options, verb, carry);
     /// <summary>Take on the form this spell's Morphs.csv row gives <paramref name="answer"/> (its answers column), for its
     /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
     /// row does not list.</summary>
@@ -961,8 +963,9 @@ public sealed class SpellContext
     // As the halves above: Inspire valor's buff and Title of nobility's title land on another player inside that player's
     // own monitor (ReceiveAreaBuff, ReceiveTitle, entered by StateRank); a troop is written through World's own methods.
     // No new lock. See Session.Spells.cs, "the Chongun spells".
-    /// <summary>The value the verb before handed on with <see cref="ask"/> (Title of nobility's typed name, carried to the
-    /// step that runs on its second answer); "" when none.</summary>
+    /// <summary>The value the verb before handed on with <see cref="ask"/> or <see cref="menu"/> (Title of nobility's typed
+    /// name, carried to the step that runs on its second answer; Forgive's target's name, to its pick's); "" when
+    /// none.</summary>
     public string carried { get; init; } = "";
     /// <summary>The time now, in whole seconds since 1970 UTC (RTK <c>os.time()</c>): Title of nobility's saved wait.</summary>
     public double osTime => System.DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -998,4 +1001,54 @@ public sealed class SpellContext
     /// <paramref name="title"/> as their title, saved with them, and reads <paramref name="line"/> in blue, inside their own
     /// monitor. False, changing nothing, when nobody online goes by that name or they are leaving.</summary>
     public bool bestowTitle(string name, string title, string line) => _s.LuaBestowTitle(_sp, name, title, line);
+
+    // ---- the Monk spells' primitives (RTK Spells/Subpaths/Monk/) ----------------------------------------------------
+    // As the halves above: Forgive's karma, count and legend, and a revive, land on another player inside that player's own
+    // monitor (ReceiveKarmaRestore, ReceiveRaise, entered by StateRank); Awe's hold is written through World's own method,
+    // which takes World._lock inside. No new lock. See Session.Spells.cs, "the Monk spells".
+    /// <summary>Decide this cast's target once, as RTK's engine does for a "Which target?" spell (Forgive, Second life):
+    /// "player" (then the player target <see cref="targetKarma"/>, <see cref="targetName"/>, <see cref="targetIsSelf"/> and
+    /// <see cref="raiseTarget"/> read), "creature", or "none". An aimed id names its block only: a player or a living
+    /// creature on the caster's map within 21 tiles; an NPC, a player elsewhere or nothing is none. With no id, the faced
+    /// tile, a player (a ghost too) before a living creature; with <paramref name="preferGhost"/> (Second life) a ghost
+    /// there before a living player. <see cref="pcTarget"/> is unchanged for the spells that use it. See
+    /// <c>Session.LuaResolveAimedTarget</c>.</summary>
+    public string aimedTarget(bool preferGhost = false) => _s.LuaResolveAimedTarget(_sp, _targetId, preferGhost);
+    /// <summary>Does the caster's karma meet the named tier (RTK <c>player:karmaCheck(tier)</c>, <see cref="Karma.Meets"/>):
+    /// "dragon" is 14 or more?</summary>
+    public bool karmaCheck(string tier) => _s.LuaKarmaCheck(tier);
+    /// <summary>Take <paramref name="amount"/> off the caster's karma, with the karma graphic and RTK's line, "Your karma
+    /// has decreased." (1 or more; "Your karma decreases." below 1): RTK <c>Player.removeKarma</c>, this server's
+    /// <c>Session.RemoveKarma</c>. Saved with the caster.</summary>
+    public void removeKarma(double amount) => _s.LuaRemoveKarma(amount);
+    /// <summary>A uniform number in [0, 1) (RTK's <c>math.random()</c> with no bounds; Forgive's karma price is it plus
+    /// 1), from the one stream every spell roll here uses.</summary>
+    public double rollFraction() => _s.LuaRollFraction();
+    /// <summary>Forgive's restore, on the player <see cref="pcTarget"/> or <see cref="pcTargetNamed"/> resolved, wherever
+    /// they stand, inside their own monitor: this spell's graphic over them, their karma becomes
+    /// <paramref name="karma"/>, they read <paramref name="line"/>, their saved registry key <paramref name="regKey"/>
+    /// counts one more, and their legend <paramref name="mark"/> reads <paramref name="firstText"/> when they had none by
+    /// that name, else <paramref name="countText"/> with "%d" the new count (RTK forgive.lua: removeLegendbyName, then
+    /// addLegend), in icon <paramref name="icon"/> and colour <paramref name="color"/>. Saved with them. False, changing
+    /// nothing, with no target or one who is leaving.</summary>
+    public bool restoreTargetKarma(double karma, string line, string regKey, string mark, string firstText, string countText,
+                                   double icon, double color) =>
+        _s.LuaRestoreTargetKarma(_sp, karma, line, regKey, mark, firstText, countText, (int)icon, (int)color);
+    /// <summary>Second life's revive, on the player <see cref="pcTarget"/> resolved: a dead player leaves ghost form where
+    /// they lie with <paramref name="vita"/> (kept within their max vita, at least 1) and the mana they had, reads
+    /// <paramref name="line"/>, and gets this spell's graphic, decided inside their own monitor. False, changing nothing,
+    /// for a living player, no target, or one who is leaving.</summary>
+    public bool raiseTarget(double vita, string line) => _s.LuaRaiseTarget(_sp, (int)System.Math.Round(vita), line);
+    /// <summary>Mass resurrect's sweep: every dead player on the caster's map comes back where they lie with full vita and
+    /// full mana, reads <paramref name="line"/> and gets this spell's graphic and sound, each decided inside their own
+    /// monitor (RTK <c>getObjectsInSameMap(BL_PC)</c>; the verb asks whether the caster may attack them). Returns how
+    /// many; 0 is still a cast.</summary>
+    public double reviveMap(string line) => _s.LuaReviveMap(_sp, line);
+    /// <summary>Awe's hold: this spell's sound at the caster, then every living creature (never an NPC) on the caster's map
+    /// within <paramref name="range"/> tiles on both axes whose <paramref name="category"/> slot is free is held for
+    /// <paramref name="durMs"/> in that slot under this spell's key, with this spell's graphic over it (RTK
+    /// <c>getObjectsInSameMap(BL_MOB)</c>, <c>distanceSquare</c>, <c>paralyzed</c>). A creature already held in that slot
+    /// is passed over. Returns how many.</summary>
+    public double holdAround(string category, double durMs, double range) =>
+        _s.LuaHoldAround(_sp, category, (int)durMs, (int)range);
 }

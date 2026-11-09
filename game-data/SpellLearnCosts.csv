@@ -687,6 +687,14 @@ natures_bloom,13,99,20000,wicked_staff,1,antler,20,,,,,rtk-lua
 earth_strike,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
 energy_bloom,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
 natures_smite,13,99,0,gold_acorn,1,topaz,1,,,,,rtk-lua
+read_karma_monk,17,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
+forgive,17,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
+second_life,17,0,0,,,,,,,,,rtk-lua
+bless_food,17,99,1000,muddy_potion,1,aqua_potion,1,brown_potion,1,,,rtk-lua
+awe,17,62,500,ambrosia,1,antler,20,,,,,rtk-lua
+son_kal,17,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
+faiths_call,17,99,0,acorn,20,rabbit_meat,10,,,,,rtk-lua
+mass_resurrect,17,99,10000,acorn,200,dark_amber,5,red_potion,2,,,rtk-lua
 song_of_the_goddess,21,0,0,,,,,,,,,rtk-lua
 sacred_verse,21,30,0,scroll,1,ink,1,,,,,rtk-lua
 tranquil_symphony,21,30,0,scroll,1,ink,1,,,,,rtk-lua
