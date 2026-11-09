@@ -2370,7 +2370,7 @@ public sealed partial class Session
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
         // A WARD BLOCKS THE TICK'S HP LOSS (#82; owner, 2026-10-21, decision sheet item 14). Harden Body, its
-        // three alignment reskins and the Scroll of Immortality (TickImmune) stop the health coming off, and
+        // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
         // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
         // and the PvP foe mark. The venom itself runs on: the timer above was not touched, the flash has already
         // gone out, and the line still prints, so a warded player can see the poison working on them. RTK's
@@ -2384,9 +2384,7 @@ public sealed partial class Session
         //
         // Gated here, on the heartbeat, under the monitor taken above; the tick does not go through TakeDamage,
         // whose PvP foe mark enters another session's monitor (DamageIntake.cs, the note at its end).
-        // Not Invincibility (Chongun): RTK lists it in hardBodies, which only its swing script reads to stop a blow,
-        // and venom's tick goes through removeHealthExtend, whose own test names the four poet wards (TickImmune).
-        if (TickImmune) { SendMiniText(PoisonTickText); return; }
+        if (DamageImmune) { SendMiniText(PoisonTickText); return; }
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();

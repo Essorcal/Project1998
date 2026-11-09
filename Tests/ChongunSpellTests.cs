@@ -39,6 +39,8 @@ public sealed class ChongunSpellTests
     private const ushort InvEndMap = 63323, TroopEdgeMap = 63324, TitleReplacedMap = 63325, GuideMap = 3611;
     // Fix round 2 (the re-check's F8): content-free, claimed by no other class.
     private const ushort InvClearMap = 63326;
+    // Fix round 3 (Invincibility stops swings only): content-free, claimed by no other class.
+    private const ushort WardKindMap = 63327;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -264,7 +266,7 @@ public sealed class ChongunSpellTests
     /// says the script's two lines, wards its caster for 3 s (a creature's swing takes nothing) and arms a 3 s wait, with
     /// graphic 11 and sound 5; a cast that fails takes 1,500 too, says "Something went wrong." and arms nothing. Under the
     /// ward, a cast says "You already cast that spell.", for free. Red on 5feb96a (generic); red without the ward key in
-    /// <c>Session.DamageImmune</c> (the swing lands, and the ward goes unseen).</summary>
+    /// <c>Session.HardBodyWarded</c> (the swing lands, and the ward goes unseen).</summary>
     [Fact]
     public void InvincibilityLandsByRtksRollAndWardsItsCaster()
     {
@@ -285,13 +287,13 @@ public sealed class ChongunSpellTests
                 if (lines == "Harden body spell | You cast Invincibility.")
                 {
                     landed = true;
-                    if (before - cc.Mp != 1_500 || wait <= 3_000 - SlackMs || wait > 3_000 || !caster.DamageImmune
+                    if (before - cc.Mp != 1_500 || wait <= 3_000 - SlackMs || wait > 3_000 || !caster.HardBodyWarded
                         || !Effects(cOut, caster.PlayerId).Contains(11) || !Sounds(cOut).Contains(5))
-                        problems.Add($"landed: spent {before - cc.Mp}, wait {wait}, ward {caster.DamageImmune}, " +
+                        problems.Add($"landed: spent {before - cc.Mp}, wait {wait}, ward {caster.HardBodyWarded}, " +
                                      $"graphics [{string.Join(",", Effects(cOut, caster.PlayerId))}], sounds [{string.Join(",", Sounds(cOut))}]");
                 }
-                else if (lines != "Something went wrong." || before - cc.Mp != 1_500 || wait != 0 || caster.DamageImmune)
-                    problems.Add($"cast {i}: [{lines}], spent {before - cc.Mp}, wait {wait}, ward {caster.DamageImmune}");
+                else if (lines != "Something went wrong." || before - cc.Mp != 1_500 || wait != 0 || caster.HardBodyWarded)
+                    problems.Add($"cast {i}: [{lines}], spent {before - cc.Mp}, wait {wait}, ward {caster.HardBodyWarded}");
             }
             Assert.True(landed && problems.Count == 0, $"landed {landed}; " + string.Join("\n", problems));
 
@@ -326,8 +328,8 @@ public sealed class ChongunSpellTests
                 FreeSlot(caster);
                 caster.Receive(SpellCastSupport.CastFrame(0));
                 Assert.True(Lines(cOut) == "Something went wrong." && before - cc.Mp == 1_500
-                            && SpellCastSupport.AetherLeft(caster, "invincibility") == 0 && !caster.DamageImmune,
-                            $"cast {i}: [{Lines(cOut)}], spent {before - cc.Mp}, ward {caster.DamageImmune}");
+                            && SpellCastSupport.AetherLeft(caster, "invincibility") == 0 && !caster.HardBodyWarded,
+                            $"cast {i}: [{Lines(cOut)}], spent {before - cc.Mp}, ward {caster.HardBodyWarded}");
             }
         }
         finally { Leave(InvMap, caster); }
@@ -355,8 +357,8 @@ public sealed class ChongunSpellTests
 
     /// <summary>Under Invincibility a creature's swing takes nothing, but a venom tick still does (RTK's Invincibility is
     /// read only by its swing script, not by removeHealthExtend, which venom's tick calls); under Harden
-    /// Body the tick takes nothing, as before. Red with Invincibility among the tick's wards (<c>Session.TickImmune</c>),
-    /// and red without it in <c>Session.DamageImmune</c>.</summary>
+    /// Body the tick takes nothing, as before. Red with Invincibility among the tick's wards (<c>Session.DamageImmune</c>),
+    /// and red with the gate not reading it for a swing.</summary>
     [Fact]
     public void AVenomTickLandsUnderInvincibilityAndASwingDoesNot()
     {
@@ -377,6 +379,52 @@ public sealed class ChongunSpellTests
                         $"swing left {afterSwing}; tick left {c.Hp} (want 700); under Harden Body {hbc.Hp}");
         }
         finally { _fx.World.DespawnMob(InvTickMap, mob); Leave(InvTickMap, p, hb); }
+    }
+
+    /// <summary>Invincibility stops a swing only, as RTK's, which reads its ward in <c>Scripts/hitCritChance.lua</c> and
+    /// nowhere else that stops a blow: under it a creature's swing and another player's swing deal nothing, while a
+    /// creature's spell and another player's spell land (the project owner, 2026-11-09, "Invincibility swings-only
+    /// first"). Each damage kind through its real entry point, as <c>DamageIntakeTests</c> drives them. Red with the gate
+    /// reading Invincibility for every kind (the spells) or for none (the swings).</summary>
+    [Theory]
+    [InlineData(DamageKind.MobMelee, false)]
+    [InlineData(DamageKind.PlayerMelee, false)]
+    [InlineData(DamageKind.MobSpell, true)]
+    [InlineData(DamageKind.PlayerSpell, true)]
+    public void UnderInvincibilitySwingsDoNotLandAndSpellsDo(DamageKind kind, bool lands)
+    {
+        var (victim, _, c) = Player(WardKindMap, CX, CY, hp: 100_000);
+        var (peer, _, _) = Player(WardKindMap, CX, CY + 4);
+        var mob = AddCreature(WardKindMap, CX + 1, CY);
+        try
+        {
+            victim.ItemSetStatus("invincibility", 60_000);
+            Strike(victim, kind, peer, mob);
+            Assert.True((c.Hp < 100_000) == lands, $"{kind} under Invincibility: vita {c.Hp} of 100000 (want {(lands ? "less" : "all")})");
+        }
+        finally { _fx.World.DespawnMob(WardKindMap, mob); Leave(WardKindMap, victim, peer); }
+    }
+
+    /// <summary>Harden Body is unchanged by the split: under the poet's Harden Body every one of those four blows, a creature's
+    /// spell and another player's spell included, deals nothing, as on master. Red with the gate letting a spell past the
+    /// Harden Body wards.</summary>
+    [Theory]
+    [InlineData(DamageKind.MobMelee)]
+    [InlineData(DamageKind.PlayerMelee)]
+    [InlineData(DamageKind.MobSpell)]
+    [InlineData(DamageKind.PlayerSpell)]
+    public void HardenBodyStillStopsSwingsAndSpells(DamageKind kind)
+    {
+        var (victim, _, c) = Player(WardKindMap, CX + 10, CY, hp: 100_000);
+        var (peer, _, _) = Player(WardKindMap, CX + 10, CY + 4);
+        var mob = AddCreature(WardKindMap, CX + 11, CY);
+        try
+        {
+            victim.ItemSetStatus("harden_body_poet", 60_000);
+            Strike(victim, kind, peer, mob);
+            Assert.True(c.Hp == 100_000, $"{kind} under Harden Body: vita {c.Hp} of 100000");
+        }
+        finally { _fx.World.DespawnMob(WardKindMap, mob); Leave(WardKindMap, victim, peer); }
     }
 
     /// <summary>When the 3 s ward has run out, the caster reads "Your skin turns back to flesh." (RTK's uncast,
@@ -406,9 +454,9 @@ public sealed class ChongunSpellTests
             cOut.Clear();
             caster.RegenTick(0, regenDue: true);
             Assert.True(wake > 3_000 - SlackMs && wake <= 3_000 && before == "" && ended == "Your skin turns back to flesh."
-                        && Lines(cOut) == "" && !caster.DamageImmune,
+                        && Lines(cOut) == "" && !caster.HardBodyWarded,
                         $"wake in {wake} ms (want about 3,000), before [{before}], at its end [{ended}], after [{Lines(cOut)}], " +
-                        $"ward {caster.DamageImmune}");
+                        $"ward {caster.HardBodyWarded}");
         }
         finally { Leave(InvEndMap, caster); }
     }
@@ -426,7 +474,7 @@ public sealed class ChongunSpellTests
             Assert.True(LandInvincibility(caster, cOut), "no Invincibility cast landed in forty");
             cOut.Clear();
             caster.WithState(() => caster.DispelSelf());
-            bool wardAfterClear = caster.DamageImmune;
+            bool wardAfterClear = caster.HardBodyWarded;
             caster.RegenTick(0, regenDue: false);
             string atClear = Lines(cOut);
             cOut.Clear();
@@ -1178,6 +1226,21 @@ public sealed class ChongunSpellTests
     }
 
     private static void FreeSlot(Session s) => s.WithState(() => { NextActionTick.SetValue(s, 0L); ActionCount.SetValue(s, 0); });
+
+    /// <summary>One 500 blow of <paramref name="kind"/> on <paramref name="victim"/> through its production entry point (as
+    /// <c>DamageIntakeTests</c> drives each kind): a creature's swing, another player's swing, a creature's spell, another
+    /// player's spell.</summary>
+    private static void Strike(Session victim, DamageKind kind, Session peer, Mob mob)
+    {
+        switch (kind)
+        {
+            case DamageKind.MobMelee: victim.ApplyMobHit(mob, 500); break;
+            case DamageKind.PlayerMelee: victim.ReceiveMeleeDamage(500, peer, crit: false); break;
+            case DamageKind.MobSpell: victim.ReceiveMobSpell(500, mob, "Ice ray"); break;
+            case DamageKind.PlayerSpell: victim.ReceiveSpellDamage(500, peer, "Spark"); break;
+            default: throw new NotSupportedException(kind.ToString());
+        }
+    }
 
     /// <summary>Cast Invincibility until a cast lands (RTK's roll lands 71 in 100 at the best armour), clearing the wait
     /// between; true once one has. Each try is a fresh cast slot.</summary>

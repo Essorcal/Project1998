@@ -245,8 +245,9 @@ public sealed class SpellContext
     /// <summary>The caster's effective armour, clamped to RTK's [-80, 70] — Harden Body's success roll
     /// scales with it (better armour is MORE negative, hence better odds).</summary>
     public double armor                               => _s.ItemArmor;
-    /// <summary>Is the caster currently untouchable (any Harden Body ward, spell or scroll)?</summary>
-    public bool immune                                => _s.DamageImmune;
+    /// <summary>Is the caster under a hard-body ward (any Harden Body ward, spell or scroll, or Chongun's Invincibility;
+    /// RTK <c>checkIfCast(hardBodies)</c>)? What a hard-body spell reads as "You already cast that spell.".</summary>
+    public bool immune                                => _s.HardBodyWarded;
     /// <summary>The self-only cast pose (RTK action 6).</summary>
     public void castPose()                            => _s.ItemCastPose();
     /// <summary>Is a named cooldown (RTK aether) still ticking?</summary>

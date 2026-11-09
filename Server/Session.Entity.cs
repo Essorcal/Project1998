@@ -958,23 +958,20 @@ public sealed partial class Session
     // the other until the check had a single home (#28).
     private static readonly string[] HardenBodyWards =
         { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
-    // Chongun's Invincibility (RTK Spells/Subpaths/Chongun/invincibility.lua) is in RTK's hardBodies list
-    // (Spells/spellTables.lua:252-260), which every hard-body spell reads as "You already cast that spell.". To stop a
-    // blow RTK reads that list in its swing script only (Scripts/hitCritChance.lua:26: a player's swing and a creature's).
-    // Scripts/magicDamage.lua tests it too, but nothing in RTK calls that script: RTK's spells, a player's and a
-    // creature's, land through removeHealthExtend (Spells/common/global_zap.lua:40), whose own test names only the four
-    // poet wards (player.lua:164-170). So RTK's Invincibility stops swings only, and a venom tick (removeHealthExtend too)
-    // lands under it: TickImmune leaves it out, as RTK. Here it is Harden Body's ward otherwise, so it ALSO stops a
-    // creature's spell and another player's spell on a PvP map: the one gate (DamageIntake.cs) asks DamageImmune for
-    // every kind of blow but room damage. That is kept on purpose and listed as a departure from RTK.
-    private const string InvincibilityWard = "invincibility";
-    internal bool DamageImmune => TickImmune || HasStatusFlag(InvincibilityWard);
-    /// <summary>The wards RTK's <c>removeHealthExtend</c> itself tests (with the plain Scroll of Immortality flag): what
-    /// stops a venom tick (<see cref="TickPoison"/>).</summary>
-    internal bool TickImmune
+    internal bool DamageImmune
     {
         get { foreach (var w in HardenBodyWards) if (HasStatusFlag(w)) return true; return false; }
     }
+
+    // Chongun's Invincibility (RTK Spells/Subpaths/Chongun/invincibility.lua) is in RTK's hardBodies list
+    // (Spells/spellTables.lua:252-260), as the five wards above are. Every hard-body spell reads that list as "You
+    // already cast that spell." (HardBodyWarded, ctx.immune), but RTK reads it to stop a blow in its swing script only
+    // (Scripts/hitCritChance.lua:26), so here it stops a swing and nothing else: DamageIntake's gate asks HardBodyWarded
+    // for the two melee kinds and DamageImmune for the rest. A spell lands on it, a creature's or a player's, and so does a
+    // venom tick (TickPoison asks DamageImmune), as in RTK, whose removeHealthExtend tests only the four poet wards
+    // (player.lua:164-170).
+    private const string InvincibilityWard = "invincibility";
+    internal bool HardBodyWarded => DamageImmune || HasStatusFlag(InvincibilityWard);
 
     // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
     // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
