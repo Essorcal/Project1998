@@ -2489,7 +2489,7 @@ end
 -- CHONGUN (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Chongun/). The project owner, 2026-10-26 (P5, each spell as
 -- its RTK script; P1 and P3, on sale once it works, at its script's price), 2026-10-30 (Q4, Spirit of war at RTK's tiers
 -- and armour sign) and 2026-11-09 (the Chongun slice's questions: Art of war builds the readout its script reaches for,
--- Q-A; Inspire valor gives the +3 Might its script means, Q-B; Title of nobility's wait is saved, as RTK's, Q-C). The
+-- Q-A; Inspire valor gives the +3 Might its script means, Q-B). Title of nobility's wait is saved as RTK under P5. The
 -- verbs here are Art of war, Inspire valor, Invincibility, Protectors fury, the three weapons, Enhanced drink, Chongun
 -- uniform, Employ troop and Title of nobility. Evaluate opponent is Do's assess verb (its script is Assess opponent's body
 -- with its own numbers), and Spirit of war climbs chungryong_rage's rtk_rage ladder (its lines are RAGE_LINES.spirit_of_war,

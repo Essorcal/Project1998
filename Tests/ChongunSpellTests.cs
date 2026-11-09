@@ -12,8 +12,8 @@ namespace Tests;
 /// <summary>
 /// The Chongun spells slice (the project owner, 2026-10-26, P5 "each spell as its RTK script", P1 and P3 "on sale once it
 /// works, at its script's price"; 2026-10-30, Q4 "Yes, as RTK": Spirit of war at RTK's tiers and armour sign; 2026-11-09,
-/// the slice's questions: Art of war as the readout its script reaches for, Q-A; Inspire valor's +3 Might as meant, Q-B;
-/// Title of nobility's wait saved, as RTK's, Q-C). Before, all fourteen Chongun rows fell to the <c>generic</c> verb, 5
+/// the slice's questions: Art of war as the readout its script reaches for, Q-A; Inspire valor's +3 Might as meant, Q-B);
+/// Title of nobility's wait is saved as RTK under P5. Before, all fourteen Chongun rows fell to the <c>generic</c> verb, 5
 /// mana and "You cast X." and nothing else (<c>Tests/Fixtures/spell-dispatch-routes.txt</c> had them on
 /// <c>verb=generic</c>); Recognize honorable act, which has no script, still does.
 ///
