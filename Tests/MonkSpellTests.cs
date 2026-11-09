@@ -727,16 +727,24 @@ public sealed class MonkSpellTests
     /// to the faced tile, where a ghost lies in every case: a creature's id, "You can't do that." for the 6,000 and the
     /// wait; an NPC's id, a player's on another map, or a ghost's 22 tiles off, nothing at all, free; a ghost's 21 tiles
     /// off, that ghost back with 600. The faced ghost stays a ghost each time. Red on 6dfaad3, whose player resolver fell
-    /// back to the faced tile and revived the faced ghost (the review's probes A, C and E).</summary>
+    /// back to the faced tile and revived the faced ghost (the review's probes A, C and E). Fix round 2 (the re-check's
+    /// R2) adds four more RTK answers: a dead creature's id, an id that names nothing, and a creature's id on another map,
+    /// nothing, free; the caster's own id, "You cast Second life." for the 6,000 and the wait, and nothing more (the caster
+    /// is alive).</summary>
     [Theory]
     [InlineData("creature")]
     [InlineData("npc")]
     [InlineData("off map")]
     [InlineData("22 tiles")]
     [InlineData("21 tiles")]
+    [InlineData("dead creature")]
+    [InlineData("missing")]
+    [InlineData("own")]
+    [InlineData("creature off map")]
     public void SecondLifeTakesAnAimedIdAsRtkDoes(string aim)
     {
         int y = 10 + 6 * Array.IndexOf(new[] { "creature", "npc", "off map", "22 tiles", "21 tiles" }, aim);
+        if (y < 10) y = 82 + 4 * Array.IndexOf(new[] { "dead creature", "missing", "own", "creature off map" }, aim);
         var (faced, _, fc) = Player(AimMap, CX + 1, y, hp: 0);
         Session? far = null;
         Character? farc = null;
@@ -748,18 +756,27 @@ public sealed class MonkSpellTests
             case "npc": mob = AddCreature(AimMap, CX + 3, y, npc: true); break;
             case "off map": farMap = AimElsewhereMap; (far, _, farc) = Player(AimElsewhereMap, CX + 3, y, hp: 0); break;
             case "22 tiles": (far, _, farc) = Player(AimMap, CX + 22, y, hp: 0); break;
-            default: (far, _, farc) = Player(AimMap, CX + 21, y, hp: 0); break;
+            case "21 tiles": (far, _, farc) = Player(AimMap, CX + 21, y, hp: 0); break;
+            case "dead creature": mob = AddCreature(AimMap, CX + 3, y, hp: 0); break;
+            case "creature off map": mob = AddCreature(AimElsewhereMap, CX + 3, y); break;
         }
         var (caster, cOut, cc) = Caster("second_life", AimMap, CX, y);
         try
         {
-            uint id = mob?.Id ?? far!.PlayerId;
+            uint id = aim switch
+            {
+                "missing" => 0x7FFF_FFF0u,
+                "own" => caster.PlayerId,
+                _ => mob?.Id ?? far!.PlayerId,
+            };
             caster.Receive(SpellCastSupport.CastFrame(0, id));
             long wait = SpellCastSupport.AetherLeft(caster, "second_life");
             bool ok = aim switch
             {
                 "creature" => Lines(cOut) == "You can't do that." && cc.Mp == Mana - 6_000 && wait > 1_250_000 - SlackMs,
                 "21 tiles" => Lines(cOut) == "You cast Second life." && cc.Mp == Mana - 6_000 && farc!.Hp == 600,
+                "own" => Lines(cOut) == "You cast Second life." && cc.Mp == Mana - 6_000 && wait > 1_250_000 - SlackMs
+                         && cc.Hp == Hp,
                 _ => Lines(cOut) == "" && cc.Mp == Mana && wait == 0 && (farc is null || farc.Hp == 0),
             };
             Assert.True(ok && fc.Hp == 0 && faced.IsDead,
@@ -769,7 +786,7 @@ public sealed class MonkSpellTests
         {
             Leave(AimMap, caster, faced);
             if (far is not null) Leave(farMap, far);
-            if (mob is not null) _fx.World.DespawnMob(AimMap, mob);
+            if (mob is not null) _fx.World.DespawnMob(aim == "creature off map" ? AimElsewhereMap : AimMap, mob);
         }
     }
 
@@ -845,6 +862,27 @@ public sealed class MonkSpellTests
                         $"lines [{Lines(cOut)}], ghost {gc.Hp}, spent {Mana - cc.Mp}");
         }
         finally { Leave(AimMap, caster, ghost); _fx.World.DespawnMob(AimMap, mob); }
+    }
+
+    /// <summary>With no id, a living player who came to the faced tile before a ghost lying there: Second life takes the
+    /// ghost, which comes back with 600, and the living player is left as they are; it revives, so a ghost on the tile
+    /// comes first (fix round 2, the re-check's R1; RTK has no faced-tile cast). Forgive keeps the first player there.
+    /// Red with the faced tile read in the map's order alone (the living player took the cast).</summary>
+    [Fact]
+    public void UnaimedSecondLifeTakesAGhostBeforeALivingPlayerOnTheFacedTile()
+    {
+        int y = 98;
+        var (living, _, lc) = Player(AimMap, CX + 1, y, hp: 5_000);
+        var (ghost, _, gc) = Player(AimMap, CX + 1, y, hp: 0);
+        var (caster, cOut, cc) = Caster("second_life", AimMap, CX, y);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(Lines(cOut) == "You cast Second life." && gc.Hp == 600 && !ghost.IsDead && lc.Hp == 5_000
+                        && cc.Mp == Mana - 6_000,
+                        $"lines [{Lines(cOut)}], ghost {gc.Hp}, living {lc.Hp}, spent {Mana - cc.Mp}");
+        }
+        finally { Leave(AimMap, caster, living, ghost); }
     }
 
     // ===== Forgive's player logging out at the pick (fix round 1: #421's review, F3) ===============================

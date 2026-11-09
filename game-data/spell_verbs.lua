@@ -2781,7 +2781,8 @@ RAGE_LINES.spirit_of_war = {
 --     there. A creature struck takes no threat bump beyond the blow it took, and a player struck reads the engine's one
 --     line, as for every spell here.
 --   * A "Which target?" spell with no aimed id takes the faced tile (the 4.95 client casts with the slot alone): Forgive
---     and Second life a player there first (a ghost too), else a living creature; facing nothing, nothing, free. RTK has
+--     and Second life a player there first (a ghost too; Second life takes a ghost before a living player there,
+--     whichever came first, since it revives), else a living creature; facing nothing, nothing, free. RTK has
 --     no faced tile: its client sends the clicked target's id, and an id of 0 runs Second life's script with no target,
 --     which spends and then stops on its first look at it. An aimed id is taken as RTK takes it (ctx:aimedTarget).
 --   * Second life's 600 vita is kept within the revived player's max vita; RTK sets it over the max until its next stat
@@ -2864,7 +2865,7 @@ end
 -- inside their own monitor; a living one is left as they are. Row: mana 6000, amount 600, duration 1250000.
 function verbs.second_life(ctx, row)
   if subpath_waiting(ctx, row) then return false end
-  local aimed = ctx:aimedTarget()
+  local aimed = ctx:aimedTarget(true)                                     -- unaimed: a ghost on the tile first
   if aimed == "none" then return false end                                -- no target: silent, free
   local mana = row.mana or 0
   if ctx.mp < mana then ctx:say("Your will is too weak."); return false end

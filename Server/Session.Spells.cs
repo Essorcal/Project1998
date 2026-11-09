@@ -4519,11 +4519,14 @@ public sealed partial class Session
     /// names, on the caster's map within <see cref="AimedSpellReach"/> tiles; a player, alive or a ghost (the caster
     /// included); a creature only while it is alive; an NPC, an id that names nothing here, a player on another map or
     /// farther off, none (RTK runs no script for them). With no id (the 4.95 client casts with the slot alone) the faced
-    /// tile: a player there first, a ghost too, else a living creature (never an NPC), else none.
+    /// tile: a player there first, a ghost too, else a living creature (never an NPC), else none. With
+    /// <paramref name="preferGhost"/> (Second life's revive) a ghost on the faced tile is taken before a living player
+    /// there, whichever of them came to the tile first; without it, the first player there in the map's order. RTK has
+    /// no faced-tile cast, so the order is this server's.
     /// <para>Not <see cref="LuaResolvePcTarget"/>: that resolver serves the other player spells (Revive, Cleanse, the
     /// mana spells, Approach, Summon) and falls back to the faced tile for an id that names no player here, and stays
     /// as it is for them. Reads only: each player's map and tile are bare reads, as that resolver's are.</para></summary>
-    internal string LuaResolveAimedTarget(SpellDef sp, uint? targetId)
+    internal string LuaResolveAimedTarget(SpellDef sp, uint? targetId, bool preferGhost = false)
     {
         _approachPlace = null;   // a place read for an earlier target is not this target's (Session.ApproachSummon.cs)
         _pcSpellTarget = null;
@@ -4541,7 +4544,8 @@ public sealed partial class Session
             return Aimless(sp, "an id that names no player or creature within reach on this map");
         }
         var (fx, fy) = FrontTile();
-        if (_world.PeerAt(_char.Map, fx, fy) is { } faced)
+        var ghost = preferGhost ? _world.PlayersAt(_char.Map, fx, fy).FirstOrDefault(p => p.IsDead) : null;
+        if ((ghost ?? _world.PeerAt(_char.Map, fx, fy)) is { } faced)
         {
             _pcSpellTarget = faced;
             return "player";

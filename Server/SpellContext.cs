@@ -1010,9 +1010,10 @@ public sealed class SpellContext
     /// "player" (then the player target <see cref="targetKarma"/>, <see cref="targetName"/>, <see cref="targetIsSelf"/> and
     /// <see cref="raiseTarget"/> read), "creature", or "none". An aimed id names its block only: a player or a living
     /// creature on the caster's map within 21 tiles; an NPC, a player elsewhere or nothing is none. With no id, the faced
-    /// tile, a player (a ghost too) before a living creature. <see cref="pcTarget"/> is unchanged for the spells that use
-    /// it. See <c>Session.LuaResolveAimedTarget</c>.</summary>
-    public string aimedTarget() => _s.LuaResolveAimedTarget(_sp, _targetId);
+    /// tile, a player (a ghost too) before a living creature; with <paramref name="preferGhost"/> (Second life) a ghost
+    /// there before a living player. <see cref="pcTarget"/> is unchanged for the spells that use it. See
+    /// <c>Session.LuaResolveAimedTarget</c>.</summary>
+    public string aimedTarget(bool preferGhost = false) => _s.LuaResolveAimedTarget(_sp, _targetId, preferGhost);
     /// <summary>Does the caster's karma meet the named tier (RTK <c>player:karmaCheck(tier)</c>, <see cref="Karma.Meets"/>):
     /// "dragon" is 14 or more?</summary>
     public bool karmaCheck(string tier) => _s.LuaKarmaCheck(tier);
