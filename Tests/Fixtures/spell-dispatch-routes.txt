@@ -59,6 +59,13 @@
 # harden_weapon, charge_weapon and sharpen_weapon to verb=weapon_enchant row, enhanced_drink to verb=drink_line row,
 # chongun_uniform to verb=uniform row, employ_troop to verb=troop_menu row, title_of_nobility to verb=title_ask row and
 # spirit_of_war to verb=chungryong_rage row. recognize_honorable_act stays on verb=generic. No other line changed.
+# The Monk spells slice (2026-11-09) then moved eight PC-subpath spells off verb=generic (the project owner's P5:
+# RTK's scripts; the smaller calls as RTK under P5), each bound by a SpellParams.csv row: read_karma_monk to
+# verb=read_karma row (Diviner's verb), forgive to verb=forgive row, second_life to verb=second_life row, bless_food
+# to verb=food_line row, awe to verb=hold_around row, son_kal to verb=vita_strike row, faiths_call to
+# verb=faith_strike row and mass_resurrect to verb=revive_map row. The row binds by identifier, so the path-99
+# mass_resurrect row (50010), which RTK's Spells table keeps under the same identifier and RTK casts with the same
+# script, moved with it. bless_drink stays on verb=generic (RTK finds no script of its own). No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -93,7 +100,7 @@ augmentation_rogue	2044	verb=stance_rage
 augmentation_warrior	1008	verb=stance_rage
 augury	31008	verb=generic
 avalanche_mage	3034	verb=area_zap
-awe	31506	verb=generic
+awe	31506	verb=hold_around row
 back_attack_warrior	1024	verb=stance_backstab
 back_battle_warrior	1018	verb=stance_backstab
 back_damage_warrior	1025	verb=stance_backstab
@@ -125,7 +132,7 @@ blades_charm_rogue	2125	verb=stance_enchant
 blazing_sands_mage	3059	verb=area_zap
 blend	30403	verb=hide row
 bless_drink	31505	verb=generic
-bless_food	31504	verb=generic
+bless_food	31504	verb=food_line row
 bless_muscles_mage	3042	verb=arch_targetbuff
 bless_muscles_poet	4039	verb=arch_targetbuff
 bless_warrior	1009	verb=arch_buff
@@ -288,7 +295,7 @@ experience_shrine_spell	50039	verb=arch_buff
 explode_mage	3088	verb=area_zap
 explorers_remedy_rogue	2126	verb=arch_heal
 faded	50046	verb=generic
-faiths_call	31508	verb=generic
+faiths_call	31508	verb=faith_strike row
 fascinate	29506	verb=endear row
 favor_of_the_gods	50041	verb=generic
 feral_berserk_warrior	1063	verb=arch_damage
@@ -321,7 +328,7 @@ forest_cover	30702	verb=generic
 forests_discord_mage	3122	verb=area_zap
 forge_of_life_poet	4146	verb=arch_heal
 forgetfulness_rogue	2062	verb=arch_debuff
-forgive	31502	verb=generic
+forgive	31502	verb=forgive row
 forsake	50051	verb=curse row
 fortify_poet	4085	verb=arch_heal
 free_movement_mage	3067	verb=arch_cure
@@ -506,8 +513,8 @@ marketer_guise	30603	verb=generic
 maros_remedy_rogue	2093	verb=arch_heal
 masos_remedy_rogue	2098	verb=arch_heal
 mass_res	11998	verb=misc
-mass_resurrect	31509	verb=generic
-mass_resurrect	50010	verb=generic
+mass_resurrect	31509	verb=revive_map row
+mass_resurrect	50010	verb=revive_map row
 master_weapon	30407	verb=stance_enchant
 meditation_rogue	2137	verb=arch_heal
 mend_equipment_warrior	1096	verb=mend_equipment
@@ -647,7 +654,7 @@ randomness_rogue	2113	verb=misc
 razors_edge_warrior	1062	verb=stance_enchant
 read_karma_diviner	31001	verb=read_karma row
 read_karma_geomancer	31103	verb=generic
-read_karma_monk	31501	verb=generic
+read_karma_monk	31501	verb=read_karma row
 rebirth	50005	verb=generic
 received_fortune	6	verb=generic
 recognize_honorable_act	30311	verb=generic
@@ -719,7 +726,7 @@ scouting_trip	30707	verb=generic
 sea_breeze	31405	verb=breeze_heal row
 seal_fate	31006	verb=generic
 seal_wounds_rogue	2085	verb=arch_heal
-second_life	31503	verb=generic
+second_life	31503	verb=second_life row
 second_sight_poet	4089	verb=arch_buff
 serpents_fury	29503	verb=stance_rage
 set_bladestorm_trap	2710	verb=bladestorm row
@@ -766,7 +773,7 @@ snare	50003	verb=generic
 snare_trap	501	verb=generic
 soften_skin	31113	verb=generic
 solace_mage	3153	verb=arch_heal
-son_kal	31507	verb=generic
+son_kal	31507	verb=vita_strike row
 song_of_the_goddess	31601	verb=heal_run row
 sonhi_rage	30201	verb=chungryong_rage row
 soothe	101	verb=arch_heal

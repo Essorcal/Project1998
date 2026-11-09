@@ -3895,19 +3895,21 @@ public sealed partial class Session
 
     /// <summary>A menu inside a cast (<c>ctx:menu</c>; RTK <c>player:menuString</c> from a spell, Wilderness guise's
     /// "Which guise would you like to use?"): sent now, with no portrait (RTK's <c>npcGraphic = 0</c> under
-    /// <c>dialogType 0</c>), on the caster's own entity id, and answered later. The cast returns at once.</summary>
-    internal void LuaSpellMenu(SpellDef sp, string prompt, string options, string verb)
+    /// <c>dialogType 0</c>), on the caster's own entity id, and answered later. The cast returns at once.
+    /// <paramref name="carry"/> is handed on to the pick's step as <c>ctx.carried</c> (Forgive's target's name).</summary>
+    internal void LuaSpellMenu(SpellDef sp, string prompt, string options, string verb, string? carry = null)
     {
         var opts = options.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        _ = RunSpellMenuAsync(sp, prompt, opts, verb);
+        _ = RunSpellMenuAsync(sp, prompt, opts, verb, carry ?? "");
     }
 
     /// <summary>The menu's answer. It resumes on the caster's own handler thread, inside their monitor
     /// (<see cref="HandleNpcDialog"/> completes the reply), and runs <paramref name="verb"/> for <paramref name="sp"/> with
-    /// the spell's SpellParams.csv row and the picked option as <c>ctx.answer</c>. A closed box never answers, so nothing
-    /// runs; a warp lets the box go (<see cref="EnterMap"/>), as for every prompt. A caster who has died or is leaving by
-    /// the time they pick runs nothing. The verb's verdict is not read: the cast it belongs to has long since landed.</summary>
-    private async Task RunSpellMenuAsync(SpellDef sp, string prompt, string[] options, string verb)
+    /// the spell's SpellParams.csv row, the picked option as <c>ctx.answer</c> and <paramref name="carry"/> as
+    /// <c>ctx.carried</c>. A closed box never answers, so nothing runs; a warp lets the box go (<see cref="EnterMap"/>), as
+    /// for every prompt. A caster who has died or is leaving by the time they pick runs nothing. The verb's verdict is not
+    /// read: the cast it belongs to has long since landed.</summary>
+    private async Task RunSpellMenuAsync(SpellDef sp, string prompt, string[] options, string verb, string carry)
     {
         try
         {
@@ -3915,7 +3917,7 @@ public sealed partial class Session
             if (choice < 1 || choice > options.Length) return;
             if (IsDead || _leaving) return;
             Content.SpellParams.TryGetValue(sp.Key, out var row);
-            SpellScript.Run(verb, new SpellContext(this, sp, null, options[choice - 1]), row);
+            SpellScript.Run(verb, new SpellContext(this, sp, null, options[choice - 1]) { carried = carry }, row);
         }
         catch (Exception e) { Log.Error($"{sp.Name}'s menu threw for '{_char.Name}': {LuaVerbHost.Describe(e)}", e); }
     }
@@ -4493,6 +4495,175 @@ public sealed partial class Session
         MarkDirty();
         if (line.Length > 0) SendBlueMessage(line);
         return true;
+    }
+
+    // ---- the Monk spells (RTK Spells/Subpaths/Monk/) ------------------------------------------------------------------
+    // Forgive's karma check and price on its caster, and its restore on another player (P10's karma write: the karma, a
+    // saved registry count and a legend); Second life's revive of one dead player and Mass resurrect's of every dead player
+    // on the map (P11's map-wide half); Awe's hold on every creature near its caster (P11's area hold).
+    //
+    // LOCKS. As the Chongun half: a verb runs on the caster's packet thread (or, for a menu pick, the caster's handler
+    // thread), inside the caster's monitor and the Lua gate, never World._lock. Another player's karma, count, legend and
+    // revive are decided and written inside that player's own monitor (ReceiveKarmaRestore, ReceiveRaise), entered here by
+    // StateRank, one player at a time; the map's roster is World.View's snapshot (MapWidePlayers), read under the world lock
+    // and used after it is released; a creature's hold is written through World.ApplyMobStatus, which takes World._lock
+    // inside. No new lock, and no write to another player outside their own monitor.
+
+    /// <summary>Does the caster's karma meet <paramref name="tier"/> (<c>ctx:karmaCheck</c>; RTK
+    /// <c>Player.karmaCheck</c>, <see cref="Karma.Meets"/>)? The caster's own karma, read under the monitor the cast holds.</summary>
+    internal bool LuaKarmaCheck(string? tier) => Karma.Meets(_char.Karma, tier ?? "");
+
+    /// <summary>Forgive's price (<c>ctx:removeKarma</c>; RTK <c>Player.removeKarma</c>): <see cref="RemoveKarma"/>, the karma
+    /// graphic and line every karma loss here sends, marked for the caster's next save.</summary>
+    internal void LuaRemoveKarma(double amount)
+    {
+        RemoveKarma(amount);
+        MarkDirty();
+    }
+
+    /// <summary>A uniform number in [0, 1) (<c>ctx:rollFraction</c>; RTK <c>math.random()</c> with no bounds), on the one
+    /// stream <see cref="LuaRoll"/> and <see cref="LuaRollRange"/> draw from.</summary>
+    internal double LuaRollFraction() => Random.Shared.NextDouble();
+
+    /// <summary>Forgive's restore (<c>ctx:restoreTargetKarma</c>; RTK <c>Spells/Subpaths/Monk/forgive.lua:51-74</c>) on the
+    /// player this cast resolved (<see cref="LuaResolvePcTarget"/> or <see cref="LuaResolveNamedPcTarget"/>), wherever they
+    /// stand by now: <see cref="ReceiveKarmaRestore"/> inside their own monitor, with the spell's graphic and sound. False
+    /// with no target, or one who is leaving.</summary>
+    internal bool LuaRestoreTargetKarma(SpellDef sp, double karma, string? line, string? regKey, string? mark,
+                                        string? firstText, string? countText, int icon, int color)
+    {
+        if (_pcSpellTarget is not { } target || string.IsNullOrEmpty(regKey)) return false;
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        bool done = target.ReceiveKarmaRestore(karma, line ?? "", regKey, mark ?? "", firstText ?? "", countText ?? "",
+                                               (byte)icon, (byte)color, anim, snd);
+        Log.Info($"      (lua) {sp.Name} -> karma {karma} {(done ? "restored on" : "not restored on (leaving)")} '{target.CharName}'");
+        return done;
+    }
+
+    /// <summary>Forgive lands on THIS player (<see cref="LuaRestoreTargetKarma"/>), inside this player's own monitor, in the
+    /// script's order: graphic <paramref name="anim"/> (and sound <paramref name="sound"/>) over them where they stand
+    /// (<c>target:sendAnimation(49)</c>), the karma becomes <paramref name="karma"/> (<c>target.karma = 0</c>), the player
+    /// reads <paramref name="line"/>, the saved registry key <paramref name="regKey"/> counts one more
+    /// (<c>target.registry["been_forgiven"] + 1</c>), and the legend named <paramref name="mark"/> reads
+    /// <paramref name="firstText"/> when the player had none by that name, else <paramref name="countText"/> with "%d" the
+    /// new count, in its place at the end of the list (<c>removeLegendbyName</c>, then <c>addLegend</c>). The registry write
+    /// saves the three together. Nothing for a player who is logging out or whose session a second login has replaced (its
+    /// save is fenced). Returns whether it landed.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the <see cref="ReceiveRevive"/>
+    /// shape, and saves inside it as that does. The graphic is broadcast from here, around this player on their own map,
+    /// as every effect is sent from inside a session's monitor (World._lock is taken inside it).</para></summary>
+    internal bool ReceiveKarmaRestore(double karma, string line, string regKey, string mark, string firstText,
+                                      string countText, byte icon, byte color, int anim = -1, int sound = -1)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || IsReplaced) return false;
+        BroadcastFx(_char.Id, anim, sound);
+        _char.Karma = karma;
+        if (line.Length > 0) SendMiniText(line);
+        var registry = Quest(QuestState.Registry);
+        int count = registry.Get(regKey) + 1;
+        bool had = mark.Length > 0 && HasLegend(mark);
+        if (mark.Length > 0) _char.Legends.RemoveAll(l => l.Name == mark);
+        string text = had ? countText.Replace("%d", count.ToString(System.Globalization.CultureInfo.InvariantCulture)) : firstText;
+        _char.Legends.Add(new Legend(icon, color, text, mark));
+        registry.Set(regKey, count);   // saves the karma, the legend and the count together (SaveChar)
+        Log.Info($"   -> KARMA RESTORED: {_char.Name} to {karma}, {regKey} {count}");
+        return true;
+    }
+
+    /// <summary>Second life's revive (<c>ctx:raiseTarget</c>; RTK <c>Spells/Subpaths/Monk/second_life.lua:36-42</c>) on the
+    /// player this cast resolved (<see cref="LuaResolvePcTarget"/>): <see cref="ReceiveRaise"/> inside their own monitor,
+    /// with <paramref name="vita"/>, then the spell's graphic over them. False with no target, or one alive or leaving.</summary>
+    internal bool LuaRaiseTarget(SpellDef sp, int vita, string? line)
+    {
+        if (_pcSpellTarget is not { } target) return false;
+        if (!target.ReceiveRaise(vita, full: false, line ?? "")) return false;
+        var fx = Content.FxFor(sp);
+        BroadcastFx(target.PlayerId, fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1,
+                    fx is not null ? Content.EffectSound(fx, sp.PathId) : -1);
+        return true;
+    }
+
+    /// <summary>Mass resurrect's sweep (<c>ctx:reviveMap</c>; RTK <c>Spells/Subpaths/Monk/mass_resurrect.lua:24-40</c>): every
+    /// player on the caster's map (<see cref="MapWidePlayers"/>, a replaced session left out) who is dead comes back where
+    /// they lie with full vita and full mana (<see cref="ReceiveRaise"/>, inside their own monitor), with the spell's graphic
+    /// and sound over them (<c>sendAnimation(11)</c>, <c>playSound(112)</c>). The living, the caster among them, are left
+    /// alone. The verb asks the PvP question first. Returns how many came back.</summary>
+    internal int LuaReviveMap(SpellDef sp, string? line)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        int revived = 0;
+        foreach (var (who, id) in MapWidePlayers())
+        {
+            if (!who.ReceiveRaise(0, full: true, line ?? "")) continue;   // living, or leaving: left alone
+            BroadcastFx(id, anim, snd);
+            revived++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> {revived} player(s) revived on map {_char.Map}");
+        return revived;
+    }
+
+    /// <summary>A Monk's revive lands on THIS player (<see cref="LuaRaiseTarget"/>, <see cref="LuaReviveMap"/>), inside this
+    /// player's own monitor: a ghost leaves ghost form where it stands, with full vita and full mana when
+    /// <paramref name="full"/> (Mass resurrect's <c>health = maxHealth</c>, <c>magic = maxMagic</c>), else
+    /// <paramref name="vita"/> kept within its effective max vita and at least 1 (Second life's <c>health + 600</c> from a
+    /// ghost's 0) and the mana it had; then the redraw, the peer resync, the stats, <paramref name="message"/> and
+    /// <c>SaveChar</c>, <see cref="ReceiveRevive"/>'s order and reasons (#196, #330). Nothing for a player who is alive,
+    /// logging out, or whose session a second login has replaced. Returns whether they came back.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>; for the caster it is the monitor
+    /// already held (and a caster is alive, so nothing happens).</para></summary>
+    internal bool ReceiveRaise(int vita, bool full, string message)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || IsReplaced || !IsDead) return false;
+        if (full) { _char.Hp = EffMaxHp; _char.Mp = EffMaxMp; }
+        else _char.Hp = (uint)Math.Clamp(vita, 1, Math.Max(1, (int)EffMaxHp));
+        RefreshAppearance();   // redraw self + everyone watching as living again
+        ResyncPeers();         // living again — stop seeing the PvP ghosts we could see while dead
+        SendStats();
+        if (message.Length > 0) SendMiniText(message);
+        SaveChar();
+        Log.Info($"   -> REVIVED (monk): {_char.Name} at {_char.Hp}/{EffMaxHp} vita, {_char.Mp} mana on map {_char.Map}");
+        return true;
+    }
+
+    /// <summary>Awe's hold (<c>ctx:holdAround</c>; RTK <c>Spells/Subpaths/Monk/awe.lua:24-36</c>): the spell's sound at the
+    /// caster (<c>playSound(70)</c>), then every creature RTK's <c>getObjectsInSameMap(BL_MOB)</c> lists within
+    /// <c>distanceSquare(player, mob, 10)</c>, that is every living creature on the caster's map within
+    /// <paramref name="range"/> tiles on both axes (never an NPC: RTK's NPCs are <c>BL_NPC</c>), that is not already held in
+    /// <paramref name="category"/> (<c>not mobs[i].paralyzed</c>), is held there for <paramref name="durMs"/> under the
+    /// spell's key (<c>setDuration</c>, <c>paralyzed = true</c>), with the spell's graphic over it (<c>sendAnimation(11)</c>).
+    /// A boss is held for the whole time: the script has no boss rule. Returns how many.
+    /// <para><b>Locks.</b> The roster is <see cref="World.View"/>'s snapshot, as Lightning storm's sweep reads it
+    /// (<see cref="LuaRangeZap"/>): each creature's flag and tile read once after the world lock is released; the slot is
+    /// asked again and the hold written under the world lock by <see cref="World.ApplyMobStatus"/>, so a creature another
+    /// caster held meanwhile is passed over.</para></summary>
+    internal int LuaHoldAround(SpellDef sp, string? category, int durMs, int range)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        BroadcastFx(_char.Id, -1, snd);
+        if (string.IsNullOrEmpty(category) || durMs <= 0) return 0;
+        int cx = _char.X, cy = _char.Y, held = 0;
+        var (_, mobs) = _world.View(this, _char.Map);
+        foreach (var mob in mobs)
+        {
+            if (!mob.Alive || mob.IsNpc) continue;
+            int mx = mob.X, my = mob.Y;                          // once, as SyncMobs reads them
+            if (Math.Max(Math.Abs(mx - cx), Math.Abs(my - cy)) > range) continue;
+            if (!_world.ApplyMobStatus(mob, category, durMs, hold: true, blind: false, spellKey: sp.Key)) continue;
+            BroadcastFx(mob.Id, anim, -1);
+            held++;
+        }
+        Log.Info($"      (lua) {sp.Name} -> {range}-tile hold [{category}] for {durMs}ms on {held} creature(s)");
+        return held;
     }
 
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------

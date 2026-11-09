@@ -28,8 +28,9 @@ throws rather than reading 0. The flat namespace, `QuestState.Registry`, is RTK'
 IS the saved key, in either map. The Lua `stage`/`setStage`/`reg`/`setReg` verbs (npc_dialog.lua), the spell
 verbs' `reg`/`setReg`, `mob_ai.lua`'s `actorQuest`, `@quest`'s raw keys, and the registry globals several
 features share (`home`, `sage_rung`, `sage_timer`, `dog_flag`, `carnage_wins`, `mentored`, `craft_*`,
-`damage_shotgun`, `baekhos_cunning`, and `title_of_nobility_timer`, Title of nobility's 4-hour wait: the Unix time it
-ends, as RTK's `player.registry` key) all live there.
+`damage_shotgun`, `baekhos_cunning`, `title_of_nobility_timer`, Title of nobility's 4-hour wait: the Unix time it
+ends, as RTK's `player.registry` key, and `been_forgiven`, how many times Monk's Forgive has restored the player's
+karma, as RTK's `player.registry` key, which its legend counts) all live there.
 
 | Namespace (= stage key) | Slot | Saved key |
 |---|---|---|
