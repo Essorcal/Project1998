@@ -2766,37 +2766,48 @@ RAGE_LINES.spirit_of_war = {
 -- up by its identifier, bless_drink, finds no such table and runs nothing (rtk/src/map/sl.c, sl_doscript_stackargs), so
 -- Bless drink stays as it was and is not sold. Each verb is bound by its SpellParams.csv row, which carries its numbers,
 -- and is the shape of its script, in that script's order. The graphic and sound are the spell's spell_effects.csv row, a
--- Utility row. RTK is weight 0 for balance; these numbers are its scripts', as RTK under P5.
+-- Utility row. RTK is weight 0 for balance; these numbers are its scripts', as RTK under P5. Forgive's boxes are the
+-- project owner's answer (2026-11-09, "No portrait"): RTK's cannot run as written (at verbs.forgive).
 --
 -- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
 --   * Each wait is checked first, with this file's own line (subpath_waiting). RTK waives Awe's, Second life's and
 --     Son-Kal's for a GM; no verb here waives anything for staff.
 --   * A ghost and a mounted caster cast nothing (the engine's gates), where Forgive's and Second life's canCast(0, ...)
---     let a ghost cast. The cast pose is the engine's, on a cast that lands (Son-Kal's script swings, sendAction(1, 30);
---     Forgive's sends none).
+--     let a ghost cast and Bless food's script has no canCast at all, so a ghost or a mounted caster casts it in RTK.
+--     The cast pose is the engine's, on a cast that lands (Son-Kal's script swings, sendAction(1, 30); Forgive's sends
+--     none).
 --   * A player the caster may attack is one on a PvP map, this server's canPK (RTK also counts a PK flag and a kill
 --     list): Second life and Mass resurrect revive nobody on a PvP map, and Son-Kal and Faiths call strike a player only
 --     there. A creature struck takes no threat bump beyond the blow it took, and a player struck reads the engine's one
 --     line, as for every spell here.
---   * A "Which target?" spell aimed at nothing casts nothing, silently and for free (the 4.95 client casts with the slot
---     alone, at the faced tile): RTK's engine runs the script only for a target it found.
+--   * A "Which target?" spell with no aimed id takes the faced tile (the 4.95 client casts with the slot alone): Forgive
+--     and Second life a player there first (a ghost too), else a living creature; facing nothing, nothing, free. RTK has
+--     no faced tile: its client sends the clicked target's id, and an id of 0 runs Second life's script with no target,
+--     which spends and then stops on its first look at it. An aimed id is taken as RTK takes it (ctx:aimedTarget).
 --   * Second life's 600 vita is kept within the revived player's max vita; RTK sets it over the max until its next stat
 --     recalculation clamps it (rtk/src/map/pc.c, pc_calcstat).
---   * Forgive's pick finds its player again by name (any map) when it is made; one who has logged out by then is
---     restored nothing and the caster pays nothing. RTK's script holds the player's object across its menu.
+--   * Forgive's pick finds its player again by name (any map) when it is made, and takes the caster's price only once
+--     the player's karma is restored: one who has logged out, or is logging out, by then is restored nothing and the
+--     caster pays nothing. RTK's script holds the player's object across its menu and takes the price first.
 --   * Faiths call at a player the caster may not attack is refused before its pose, with this server's line, "You can't
 --     attack that target." (the #351/#356 rule); the script says "You cannot attack that target." after its pose. It
---     costs nothing either way.
+--     costs nothing either way. Its deflect is the engine's, rolled at the blow after the reach, mana and PvP checks:
+--     "Your magic has been deflected." and then "You cast Faiths call."; RTK's engine rolls it before the script runs and
+--     says "The magic has been deflected." alone (rtk/src/map/clif.c, clif_parsemagic).
 -- =========================================================================================================
 
 -- Forgive (RTK Subpaths/Monk/forgive.lua), two steps: the cast, then the menu's pick (forgive_pick). The cast, with no
--- mana and no wait (the script's magicCost is 0 and it arms none): at a creature (no karma to read; RTK's script reads
--- target.karma as nil and stops at its first comparison), the caster's karma check alone; at a player, the caster needs
--- Dragon karma (karmaCheck("dragon"), 14 or more), else the box "Your soul is too impure restore karma. Improve your karma
--- first."; a player above the snake (karma more than -3), the box "<player>'s karma is not Snake level."; yourself, the box
--- "You cannot restore your own karma." (unreachable: a Dragon is no snake). Then RTK's menu, its question naming the
--- caster as the script writes it (player.name), with no portrait. Each box is the script's dialogSeq({t, text}, 0), whose
--- `t` is a global nothing sets, so it carries no portrait. No "You cast" line: the boxes are the script's words.
+-- mana and no wait (the script's magicCost is 0 and it arms none), at its target (ctx:aimedTarget): at a creature (no
+-- karma to read; RTK's script reads target.karma as nil and stops at its first comparison), the caster's karma check
+-- alone; at a player, the caster needs Dragon karma (karmaCheck("dragon"), 14 or more), else the box "Your soul is too
+-- impure restore karma. Improve your karma first."; a player above the snake (karma more than -3), the box "<player>'s
+-- karma is not Snake level."; yourself, the box "You cannot restore your own karma." (unreachable: a Dragon is no snake).
+-- Then RTK's menu, its question naming the caster as the script writes it (player.name), with no portrait. No "You cast"
+-- line: the boxes are the script's words.
+-- The boxes are plain, with no portrait, the project owner's answer (2026-11-09, "No portrait"), as Read karma's are. RTK's
+-- cannot run as written: each is dialogSeq({t, text}, 0) with `t` a global nothing sets, so the box keeps graphic 0 and
+-- colour 0 and dialogSeq sets dialogType 1 (rtklua/Accepted/player.lua), whose branch of the engine's box draws the NPC
+-- it looks up by the caster's own id, with no check that there is one (rtk/src/map/clif.c, clif_scriptmes).
 local FORGIVE_TIER  = "dragon"                          -- player:karmaCheck("dragon")
 local FORGIVE_SNAKE = -3                                -- if karma <= -3
 local FORGIVE_YES   = "Yes, I want to restore them."
@@ -2805,13 +2816,13 @@ local FORGIVE_KEY   = "been_forgiven"                   -- the target's registry
 local FORGIVE_ICON, FORGIVE_COLOR = 12, 128             -- addLegend(..., "been_forgiven", 12, 128)
 
 function verbs.forgive(ctx, row)
-  local player = ctx:pcTarget()
-  if not player and ctx.victimKind ~= "creature" then return false end   -- nothing aimed: silent, free
+  local aimed = ctx:aimedTarget()
+  if aimed == "none" then return false end                                -- no target: silent, free
   if not ctx:karmaCheck(FORGIVE_TIER) then
     ctx:dialog("Your soul is too impure restore karma. Improve your karma first.")
     return false
   end
-  if not player then return false end                                     -- a creature: the script stops here
+  if aimed ~= "player" then return false end                              -- a creature: the script stops here
   if ctx.targetKarma > FORGIVE_SNAKE then
     ctx:dialog(ctx.targetName .. "'s karma is not Snake level.")
     return false
@@ -2825,39 +2836,41 @@ function verbs.forgive(ctx, row)
 end
 
 -- Forgive's pick (the script after its menuSeq). "No, nevermind.": the box "Very well.". "Yes, I want to restore them.":
--- the caster loses math.random() + 1 karma, 1 to 2 (removeKarma: the karma graphic and "Your karma has decreased."); the
--- player, inside their own monitor, takes the spell's graphic (49), karma 0 (the Cat), "Your karma has been restored.",
--- one more on their saved registry count been_forgiven, and the legend "Has been forgiven" the first time, "Has been
--- forgiven N times" after (icon 12, colour 128); then the caster's box "<player>'s karma has been restored to Cat.". A
--- closed menu does nothing.
+-- the player, inside their own monitor, takes the spell's graphic (49), karma 0 (the Cat), "Your karma has been
+-- restored.", one more on their saved registry count been_forgiven, and the legend "Has been forgiven" the first time,
+-- "Has been forgiven N times" after (icon 12, colour 128); then the caster loses math.random() + 1 karma, 1 to 2
+-- (removeKarma: the karma graphic and "Your karma has decreased.") and reads the box "<player>'s karma has been restored
+-- to Cat.". The script takes the price first; here it is taken once the restore has landed, so a player gone, or going,
+-- by the pick costs the caster nothing. A closed menu does nothing.
 function verbs.forgive_pick(ctx, row)
   if ctx.answer == FORGIVE_NO then ctx:dialog("Very well."); return true end
   if ctx.answer ~= FORGIVE_YES then return false end
   if not ctx:pcTargetNamed(ctx.carried) then return false end             -- gone since the cast: nothing
-  ctx:removeKarma(ctx:rollFraction() + 1)
   if not ctx:restoreTargetKarma(0, "Your karma has been restored.", FORGIVE_KEY, FORGIVE_KEY, "Has been forgiven",
                                 "Has been forgiven %d times", FORGIVE_ICON, FORGIVE_COLOR) then
-    return false
+    return false                                                          -- logging out: nothing, and no price
   end
+  ctx:removeKarma(ctx:rollFraction() + 1)
   ctx:dialog(ctx.targetName .. "'s karma has been restored to Cat.")
   return true
 end
 
--- Second life (RTK Subpaths/Monk/second_life.lua). Inside its wait, the wait line; aimed at nothing, nothing; short of
--- `mana`, "Your will is too weak.", for free. Then the `duration` ms wait and the mana go, whatever was aimed at, as the
--- script spends before it looks: at a creature or at a player the caster may attack (a PvP map), "You can't do that.";
+-- Second life (RTK Subpaths/Monk/second_life.lua). Inside its wait, the wait line; with no target (ctx:aimedTarget: an
+-- NPC, a player out of RTK's reach or elsewhere, nothing faced), nothing; short of `mana`, "Your will is too weak.", for
+-- free. Then the `duration` ms wait and the mana go, whatever it is aimed at, as the script spends before it looks: at a
+-- creature or at a player the caster may attack (a PvP map), "You can't do that.";
 -- else "You cast Second life.", and a dead player comes back where they lie with `amount` vita (the script's health +
 -- 600 from a ghost's 0) and the mana they had, with the spell's graphic (18) and "<caster> cast Second life on you.",
 -- inside their own monitor; a living one is left as they are. Row: mana 6000, amount 600, duration 1250000.
 function verbs.second_life(ctx, row)
   if subpath_waiting(ctx, row) then return false end
-  local player = ctx:pcTarget()
-  if not player and ctx.victimKind ~= "creature" then return false end   -- nothing aimed: silent, free
+  local aimed = ctx:aimedTarget()
+  if aimed == "none" then return false end                                -- no target: silent, free
   local mana = row.mana or 0
   if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
   if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
   ctx:debitMana(mana)
-  if not player or ctx:mapPvp(ctx.map) then                               -- player:canPK(target)
+  if aimed ~= "player" or ctx:mapPvp(ctx.map) then                        -- player:canPK(target)
     ctx:say("You can't do that.")
     ctx:narrated()
     return true

@@ -4509,6 +4509,52 @@ public sealed partial class Session
     // and used after it is released; a creature's hold is written through World.ApplyMobStatus, which takes World._lock
     // inside. No new lock, and no write to another player outside their own monitor.
 
+    /// <summary>RTK's reach for a "Which target?" spell: <c>CheckProximity(..., 21)</c>, the target on the caster's map
+    /// within 21 tiles on both axes (<c>rtk/src/map/clif.c</c>, <c>clif_parsemagic</c> and <c>CheckProximity</c>).</summary>
+    private const int AimedSpellReach = 21;
+
+    /// <summary>The target of Forgive's and Second life's cast, decided once (<c>ctx:aimedTarget</c>): "player" (then this
+    /// cast's player target, which <c>targetKarma</c>, <c>targetName</c>, <c>targetIsSelf</c> and <c>raiseTarget</c> read),
+    /// "creature", or "none". An aimed id is taken as RTK's <c>clif_parsemagic</c> takes it, and only it: the block the id
+    /// names, on the caster's map within <see cref="AimedSpellReach"/> tiles; a player, alive or a ghost (the caster
+    /// included); a creature only while it is alive; an NPC, an id that names nothing here, a player on another map or
+    /// farther off, none (RTK runs no script for them). With no id (the 4.95 client casts with the slot alone) the faced
+    /// tile: a player there first, a ghost too, else a living creature (never an NPC), else none.
+    /// <para>Not <see cref="LuaResolvePcTarget"/>: that resolver serves the other player spells (Revive, Cleanse, the
+    /// mana spells, Approach, Summon) and falls back to the faced tile for an id that names no player here, and stays
+    /// as it is for them. Reads only: each player's map and tile are bare reads, as that resolver's are.</para></summary>
+    internal string LuaResolveAimedTarget(SpellDef sp, uint? targetId)
+    {
+        _approachPlace = null;   // a place read for an earlier target is not this target's (Session.ApproachSummon.cs)
+        _pcSpellTarget = null;
+        int cx = _char.X, cy = _char.Y;
+        bool InReach(int x, int y) => Math.Max(Math.Abs(x - cx), Math.Abs(y - cy)) <= AimedSpellReach;
+        if (targetId is uint id && id != 0)
+        {
+            if (_world.MobById(_char.Map, id) is { } mob)
+                return mob.Alive && !mob.IsNpc && InReach(mob.X, mob.Y) ? "creature" : Aimless(sp, "an NPC, a dead creature or one out of reach");
+            if (_world.Online.ById(id) is { } pc && !pc.IsReplaced && pc.CharMap == CharMap && InReach(pc._char.X, pc._char.Y))
+            {
+                _pcSpellTarget = pc;
+                return "player";
+            }
+            return Aimless(sp, "an id that names no player or creature within reach on this map");
+        }
+        var (fx, fy) = FrontTile();
+        if (_world.PeerAt(_char.Map, fx, fy) is { } faced)
+        {
+            _pcSpellTarget = faced;
+            return "player";
+        }
+        return _world.MobsAt(_char.Map, fx, fy).Any(m => m.Alive && !m.IsNpc) ? "creature" : Aimless(sp, "nothing faced");
+    }
+
+    private string Aimless(SpellDef sp, string why)
+    {
+        Log.Info($"      -x {sp.Name}: {why} — no target, so nothing (RTK runs no script)");
+        return "none";
+    }
+
     /// <summary>Does the caster's karma meet <paramref name="tier"/> (<c>ctx:karmaCheck</c>; RTK
     /// <c>Player.karmaCheck</c>, <see cref="Karma.Meets"/>)? The caster's own karma, read under the monitor the cast holds.</summary>
     internal bool LuaKarmaCheck(string? tier) => Karma.Meets(_char.Karma, tier ?? "");

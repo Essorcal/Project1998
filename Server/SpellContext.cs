@@ -1006,6 +1006,13 @@ public sealed class SpellContext
     // As the halves above: Forgive's karma, count and legend, and a revive, land on another player inside that player's own
     // monitor (ReceiveKarmaRestore, ReceiveRaise, entered by StateRank); Awe's hold is written through World's own method,
     // which takes World._lock inside. No new lock. See Session.Spells.cs, "the Monk spells".
+    /// <summary>Decide this cast's target once, as RTK's engine does for a "Which target?" spell (Forgive, Second life):
+    /// "player" (then the player target <see cref="targetKarma"/>, <see cref="targetName"/>, <see cref="targetIsSelf"/> and
+    /// <see cref="raiseTarget"/> read), "creature", or "none". An aimed id names its block only: a player or a living
+    /// creature on the caster's map within 21 tiles; an NPC, a player elsewhere or nothing is none. With no id, the faced
+    /// tile, a player (a ghost too) before a living creature. <see cref="pcTarget"/> is unchanged for the spells that use
+    /// it. See <c>Session.LuaResolveAimedTarget</c>.</summary>
+    public string aimedTarget() => _s.LuaResolveAimedTarget(_sp, _targetId);
     /// <summary>Does the caster's karma meet the named tier (RTK <c>player:karmaCheck(tier)</c>, <see cref="Karma.Meets"/>):
     /// "dragon" is 14 or more?</summary>
     public bool karmaCheck(string tier) => _s.LuaKarmaCheck(tier);

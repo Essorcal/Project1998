@@ -20,7 +20,7 @@ namespace Tests;
 /// Diviner's <c>read_karma</c>).</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Monk facing east, on
-/// content-free maps 63400-63419 (no Maps.csv row: no terrain, PvP off) and on Chestnut Arena (3034), a PvP map no other
+/// content-free maps 63400-63420 (no Maps.csv row: no terrain, PvP off) and on Chestnut Arena (3034), a PvP map no other
 /// class's facts use. A menu or a box is answered from a thread of its own with no synchronisation context, as a read loop
 /// answers it, so the step resumes inline as on the server.</para>
 /// </summary>
@@ -32,6 +32,8 @@ public sealed class MonkSpellTests
                          LifeRefuseMap = 63408, LifeHeldMap = 63409, FoodMap = 63410, AweMap = 63411, AweRefuseMap = 63412,
                          SonKalMap = 63413, FaithMap = 63414, MassMap = 63415, MassRefuseMap = 63416, MassHeldMap = 63417,
                          Arena = 3034;
+    // Fix round 1 (#421's review, F2 and F3): content-free too, claimed by no other class.
+    private const ushort AimMap = 63418, AimElsewhereMap = 63419, LeavingMap = 63420;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
     private const byte Will = 41;
@@ -45,6 +47,8 @@ public sealed class MonkSpellTests
         typeof(Session).GetField("_actionCount", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo ReplacedField =
         typeof(Session).GetField("_replaced", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo LeavingField =
+        typeof(Session).GetField("_leaving", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -714,6 +718,165 @@ public sealed class MonkSpellTests
             Assert.True(tc.Hp == tc.MaxHp && !target.IsDead, $"after: vita {tc.Hp}");
         }
         finally { if (run.Settled) Leave(MassHeldMap, caster, target); }
+    }
+
+    // ===== the aimed target (fix round 1: #421's review, F2) ===================================================
+
+    /// <summary>Second life takes an aimed id as RTK's engine takes it (<c>clif_parsemagic</c>: the block the id names, on
+    /// the caster's map within 21 tiles; a creature while alive; an NPC or anything else, no script), never falling back
+    /// to the faced tile, where a ghost lies in every case: a creature's id, "You can't do that." for the 6,000 and the
+    /// wait; an NPC's id, a player's on another map, or a ghost's 22 tiles off, nothing at all, free; a ghost's 21 tiles
+    /// off, that ghost back with 600. The faced ghost stays a ghost each time. Red on 6dfaad3, whose player resolver fell
+    /// back to the faced tile and revived the faced ghost (the review's probes A, C and E).</summary>
+    [Theory]
+    [InlineData("creature")]
+    [InlineData("npc")]
+    [InlineData("off map")]
+    [InlineData("22 tiles")]
+    [InlineData("21 tiles")]
+    public void SecondLifeTakesAnAimedIdAsRtkDoes(string aim)
+    {
+        int y = 10 + 6 * Array.IndexOf(new[] { "creature", "npc", "off map", "22 tiles", "21 tiles" }, aim);
+        var (faced, _, fc) = Player(AimMap, CX + 1, y, hp: 0);
+        Session? far = null;
+        Character? farc = null;
+        Mob? mob = null;
+        ushort farMap = AimMap;
+        switch (aim)
+        {
+            case "creature": mob = AddCreature(AimMap, CX + 3, y); break;
+            case "npc": mob = AddCreature(AimMap, CX + 3, y, npc: true); break;
+            case "off map": farMap = AimElsewhereMap; (far, _, farc) = Player(AimElsewhereMap, CX + 3, y, hp: 0); break;
+            case "22 tiles": (far, _, farc) = Player(AimMap, CX + 22, y, hp: 0); break;
+            default: (far, _, farc) = Player(AimMap, CX + 21, y, hp: 0); break;
+        }
+        var (caster, cOut, cc) = Caster("second_life", AimMap, CX, y);
+        try
+        {
+            uint id = mob?.Id ?? far!.PlayerId;
+            caster.Receive(SpellCastSupport.CastFrame(0, id));
+            long wait = SpellCastSupport.AetherLeft(caster, "second_life");
+            bool ok = aim switch
+            {
+                "creature" => Lines(cOut) == "You can't do that." && cc.Mp == Mana - 6_000 && wait > 1_250_000 - SlackMs,
+                "21 tiles" => Lines(cOut) == "You cast Second life." && cc.Mp == Mana - 6_000 && farc!.Hp == 600,
+                _ => Lines(cOut) == "" && cc.Mp == Mana && wait == 0 && (farc is null || farc.Hp == 0),
+            };
+            Assert.True(ok && fc.Hp == 0 && faced.IsDead,
+                        $"{aim}: lines [{Lines(cOut)}], spent {Mana - cc.Mp}, wait {wait} ms, aimed player {farc?.Hp}, faced ghost {fc.Hp}");
+        }
+        finally
+        {
+            Leave(AimMap, caster, faced);
+            if (far is not null) Leave(farMap, far);
+            if (mob is not null) _fx.World.DespawnMob(AimMap, mob);
+        }
+    }
+
+    /// <summary>Forgive takes an aimed id as RTK's engine does, never falling back to the Snake standing in front: a
+    /// creature's id (a Dragon caster), nothing at all, as RTK's script stops on the creature's missing karma; an NPC's id
+    /// (a caster below Dragon), nothing, not even the impure box, since RTK runs no script; a Snake's id 22 tiles off,
+    /// nothing; a Snake's id 21 tiles off, RTK's menu, and on "Yes" that Snake is restored. The faced Snake keeps -5 each
+    /// time. Red on 6dfaad3: the menu came up for the faced Snake and "Yes" restored them (the review's probe B), and the
+    /// NPC's id showed the impure box.</summary>
+    [Theory]
+    [InlineData("creature")]
+    [InlineData("npc")]
+    [InlineData("22 tiles")]
+    [InlineData("21 tiles")]
+    public void ForgiveTakesAnAimedIdAsRtkDoes(string aim)
+    {
+        int y = 50 + 6 * Array.IndexOf(new[] { "creature", "npc", "22 tiles", "21 tiles" }, aim);
+        var (faced, _, fc) = Player(AimMap, CX + 1, y, configure: ch => ch.Karma = -5, name: Letters("Faced"));
+        Session? far = null;
+        Character? farc = null;
+        Mob? mob = null;
+        switch (aim)
+        {
+            case "creature": mob = AddCreature(AimMap, CX + 3, y); break;
+            case "npc": mob = AddCreature(AimMap, CX + 3, y, npc: true); break;
+            default:
+                (far, _, farc) = Player(AimMap, CX + (aim == "22 tiles" ? 22 : 21), y, configure: ch => ch.Karma = -5, name: Letters("Far"));
+                break;
+        }
+        double karma = aim == "npc" ? 13.9 : 15;
+        var (caster, cOut, cc) = Caster("forgive", AimMap, CX, y, configure: ch => ch.Karma = karma);
+        try
+        {
+            List<string> menus = new();
+            List<Box> boxes = new();
+            OnOwnThread(() =>
+            {
+                caster.Receive(SpellCastSupport.CastFrame(0, mob?.Id ?? far!.PlayerId));
+                menus = Menus(cOut);
+                if (menus.Count > 0) caster.Receive(MenuFrame(1));
+                boxes = Boxes(cOut);
+            });
+            bool ok = aim == "21 tiles"
+                ? menus.Count == 1 && farc!.Karma == 0 && cc.Karma < 14
+                  && boxes is [{ Kind: 0x0001 } b] && b.Text == $"{far!.CharName}'s karma has been restored to Cat."
+                : menus.Count == 0 && boxes.Count == 0 && Lines(cOut) == "" && cc.Karma == karma && (farc is null || farc.Karma == -5);
+            Assert.True(ok && fc.Karma == -5 && fc.Legends.All(l => l.Name != "been_forgiven"),
+                        $"{aim}: menus {menus.Count}, boxes [{string.Join(" / ", boxes)}], lines [{Lines(cOut)}], caster karma " +
+                        $"{cc.Karma}, aimed player {farc?.Karma}, faced Snake {fc.Karma}");
+        }
+        finally
+        {
+            Leave(AimMap, caster, faced);
+            if (far is not null) Leave(AimMap, far);
+            if (mob is not null) _fx.World.DespawnMob(AimMap, mob);
+        }
+    }
+
+    /// <summary>With no id (the 4.95 client's slot-only cast), a ghost and a creature on the faced tile: the ghost is the
+    /// target, decided once (a player before a creature), and comes back. Red with the faced tile read creature
+    /// first.</summary>
+    [Fact]
+    public void UnaimedSecondLifeTakesTheFacedPlayerBeforeACreature()
+    {
+        int y = 80;
+        var (ghost, _, gc) = Player(AimMap, CX + 1, y, hp: 0);
+        var mob = AddCreature(AimMap, CX + 1, y);
+        var (caster, cOut, cc) = Caster("second_life", AimMap, CX, y);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            Assert.True(Lines(cOut) == "You cast Second life." && gc.Hp == 600 && cc.Mp == Mana - 6_000,
+                        $"lines [{Lines(cOut)}], ghost {gc.Hp}, spent {Mana - cc.Mp}");
+        }
+        finally { Leave(AimMap, caster, ghost); _fx.World.DespawnMob(AimMap, mob); }
+    }
+
+    // ===== Forgive's player logging out at the pick (fix round 1: #421's review, F3) ===============================
+
+    /// <summary>A player found by name at the pick but already logging out (their teardown has begun) is restored
+    /// nothing, and the caster pays nothing and reads nothing: the price is taken once the restore has landed. Red with
+    /// the price taken first, as RTK's script orders it (the caster lost 1 to 2 karma for nothing).</summary>
+    [Fact]
+    public void ForgiveCostsNothingWhenThePlayerIsLeavingAtThePick()
+    {
+        var (target, _, tc) = Player(LeavingMap, CX + 1, CY, configure: ch => ch.Karma = -5, name: Letters("Leaving"));
+        var (caster, cOut, cc) = Caster("forgive", LeavingMap, CX, CY, configure: ch => ch.Karma = 15);
+        try
+        {
+            List<Box> boxes = new();
+            OnOwnThread(() =>
+            {
+                caster.Receive(SpellCastSupport.CastFrame(0));
+                target.WithState(() => LeavingField.SetValue(target, true));
+                cOut.Clear();
+                caster.Receive(MenuFrame(1));
+                boxes = Boxes(cOut);
+            });
+            Assert.True(cc.Karma == 15 && tc.Karma == -5 && Lines(cOut) == "" && boxes.Count == 0
+                        && tc.Legends.All(l => l.Name != "been_forgiven"),
+                        $"caster karma {cc.Karma}, player karma {tc.Karma}, lines [{Lines(cOut)}], boxes [{string.Join(" / ", boxes)}]");
+        }
+        finally
+        {
+            target.WithState(() => LeavingField.SetValue(target, false));
+            Leave(LeavingMap, caster, target);
+        }
     }
 
     // ===== the teacher ==========================================================================================
