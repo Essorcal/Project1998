@@ -2512,8 +2512,10 @@ end
 --     taken when the line shows (the decision's words; the script checks its 80 and never takes it).
 --   * Inspire valor's recast reads `might.might + 3`, and RTK's Lua has no `might` table, so RTK's buff adds nothing; the
 --     +3 Might it means is given (Q-B), in the mights slot, which still ends every other might buff on the player first.
---   * Invincibility stops a creature's spell too: RTK's stops a swing and a player's spell only, and the one gate that
---     tells those apart here is Server/DamageIntake.cs, outside this slice. A venom tick it lets through, as RTK.
+--   * Invincibility also stops a creature's spell and another player's spell (on a PvP map): RTK's stops a swing only
+--     (its magicDamage.lua check has no caller, and RTK's spells land through removeHealthExtend, which does not test
+--     it). Here it is Harden Body's ward, which the one gate (Server/DamageIntake.cs) asks for every blow kind but room
+--     damage. A venom tick it lets through, as RTK.
 --   * Employ troop's spawn does not raise the caster's threat on what is attacking them (cotw_SpawnSetThreat's
 --     setThreat line): that is the highest threat plus the damage the attacker last dealt, which no creature here keeps.
 --   * Title of nobility looks a typed name up as every typed name here is (any map, any case, trimmed; RTK's Player(name)
@@ -2562,7 +2564,10 @@ end
 -- Harden Body's: it fails when math.random(1, 100) < (140 + armour) / 2, the armour clamped to -80..70 (ctx.armor), so it
 -- lands 71 times in 100 at -80, 31 at 0 and never at +70. Failed: the pose and "Something went wrong.", the mana gone,
 -- no wait. Landed: the spell's graphic and sound, the script's two lines, `durationMax` ms of immunity (the ward
--- Session.DamageImmune reads) and the `duration` ms wait. Row: mana 1500, duration 3000, durationMax 3000.
+-- Session.DamageImmune reads) and the `duration` ms wait. When the immunity ends, "Your skin turns back to flesh." (its
+-- uncast; the duration's end line). Row: mana 1500, duration 3000, durationMax 3000.
+local INVINCIBILITY_END = "Your skin turns back to flesh."
+
 function verbs.invincible(ctx, row)
   if subpath_waiting(ctx, row) then return false end
   local mana = row.mana or 0
@@ -2577,7 +2582,7 @@ function verbs.invincible(ctx, row)
   ctx:fxSelf()
   ctx:say("Harden body spell")
   ctx:say("You cast " .. ctx.spellName .. ".")
-  ctx:setDuration(ctx.spellKey, row.durationMax or 0)
+  ctx:setDuration(ctx.spellKey, row.durationMax or 0, INVINCIBILITY_END)
   if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
   ctx:narrated()
   return true

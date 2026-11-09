@@ -1462,7 +1462,42 @@ public sealed partial class Session
     // visible to a spell (or vice versa) — three separate stores for one RTK concept. It is now the same
     // _statusFlags map the item verbs write, so the two halves see each other exactly as RTK's do.
     internal bool LuaHasDuration(string key)         => HasStatusFlag(key);
-    internal void LuaSetDuration(string key, int ms) => SetStatusFlag(key, ms);
+    internal void LuaSetDuration(string key, int ms, string? endLine = null)
+    {
+        SetStatusFlag(key, ms);
+        if (string.IsNullOrEmpty(endLine)) { _durationEndLines.Remove(key); return; }
+        _durationEndLines[key] = endLine;
+        long due = Environment.TickCount64 + Math.Max(0, ms);
+        if (due < Volatile.Read(ref _durationLineDue)) Volatile.Write(ref _durationLineDue, due);
+    }
+
+    // A DURATION'S END LINE: RTK's uncast message for a setDuration whose script says one (Chongun's Invincibility, "Your
+    // skin turns back to flesh."). The status-flag store has no fade text of its own (only _buffs do, through
+    // Content.FadeTextFor), so a verb that arms a duration with ctx:setDuration(key, ms, endLine) leaves its line here,
+    // and the heartbeat says it once (RegenTick -> SayLapsedDurationLines) when the flag has run out or been cleared, as
+    // by death or @dispel, where RTK's pc_diescript runs the uncast too. Session state only: a relog keeps the flag
+    // (Session.TimedEffects) but not its line, so a duration that ends after a relog ends silently. Written and read
+    // under this session's monitor; _durationLineDue is the earliest a pending line can be due, read bare by RegenTick's
+    // early-out as _nextBuffExpiry is.
+    private readonly Dictionary<string, string> _durationEndLines = new(StringComparer.OrdinalIgnoreCase);
+    private long _durationLineDue = long.MaxValue;
+
+    /// <summary>Say the end line of every duration that left one (<see cref="LuaSetDuration"/>) and is no longer running,
+    /// once, and drop it; keep the rest, and leave <see cref="_durationLineDue"/> at the earliest of their ends.</summary>
+    private void SayLapsedDurationLines()
+    {
+        AssertStateHeld("_durationEndLines");
+        long now = Environment.TickCount64, next = long.MaxValue;
+        List<string>? ended = null;
+        foreach (var (key, line) in _durationEndLines)
+        {
+            if (_statusFlags.TryGetValue(key, out var until) && until > now) { next = Math.Min(next, until); continue; }
+            (ended ??= new()).Add(key);
+            SendMiniText(line);
+        }
+        if (ended is not null) foreach (var key in ended) _durationEndLines.Remove(key);
+        Volatile.Write(ref _durationLineDue, next);
+    }
     /// <summary>Milliseconds left on a named duration, 0 if it isn't running. What a tiered fury needs to
     /// re-arm its effects onto the run ALREADY BURNING rather than starting a fresh window — RTK's tiered
     /// spells set their duration in the first-cast branch only, so a climb has to inherit what remains.</summary>
@@ -2335,7 +2370,7 @@ public sealed partial class Session
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
         if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
         // A WARD BLOCKS THE TICK'S HP LOSS (#82; owner, 2026-10-21, decision sheet item 14). Harden Body, its
-        // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
+        // three alignment reskins and the Scroll of Immortality (TickImmune) stop the health coming off, and
         // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
         // and the PvP foe mark. The venom itself runs on: the timer above was not touched, the flash has already
         // gone out, and the line still prints, so a warded player can see the poison working on them. RTK's
@@ -2349,7 +2384,7 @@ public sealed partial class Session
         //
         // Gated here, on the heartbeat, under the monitor taken above; the tick does not go through TakeDamage,
         // whose PvP foe mark enters another session's monitor (DamageIntake.cs, the note at its end).
-        // Not Invincibility (Chongun): RTK lists it in hardBodies, which only its swing and magic-damage scripts read,
+        // Not Invincibility (Chongun): RTK lists it in hardBodies, which only its swing script reads to stop a blow,
         // and venom's tick goes through removeHealthExtend, whose own test names the four poet wards (TickImmune).
         if (TickImmune) { SendMiniText(PoisonTickText); return; }
         _char.Hp -= (uint)dam;
@@ -4446,14 +4481,16 @@ public sealed partial class Session
     /// <summary>A title given to THIS player (Title of nobility), inside this player's own monitor: <paramref name="title"/>
     /// becomes <see cref="Character.Title"/>, the saved field the title NPC sets and the profiles draw, marked for this
     /// player's own next save (<see cref="MarkDirty"/>, the autosave path, so no save is run inside two monitors), and the
-    /// player reads <paramref name="line"/> in blue. Nothing for a player who is logging out. Returns whether it landed.
+    /// player reads <paramref name="line"/> in blue. Nothing for a player who is logging out or whose session a second login
+    /// has replaced (<see cref="IsReplaced"/>: its save is fenced, so a title written there would be lost while the caster
+    /// still took the wait), as the other saved cross-player writes refuse one. Returns whether it landed.
     /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
     /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>; for the caster it is the monitor
     /// already held.</para></summary>
     internal bool ReceiveTitle(string title, string line)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        if (_leaving) return false;
+        if (_leaving || IsReplaced) return false;
         _char.Title = title;
         MarkDirty();
         if (line.Length > 0) SendBlueMessage(line);

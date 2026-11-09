@@ -34,6 +34,9 @@ public sealed class ChongunSpellTests
                          UniformMap = 63310, TroopMap = 63311, TroopBlockMap = 63312, TitleMap = 63313, TitleFarMap = 63314,
                          TitleHeldMap = 63315, WarMap = 63316, TroopRefuseMap = 63317, TitleWaitMap = 63318,
                          TitleRefuseMap = 63319, ArtNothingMap = 63320, InvRefuseMap = 63321, UniformEndMap = 63322;
+    // Fix round 1 (#420's review): content-free too, claimed by no other class; and the Chongun Guide map, which has terrain
+    // and no NPC, spawn or other class's facts on it.
+    private const ushort InvEndMap = 63323, TroopEdgeMap = 63324, TitleReplacedMap = 63325, GuideMap = 3611;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -52,6 +55,12 @@ public sealed class ChongunSpellTests
         typeof(Session).GetField("_morphColor", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo MorphUntilField =
         typeof(Session).GetField("_morphUntil", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo StatusFlagsField =
+        typeof(Session).GetField("_statusFlags", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo DurationLineDueField =
+        typeof(Session).GetField("_durationLineDue", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ReplacedField =
+        typeof(Session).GetField("_replaced", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo DirtyField =
         typeof(Session).GetField("_dirty", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
@@ -343,7 +352,7 @@ public sealed class ChongunSpellTests
     }
 
     /// <summary>Under Invincibility a creature's swing takes nothing, but a venom tick still does (RTK's Invincibility is
-    /// read by the swing and magic-damage scripts, not by removeHealthExtend, which venom's tick calls); under Harden
+    /// read only by its swing script, not by removeHealthExtend, which venom's tick calls); under Harden
     /// Body the tick takes nothing, as before. Red with Invincibility among the tick's wards (<c>Session.TickImmune</c>),
     /// and red without it in <c>Session.DamageImmune</c>.</summary>
     [Fact]
@@ -366,6 +375,35 @@ public sealed class ChongunSpellTests
                         $"swing left {afterSwing}; tick left {c.Hp} (want 700); under Harden Body {hbc.Hp}");
         }
         finally { _fx.World.DespawnMob(InvTickMap, mob); Leave(InvTickMap, p, hb); }
+    }
+
+    /// <summary>When the 3 s ward has run out, the caster reads "Your skin turns back to flesh." (RTK's uncast,
+    /// <c>invincibility.lua:53-55</c>) once, on the heartbeat, which wakes for it by itself (no regen due); before then the
+    /// heartbeat says nothing, and after, nothing again. Red without the line in the verb, without the heartbeat saying it,
+    /// or without the heartbeat waking for it. (#420's review, F3.)</summary>
+    [Fact]
+    public void InvincibilityEndsWithItsLine()
+    {
+        var (caster, cOut, _) = Caster("invincibility", InvEndMap, CX, CY, configure: ch => ch.Ac = -100);
+        try
+        {
+            Assert.True(LandInvincibility(caster, cOut), "no Invincibility cast landed in forty");
+            cOut.Clear();
+            caster.RegenTick(0, regenDue: true);
+            string before = Lines(cOut);
+            caster.WithState(() =>
+            {
+                ((Dictionary<string, long>)StatusFlagsField.GetValue(caster)!)["invincibility"] = Environment.TickCount64 - 1;
+                DurationLineDueField.SetValue(caster, Environment.TickCount64 - 1);
+            });
+            caster.RegenTick(0, regenDue: false);
+            string ended = Lines(cOut);
+            cOut.Clear();
+            caster.RegenTick(0, regenDue: true);
+            Assert.True(before == "" && ended == "Your skin turns back to flesh." && Lines(cOut) == "" && !caster.DamageImmune,
+                        $"before [{before}], at its end [{ended}], after [{Lines(cOut)}], ward {caster.DamageImmune}");
+        }
+        finally { Leave(InvEndMap, caster); }
     }
 
     // ===== Protectors fury ======================================================================================
@@ -641,6 +679,81 @@ public sealed class ChongunSpellTests
         }
     }
 
+    /// <summary>RTK's <c>getpass</c> answers 1 past the map's last column (<c>rtk/src/map/sl.c:683-695</c>), so a caster on
+    /// the last column facing east puts the troop on their own tile. Red without the bounds check in
+    /// <c>Session.CotwTileOpen</c>. (#420's review, F4.)</summary>
+    [Fact]
+    public void FacingTheMapsEdgeTheTroopStaysOnTheCastersTile()
+    {
+        var (caster, _, cc) = Caster("employ_troop", TroopEdgeMap, 99, CY);   // a content-free map is 100 wide here
+        var made = new List<Mob>();
+        try
+        {
+            Assert.Equal(100, cc.MapXs);
+            Bare(() =>
+            {
+                caster.Receive(SpellCastSupport.CastFrame(0));
+                caster.Receive(MenuFrame(1));
+            });
+            var home = _fx.World.MobsAt(TroopEdgeMap, 99, CY).Where(m => m.Key == "employ_troop_scout").ToList();
+            var past = _fx.World.MobsAt(TroopEdgeMap, 100, CY).Where(m => m.Key == "employ_troop_scout").ToList();
+            made.AddRange(home);
+            made.AddRange(past);
+            Assert.True(home.Count == 1 && past.Count == 0, $"{home.Count} on the caster's tile, {past.Count} past the edge");
+        }
+        finally
+        {
+            foreach (var m in made) _fx.World.DespawnMob(TroopEdgeMap, m);
+            Leave(TroopEdgeMap, caster);
+        }
+    }
+
+    /// <summary>On a map with terrain, a faced tile <c>getPass</c> calls blocked sends the troop to the caster's own tile,
+    /// and an open one takes it. Red without the blocked-ground check in <c>Session.CotwTileOpen</c>. (#420's review,
+    /// F4.)</summary>
+    [Fact]
+    public void FacingBlockedGroundTheTroopStaysOnTheCastersTile()
+    {
+        var md = MapData.For(GuideMap)!;
+        bool Open(int x, int y) => md.Pass(x, y) == 0 && !Content.TryWarp(GuideMap, (ushort)x, (ushort)y, out _);
+        (int X, int Y) blocked = (-1, -1), open = (-1, -1);
+        for (int y = 2; y < md.Ys - 2 && (blocked.X < 0 || open.X < 0); y++)
+            for (int x = 2; x < md.Xs - 3; x++)
+            {
+                if (!Open(x, y)) continue;
+                if (blocked.X < 0 && md.Pass(x + 1, y) != 0) blocked = (x, y);
+                else if (open.X < 0 && Open(x + 1, y) && (Math.Abs(x - blocked.X) > 3 || Math.Abs(y - blocked.Y) > 3)) open = (x, y);
+            }
+        Assert.True(blocked.X >= 0 && open.X >= 0, $"map {GuideMap} has no blocked-facing tile {blocked} or open-facing tile {open}");
+        var (bCaster, _, _) = Caster("employ_troop", GuideMap, blocked.X, blocked.Y);
+        var (oCaster, _, _) = Caster("employ_troop", GuideMap, open.X, open.Y);
+        var made = new List<Mob>();
+        try
+        {
+            Bare(() =>
+            {
+                bCaster.Receive(SpellCastSupport.CastFrame(0));
+                bCaster.Receive(MenuFrame(1));
+                oCaster.Receive(SpellCastSupport.CastFrame(0));
+                oCaster.Receive(MenuFrame(1));
+            });
+            List<Mob> At((int X, int Y) t) => _fx.World.MobsAt(GuideMap, t.X, t.Y).Where(m => m.Key == "employ_troop_scout").ToList();
+            var bHome = At(blocked);
+            var bFront = At((blocked.X + 1, blocked.Y));
+            var oFront = At((open.X + 1, open.Y));
+            var oHome = At(open);
+            made.AddRange(bHome); made.AddRange(bFront); made.AddRange(oFront); made.AddRange(oHome);
+            Assert.True(bHome.Count == 1 && bFront.Count == 0 && oFront.Count == 1 && oHome.Count == 0,
+                        $"facing blocked {blocked}: {bHome.Count} home, {bFront.Count} on the blocked tile; " +
+                        $"facing open {open}: {oFront.Count} in front, {oHome.Count} home");
+        }
+        finally
+        {
+            foreach (var m in made) _fx.World.DespawnMob(GuideMap, m);
+            Leave(GuideMap, bCaster, oCaster);
+        }
+    }
+
     /// <summary>Short of 1,000, "Your will is too weak."; inside its wait, "Employ troop isn't ready yet."; both free and
     /// with no menu. Red on 5feb96a.</summary>
     [Fact]
@@ -828,6 +941,30 @@ public sealed class ChongunSpellTests
         finally { if (run.Settled) Leave(TitleHeldMap, caster, target); }
     }
 
+    /// <summary>A session a second login has replaced takes no title: its save is fenced, so a title written there would
+    /// be lost while the caster took the four-hour wait. <c>Session.ReceiveTitle</c> answers false and changes nothing, so
+    /// the step says no "It is done." and sets no wait. The name lookup already passes over a replaced session; this is the
+    /// guard for one replaced between the lookup and the write. Red without the <c>IsReplaced</c> guard. (#420's review,
+    /// F6.)</summary>
+    [Fact]
+    public void AReplacedSessionTakesNoTitle()
+    {
+        var (target, tOut, tc) = Player(TitleReplacedMap, CX, CY, name: Letters("Replaced"));
+        try
+        {
+            ReplacedField.SetValue(target, 1);
+            Assert.True(target.IsReplaced);
+            bool landed = target.ReceiveTitle("Duke", "Chongun Someone has bestowed upon you a new title.");
+            Assert.True(!landed && tc.Title == "" && Typed(tOut, 0).Count == 0,
+                        $"landed {landed}, title '{tc.Title}', blue [{string.Join(" | ", Typed(tOut, 0))}]");
+        }
+        finally
+        {
+            ReplacedField.SetValue(target, 0);
+            Leave(TitleReplacedMap, target);
+        }
+    }
+
     // ===== Spirit of war ========================================================================================
 
     /// <summary>Six casts climb RTK's copy of Chung ryong rage: rage 6/9/12/18/27/50 for 3,000/10,000/22,000/38,000/
@@ -1011,6 +1148,28 @@ public sealed class ChongunSpellTests
 
     private static void FreeSlot(Session s) => s.WithState(() => { NextActionTick.SetValue(s, 0L); ActionCount.SetValue(s, 0); });
 
+    /// <summary>Cast Invincibility until a cast lands (RTK's roll lands 71 in 100 at the best armour), clearing the wait
+    /// between; true once one has. Each try is a fresh cast slot.</summary>
+    private static bool LandInvincibility(Session caster, RecordingOutbound o)
+    {
+        for (int i = 0; i < 40; i++)
+        {
+            o.Clear();
+            FreeSlot(caster);
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            if (Lines(o) == "Harden body spell | You cast Invincibility.") return true;
+            SpellCastSupport.ClearAether(caster, "invincibility");
+        }
+        return false;
+    }
+
+    /// <summary>A map's size as Maps.csv has it, or a wide 100 x 100 for a content-free map.</summary>
+    private static void Size(Character c, ushort map)
+    {
+        if (Content.Maps.TryGetValue(map, out var m)) { c.MapXs = m.Xs; c.MapYs = m.Ys; }
+        else { c.MapXs = 100; c.MapYs = 100; }
+    }
+
     /// <summary>A minute-long venom from no one, ticking <paramref name="perTick"/> every 1 ms (VenomWardTests' shape).</summary>
     private static void Venom(Session p, int perTick)
     {
@@ -1062,7 +1221,7 @@ public sealed class ChongunSpellTests
     }
 
     /// <summary>A level-99 Chongun at (<paramref name="x"/>, <paramref name="y"/>) facing east, with <paramref name="key"/>
-    /// in slot 0 of the book, on a wide content-free map.</summary>
+    /// in slot 0 of the book, on the map's own size (a wide one for a content-free map).</summary>
     private (Session session, RecordingOutbound outbound, Character c) Caster(string key, ushort map, int x, int y,
                                                                             uint mana = Mana, uint maxMana = MaxMana,
                                                                             Action<Character>? configure = null, string? name = null) =>
@@ -1074,7 +1233,7 @@ public sealed class ChongunSpellTests
             ch.MaxHp = Hp; ch.Hp = Hp;
             ch.MaxMp = maxMana; ch.Mp = mana;
             ch.Dir = 1;
-            ch.MapXs = 100; ch.MapYs = 100;
+            Size(ch, map);
             ch.Spells.Add(Content.SpellByKey(key)!.Id);
             configure?.Invoke(ch);
         }, map, (ushort)x, (ushort)y);
@@ -1086,7 +1245,7 @@ public sealed class ChongunSpellTests
             ch.Level = 50;
             ch.Ac = 0;
             ch.MaxHp = Math.Max(hp, 1_000); ch.Hp = hp;
-            ch.MapXs = 100; ch.MapYs = 100;
+            Size(ch, map);
             configure?.Invoke(ch);
         }, map, (ushort)x, (ushort)y);
 

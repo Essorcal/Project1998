@@ -247,6 +247,7 @@ public sealed partial class Session
         bool due = regenDue
                 || _mailAccum >= MailBackstopMs
                 || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
+                || Volatile.Read(ref _durationLineDue) <= Environment.TickCount64
                 || Volatile.Read(ref _crRageTier) > 0
                 || sightDue;
         if (!due) return;   // the common case: no monitor entered at all
@@ -255,6 +256,7 @@ public sealed partial class Session
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
         ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
+        SayLapsedDurationLines();   // a duration's end line (Invincibility's), once it has run out or been cleared
         // Chung Ryong's Rage draining vita when it wears out (its price) — checked here so it fires whether the
         // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
         if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
@@ -954,12 +956,14 @@ public sealed partial class Session
     private static readonly string[] HardenBodyWards =
         { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
     // Chongun's Invincibility (RTK Spells/Subpaths/Chongun/invincibility.lua) is in RTK's hardBodies list
-    // (Spells/spellTables.lua:252-260), which the swing and magic-damage scripts read to stop a blow
-    // (Scripts/hitCritChance.lua:26, Scripts/magicDamage.lua:38), and which every hard-body spell reads as "You already
-    // cast that spell.". It is NOT in removeHealthExtend's own test (player.lua:164-170), so a venom tick still lands
-    // under it: TickImmune leaves it out. A creature's spell lands through that same call in RTK, so RTK's Invincibility
-    // does not stop one either; here it does, because the one gate (DamageIntake.cs) asks DamageImmune for every kind of
-    // blow but room damage, and telling the kinds apart there is outside the Chongun slice.
+    // (Spells/spellTables.lua:252-260), which every hard-body spell reads as "You already cast that spell.". To stop a
+    // blow RTK reads that list in its swing script only (Scripts/hitCritChance.lua:26: a player's swing and a creature's).
+    // Scripts/magicDamage.lua tests it too, but nothing in RTK calls that script: RTK's spells, a player's and a
+    // creature's, land through removeHealthExtend (Spells/common/global_zap.lua:40), whose own test names only the four
+    // poet wards (player.lua:164-170). So RTK's Invincibility stops swings only, and a venom tick (removeHealthExtend too)
+    // lands under it: TickImmune leaves it out, as RTK. Here it is Harden Body's ward otherwise, so it ALSO stops a
+    // creature's spell and another player's spell on a PvP map: the one gate (DamageIntake.cs) asks DamageImmune for
+    // every kind of blow but room damage. That is kept on purpose and listed as a departure from RTK.
     private const string InvincibilityWard = "invincibility";
     internal bool DamageImmune => TickImmune || HasStatusFlag(InvincibilityWard);
     /// <summary>The wards RTK's <c>removeHealthExtend</c> itself tests (with the plain Scroll of Immortality flag): what

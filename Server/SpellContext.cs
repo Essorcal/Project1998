@@ -235,8 +235,10 @@ public sealed class SpellContext
     /// verbs, so a spell sees a potion's ward — which is how the five warrior strikes read the Black Potion's
     /// <c>chin_baek_ho_ryung</c>, exactly as RTK's scripts do.</summary>
     public bool hasDuration(string key)               => _s.LuaHasDuration(key);
-    /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds.</summary>
-    public void setDuration(string key, double ms)    => _s.LuaSetDuration(key, (int)ms);
+    /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds. With <paramref name="endLine"/>, the
+    /// caster reads that line once when it has run out or been cleared (RTK's uncast message: Invincibility's); see
+    /// <c>Session.SayLapsedDurationLines</c>.</summary>
+    public void setDuration(string key, double ms, string endLine = "") => _s.LuaSetDuration(key, (int)ms, endLine);
     /// <summary>Milliseconds left on a named duration (0 if not running) — for a tiered spell re-arming its
     /// effects onto the run it is already inside instead of opening a new window.</summary>
     public double durationLeft(string key)            => _s.LuaDurationLeft(key);
