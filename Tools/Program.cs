@@ -59,10 +59,10 @@ if (args is ["readme-tables", ..])
 }
 
 // Write the synthetic content profile (test-content/synthetic/, see Tools/SyntheticProfile.cs): invented maps,
-// walls, warps and one NPC that a server reads only when P1998_GAME_DATA points at it. Same contract as the two
-// generators above: Tests/SyntheticProfileTests.cs regenerates it into a temp folder and compares every byte with
-// the committed copy, so editing the generator without re-running this fails CI. It never deletes; a file a
-// layout change left behind is named and the run exits 1, so it can be removed by hand.
+// walls, warps and two NPCs, one with a scripted dialog, that a server reads only when P1998_GAME_DATA points at
+// it. Same contract as the two generators above: Tests/SyntheticProfileTests.cs regenerates it into a temp folder
+// and compares every byte with the committed copy, so editing the generator without re-running this fails CI. It
+// never deletes; a file a layout change left behind is named and the run exits 1, so it can be removed by hand.
 if (args is ["synthetic-profile", ..])
 {
     string profileDir = args.Length > 1 ? args[1] : Tools.SyntheticProfile.DefaultDirectory();
