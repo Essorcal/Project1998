@@ -372,7 +372,7 @@ public sealed class SpySpellTests
     // ===== the traps on a creature ==============================================================================
 
     /// <summary>A creature that steps onto a Spy kit trap springs it, and the trap is gone. Toxic spray: the poison,
-    /// ceil(1% of its vita) a 1.5 s beat (543 for 54,321, at most 1,000), credited to the trap's owner, graphic 1 each beat,
+    /// ceil(1% of its vita) a 1.5 s beat (544 for 54,321, at most 1,000), credited to the trap's owner, graphic 1 each beat,
     /// for RTK's 185,000 at its creature timer (277.5 s). Tripwire: AC +30 in its curses slot and graphic 34 each beat for
     /// 37,000 (55.5 s). Smoke screen: blind for 25,000 (37.5 s). Red on 461e2d9: nothing springs (the kinds do not
     /// exist); red with the creature timer read as clock time.</summary>
@@ -423,40 +423,45 @@ public sealed class SpySpellTests
     }
 
     /// <summary>A trap whose effect is refused is still used up: a poisoned creature springs Toxic spray (its poison
-    /// unchanged), a protected one Tripwire (no curse, AC unchanged: RTK's checkIfCast(protections)), a blinded one Smoke
-    /// screen. Red with Tripwire's curse-or-protection check taken out of <c>World.SpringSpyTrapLocked</c> (the protected
-    /// creature is cursed).</summary>
+    /// unchanged), a protected one Tripwire (no curse, AC unchanged: RTK's checkIfCast(protections)), one carrying only a
+    /// minor curse Tripwire too (RTK's curses table lists the minor curses, Vex among them), a blinded one Smoke screen. Red
+    /// with Tripwire's curse-or-protection check taken out of <c>World.SpringSpyTrapLocked</c> (the protected creature is
+    /// cursed), and with its minor-curse test alone taken out (the Vexed one is).</summary>
     [Fact]
     public void ARefusedEffectStillUsesTheTrap()
     {
         var poisoned = AddCreature(CreatureTrapMap, CX + 10, CY, hp: 54_321, maxHp: 54_321);
         var guarded = AddCreature(CreatureTrapMap, CX + 10, CY + 4);
         var blinded = AddCreature(CreatureTrapMap, CX + 10, CY + 8);
+        var vexed = AddCreature(CreatureTrapMap, CX + 10, CY + 12);
         try
         {
             Assert.True(_fx.World.PoisonMob(poisoned, 1000, 5_000, 5_000, 5, spellKey: "venom"));
             Assert.True(_fx.World.ApplyMobStatus(guarded, "protections", 60_000, false, false, spellKey: "curse_protection"));
             Assert.True(_fx.World.ApplyMobStatus(blinded, "blinds", 60_000, false, true, spellKey: "blind"));
+            Assert.True(_fx.World.ApplyMobStatus(vexed, "minorcurses", 60_000, false, false, spellKey: "vex"));
             long poisonEnd = poisoned.PoisonUntil, blindEnd = blinded.BlindUntil;
-            var pairs = new[] { (poisoned, "toxic_spray", CY), (guarded, "tripwire", CY + 4), (blinded, "smoke_screen", CY + 8) };
+            var pairs = new[] { (poisoned, "toxic_spray", CY), (guarded, "tripwire", CY + 4), (blinded, "smoke_screen", CY + 8),
+                                (vexed, "tripwire", CY + 12) };
             foreach (var (mob, kind, y) in pairs)
             {
                 _fx.World.PlaceTrap(CreatureTrapMap, CX + 11, (ushort)y, kind, 77, Environment.TickCount64 + 20_000);
                 Step(CreatureTrapMap, mob, CX + 11, y, 1);
             }
-            Assert.True(_fx.World.TrapsNear(CreatureTrapMap, CX + 11, CY + 4, 4).Length == 0
+            Assert.True(_fx.World.TrapsNear(CreatureTrapMap, CX + 11, CY + 6, 6).Length == 0
                         && poisoned.PoisonUntil == poisonEnd && poisoned.PoisonOwnerId == 5
                         && _fx.World.MobStatusKey(poisoned, "venoms") == "venom"
                         && guarded.Ac == 0 && _fx.World.MobStatusKey(guarded, "curses") == ""
-                        && blinded.BlindUntil == blindEnd && _fx.World.MobStatusKey(blinded, "blinds") == "blind",
-                        $"traps left {_fx.World.TrapsNear(CreatureTrapMap, CX + 11, CY + 4, 4).Length}; poison owner " +
+                        && blinded.BlindUntil == blindEnd && _fx.World.MobStatusKey(blinded, "blinds") == "blind"
+                        && vexed.Ac == 0 && _fx.World.MobStatusKey(vexed, "curses") == "",
+                        $"traps left {_fx.World.TrapsNear(CreatureTrapMap, CX + 11, CY + 6, 6).Length}; poison owner " +
                         $"{poisoned.PoisonOwnerId}, AC {guarded.Ac} curse [{_fx.World.MobStatusKey(guarded, "curses")}], blind slot " +
-                        $"{_fx.World.MobStatusKey(blinded, "blinds")}");
+                        $"{_fx.World.MobStatusKey(blinded, "blinds")}; Vexed AC {vexed.Ac} curse [{_fx.World.MobStatusKey(vexed, "curses")}]");
         }
         finally
         {
             ClearTraps(CreatureTrapMap);
-            foreach (var m in new[] { poisoned, guarded, blinded }) _fx.World.DespawnMob(CreatureTrapMap, m);
+            foreach (var m in new[] { poisoned, guarded, blinded, vexed }) _fx.World.DespawnMob(CreatureTrapMap, m);
         }
     }
 
@@ -564,7 +569,9 @@ public sealed class SpySpellTests
     }
 
     /// <summary>Tripwire on a player on a PvP map: "Tripwire", graphic 1, AC +30 (more damage taken) in the curses slot for
-    /// 37 s; already cursed, nothing, and the trap is still used. Red on 461e2d9: nothing springs.</summary>
+    /// 37 s; already cursed (a minor curse, Vex), nothing, and the trap is still used; carrying a protection (RTK's
+    /// checkIfCast(protections)), nothing either. Red on 461e2d9: nothing springs; red with the protection test taken out of
+    /// <c>Session.SpringSpyTrap</c> (the protected player is cursed).</summary>
     [Fact]
     public void TripwireCursesAPlayer()
     {
@@ -572,25 +579,34 @@ public sealed class SpySpellTests
         var cursedRun = OpenRun(Arena, 3, skip: 3);
         var (victim, vOut, _) = Player(Arena, run.X, run.Y);
         var (cursed, cOut, _) = Player(Arena, cursedRun.X, cursedRun.Y);
+        var guardedRun = OpenRun(Arena, 3, skip: 7);
+        var (guarded, gOut, _) = Player(Arena, guardedRun.X, guardedRun.Y);
         try
         {
             cursed.WithState(() => cursed.ReceiveCurse("armor", 5, 60_000, "vex", "Vex", "minorcurses"));
-            int baseArmor = victim.ItemArmor, cursedArmor = cursed.ItemArmor;
+            guarded.WithState(() => guarded.ReceiveCurse("", 0, 60_000, "curse_protection", "Curse protection", "protections"));
+            int baseArmor = victim.ItemArmor, cursedArmor = cursed.ItemArmor, guardedArmor = guarded.ItemArmor;
             _fx.World.PlaceTrap(Arena, (ushort)(run.X + 1), (ushort)run.Y, "tripwire", 77, Environment.TickCount64 + 20_000);
             _fx.World.PlaceTrap(Arena, (ushort)(cursedRun.X + 1), (ushort)cursedRun.Y, "tripwire", 77, Environment.TickCount64 + 20_000);
-            vOut.Clear(); cOut.Clear();
+            _fx.World.PlaceTrap(Arena, (ushort)(guardedRun.X + 1), (ushort)guardedRun.Y, "tripwire", 77, Environment.TickCount64 + 20_000);
+            vOut.Clear(); cOut.Clear(); gOut.Clear();
             Walk(victim, East);
             Walk(cursed, East);
+            Walk(guarded, East);
             var slot = SpellCastSupport.BuffEntry(victim, "tripwire");
             Assert.True(Lines(vOut) == "Tripwire" && Effects(vOut, victim.PlayerId).SequenceEqual(new[] { 1 })
                         && victim.ItemArmor - baseArmor == 30 && slot is { Category: "curses" }
                         && slot.Value.LeftMs > 37_000 - SlackMs && slot.Value.LeftMs <= 37_000
                         && Lines(cOut) == "" && cursed.ItemArmor == cursedArmor && SpellCastSupport.BuffEntry(cursed, "tripwire") is null
-                        && _fx.World.TrapsNear(Arena, cursedRun.X + 1, cursedRun.Y, 0).Length == 0,
+                        && _fx.World.TrapsNear(Arena, cursedRun.X + 1, cursedRun.Y, 0).Length == 0
+                        && guarded.PlayerX == guardedRun.X + 1 && Lines(gOut) == "" && guarded.ItemArmor == guardedArmor
+                        && SpellCastSupport.BuffEntry(guarded, "tripwire") is null
+                        && _fx.World.TrapsNear(Arena, guardedRun.X + 1, guardedRun.Y, 0).Length == 0,
                         $"victim [{Lines(vOut)}] AC +{victim.ItemArmor - baseArmor} slot {slot}; cursed [{Lines(cOut)}] AC " +
-                        $"{cursedArmor} -> {cursed.ItemArmor}");
+                        $"{cursedArmor} -> {cursed.ItemArmor}; protected at {guarded.PlayerX} [{Lines(gOut)}] AC {guardedArmor} -> " +
+                        $"{guarded.ItemArmor} slot {SpellCastSupport.BuffEntry(guarded, "tripwire")}");
         }
-        finally { ClearTraps(Arena); Leave(Arena, victim, cursed); }
+        finally { ClearTraps(Arena); Leave(Arena, victim, cursed, guarded); }
     }
 
     /// <summary>Smoke screen on a player on a PvP map: "You cannot see anything." and the blinds slot for 25 s, nothing
