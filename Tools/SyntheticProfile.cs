@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Shared;
 
 namespace Tools;
@@ -13,7 +14,9 @@ namespace Tools;
 /// <c>P1998_MAPS</c>, <c>P1998_SOBJ</c>). It exists so a client test can rely on known terrain, walls, warps and
 /// an entity without carrying any retail content: two maps from an id band no game-data file and no server
 /// literal uses, a band of blocked ground, an object for every direction-flag value, a flag-0 decor object, an
-/// object the table marks solid but the server lets through, a warp each way and one NPC that never moves.
+/// object the table marks solid but the server lets through, a warp each way and two NPCs that never move: one
+/// with no script, whose click opens nothing, and one whose scripted dialog opens a menu, an input box and text
+/// boxes, so a client test can send every kind of dialog reply.
 ///
 /// <para><b>Nothing reads it by default.</b> The server opens only <c>P1998_GAME_DATA</c> (default
 /// <c>&lt;root&gt;/game-data</c>), the release bundle ships <c>game-data/</c> only, and this class is reached
@@ -62,7 +65,44 @@ public static class SyntheticProfile
     /// walkable gap cell that holds <paramref name="GapObject"/>.</summary>
     private sealed record WallBandSpec(ushort Map, int Y, int FromX, int ToX, ushort Ground, int GapX, ushort GapObject);
 
-    private sealed record NpcSpec(int NpcId, string Identifier, string Description, ushort Map, Tile At, ushort Look);
+    /// <summary>One <c>NPCs.csv</c> row. An NPC with a <paramref name="Dialog"/> gets a script in
+    /// <c>npc_dialog.lua</c> keyed by its <paramref name="Identifier"/> and a <c>dialog</c> block in the manifest.
+    /// One without has no click menu entries either, so a click on it opens nothing (Server/Session.Dialog.cs
+    /// <c>RunNpcAsync</c>: the greeting there is only for an NPC that answers no spoken question, and every NPC
+    /// answers some).</summary>
+    private sealed record NpcSpec(int NpcId, string Identifier, string Description, ushort Map, Tile At, ushort Look,
+                                  DialogSpec? Dialog = null);
+
+    /// <summary>Where a menu entry leads: the input box, the notice's text box, or the end of the conversation.</summary>
+    private enum Leads { Input, Notice, End }
+
+    private sealed record MenuEntrySpec(string Text, Leads To);
+
+    /// <summary>An NPC's click dialog, every word of it held here once and written into both
+    /// <c>npc_dialog.lua</c> and <c>manifest.json</c>, so the script and its description cannot drift apart. A menu
+    /// of <paramref name="Entries"/> (picked 1-based) under <paramref name="MenuPrompt"/>. The entry that leads to
+    /// the input box opens one under <paramref name="InputPrompt"/>; a submit is answered with
+    /// <paramref name="TypedBefore"/>, the submitted text's length, <paramref name="TypedBetween"/> and the text, and
+    /// any other reply with <paramref name="NotSubmitted"/>. The entry that leads to the notice answers with
+    /// <paramref name="Notice"/>. Every answer is a text box with a next arrow, whose next ends the conversation;
+    /// an entry that leads to the end, and any other reply to the menu, ends it at once.</summary>
+    private sealed record DialogSpec(string MenuPrompt, MenuEntrySpec[] Entries, string InputPrompt, string TypedBefore,
+                                     string TypedBetween, string NotSubmitted, string Notice)
+    {
+        /// <summary>The submit's answer as the manifest states it, with the two parts the server fills in written
+        /// <c>{N}</c> and <c>{TEXT}</c>: braces, so that substituting them never depends on the order, whatever the
+        /// submitted text holds.</summary>
+        public string SubmitPattern => TypedBefore + "{N}" + TypedBetween + "{TEXT}";
+
+        /// <summary>The 1-based picks of the entries that lead to <paramref name="to"/>.</summary>
+        public IEnumerable<int> Picks(Leads to) =>
+            Entries.Select((e, i) => (e.To, Pick: i + 1)).Where(e => e.To == to).Select(e => e.Pick);
+
+        /// <summary>Every string the dialog shows or writes into a reply.</summary>
+        public IEnumerable<string> Texts =>
+            new[] { MenuPrompt, InputPrompt, TypedBefore, TypedBetween, NotSubmitted, Notice }
+                .Concat(Entries.Select(e => e.Text));
+    }
 
     // Map ids from 7201-7643, a run that no game-data map list and no server literal uses, away from the ids the
     // code treats specially (the 4711-4718 tutorial, 410-419 warp exclusion, 59000-65000 instances).
@@ -134,10 +174,29 @@ public static class SyntheticProfile
         new(AnnexMapId, new Tile(20, 12), StartMapId, new Tile(32, 55)),
     };
 
-    // NpcMoveTime 0: the NPC never paces (Server/World.cs PlaceNpc), and EraFeature is blank, so it always stands.
+    // The clerk's dialog: a menu whose first entry opens an input box and answers what was submitted, whose second
+    // answers with a text box, and whose third ends the conversation. All of it invented.
+    private static readonly DialogSpec ClerkDialog = new(
+        MenuPrompt: "Synthetic Clerk: pick a test.",
+        Entries: new MenuEntrySpec[]
+        {
+            new("Type a line", Leads.Input),
+            new("Read the notice", Leads.Notice),
+            new("Goodbye", Leads.End),
+        },
+        InputPrompt: "Type a line for the clerk.",
+        TypedBefore: "You typed ",
+        TypedBetween: " characters: ",
+        NotSubmitted: "Nothing was submitted.",
+        Notice: "The notice is blank. It is a synthetic notice.");
+
+    // NpcMoveTime 0: an NPC never paces (Server/World.cs PlaceNpc), and EraFeature is blank, so it always stands. A
+    // fresh server numbers them in this order (FirstNpcRuntimeId). The clerk mirrors the sentinel across column 32,
+    // which stays clear for the walk from the start tile to the outbound warp.
     private static readonly NpcSpec[] Npcs =
     {
         new(1000, "SyntheticSentinel", "Synthetic Sentinel", StartMapId, new Tile(30, 29), Look: 1),
+        new(1001, "SyntheticClerk", "Synthetic Clerk", StartMapId, new Tile(34, 29), Look: 1, ClerkDialog),
     };
 
     // ---- output ----------------------------------------------------------------------------------------------
@@ -160,7 +219,7 @@ public static class SyntheticProfile
             ("SObj.tbl", ObjectTable()),
             ("spell_verbs.lua", Text(VerbStub("spell_verbs.lua", "spell verbs", "Server/LuaVerbHost.cs"))),
             ("item_verbs.lua", Text(VerbStub("item_verbs.lua", "item verbs", "Server/LuaVerbHost.cs"))),
-            ("npc_dialog.lua", Text(NpcDialogStub())),
+            ("npc_dialog.lua", Text(NpcDialogScript())),
             ("mob_ai.lua", Text(MobAiStub())),
             ("manifest.json", Manifest()),
         };
@@ -254,11 +313,64 @@ public static class SyntheticProfile
               $"-- No {what}. The loader ({loader}) accepts the file once it defines a global `verbs` table.",
               new[] { "verbs = {}" });
 
-    private static string[] NpcDialogStub() =>
-        Lines($"-- npc_dialog.lua: {Banner}",
-              "-- No dialogs. The loader (Server/NpcScript.cs) accepts the file once it defines a global `npcs` table",
-              "-- and a `__make_ctx` function; with `npcs` empty it never calls `__make_ctx`.",
-              new[] { "npcs = {}", "function __make_ctx() return {} end" });
+    /// <summary><c>npc_dialog.lua</c>: a script for each NPC that has a <see cref="DialogSpec"/>, keyed by its
+    /// identifier. <c>__make_ctx</c> defines only the three requests these scripts make, in the form
+    /// <c>game-data/npc_dialog.lua</c> gives them; the loader needs it and the global <c>npcs</c> table.</summary>
+    private static string[] NpcDialogScript()
+    {
+        var lines = new List<string>(Lines(
+            $"-- npc_dialog.lua: {Banner}",
+            "-- The loader (Server/NpcScript.cs) runs npcs.<NpcIdentifier>(ctx) as a coroutine when that NPC is clicked.",
+            "-- Each ctx method yields one request, and the server resumes the coroutine with the player's 0x3A reply:",
+            "--   ctx:say(text)               a text box with a next arrow; returns after the next",
+            "--   ctx:menu(prompt, entries)   a menu; returns the 1-based pick, or 0 for a reply that is not a pick",
+            "--   ctx:input(prompt)           an input box; returns the submitted text, or nil for any other reply",
+            "-- manifest.json describes each dialog under its NPC's entity; both are written from the same strings.",
+            "",
+            "function __make_ctx()",
+            "  local ctx = {}",
+            "  function ctx:say(...)                 return coroutine.yield({op=\"say\", pages={...}}) end",
+            "  function ctx:menu(prompt, options)    return coroutine.yield({op=\"menu\", prompt=prompt, options=options}) end",
+            "  function ctx:input(prompt)            return coroutine.yield({op=\"input\", prompt=prompt}) end",
+            "  return ctx",
+            "end",
+            "",
+            "npcs = {}"));
+
+        foreach (var n in Npcs.Where(n => n.Dialog is not null))
+        {
+            var d = n.Dialog!;
+            lines.Add("");
+            lines.Add(Invariant($"-- {n.Description} (NPC {n.NpcId}). Any reply to the menu that leads nowhere ends the conversation."));
+            lines.Add($"function npcs.{n.Identifier}(ctx)");
+            lines.Add($"  local pick = ctx:menu({Lua(d.MenuPrompt)}, {{{string.Join(", ", d.Entries.Select(e => Lua(e.Text)))}}})");
+            string branch = "if";
+            for (int i = 0; i < d.Entries.Length; i++)
+            {
+                if (d.Entries[i].To == Leads.End) continue;
+                lines.Add(Invariant($"  {branch} pick == {i + 1} then"));
+                branch = "elseif";
+                if (d.Entries[i].To == Leads.Input)
+                {
+                    lines.Add($"    local typed = ctx:input({Lua(d.InputPrompt)})");
+                    lines.Add("    if typed then");
+                    lines.Add($"      ctx:say({Lua(d.TypedBefore)} .. #typed .. {Lua(d.TypedBetween)} .. typed)");
+                    lines.Add("    else");
+                    lines.Add($"      ctx:say({Lua(d.NotSubmitted)})");
+                    lines.Add("    end");
+                }
+                else lines.Add($"    ctx:say({Lua(d.Notice)})");
+            }
+            if (branch == "elseif") lines.Add("  end");
+            lines.Add("end");
+        }
+        return lines.ToArray();
+    }
+
+    /// <summary>A Lua string literal. <see cref="Validate"/> holds every dialog text to printable ASCII, so only
+    /// the backslash and the quote need escaping.</summary>
+    private static string Lua(string text) =>
+        "\"" + text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 
     private static string[] MobAiStub() =>
         Lines($"-- mob_ai.lua: {Banner}",
@@ -452,6 +564,8 @@ public static class SyntheticProfile
                 WriteTile(w, n.Map, n.At);
                 w.WriteNumber("look", n.Look);
                 w.WriteBoolean("stationary", true);
+                if (n.Dialog is { } dialog) WriteDialog(w, dialog);
+                else w.WriteNull("dialog");
                 w.WriteEndObject();
             }
             w.WriteEndArray();
@@ -487,6 +601,51 @@ public static class SyntheticProfile
         w.WriteNumber("map", map);
         w.WriteNumber("x", tile.X);
         w.WriteNumber("y", tile.Y);
+    }
+
+    /// <summary>An NPC's <c>dialog</c> block: what each box says, where each pick leads, the rule for the submit's
+    /// answer, and which replies end the conversation.</summary>
+    private static void WriteDialog(Utf8JsonWriter w, DialogSpec d)
+    {
+        int last = d.Entries.Length;
+        w.WriteStartObject("dialog");
+        w.WriteString("script", "npc_dialog.lua");
+
+        w.WriteStartObject("menu");
+        w.WriteString("prompt", d.MenuPrompt);
+        w.WriteStartArray("entries");
+        for (int i = 0; i < d.Entries.Length; i++)
+        {
+            w.WriteStartObject();
+            w.WriteNumber("pick", i + 1);
+            w.WriteString("text", d.Entries[i].Text);
+            w.WriteString("leadsTo", d.Entries[i].To.ToString().ToLowerInvariant());
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+        w.WriteEndObject();
+
+        w.WriteStartObject("input");
+        w.WriteString("prompt", d.InputPrompt);
+        w.WriteString("submitReply", d.SubmitPattern);
+        w.WriteString("submitRule", "A submit (0x3A kind 4, step 2) is answered with a text box reading submitReply, " +
+                                    "where {TEXT} is the text the server read and {N} is its length in bytes, in " +
+                                    $"decimal. An empty submit gives \"{d.TypedBefore}0{d.TypedBetween}\".");
+        w.WriteString("otherReply", d.NotSubmitted);
+        w.WriteString("otherRule", "Any other reply to the input box, such as its Previous (0x3A kind 4, step 0), is " +
+                                   "answered with a text box reading otherReply.");
+        w.WriteEndObject();
+
+        w.WriteString("notice", d.Notice);
+
+        w.WriteStartArray("endingPicks");
+        foreach (int pick in d.Picks(Leads.End)) w.WriteNumberValue(pick);
+        w.WriteEndArray();
+        w.WriteString("endRule", Invariant(
+            $"A pick in endingPicks, a pick outside 1-{last}, or a reply to the menu that is not a pick ends the ") +
+            "conversation at once: the server sends nothing more. Every other pick ends it after the text box it " +
+            "leads to, whose next arrow ends the conversation.");
+        w.WriteEndObject();
     }
 
     private static void WriteVariable(Utf8JsonWriter w, string name, string? value, string note)
@@ -541,6 +700,11 @@ public static class SyntheticProfile
         Require(Free(start.Id, s), "the start tile is walkable and empty");
 
         Require(Npcs.Select(n => n.NpcId).Distinct().Count() == Npcs.Length, "NPC ids are unique");
+        Require(Npcs.Select(n => n.Identifier).Distinct(StringComparer.OrdinalIgnoreCase).Count() == Npcs.Length,
+                "NPC identifiers are unique");
+        // The server would not refuse two NPCs on one tile: it moves the later one off it (World.PlaceNpc,
+        // FreeSpawnTile), so the manifest's tile and the server's would disagree.
+        Require(Npcs.Select(n => (n.Map, n.At)).Distinct().Count() == Npcs.Length, "no two NPCs share a tile");
         foreach (var n in Npcs)
         {
             Require(maps.ContainsKey(n.Map) && Walkable(n.Map, n.At) && ObjectAt(n.Map, n.At) == 0
@@ -548,6 +712,26 @@ public static class SyntheticProfile
             Require(n.Map == start.Id && Math.Abs(n.At.X - s.X) <= ViewHalfWidth && Math.Abs(n.At.Y - s.Y) <= ViewHalfHeight,
                     $"NPC {n.NpcId} is in view of the start tile");
         }
+
+        foreach (var n in Npcs.Where(n => n.Dialog is not null))
+        {
+            var d = n.Dialog!;
+            Require(LuaName.IsMatch(n.Identifier), $"NPC {n.NpcId}'s identifier is a Lua name, so npcs.{n.Identifier} keys its script");
+            // The server writes dialog text as ASCII (Server/Session.Dialog.cs), so anything else would arrive as '?'.
+            Require(d.Texts.All(t => t.Length > 0 && t.All(c => c is >= ' ' and <= '~')),
+                    $"NPC {n.NpcId}'s dialog text is printable ASCII");
+            // A menu frame carries the entry count and each entry's length in one byte (SendNpcMenuP).
+            Require(d.Entries.Length is > 0 and <= byte.MaxValue && d.Entries.All(e => e.Text.Length <= byte.MaxValue),
+                    $"NPC {n.NpcId}'s menu fits the menu frame's one-byte count and lengths");
+            Require(d.Picks(Leads.Input).Count() == 1 && d.Picks(Leads.Notice).Count() == 1 && d.Picks(Leads.End).Any(),
+                    $"NPC {n.NpcId}'s menu has one entry to the input box, one to the notice and at least one that ends");
+        }
+        // Read back from the two generated files, so a writer that drops or renames one side fails here.
+        var described = ManifestDialogKeys(Manifest());
+        var scripted = LuaScriptKeys(NpcDialogScript());
+        Require(described.SetEquals(scripted),
+                "every NPC the manifest gives a dialog has a script in npc_dialog.lua, and every script is such an " +
+                $"NPC's (manifest: {string.Join(", ", described.Order())}; npc_dialog.lua: {string.Join(", ", scripted.Order())})");
 
         Require(Objects.Select(o => o.Id).Distinct().Count() == Objects.Length, "object ids are unique");
         Require(Objects.Select(o => (int)o.Id).Order().SequenceEqual(Enumerable.Range(1, Objects.Length)),
@@ -580,6 +764,29 @@ public static class SyntheticProfile
             Require(Free(w.ToMap, w.To), "a landing tile is walkable, empty and not a warp");
         }
     }
+
+    private static readonly Regex LuaName = new(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
+
+    private static readonly Regex LuaScriptLine =
+        new(@"^function npcs\.([A-Za-z_][A-Za-z0-9_]*)\(ctx\)$", RegexOptions.CultureInvariant);
+
+    /// <summary>The identifiers of the entities the manifest gives a <c>dialog</c> object.</summary>
+    private static HashSet<string> ManifestDialogKeys(byte[] manifest)
+    {
+        using var doc = JsonDocument.Parse(manifest);
+        return doc.RootElement.GetProperty("entities").EnumerateArray()
+            .Where(e => e.GetProperty("dialog").ValueKind == JsonValueKind.Object)
+            .Select(e => e.GetProperty("identifier").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>The keys of the click scripts <c>npc_dialog.lua</c> defines, one <c>function npcs.Key(ctx)</c> line
+    /// each.</summary>
+    private static HashSet<string> LuaScriptKeys(string[] script) =>
+        script.Select(line => LuaScriptLine.Match(line))
+              .Where(m => m.Success)
+              .Select(m => m.Groups[1].Value)
+              .ToHashSet(StringComparer.Ordinal);
 
     // ---- text helpers ----------------------------------------------------------------------------------------
 

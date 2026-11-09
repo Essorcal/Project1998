@@ -26,7 +26,26 @@ internal sealed class SyntheticManifest
     internal sealed record WarpEntry(Tile From, Tile To);
 
     internal sealed record NpcEntry(int NpcId, uint RuntimeId, string Identifier, string Name, Tile At, ushort Look,
-                                    bool Stationary);
+                                    bool Stationary, DialogEntry? Dialog);
+
+    internal sealed record MenuEntry(int Pick, string Text, string LeadsTo);
+
+    /// <summary>An NPC's <c>dialog</c> block: the menu and its entries, the input box with the answers to a
+    /// submit and to any other reply, the notice, and the picks that end the conversation at once.</summary>
+    internal sealed record DialogEntry(string MenuPrompt, IReadOnlyList<MenuEntry> Entries, string InputPrompt,
+                                       string SubmitReply, string OtherReply, string Notice,
+                                       IReadOnlyList<int> EndingPicks)
+    {
+        /// <summary>The one entry that leads to <paramref name="target"/> (<c>input</c> or <c>notice</c>).</summary>
+        internal MenuEntry Leading(string target) => Entries.Single(e => e.LeadsTo == target);
+
+        /// <summary>The answer to a submit of <paramref name="sent"/>, the bytes the client sent: the manifest's
+        /// <c>submitReply</c> with <c>{N}</c> their count and <c>{TEXT}</c> their text.</summary>
+        internal string Submitted(byte[] sent) =>
+            SubmitReply.Replace("{N}", sent.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                StringComparison.Ordinal)
+                       .Replace("{TEXT}", System.Text.Encoding.ASCII.GetString(sent), StringComparison.Ordinal);
+    }
 
     /// <summary>The profile folder the manifest was read from.</summary>
     internal string ProfileDir { get; }
@@ -70,7 +89,7 @@ internal sealed class SyntheticManifest
                 e.GetProperty("npcId").GetInt32(), e.GetProperty("runtimeId").GetUInt32(),
                 e.GetProperty("identifier").GetString()!, e.GetProperty("name").GetString()!,
                 TileOf(e, e.GetProperty("map").GetUInt16()), e.GetProperty("look").GetUInt16(),
-                e.GetProperty("stationary").GetBoolean()))
+                e.GetProperty("stationary").GetBoolean(), DialogOf(e.GetProperty("dialog"))))
             .ToList();
 
         Environment = root.GetProperty("environment").GetProperty("variables").EnumerateArray()
@@ -81,6 +100,25 @@ internal sealed class SyntheticManifest
 
     private static Tile TileOf(JsonElement e, ushort map) =>
         new(map, e.GetProperty("x").GetUInt16(), e.GetProperty("y").GetUInt16());
+
+    /// <summary>An entity's <c>dialog</c>: null when the manifest writes null (an NPC with no script), and every
+    /// field required otherwise.</summary>
+    private static DialogEntry? DialogOf(JsonElement d)
+    {
+        if (d.ValueKind == JsonValueKind.Null) return null;
+        var menu = d.GetProperty("menu");
+        var input = d.GetProperty("input");
+        return new DialogEntry(
+            menu.GetProperty("prompt").GetString()!,
+            menu.GetProperty("entries").EnumerateArray().Select(e => new MenuEntry(
+                e.GetProperty("pick").GetInt32(), e.GetProperty("text").GetString()!,
+                e.GetProperty("leadsTo").GetString()!)).ToList(),
+            input.GetProperty("prompt").GetString()!,
+            input.GetProperty("submitReply").GetString()!,
+            input.GetProperty("otherReply").GetString()!,
+            d.GetProperty("notice").GetString()!,
+            d.GetProperty("endingPicks").EnumerateArray().Select(p => p.GetInt32()).ToList());
+    }
 
     /// <summary>Read <c>manifest.json</c> from the committed profile.</summary>
     internal static SyntheticManifest Read()
