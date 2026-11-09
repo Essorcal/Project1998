@@ -5506,6 +5506,9 @@ public sealed partial class Session
 
         BuffClear();
         ClearStatusFlags();
+        // A duration cleared here with an end line pending (Invincibility's) says it at the clear, as RTK's pc_diescript
+        // runs the uncast at death: wake the heartbeat now, and SayLapsedDurationLines finds the flag gone.
+        if (_durationEndLines.Count > 0) Volatile.Write(ref _durationLineDue, Environment.TickCount64);
         // _crRageTier goes with _rageUntil, and must: the tier is what RegenTick reads to charge Chung Ryong's
         // wear-out drain, so leaving it set behind a zeroed deadline fires the drain on the very next tick —
         // on a player who just DIED it ran ChungRyongRageWearOff's Max(1, ...) floor against Hp 0 and stood

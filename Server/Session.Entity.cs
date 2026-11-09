@@ -218,6 +218,9 @@ public sealed partial class Session
     /// writers under the monitor they already hold (see <c>Session.Items.cs</c>).</item>
     /// <item><c>_crRageTier</c> is an <c>int</c> written only under the monitor; a fury is either up or it
     /// is not.</item>
+    /// <item><c>_durationLineDue</c> is the earliest a duration's end line can be due (Invincibility's), written only
+    /// under the monitor (<c>LuaSetDuration</c>, <c>SayLapsedDurationLines</c>, <c>ClearAllTimedEffects</c>) and read with
+    /// <c>Volatile</c>, as <c>_nextBuffExpiry</c> is.</item>
     /// </list>
     /// Everything the method actually DOES still happens under the monitor, including a second, guarded
     /// look at each condition — the pre-check only decides whether to bother acquiring.</para>

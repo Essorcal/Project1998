@@ -37,6 +37,8 @@ public sealed class ChongunSpellTests
     // Fix round 1 (#420's review): content-free too, claimed by no other class; and the Chongun Guide map, which has terrain
     // and no NPC, spawn or other class's facts on it.
     private const ushort InvEndMap = 63323, TroopEdgeMap = 63324, TitleReplacedMap = 63325, GuideMap = 3611;
+    // Fix round 2 (the re-check's F8): content-free, claimed by no other class.
+    private const ushort InvClearMap = 63326;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 200_000, Mana = 200_000, Hp = 10_000;
 
@@ -379,8 +381,9 @@ public sealed class ChongunSpellTests
 
     /// <summary>When the 3 s ward has run out, the caster reads "Your skin turns back to flesh." (RTK's uncast,
     /// <c>invincibility.lua:53-55</c>) once, on the heartbeat, which wakes for it by itself (no regen due); before then the
-    /// heartbeat says nothing, and after, nothing again. Red without the line in the verb, without the heartbeat saying it,
-    /// or without the heartbeat waking for it. (#420's review, F3.)</summary>
+    /// heartbeat says nothing, and after, nothing again. The cast schedules the heartbeat's wake for the ward's end, about
+    /// 3 s on. Red without the line in the verb, without the heartbeat saying it, without the heartbeat waking for it, or
+    /// without the cast scheduling that wake. (#420's review, F3; the re-check's F7.)</summary>
     [Fact]
     public void InvincibilityEndsWithItsLine()
     {
@@ -388,6 +391,8 @@ public sealed class ChongunSpellTests
         try
         {
             Assert.True(LandInvincibility(caster, cOut), "no Invincibility cast landed in forty");
+            long wake = 0;
+            caster.WithState(() => wake = (long)DurationLineDueField.GetValue(caster)! - Environment.TickCount64);
             cOut.Clear();
             caster.RegenTick(0, regenDue: true);
             string before = Lines(cOut);
@@ -400,10 +405,36 @@ public sealed class ChongunSpellTests
             string ended = Lines(cOut);
             cOut.Clear();
             caster.RegenTick(0, regenDue: true);
-            Assert.True(before == "" && ended == "Your skin turns back to flesh." && Lines(cOut) == "" && !caster.DamageImmune,
-                        $"before [{before}], at its end [{ended}], after [{Lines(cOut)}], ward {caster.DamageImmune}");
+            Assert.True(wake > 3_000 - SlackMs && wake <= 3_000 && before == "" && ended == "Your skin turns back to flesh."
+                        && Lines(cOut) == "" && !caster.DamageImmune,
+                        $"wake in {wake} ms (want about 3,000), before [{before}], at its end [{ended}], after [{Lines(cOut)}], " +
+                        $"ward {caster.DamageImmune}");
         }
         finally { Leave(InvEndMap, caster); }
+    }
+
+    /// <summary>A ward cleared early (@dispel here; death takes the same path, <c>ClearAllTimedEffects</c>) says "Your skin
+    /// turns back to flesh." at the clear, on the next heartbeat with nothing forced, as RTK's pc_diescript runs the uncast;
+    /// once, not again at the ward's own end. Red without the clear waking the heartbeat: the line would wait for the ward's
+    /// original 3 s end. (The re-check's F8.)</summary>
+    [Fact]
+    public void AClearedWardSaysItsLineAtTheClear()
+    {
+        var (caster, cOut, _) = Caster("invincibility", InvClearMap, CX, CY, configure: ch => ch.Ac = -100);
+        try
+        {
+            Assert.True(LandInvincibility(caster, cOut), "no Invincibility cast landed in forty");
+            cOut.Clear();
+            caster.WithState(() => caster.DispelSelf());
+            bool wardAfterClear = caster.DamageImmune;
+            caster.RegenTick(0, regenDue: false);
+            string atClear = Lines(cOut);
+            cOut.Clear();
+            caster.RegenTick(0, regenDue: true);
+            Assert.True(!wardAfterClear && atClear == "Your skin turns back to flesh." && Lines(cOut) == "",
+                        $"ward after the clear {wardAfterClear}, at the clear [{atClear}], after [{Lines(cOut)}]");
+        }
+        finally { Leave(InvClearMap, caster); }
     }
 
     // ===== Protectors fury ======================================================================================
