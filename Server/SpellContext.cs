@@ -583,6 +583,11 @@ public sealed class SpellContext
     public bool placeTrap()     => _s.LuaPlaceTrap(_sp, answer);
     /// <summary>Place a bladestorm decoy on the caster's tile, auto-expiring in <paramref name="lifetimeMs"/> ms.</summary>
     public void placeBladestorm(double lifetimeMs) => _s.LuaPlaceBladestorm((int)lifetimeMs);
+    /// <summary>Spy kit's pick: set a trap of <paramref name="kind"/> ("toxic_spray", "tripwire" or "smoke_screen", RTK's
+    /// trap NPCs) on the caster's own tile, owned by the caster, gone in <paramref name="lifetimeMs"/> ms if nothing has
+    /// sprung it (RTK <c>addNPC(..., 2, 1000, 20000, player.ID)</c>). What it does when sprung is World's (the Spy kit
+    /// block). Throws for any other kind.</summary>
+    public void setTrap(string kind, double lifetimeMs) => _s.LuaSetSpyTrap(_sp, kind, (int)lifetimeMs);
     /// <summary>Summon this spell's pet as a real owned world mob (one tile ahead, else on the caster's tile).
     /// False if the pet/mob couldn't be resolved.</summary>
     public bool summonPet()     => _s.LuaSummonPet(_sp);

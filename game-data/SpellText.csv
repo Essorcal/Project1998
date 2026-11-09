@@ -5,5 +5,6 @@ valor_mage,,Your strength returns to normal.,live
 valor_poet,,Your strength returns to normal.,live
 insult,,Insult end.,rtk-lua
 break_jaw,,Your jaw feels better.,rtk-lua
+dagger_to_throat,,Your anxiety subsides.,rtk-lua
 dishonor,,Dishonor end.,rtk-lua
 blend,,You are no longer invisible.,rtk-lua

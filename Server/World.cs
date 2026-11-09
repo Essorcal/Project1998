@@ -55,7 +55,8 @@ public sealed class Trap
 {
     public uint   Id;
     public ushort X, Y;
-    public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm"
+    public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm", or Spy
+                               // kit's "toxic_spray"/"tripwire"/"smoke_screen" (World.IsSpyTrap)
     public uint   OwnerId;     // caster's player id — credited with any exp from a trap kill
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
@@ -992,14 +993,19 @@ public sealed partial class World
         Trap? trap;
         var coneTargets = new List<Mob>();
         string? ambushMsg = null;
+        // Spy kit's traps spring on a player only where the trap may touch them, and never on a ghost: RTK's click returns
+        // first for `block.state == 1` and for `not block:canPK(block)` (this server's canPK, the PvP map), leaving the
+        // trap where it is. Read on the stepper's own thread, before the lock.
+        bool spySprings = !player.IsDead && Content.IsPvpMap(mapId);
         lock (_lock)
         {
             var m = Map(mapId);
             // The trap kinds a PLAYER sets off: bladestorm (an AoE decoy), shiver (a cosmetic fall echo — see
-            // Session.TryMythicFallRoom), and ambush (a cave mob-spawn tile — see Content.AmbushMapDef). The
-            // hazard family (dart/snare/…) stays mob-only.
+            // Session.TryMythicFallRoom), ambush (a cave mob-spawn tile — see Content.AmbushMapDef), and Spy kit's three
+            // where they may touch the stepper. The hazard family (dart/snare/…) stays mob-only.
             trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush"
-                                                || t.Kind == SuteAi.FrigidTrapKind) && t.X == x && t.Y == y);
+                                                || t.Kind == SuteAi.FrigidTrapKind || (spySprings && IsSpyTrap(t.Kind)))
+                                               && t.X == x && t.Y == y);
             if (trap is null) return;
             m.Traps.Remove(trap);
             if (trap.Kind == SuteAi.FrigidTrapKind) RefillFrigidLocked(mapId);   // relocate the sprung tile
@@ -1016,6 +1022,8 @@ public sealed partial class World
         // every client that spotted it, not just the stepper's. Runs for all three PC-triggerable kinds; only
         // ambush is revealable today, so for the other two it's a no-op on every session.
         Broadcast(mapId, p => p.ClearTrapMarker(trap.Id));
+        // Spy kit's trap: its spell on the stepper, written on their own thread inside their own monitor.
+        if (IsSpyTrap(trap.Kind)) { player.SpringSpyTrap(trap.Kind, trap.OwnerId); return; }
         // Shiver is pure flavor: sense the sprung trap, nothing else (RTK WarpTrapShiverNpc).
         if (trap.Kind == "shiver") { player.FeelShiver(); return; }
         // Sute's Cave cold tile: a flat hit and its own line. Its replacement was already placed under the
@@ -1258,6 +1266,77 @@ public sealed partial class World
                 damageQueue.Add((mapId, mob, dmg, mob.Id));   // the trigger takes it too (RTK block.health -= damage)
                 break;
             }
+            case ToxicSprayTrap or TripwireTrap or SmokeScreenTrap:
+                SpringSpyTrapLocked(mapId, mob, trap);
+                break;
+        }
+    }
+
+    // ---- Spy kit's traps (RTK NPCs/trap/rogue_traps/Spy/, set by Spells/Subpaths/Spy/spy_kit.lua) -------------------
+    // Each is RTK's trap NPC: never drawn (an NPC with a subtype is passed over by RTK's object look), never shown by Spot
+    // traps or Watchful Eye (RTK's seeSpotTraps names only the rogue's eight; Session.RevealableTrapsNear), gone after its
+    // 20 s if nothing has sprung it (the expiry sweep in Tick). A creature that steps onto one always springs it
+    // (TriggerTrapLocked); a player only where the trap may touch them, alive (CheckPlayerTrapTrigger,
+    // Session.SpringSpyTrap). A sprung trap is used up even when its effect is then refused, as RTK's click deletes the
+    // NPC before it casts. Each effect is the trap's spell as RTK's script has it, through the statuses that exist:
+    //   * toxic_spray: refused while any poison holds (checkIfCast(venoms)); else the poison, 1% of base vita a beat (at
+    //     least 1, at most 1,000, never the last vita), graphic 1 at the cast and each beat, credited to the trap's owner
+    //     for its whole time, whatever the victim does (the project owner, 2026-11-09, "Tick its full time": RTK's beat
+    //     takes its vita through the victim's recorded attacker, which its engine clears at each of their casts).
+    //   * tripwire: refused while a curse or a protection holds; else armour +30 (more damage taken) in the curses slot,
+    //     graphic 1, and over a creature graphic 34 each beat (the script's while_cast).
+    //   * smoke_screen: refused while a blind holds; else a creature's blind, a player's blinds slot.
+    // A creature's figure is RTK's setDuration count, which its creature timer takes 1,000 off every 1.5 s
+    // (rtk/src/map/mob.c, mob_timer_spawns and mob_duratimer), so it runs 1.5 times as long as on a player, whose
+    // durations beat every second: the reading Awe and the Song of the Goddess took.
+    internal const string ToxicSprayTrap = "toxic_spray", TripwireTrap = "tripwire", SmokeScreenTrap = "smoke_screen";
+    /// <summary>Is <paramref name="kind"/> one of Spy kit's three traps?</summary>
+    internal static bool IsSpyTrap(string kind) => kind is ToxicSprayTrap or TripwireTrap or SmokeScreenTrap;
+    // The scripts' setDuration figures (toxic_spray.lua:27-31, tripwire.lua:28, smoke_screen.lua:27).
+    internal const int ToxicSprayPcMs = 40_000, ToxicSprayMobFigure = 185_000;
+    internal const int TripwireFigure = 37_000, SmokeScreenFigure = 25_000;
+    internal const int ToxicSprayTickCap = 1000;                // toxic_spray.lua:53-58
+    internal const int TripwireArmor = 30;                      // tripwire.lua:46 and its recast
+    internal const int SpyTrapCastAnim = 1, TripwireBeatAnim = 34;
+    private const int CreatureBeatMs = 1500;                    // RTK's creature duration timer, one 1,000 a beat
+
+    /// <summary>How long RTK's creature timer holds a setDuration <paramref name="figure"/>: 1,000 off every 1.5 s.</summary>
+    internal static int CreatureTimerMs(int figure) => figure / 1000 * CreatureBeatMs;
+
+    /// <summary>Toxic spray's beat: 1% of <paramref name="baseVita"/>, rounded up as RTK's damage helper rounds
+    /// (math.ceil), at least 1 and at most 1,000 (toxic_spray.lua:51-58).</summary>
+    internal static int ToxicSprayTick(long baseVita) =>
+        (int)Math.Clamp((long)Math.Ceiling(baseVita * 0.01), 1, ToxicSprayTickCap);
+
+    /// <summary>A creature springs a Spy kit trap (caller holds <c>_lock</c>, mid-step; the status writes take it again,
+    /// re-entrantly, as World's own methods). The cast graphic is queued with the tick's other deferred effects.</summary>
+    private void SpringSpyTrapLocked(ushort mapId, Mob mob, Trap trap)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        switch (trap.Kind)
+        {
+            case ToxicSprayTrap:
+            {
+                int ms = CreatureTimerMs(ToxicSprayMobFigure);
+                if (!PoisonMob(mob, ToxicSprayTickCap, ms - 1, ms - 1, trap.OwnerId, flatTick: ToxicSprayTick(mob.MaxHp),
+                               fxAnim: SpyTrapCastAnim, spellKey: ToxicSprayTrap)) return;
+                _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, SpyTrapCastAnim, 0));
+                return;
+            }
+            case TripwireTrap:
+            {
+                if (MobHasStatus(mob, "curses") || MobHasStatus(mob, "minorcurses") || MobHasStatus(mob, "protections")) return;
+                int ms = CreatureTimerMs(TripwireFigure);
+                if (!ApplyMobStatus(mob, "curses", ms, hold: false, blind: false, fxAnim: TripwireBeatAnim, fxSound: 0,
+                                    fxEveryMs: CreatureBeatMs, spellKey: TripwireTrap)) return;
+                ApplyMobBuff(mob, "armor", TripwireArmor, ms, TripwireTrap);
+                _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, SpyTrapCastAnim, 0));
+                return;
+            }
+            case SmokeScreenTrap:
+                ApplyMobStatus(mob, "blinds", CreatureTimerMs(SmokeScreenFigure), hold: false, blind: true,
+                               spellKey: SmokeScreenTrap);
+                return;
         }
     }
 

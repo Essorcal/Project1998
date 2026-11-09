@@ -160,7 +160,15 @@ public sealed class SubpathTeacherTests
                              "spirit_blade 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]")]
     [InlineData("Merchant",  "")]
     [InlineData("Ranger",    "")]
-    [InlineData("Spy",       "assassinate 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]")]
+    // The Spy spells slice: seven beside Assassinate, each at its script's price, the copied lists as written (Hear
+    // footstep asks Blend's, Dagger to throat Assassinate's); Skill up, Spy kit and Mimic, whose scripts have no
+    // requirements(), at their rows' level, 0, for nothing; Apply stealth, whose cast is empty, off sale.
+    [InlineData("Spy",       "assassinate 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
+                             "assess_opponent_spy 99 5000 [3 fox_blade, 5 fine_rabbit_meat, 80 red_fox_fur]; " +
+                             "dagger_to_throat 99 10000 [1 angels_tear, 1 electra, 20 dark_amber]; " +
+                             "hear_footstep_spy 99 0 [1 fox_tail, 1 topaz]; " +
+                             "incognito 99 0 [1 fox_tail, 1 topaz]; " +
+                             "mimic_spy 0 0 []; skill_up_spy 0 0 []; spy_kit 0 0 []")]
     [InlineData("Diviner",   "divine_time 99 0 [1 fox_tail, 1 topaz]; " +
                              "hear_footstep_diviner 99 0 [1 fox_tail, 1 topaz]; " +
                              "read_karma_diviner 60 50 [20 light_fox_fur, 70 acorn]; " +
