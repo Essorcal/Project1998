@@ -67,9 +67,10 @@ public class SyntheticProfileTests
     }
 
     /// <summary>No profile file has the bytes of a game-data file; no profile data row is a row of game-data's
-    /// table of the same name, read through the profile's columns; no map name or NPC identifier or description
-    /// appears anywhere in game-data's text; no map id or NPC id is one game-data uses. File names and CSV header
-    /// lines are schema the loader fixes, so they are not compared.</summary>
+    /// table of the same name, read through the profile's columns; no map name, NPC identifier or description, and
+    /// no sentence of an NPC's dialog (its prompts, its notice, its answer to a reply that is not a submit) appears
+    /// anywhere in game-data's text; no map id or NPC id is one game-data uses. File names and CSV header lines are
+    /// schema the loader fixes, so they are not compared.</summary>
     [Fact]
     public void Nothing_in_the_profile_is_shared_with_game_data()
     {
@@ -119,8 +120,11 @@ public class SyntheticProfileTests
         }
         Assert.True(comparedRows >= 8, $"compared only {comparedRows} profile data rows");
 
-        // Content names, from the CSVs and the manifest, against every text file game-data has.
+        // Content names, from the CSVs and the manifest, and the sentences of every NPC dialog, against every text
+        // file game-data has. A dialog's menu entries are left out: they are two- and three-word phrases that
+        // ordinary prose holds ("Type a line" is in a comment of game-data/spell_verbs.lua).
         var names = new SortedSet<string>(StringComparer.Ordinal);
+        var sentences = new SortedSet<string>(StringComparer.Ordinal);
         names.UnionWith(Column(ProfilePath("map_index.csv"), "name"));
         names.UnionWith(Column(ProfilePath("NPCs.csv"), "NpcIdentifier"));
         names.UnionWith(Column(ProfilePath("NPCs.csv"), "NpcDescription"));
@@ -132,15 +136,22 @@ public class SyntheticProfileTests
             {
                 names.Add(entity.GetProperty("identifier").GetString()!);
                 names.Add(entity.GetProperty("name").GetString()!);
+                if (entity.GetProperty("dialog") is not { ValueKind: JsonValueKind.Object } dialog) continue;
+                var input = dialog.GetProperty("input");
+                sentences.Add(dialog.GetProperty("menu").GetProperty("prompt").GetString()!);
+                sentences.Add(input.GetProperty("prompt").GetString()!);
+                sentences.Add(input.GetProperty("otherReply").GetString()!);
+                sentences.Add(dialog.GetProperty("notice").GetString()!);
             }
         }
         Assert.True(names.Count >= 4, $"collected only {names.Count} profile names");
-        Assert.All(names, n => Assert.False(string.IsNullOrWhiteSpace(n), "a profile name is blank"));
+        Assert.True(sentences.Count >= 4, $"collected only {sentences.Count} profile dialog sentences");
+        Assert.All(names.Concat(sentences), n => Assert.False(string.IsNullOrWhiteSpace(n), "a profile name or sentence is blank"));
         var gameText = gameFiles.Where(IsText).Select(f => (File: Rel(GameDataDir, f), Text: File.ReadAllText(f))).ToList();
-        foreach (string name in names)
+        foreach (var (what, value) in names.Select(n => ("name", n)).Concat(sentences.Select(s => ("dialog sentence", s))))
             foreach (var (file, text) in gameText)
-                if (text.Contains(name, StringComparison.OrdinalIgnoreCase))
-                    shared.Add($"profile name '{name}' appears in game-data/{file}");
+                if (text.Contains(value, StringComparison.OrdinalIgnoreCase))
+                    shared.Add($"profile {what} '{value}' appears in game-data/{file}");
 
         // Map ids: game-data's three map lists against every map id the profile names.
         var gameMaps = new HashSet<int>();
