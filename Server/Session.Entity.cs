@@ -953,7 +953,18 @@ public sealed partial class Session
     // the other until the check had a single home (#28).
     private static readonly string[] HardenBodyWards =
         { "harden_body", "harden_body_poet", "deaths_guard_poet", "lifes_protection_poet", "body_of_alignment_poet" };
-    internal bool DamageImmune
+    // Chongun's Invincibility (RTK Spells/Subpaths/Chongun/invincibility.lua) is in RTK's hardBodies list
+    // (Spells/spellTables.lua:252-260), which the swing and magic-damage scripts read to stop a blow
+    // (Scripts/hitCritChance.lua:26, Scripts/magicDamage.lua:38), and which every hard-body spell reads as "You already
+    // cast that spell.". It is NOT in removeHealthExtend's own test (player.lua:164-170), so a venom tick still lands
+    // under it: TickImmune leaves it out. A creature's spell lands through that same call in RTK, so RTK's Invincibility
+    // does not stop one either; here it does, because the one gate (DamageIntake.cs) asks DamageImmune for every kind of
+    // blow but room damage, and telling the kinds apart there is outside the Chongun slice.
+    private const string InvincibilityWard = "invincibility";
+    internal bool DamageImmune => TickImmune || HasStatusFlag(InvincibilityWard);
+    /// <summary>The wards RTK's <c>removeHealthExtend</c> itself tests (with the plain Scroll of Immortality flag): what
+    /// stops a venom tick (<see cref="TickPoison"/>).</summary>
+    internal bool TickImmune
     {
         get { foreach (var w in HardenBodyWards) if (HasStatusFlag(w)) return true; return false; }
     }

@@ -52,6 +52,13 @@
 # verb=rodent_morph row, steed to verb=spawn_steed row, sea_breeze to verb=breeze_heal row, natures_bloom to
 # verb=bloom_window row and energy_bloom to verb=ranged_strike row. efflorescence stays on verb=generic. No other
 # line changed.
+# The Chongun spells slice (2026-11-09) then moved thirteen PC-subpath spells off verb=generic (the project owner's
+# P5, Q4, and the slice's Q-A and Q-B: RTK's scripts, Art of war as the readout its script reaches for), each bound by a
+# SpellParams.csv row: evaluate_opponent to verb=assess row (Do's verb), inspire_valor to verb=valor_around row,
+# art_of_war to verb=max_vita_readout row, invincibility to verb=invincible row, protectors_fury to verb=lesser_fury row,
+# harden_weapon, charge_weapon and sharpen_weapon to verb=weapon_enchant row, enhanced_drink to verb=drink_line row,
+# chongun_uniform to verb=uniform row, employ_troop to verb=troop_menu row, title_of_nobility to verb=title_ask row and
+# spirit_of_war to verb=chungryong_rage row. recognize_honorable_act stays on verb=generic. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -75,7 +82,7 @@ appraise_rogue	2016	verb=divine row
 apprentices_wisdom	403	verb=sage_shout row
 approach_spell	104	verb=approach row
 armor_of_elements_poet	4150	verb=ward row
-art_of_war	30303	verb=generic
+art_of_war	30303	verb=max_vita_readout row
 assassinate	30806	verb=assassinate row
 assault	50032	verb=generic
 assault_warrior	1085	verb=arch_damage
@@ -152,11 +159,11 @@ chain_lightning_mage	3143	verb=area_zap
 chance_rogue	2112	verb=misc
 chaos_rain_mage	3127	verb=arch_debuff
 charge_of_life_poet	4160	verb=arch_heal
-charge_weapon	30307	verb=generic
+charge_weapon	30307	verb=weapon_enchant row
 charm_life_poet	4063	verb=endear row
 chill	50021	verb=curse row
 chin_baek_ho_ryung	50036	verb=generic
-chongun_uniform	30309	verb=generic
+chongun_uniform	30309	verb=uniform row
 chung_ryongs_rage	30101	verb=chungryong_rage row
 clan_of_souls_poet	4118	verb=area_heal
 clear_darkness_poet	4058	verb=arch_cure
@@ -260,14 +267,14 @@ elementalists_mark	31110	verb=generic
 embrace_of_the_void_mage	3017	verb=arch_damage
 embrace_of_the_void_poet	4030	verb=arch_damage
 embrace_of_the_void_rogue	2018	verb=arch_damage
-employ_troop	30310	verb=generic
+employ_troop	30310	verb=troop_menu row
 enchant_warrior	1034	verb=stance_enchant
 endear	50034	verb=endear row
 endear_poet	4061	verb=endear row
 energy_bloom	31408	verb=ranged_strike row
 energy_flow_mage	3169	verb=arch_heal
 engrave	30602	verb=generic
-enhanced_drink	30308	verb=generic
+enhanced_drink	30308	verb=drink_line row
 ensure_poet	4162	verb=ward row
 enthrall_charm	413	verb=generic
 envigorate	30207	verb=arch_heal
@@ -275,7 +282,7 @@ erupt_mage	3032	verb=area_zap
 essence_of_life_poet	4155	verb=arch_heal
 essence_of_poppies_mage	3130	verb=arch_debuff
 essence_of_spirit_poet	4156	verb=arch_heal
-evaluate_opponent	30301	verb=generic
+evaluate_opponent	30301	verb=assess row
 exhume	31102	verb=generic
 experience_shrine_spell	50039	verb=arch_buff
 explode_mage	3088	verb=area_zap
@@ -354,7 +361,7 @@ harden_armor_mage	3020	verb=ward row
 harden_armor_poet	4021	verb=ward row
 harden_body	50019	verb=generic
 harden_body_poet	4121	verb=harden_body row
-harden_weapon	30306	verb=generic
+harden_weapon	30306	verb=weapon_enchant row
 harness_power_poet	4075	verb=mana_steal
 harshen_attack_poet	4154	verb=curse row
 heal_injury_rogue	2087	verb=arch_heal
@@ -413,11 +420,11 @@ inner_sect_recognition	31108	verb=generic
 inspect_mob_gm	12022	verb=misc
 inspiration_poet	4073	verb=mana_steal
 inspire_poet	4101	verb=mana_gift
-inspire_valor	30302	verb=generic
+inspire_valor	30302	verb=valor_around row
 instance_ambush	10004	verb=misc
 insult	30208	verb=curse_around row
 invigorate_rogue	2123	verb=arch_heal
-invincibility	30304	verb=generic
+invincibility	30304	verb=invincible row
 invisible_rogue	2049	verb=stance_stealth
 invoke	50030	verb=mana_battery
 invoke_mage	3072	verb=mana_battery
@@ -619,7 +626,7 @@ protect_sides_poet	4116	verb=arch_buff
 protect_soul_mage	3069	verb=arch_targetbuff
 protect_soul_poet	4054	verb=arch_targetbuff
 protectors_bulwark	30315	verb=generic
-protectors_fury	30305	verb=generic
+protectors_fury	30305	verb=lesser_fury row
 purge	50020	verb=generic
 purge_darkness_poet	4060	verb=arch_cure
 purge_mage	3052	verb=arch_cure
@@ -735,7 +742,7 @@ shamans_torment	31210	verb=torment row
 share_energy_poet	4102	verb=mana_gift
 share_wisdom	401	verb=sage_shout row
 sharpen_warrior	1045	verb=arch_buff
-sharpen_weapon	30312	verb=generic
+sharpen_weapon	30312	verb=weapon_enchant row
 shatter_mage	3087	verb=arch_damage
 shatter_storm_mage	3123	verb=area_zap
 sheep_guise	30220	verb=generic
@@ -790,7 +797,7 @@ spirit_of_the_forest_rogue	2043	verb=stance_rage
 spirit_of_the_forest_warrior	1007	verb=stance_rage
 spirit_of_the_wild_rogue	2075	verb=stance_rage
 spirit_of_the_wild_warrior	1032	verb=stance_rage
-spirit_of_war	30314	verb=generic
+spirit_of_war	30314	verb=chungryong_rage row
 spirit_puppet_poet	4094	verb=arch_damage
 spirit_shield_poet	4163	verb=ward row
 spirit_strength_mage	3003	verb=arch_buff
@@ -883,7 +890,7 @@ tile_paste	12008	verb=generic
 tile_prev	12003	verb=generic
 tilting_the_balance_rogue	2072	verb=sacrifice
 tincture_of_the_unknown_warrior	1055	verb=stance_enchant
-title_of_nobility	30313	verb=generic
+title_of_nobility	30313	verb=title_ask row
 toggle_highlight_pass	12016	verb=generic
 toggle_pass	12004	verb=generic
 tornado_poet	4096	verb=arch_damage
