@@ -2484,3 +2484,275 @@ function verbs.bloom_window_drop(ctx, row)
   ctx:scatter(flower, row.amount or 0, row.chance or 0)
   return true
 end
+
+-- =========================================================================================================
+-- CHONGUN (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Chongun/). The project owner, 2026-10-26 (P5, each spell as
+-- its RTK script; P1 and P3, on sale once it works, at its script's price), 2026-10-30 (Q4, Spirit of war at RTK's tiers
+-- and armour sign) and 2026-11-09 (the Chongun slice's questions: Art of war builds the readout its script reaches for,
+-- Q-A; Inspire valor gives the +3 Might its script means, Q-B). Title of nobility's wait is saved as RTK under P5. The
+-- verbs here are Art of war, Inspire valor, Invincibility, Protectors fury, the three weapons, Enhanced drink, Chongun
+-- uniform, Employ troop and Title of nobility. Evaluate opponent is Do's assess verb (its script is Assess opponent's body
+-- with its own numbers), and Spirit of war climbs chungryong_rage's rtk_rage ladder (its lines are RAGE_LINES.spirit_of_war,
+-- at the end of this region). Recognize honorable act has no script and stays as it was. Employ troop and Title of
+-- nobility are built and not sold: their price names boiled_meat, an item in no table here or in RTK. Each verb is bound
+-- by its SpellParams.csv row, which carries its numbers, and is the shape of its script, in that script's order. The
+-- graphic and sound are the spell's spell_effects.csv row, a Utility row. RTK is weight 0 for balance; these numbers are
+-- its scripts' by those decisions.
+--
+-- Where the port parts from the scripts, on purpose:
+--   * Each wait is checked first, with this file's own line (subpath_waiting). RTK waives Spirit of war's for a GM; no
+--     verb here waives anything for staff. A ghost and a mounted caster cast nothing (the engine's gates), where Art of
+--     war's and the weapons' canCast(0, ...) let a ghost cast and Enhanced drink and Title of nobility check nothing.
+--   * The cast pose is the engine's, on a cast that lands, and so is "You cast Chongun uniform.", which its script does
+--     not say: the central line every subpath verb keeps where its script says nothing.
+--   * Art of war is the readout its script reaches for (Q-A): RTK runs a self-cast's script with no target
+--     (rtk/src/map/clif.c:8942), so the script stops on `target.blType`, and its sendHealth takes two numbers, not its
+--     line (rtk/src/map/sl.c:10271-10272). Here the creature on the faced tile is read, the line is a minitext (the
+--     channel Evaluate opponent's readout uses; sendHealth's is the over-head bar, which carries no text), and the 80 is
+--     taken when the line shows (the decision's words; the script checks its 80 and never takes it).
+--   * Inspire valor's recast reads `might.might + 3`, and RTK's Lua has no `might` table, so RTK's buff adds nothing; the
+--     +3 Might it means is given (Q-B), in the mights slot, which still ends every other might buff on the player first.
+--   * Employ troop's spawn does not raise the caster's threat on what is attacking them (cotw_SpawnSetThreat's
+--     setThreat line): that is the highest threat plus the damage the attacker last dealt, which no creature here keeps.
+--   * Title of nobility looks a typed name up as every typed name here is (any map, any case, trimmed; RTK's Player(name)
+--     does not trim), and its two boxes carry the script's questions alone, as Diviner's do.
+-- =========================================================================================================
+
+-- Art of war (RTK Subpaths/Chongun/art_of_war.lua, the readout it reaches for; Q-A). Short of `mana`, "You do not have
+-- enough mana.", for free. The creature on the faced tile (never an NPC) reads "<name> Max Health: <max vita>", and then
+-- the mana is taken. Facing a player, nothing or an NPC, nothing happens and nothing is spent, as the script's `if
+-- target.blType == BL_MOB` falls through. Row: mana 80.
+function verbs.max_vita_readout(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+  if ctx.victimKind ~= "creature" then return false end            -- silent, free: no creature faced
+  ctx:say(ctx.victimName .. " Max Health: " .. math.floor(ctx.victimMaxHp))
+  ctx:debitMana(mana)
+  ctx:narrated()                                                   -- the readout replaces "You cast Art of war."
+  return true
+end
+
+-- Inspire valor (RTK Subpaths/Chongun/inspire_valor.lua). Inside its wait, the wait line; short of `mana`, "Your will is
+-- too weak.", for free. Then the mana, the `duration` ms wait, "You cast Inspire valor.", and every OTHER player within
+-- VALOR_RANGE tiles on both axes (getObjectsInArea(BL_PC) and distanceSquare(player, target, 10)), a ghost included and
+-- with no PK test, has every buff in its `category` slot ended (removeDuras(mights)) and takes `stat` +`amount` for
+-- `durationMax` ms in that slot, with the spell's graphic and "<caster> cast Inspire valor on you."; the spell's sound
+-- plays at the caster (ctx:buffAround). Nobody near still costs. Row: mana 1000, stat might, amount 3, category mights,
+-- duration 25000, durationMax 112000.
+local VALOR_RANGE = 10
+
+function verbs.valor_around(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  ctx:buffAround(row.stat or "", row.amount or 0, row.durationMax or 0, row.category or "", VALOR_RANGE,
+                 ctx.name .. " cast " .. ctx.spellName .. " on you.")
+  ctx:narrated()                                                   -- its line comes before the sweep's
+  return true
+end
+
+-- Invincibility (RTK Subpaths/Chongun/invincibility.lua). Inside its wait, the wait line; short of `mana`, "Your will is
+-- too weak."; under a hard-body ward already (RTK checkIfCast(hardBodies): Harden Body and its reskins, the Scroll of
+-- Immortality, this), "You already cast that spell."; each for free. Then the mana goes and RTK's roll, which is not
+-- Harden Body's: it fails when math.random(1, 100) < (140 + armour) / 2, the armour clamped to -80..70 (ctx.armor), so it
+-- lands 71 times in 100 at -80, 31 at 0 and never at +70. Failed: the pose and "Something went wrong.", the mana gone,
+-- no wait. Landed: the spell's graphic and sound, the script's two lines, `durationMax` ms in which a swing does not
+-- land (a player's or a creature's; a spell and a venom tick do, as RTK's hitCritChance.lua reads the ward and nothing
+-- else does: Server/DamageIntake.cs's gate) and the `duration` ms wait. When the ward ends, "Your skin turns back to
+-- flesh." (its uncast; the duration's end line). Row: mana 1500, duration 3000, durationMax 3000.
+local INVINCIBILITY_END = "Your skin turns back to flesh."
+
+function verbs.invincible(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if ctx.immune then ctx:say("You already cast that spell."); return false end
+  ctx:debitMana(mana)
+  if ctx:rollRange(1, 100) < (140 + ctx.armor) / 2 then
+    ctx:castPose()
+    ctx:say("Something went wrong.")
+    return false
+  end
+  ctx:fxSelf()
+  ctx:say("Harden body spell")
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  ctx:setDuration(ctx.spellKey, row.durationMax or 0, INVINCIBILITY_END)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:narrated()
+  return true
+end
+
+-- Protectors fury (RTK Subpaths/Chongun/protectors_fury.lua). Short of `mana`, "You do not have enough mana."; a fury
+-- already running (RTK checkIfCast(lesserFuries) or rage > 1), "This spell is already active."; each for free. Then the
+-- mana, rage x`amount` for `duration` ms, and the spell's graphic and sound; "You cast Protectors fury." is the engine's
+-- line, the script's own. No wait: the script arms none. Row: mana 1000, amount 3, duration 250000.
+function verbs.lesser_fury(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+  if ctx.rageActive then ctx:say("This spell is already active."); return false end
+  ctx:debitMana(mana)
+  ctx:rage(row.amount or 1, row.duration or 0)
+  ctx:fxSelf()
+  return true
+end
+
+-- Harden weapon (mark 1), Charge weapon (mark 2), Sharpen weapon (RTK Subpaths/Chongun/harden_weapon.lua,
+-- charge_weapon.lua, sharpen_weapon.lua, one body but the multiplier and the price). Short of `mana`, "You do not have
+-- enough mana."; an enchant already running (RTK checkIfCast(enchants) or enchant > 1), "This spell is already active.";
+-- each for free. Unarmed, nothing happens and nothing is spent: the script reads the missing weapon's name and stops.
+-- Then "<weapon> shines with holy light." (the weapon's Items.csv name), the mana, and the weapon enchant x`amount`,
+-- which lasts until the weapon leaves the hand, as every enchant here ("The glimmer subsides into a throb and then
+-- vanishes.", the scripts' uncast). Rows: mana 60, amount 6, 8 and 4.
+function verbs.weapon_enchant(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("You do not have enough mana."); return false end
+  if ctx.enchantActive then ctx:say("This spell is already active."); return false end
+  local weapon = ctx.weaponName
+  if weapon == "" then return false end                            -- silent, free: nothing wielded
+  ctx:say(weapon .. " shines with holy light.")
+  ctx:debitMana(mana)
+  ctx:armEnchant(row.amount or 1)
+  ctx:narrated()                                                   -- the script's line replaces "You cast X."
+  return true
+end
+
+-- Enhanced drink (RTK Subpaths/Chongun/enhanced_drink.lua; Monk's bless_drink.lua is the same file, so a Monk row can
+-- bind here and take its own wait under its own key). Inside its wait, the wait line. Then the `duration` ms wait first,
+-- as the script sets it, and the typed answer, lowered: exactly "water jug" with a Water jug in the bag, "Red fog spreads
+-- around Water jug."; "water jug" without one, "Oh! if only you had that."; anything else, "You can't imbibe that.".
+-- Nothing else changes, and no mana is asked or spent (the script names 25 and never reads it). Row: duration 112000.
+local DRINK_ANSWER = "water jug"
+local DRINK_ITEM   = "water_jug"
+
+function verbs.drink_line(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  if string.lower(ctx.answer) == DRINK_ANSWER then
+    if ctx:hasItem(DRINK_ITEM) then ctx:say("Red fog spreads around Water jug.")
+    else ctx:say("Oh! if only you had that.") end
+  else
+    ctx:say("You can't imbibe that.")
+  end
+  ctx:narrated()                                                   -- the script's line replaces "You cast X."
+  return true
+end
+
+-- Chongun uniform (RTK Subpaths/Chongun/chongun_uniform.lua). Cast while wearing it, the uniform ends, silently and for
+-- free (its setDuration(..., 0)). Short of `mana`, "Your will is too weak."; invisible (RTK checkIfCast(invis) or state
+-- 2), "You cannot cast Chongun Uniform while invisible."; each for free. Then the mana and the spell's Morphs.csv look (37)
+-- for that row's 162 s, in the caster's war-paint colour (RTK disguiseColor = armorColor), with the spell's graphic
+-- (ctx:wearForm). When it ends, nothing is played (its uncast plays nothing). Row: mana 25.
+function verbs.uniform(ctx, row)
+  if ctx.morphSpell == ctx.spellKey then ctx:endMorph(); return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  if ctx.stealthed then ctx:say("You cannot cast Chongun Uniform while invisible."); return false end
+  ctx:debitMana(mana)
+  ctx:wearForm()
+  return true
+end
+
+-- Employ troop (RTK Subpaths/Chongun/employ_troop.lua). Inside its wait, the wait line; short of `mana`, "Your will is too
+-- weak.", for free. Then the spell's sound, "You cast Employ troop.", the mana and the `duration` ms wait, all before the
+-- menu, as the script orders them, and RTK's menu "Summon what?": Scout, Spearman, Swordsman, and Master at rank 2 or
+-- more. The pick runs troop_pick: that troop (mobs.csv employ_troop_*, RTK's ids 699-702) owned by the caster for
+-- `durationMax` ms, on the faced tile unless it is blocked or a creature or player stands there, else on the caster's
+-- own (ctx:summonTroop, RTK's cotw_SpawnSetThreat), then "You summon a <troop>" (no full stop, as the script). A closed
+-- menu summons nothing; the mana and the wait are gone. Row: mana 1000, duration 600000, durationMax 600000.
+local TROOP_PROMPT = "Summon what?"
+local TROOPS = {
+  Scout = "employ_troop_scout", Spearman = "employ_troop_spearman",
+  Swordsman = "employ_troop_swordsman", Master = "employ_troop_master",
+}
+
+function verbs.troop_menu(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:fxSelf()                                                     -- its playSound(22)
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  local options = "Scout|Spearman|Swordsman"
+  if ctx.mark >= 2 then options = options .. "|Master" end
+  ctx:menu(TROOP_PROMPT, options, "troop_pick")
+  ctx:narrated()                                                   -- its line comes before the menu
+  return true
+end
+
+function verbs.troop_pick(ctx, row)
+  local key = TROOPS[ctx.answer]
+  if not key then return false end
+  local name = ctx:summonTroop(key, row.durationMax or 0)
+  if name ~= "" then ctx:say("You summon a " .. name) end
+  return true
+end
+
+-- Title of nobility (RTK Subpaths/Chongun/title_of_nobility.lua): three steps, as Read karma's, because the script waits
+-- twice for its player. The cast: while its saved wait runs (Q-C: RTK's player.registry key, here the saved registry,
+-- ctx:reg), the blue "You must wait DD days HH hours MM minutes SS seconds before giving another title." (RTK's
+-- playerTimerValues) and nothing more; else the box "Whom would you like to bestow a title?". The name (title_named):
+-- anything but letters, spaces and an apostrophe, the box "You can only enter letters and spaces." and nothing more (RTK
+-- inputLetterCheck); nobody online by that name, "That player is either not online or unable to be found."; else the box
+-- "What would you choose the title to be?", the typed name carried on. The title (title_given): the same letters box;
+-- more than TITLE_MAX characters, the box "Your entered title must be no greater than 16 characters."; else the named
+-- player (yourself included) takes it as their title, inside their own monitor, and reads in blue "Chongun <caster> has
+-- bestowed upon you a new title."; the wait is set four hours on and the caster reads "It is done.". A player who has
+-- gone by then takes nothing and nothing is set, as the script stops on Player(name) being nil. No mana is asked (the
+-- script names 25 and never reads it) and there is no aether. Row: none of its numbers (they are RTK constants).
+local TITLE_WAIT_KEY = "title_of_nobility_timer"   -- its player.registry key
+local TITLE_WAIT_S   = 60 * 60 * 4                 -- os.time() + (60 * 60 * 4)
+local TITLE_MAX      = 16
+
+-- RTK's playerTimerValues (rtklua/Developers/scripts.lua): whole days, hours, minutes and seconds, two digits each.
+local function title_wait_text(left)
+  local days    = math.floor(left / 86400)
+  local hours   = math.floor((left % 86400) / 3600)
+  local minutes = math.floor((left % 3600) / 60)
+  local seconds = math.floor(left % 60)
+  return string.format("%02d days %02d hours %02d minutes %02d seconds", days, hours, minutes, seconds)
+end
+
+function verbs.title_ask(ctx, row)
+  local ends = ctx:reg(TITLE_WAIT_KEY)
+  local now  = ctx.osTime
+  if now < ends then
+    ctx:blue("You must wait " .. title_wait_text(ends - now) .. " before giving another title.")
+    return false
+  end
+  ctx:ask("Whom would you like to bestow a title?", "title_named")
+  ctx:narrated()
+  return true
+end
+
+function verbs.title_named(ctx, row)
+  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces."); return false end
+  if not ctx:pcTargetNamed(ctx.answer) then ctx:say("That player is either not online or unable to be found."); return false end
+  ctx:ask("What would you choose the title to be?", "title_given", ctx.answer)
+  return true
+end
+
+function verbs.title_given(ctx, row)
+  local title = ctx.answer
+  if string.find(title, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces."); return false end
+  if string.len(title) > TITLE_MAX then
+    ctx:dialog("Your entered title must be no greater than " .. TITLE_MAX .. " characters.")
+    return false
+  end
+  if not ctx:bestowTitle(ctx.carried, title, "Chongun " .. ctx.name .. " has bestowed upon you a new title.") then
+    return false
+  end
+  ctx:setReg(TITLE_WAIT_KEY, ctx.osTime + TITLE_WAIT_S)
+  ctx:say("It is done.")
+  return true
+end
+
+-- Spirit of war (RTK Subpaths/Chongun/spirit_of_war.lua): Crossing swords' body with graphic 106 and its own lines, each
+-- "You cast Spirit of war." after "[Rage N] ". It climbs the rtk_rage ladder (its SpellParams.csv row's category).
+RAGE_LINES.spirit_of_war = {
+  "You cast Spirit of war.", "You cast Spirit of war.", "You cast Spirit of war.",
+  "You cast Spirit of war.", "You cast Spirit of war.", "You cast Spirit of war.",
+}

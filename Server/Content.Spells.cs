@@ -1315,8 +1315,12 @@ public static partial class Content
     // agreeing on Ingress 3. Infuse 2 / Ingress 3 / Viper's Venom 4 are unanimous across all sources.
     // NOTE baekhos_blade_rogue 1.5 now EQUALS the free tigers_fortitude_rogue despite costing 6000 mana at
     // level 99. That looks wrong but it is what both early sources say; flagged, not "corrected".
-    // STILL UNRESOLVED: art_of_war — DM calls it a x4 weapon enhancer, but RTK's art_of_war.lua implements
-    // something ELSE entirely (an 80-mana reveal of a mob's max health). Not wired as an enchant here.
+    // ART OF WAR IS NOT AN ENCHANT. The DM PDF calls it a x4 weapon enhancer; it is a readout here, by the project owner's
+    // word (2026-11-09, the Chongun slice, Q-A: "Build the intended readout"). RTK's Spells/Subpaths/Chongun/art_of_war.lua
+    // can never show anything: it is a self-cast (type 5), which RTK's engine runs with no target (rtk/src/map/clif.c:8942),
+    // so the script stops on `target.blType`, and its one output, `player:sendHealth(<a string>)`, takes two numbers
+    // (rtk/src/map/sl.c:10271-10272) and would stop it again. What it reaches for is built instead: the creature on the
+    // faced tile reads "<name> Max Health: <max vita>" for 80 mana (spell_verbs.lua, verbs.max_vita_readout).
     private static IReadOnlyDictionary<string, (double Amt, int Mana)> EnchantSpells
     {
         get => _snapshotBuilder?.EnchantSpells ?? Snapshot.EnchantSpells;
@@ -1626,6 +1630,7 @@ public static partial class Content
         ChinBaekHoRyung,                                        // Session.CastArch + the sacrifice verb — x1.5
         "harden_body", "harden_body_poet", "deaths_guard_poet", // Session.DamageImmune — total damage immunity
         "lifes_protection_poet", "body_of_alignment_poet",
+        "invincibility",                                        // Session.HardBodyWarded — swings only (DamageIntake's gate)
         "baekhos_cunning",                                      // spell_verbs.lua stance_cunning — its tier window
     };
 

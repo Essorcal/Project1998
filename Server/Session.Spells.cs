@@ -1462,7 +1462,42 @@ public sealed partial class Session
     // visible to a spell (or vice versa) — three separate stores for one RTK concept. It is now the same
     // _statusFlags map the item verbs write, so the two halves see each other exactly as RTK's do.
     internal bool LuaHasDuration(string key)         => HasStatusFlag(key);
-    internal void LuaSetDuration(string key, int ms) => SetStatusFlag(key, ms);
+    internal void LuaSetDuration(string key, int ms, string? endLine = null)
+    {
+        SetStatusFlag(key, ms);
+        if (string.IsNullOrEmpty(endLine)) { _durationEndLines.Remove(key); return; }
+        _durationEndLines[key] = endLine;
+        long due = Environment.TickCount64 + Math.Max(0, ms);
+        if (due < Volatile.Read(ref _durationLineDue)) Volatile.Write(ref _durationLineDue, due);
+    }
+
+    // A DURATION'S END LINE: RTK's uncast message for a setDuration whose script says one (Chongun's Invincibility, "Your
+    // skin turns back to flesh."). The status-flag store has no fade text of its own (only _buffs do, through
+    // Content.FadeTextFor), so a verb that arms a duration with ctx:setDuration(key, ms, endLine) leaves its line here,
+    // and the heartbeat says it once (RegenTick -> SayLapsedDurationLines) when the flag has run out or been cleared, as
+    // by death or @dispel, where RTK's pc_diescript runs the uncast too. Session state only: a relog keeps the flag
+    // (Session.TimedEffects) but not its line, so a duration that ends after a relog ends silently. Written and read
+    // under this session's monitor; _durationLineDue is the earliest a pending line can be due, read bare by RegenTick's
+    // early-out as _nextBuffExpiry is.
+    private readonly Dictionary<string, string> _durationEndLines = new(StringComparer.OrdinalIgnoreCase);
+    private long _durationLineDue = long.MaxValue;
+
+    /// <summary>Say the end line of every duration that left one (<see cref="LuaSetDuration"/>) and is no longer running,
+    /// once, and drop it; keep the rest, and leave <see cref="_durationLineDue"/> at the earliest of their ends.</summary>
+    private void SayLapsedDurationLines()
+    {
+        AssertStateHeld("_durationEndLines");
+        long now = Environment.TickCount64, next = long.MaxValue;
+        List<string>? ended = null;
+        foreach (var (key, line) in _durationEndLines)
+        {
+            if (_statusFlags.TryGetValue(key, out var until) && until > now) { next = Math.Min(next, until); continue; }
+            (ended ??= new()).Add(key);
+            SendMiniText(line);
+        }
+        if (ended is not null) foreach (var key in ended) _durationEndLines.Remove(key);
+        Volatile.Write(ref _durationLineDue, next);
+    }
     /// <summary>Milliseconds left on a named duration, 0 if it isn't running. What a tiered fury needs to
     /// re-arm its effects onto the run ALREADY BURNING rather than starting a fresh window — RTK's tiered
     /// spells set their duration in the first-cast branch only, so a climb has to inherit what remains.</summary>
@@ -2977,32 +3012,33 @@ public sealed partial class Session
 
     /// <summary>Ask the caster for a line of text inside a cast (<c>ctx:ask</c>, RTK <c>inputSeq</c>); a submitted answer
     /// runs <paramref name="verb"/> for this caster and spell, with the text as <c>ctx.answer</c>.</summary>
-    internal void LuaAsk(SpellDef sp, string prompt, string verb)
+    internal void LuaAsk(SpellDef sp, string prompt, string verb, string? carry = null)
     {
         if (string.IsNullOrEmpty(verb)) return;
-        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb);
+        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb, carry ?? "");
     }
 
-    private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb)
+    private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb, string carry)
     {
         try
         {
             string? typed = await DlgInputPush(0, 0, prompt);
             if (typed is null) return;   // a reply that is not a submit: nothing runs
-            RunSpellStep(sp, verb, typed);
+            RunSpellStep(sp, verb, typed, carry);
         }
         catch (Exception e) { Log.Error($"{sp.Name}'s answer for '{_char.Name}' threw: {LuaVerbHost.Describe(e)}", e); }
     }
 
     /// <summary>Run <paramref name="verb"/>, the next step of <paramref name="sp"/>'s cast, for this caster with
-    /// <paramref name="answer"/> as <c>ctx.answer</c>, against the spell's own SpellParams.csv row. In this caster's
-    /// monitor, entering the Lua gate from it as a cast does. Nothing for a caster who is logging out.</summary>
-    private void RunSpellStep(SpellDef sp, string verb, string answer)
+    /// <paramref name="answer"/> as <c>ctx.answer</c> and <paramref name="carry"/>, what the step before handed on, as
+    /// <c>ctx.carried</c>, against the spell's own SpellParams.csv row. In this caster's monitor, entering the Lua gate from
+    /// it as a cast does. Nothing for a caster who is logging out.</summary>
+    private void RunSpellStep(SpellDef sp, string verb, string answer, string carry = "")
     {
         using var _ = EnterState();   // #29: the reply's thread holds it already; re-entrant then
         if (_leaving) return;
         var row = Content.SpellParams.TryGetValue(sp.Key, out var r) ? r : SpellScript.NoRow;
-        if (SpellScript.Run(verb, new SpellContext(this, sp, null, answer), row) is null)
+        if (SpellScript.Run(verb, new SpellContext(this, sp, null, answer) { carried = carry }, row) is null)
             Log.Warn($"{sp.Name}: '{verb}' is not a loaded verb, so the answer '{answer}' does nothing");
     }
 
@@ -3719,13 +3755,13 @@ public sealed partial class Session
         ushort newLook = (m.lookF != 0 && _char.Sex == 1) ? m.lookF : m.look;
         return _morphLook != 0 && _morphLook == newLook;
     }
-    internal void LuaApplyMorph(SpellDef sp)
+    internal void LuaApplyMorph(SpellDef sp, byte color = 0)
     {
         if (_pendingMorph is not { } m) return;
         ushort newLook = (m.lookF != 0 && _char.Sex == 1) ? m.lookF : m.look;
         BuffRemoveAll(b => b.Key == _morphKey);
         _morphLook = newLook;
-        _morphColor = 0;
+        _morphColor = color;   // 0, the form's own colours, for every morph but Chongun uniform (LuaWearForm)
         _morphUntil = Environment.TickCount64 + m.dur;
         _morphKey = sp.Key;
         BuffAdd(new ActiveBuff { Stat = "", Amount = 0, Expires = _morphUntil, Key = sp.Key, Name = sp.Name });
@@ -4273,6 +4309,189 @@ public sealed partial class Session
     {
         if (!IsMorphed) return false;
         RevertMorph();
+        return true;
+    }
+
+    // ---- the Chongun spells (RTK rtklua/Accepted/Spells/Subpaths/Chongun/) --------------------------------------------
+    // The engine half of the Chongun verbs in game-data/spell_verbs.lua: a might buff on every other player in reach
+    // (Inspire valor, P11's ally half), a troop owned by its caster (Employ troop, by RTK's cotw_SpawnSetThreat), a title
+    // given to a named player (Title of nobility, P10's title), the uniform's look in the caster's war paint, and the reads
+    // the scripts make of their caster (the bag, the weapon, invisibility, the running form).
+    //
+    // LOCKS. As the Barbarian and Druid halves: a verb runs on the caster's packet thread (or, for an answer or a menu pick,
+    // the caster's handler thread), inside the caster's monitor and the Lua gate, never World._lock. Nothing here takes a
+    // new lock or holds two players' monitors at once beyond the StateRank pair every cross-player spell takes: another
+    // player's buff and title are decided and written inside that player's own monitor (ReceiveAreaBuff, ReceiveTitle,
+    // entered here by StateRank), one player at a time; the roster is World.View's snapshot, read under the world lock and
+    // used after it is released; a troop is written through World's own methods, which take World._lock inside.
+
+    /// <summary>Does this caster's bag hold an <paramref name="itemKey"/>? (<c>ctx:hasItem</c>; Enhanced drink's Water jug.)
+    /// The bag is the caster's own, read under the monitor the cast holds.</summary>
+    internal bool LuaHasItem(string? itemKey) =>
+        !string.IsNullOrEmpty(itemKey)
+        && _char.Inventory.Any(i => i.Amount > 0 && string.Equals(Content.ItemById(i.ItemId)?.Key, itemKey, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The Items.csv name of the wielded weapon (<c>ctx.weaponName</c>; RTK <c>getEquippedItem(EQ_WEAP).name</c>,
+    /// the definition's name, as RTK's <c>iteml_getattr</c> answers <c>name</c>), "" unarmed.</summary>
+    internal string LuaWeaponName
+    {
+        get
+        {
+            foreach (var e in _char.Equipment)
+                if (Content.ItemById(e.ItemId) is { Type: 3 } def) return def.Name;
+            return "";
+        }
+    }
+
+    /// <summary>Is the caster invisible (<c>ctx.stealthed</c>): the stealth state the rogue's Invisible family and Blend's
+    /// hide share.</summary>
+    internal bool LuaStealthed => Stealthed;
+
+    /// <summary>The key of the spell whose form the caster wears (<c>ctx.morphSpell</c>), "" with none.</summary>
+    internal string LuaMorphSpell => IsMorphed ? _morphKey : "";
+
+    /// <summary>Is <paramref name="key"/> a uniform, one whose SpellParams.csv row binds the <c>uniform</c> verb (Chongun
+    /// uniform)? Its form then ends with nothing played, as its script's uncast ends it (<see cref="RevertMorph"/>).</summary>
+    private static bool IsUniformSpell(string key) =>
+        key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") == "uniform";
+
+    /// <summary>Chongun uniform's look (<c>ctx:wearForm</c>; RTK <c>Spells/Subpaths/Chongun/chongun_uniform.lua:25-33</c>):
+    /// the spell's own Morphs.csv look (37) for that row's time, by the morph family's two steps, so any other form ends
+    /// first and the buff box lists it, with the spell's graphic; its colour is the caster's war paint
+    /// (<see cref="Character.ArmorColor"/>, RTK's <c>armorColor</c>, <c>status.armor_color</c>), 0 with none, as RTK's
+    /// <c>disguiseColor = player.armorColor</c>. False, changing nothing, for a spell with no fixed look.</summary>
+    internal bool LuaWearForm(SpellDef sp)
+    {
+        if (Content.MorphFor(sp) is not (ushort look, ushort lookF, int mana, int dur)) return false;
+        LuaSetPendingMorph(look, lookF, mana, dur);
+        LuaApplyMorph(sp, _char.ArmorColor);
+        return true;
+    }
+
+    /// <summary>A line to the caster in the blue whisper channel (<c>ctx:blue</c>; RTK <c>player:msg(0, text, player.ID)</c>,
+    /// type 0, "Wisp (blue text)", <c>rtk/src/map/clif.c</c> clif_sendmsg).</summary>
+    internal void LuaBlue(string? msg) => SendBlueMessage(msg ?? "");
+
+    /// <summary>Inspire valor's sweep (<c>ctx:buffAround</c>; RTK <c>Spells/Subpaths/Chongun/inspire_valor.lua:22-36</c>):
+    /// every player RTK's <c>getObjectsInArea(BL_PC)</c> lists within <c>distanceSquare(player, target, 10)</c>, that is every
+    /// player on the caster's map within <paramref name="range"/> tiles on both axes, but the caster (<c>targets[i].ID ~=
+    /// player.ID</c>), a ghost included and with no PK test. Each has every buff in <paramref name="category"/> ended
+    /// (<c>removeDuras(mights)</c>) and takes <paramref name="stat"/> <paramref name="amount"/> for <paramref name="durMs"/> in
+    /// that slot under the spell's key and name (<c>setDuration</c>), the spell's graphic over them (<c>sendAnimation(11)</c>)
+    /// and <paramref name="line"/>; then the spell's sound plays at the caster (<c>playSound(12)</c>). Returns how many.
+    /// <para><b>Locks.</b> The roster is <see cref="World.View"/>'s snapshot, as Sea breeze's (<see cref="LuaHealRange"/>):
+    /// the peers with their tiles read under the world lock, filtered after it is released; a session a second login
+    /// replaced is left out. Each player's slot is decided and written inside their own monitor
+    /// (<see cref="ReceiveAreaBuff"/>), one at a time.</para></summary>
+    internal int LuaBuffAround(SpellDef sp, string stat, int amount, int durMs, string category, int range, string line)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        int cx = _char.X, cy = _char.Y, reached = 0;
+        var (peers, _) = _world.View(this, _char.Map);
+        foreach (var peer in peers)
+        {
+            if (peer.Session.IsReplaced) continue;
+            if (Math.Max(Math.Abs(peer.X - cx), Math.Abs(peer.Y - cy)) > range) continue;
+            if (!peer.Session.ReceiveAreaBuff(stat ?? "", amount, durMs, sp.Key, sp.Name, category ?? "", line ?? "")) continue;
+            BroadcastFx(peer.Id, anim, -1);
+            reached++;
+        }
+        BroadcastFx(_char.Id, -1, snd);
+        Log.Info($"      (lua) {sp.Name} -> {range}-tile {stat} +{amount} [{category}] for {durMs}ms on {reached} other player(s)");
+        return reached;
+    }
+
+    /// <summary>Inspire valor lands on THIS player (<see cref="LuaBuffAround"/>), inside this player's own monitor: every
+    /// buff in <paramref name="category"/> ends, and so does an earlier run of this one (RTK's <c>removeDuras(mights)</c>,
+    /// whose list holds <c>inspire_valor</c> itself), then <paramref name="stat"/> <paramref name="amount"/> for
+    /// <paramref name="durMs"/> in that slot under <paramref name="key"/> and <paramref name="name"/>, and the player reads
+    /// <paramref name="line"/>. Nothing for a player who is logging out. Returns whether it landed.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the <see cref="ReceiveMapSanctuary"/>
+    /// shape.</para></summary>
+    internal bool ReceiveAreaBuff(string stat, int amount, int durMs, string key, string name, string category, string line)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || durMs <= 0) return false;
+        BuffRemoveAll(b => b.Key == key || (category.Length > 0 && b.Category == category));
+        BuffAdd(new ActiveBuff
+        { Stat = stat, Amount = amount, Expires = Environment.TickCount64 + durMs, Key = key, Name = name, Category = category });
+        if (line.Length > 0) SendMiniText(line);
+        SendStats();
+        return true;
+    }
+
+    /// <summary>Employ troop's troop (<c>ctx:summonTroop</c>; RTK <c>Spells/poet/cotw_controller.lua:41-88</c>,
+    /// <c>cotw_SpawnSetThreat(player, mobID, 600)</c>): the mobs.csv creature <paramref name="mobKey"/> on the faced tile, or
+    /// on the caster's own when the faced one fails RTK's test (<see cref="CotwTileOpen"/>), owned by the caster for
+    /// <paramref name="durMs"/> on the poet pets' machinery (RTK's troops run <c>mob_ai_cotw</c>, the poet pets' AI:
+    /// <c>AI/employ_troop/employ_troop.lua</c>). It faces north: RTK's spawn sets no side, so the zeroed creature faces 0.
+    /// Returns its name, "" when the key names no creature.</summary>
+    internal string LuaSummonTroop(SpellDef sp, string mobKey, int durMs)
+    {
+        var def = Content.MobByKey(mobKey);
+        if (def is null) { Log.Warn($"{sp.Name}: no creature '{mobKey}' to summon"); return ""; }
+        var (fx, fy) = FrontTile();
+        bool front = CotwTileOpen(fx, fy);
+        ushort x = front ? (ushort)fx : _char.X, y = front ? (ushort)fy : _char.Y;
+        var mob = SummonWorldMob(def.Look, x, y, def.Name, def.Hp, dir: 0, color: def.Color,
+                                 exp: def.Exp, moveTime: def.MoveTime, key: def.Key, def: def);
+        _world.OwnSummonedMob(mob, _char.Id, durMs);
+        Log.Info($"      {sp.Name}(lua) -> troop '{def.Key}' ({mob.Id}) for {durMs}ms {(front ? "on the faced tile" : "on the caster's tile")} ({x},{y})");
+        return def.Name;
+    }
+
+    /// <summary>RTK's cotw tile test (<c>Spells/poet/cotw_controller.lua:46-71</c>): the faced tile takes the troop unless
+    /// <c>getPass</c> answers non-zero (a blocked tile, or one past the map's last row or column, where RTK's <c>getpass</c>
+    /// answers 1, <c>rtk/src/map/sl.c:683-695</c>; a negative one is read as blocked too), or a creature or a player (a ghost
+    /// included) stands on it. A map object, a warp, an NPC or a floor item does not stop it: the script asks only those
+    /// three. A map with no terrain file has no blocked tile.</summary>
+    private bool CotwTileOpen(int x, int y)
+    {
+        ushort map = _char.Map;
+        if (x < 0 || y < 0 || x > _char.MapXs - 1 || y > _char.MapYs - 1) return false;
+        var md = MapData.For(map, _char.MapXs, _char.MapYs);
+        if (md is not null && md.Pass(x, y) != 0) return false;
+        if (_world.MobsAt(map, x, y).Any(m => !m.IsNpc)) return false;
+        return _world.PlayersAt(map, x, y).Count == 0;
+    }
+
+    /// <summary>Title of nobility's title (<c>ctx:bestowTitle</c>; RTK <c>Spells/Subpaths/Chongun/title_of_nobility.lua:42-48</c>,
+    /// <c>Player(name).title = title</c>, <c>sendStatus</c>, <c>msg(0, ...)</c>): the online player named
+    /// <paramref name="name"/> (any map, any case, trimmed, a replaced session skipped: <c>FindPlayer</c>, as every typed
+    /// name here), the caster included, takes <paramref name="title"/> (<see cref="ReceiveTitle"/>). False when nobody goes
+    /// by that name, as RTK's script stops on <c>Player(name)</c> being nil, or the player is leaving.</summary>
+    internal bool LuaBestowTitle(SpellDef sp, string? name, string? title, string? line)
+    {
+        string typed = (name ?? "").Trim();
+        if (typed.Length == 0 || _world.Online.FindPlayer(typed) is not { } target)
+        {
+            Log.Info($"      -x {sp.Name}: nobody online named '{typed}' to take a title");
+            return false;
+        }
+        bool given = target.ReceiveTitle(title ?? "", line ?? "");
+        Log.Info($"      (lua) {sp.Name} -> title '{title}' {(given ? "given to" : "not given to (leaving)")} '{target.CharName}'");
+        return given;
+    }
+
+    /// <summary>A title given to THIS player (Title of nobility), inside this player's own monitor: <paramref name="title"/>
+    /// becomes <see cref="Character.Title"/>, the saved field the title NPC sets and the profiles draw, marked for this
+    /// player's own next save (<see cref="MarkDirty"/>, the autosave path, so no save is run inside two monitors), and the
+    /// player reads <paramref name="line"/> in blue. Nothing for a player who is logging out or whose session a second login
+    /// has replaced (<see cref="IsReplaced"/>: its save is fenced, so a title written there would be lost while the caster
+    /// still took the wait), as the other saved cross-player writes refuse one. Returns whether it landed.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>; for the caster it is the monitor
+    /// already held.</para></summary>
+    internal bool ReceiveTitle(string title, string line)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || IsReplaced) return false;
+        _char.Title = title;
+        MarkDirty();
+        if (line.Length > 0) SendBlueMessage(line);
         return true;
     }
 
@@ -4864,6 +5083,7 @@ public sealed partial class Session
         // A disguise as a creature (Costume) ends as its script's uncast ends it: the spell's own graphic over the
         // player, no sound (Session.PlayDisguiseEnd). Every other morph keeps this server's exit "poof".
         if (IsDisguiseSpell(key)) PlayDisguiseEnd(key);
+        else if (IsUniformSpell(key)) { }      // Chongun uniform: its script's uncast plays nothing (LuaWearForm)
         else BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);
@@ -5284,6 +5504,9 @@ public sealed partial class Session
 
         BuffClear();
         ClearStatusFlags();
+        // A duration cleared here with an end line pending (Invincibility's) says it at the clear, as RTK's pc_diescript
+        // runs the uncast at death: wake the heartbeat now, and SayLapsedDurationLines finds the flag gone.
+        if (_durationEndLines.Count > 0) Volatile.Write(ref _durationLineDue, Environment.TickCount64);
         // _crRageTier goes with _rageUntil, and must: the tier is what RegenTick reads to charge Chung Ryong's
         // wear-out drain, so leaving it set behind a zeroed deadline fires the drain on the very next tick —
         // on a player who just DIED it ran ChungRyongRageWearOff's Max(1, ...) floor against Hp 0 and stood

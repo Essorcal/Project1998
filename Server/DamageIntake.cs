@@ -258,7 +258,17 @@ public sealed partial class Session
         //
         // Four of the five sources reach this gate; the fifth (room damage) walks past it, sourced. Which
         // ones and why is the note on DamageIntake.IgnoresHardenBody.
-        if (!intake.IgnoresHardenBody && DamageImmune) return 0;
+        //
+        // Chongun's Invincibility is the one ward that stops SWINGS only (the project owner, 2026-11-09, "Invincibility
+        // swings-only first", as RTK). RTK's hardBodies list holds it, and RTK reads that list to stop a blow in exactly
+        // one place, Scripts/hitCritChance.lua:26, which every swing runs before its damage: a player's melee swing at a
+        // player (clif.c clif_pc_damage) or at a creature, a creature's swing (mob.c's attack, Mobs/mob.lua's), and a
+        // bow's shot (Items/Weapons/Bows/bow.lua). A spell, a player's or a creature's, lands through removeHealthExtend,
+        // which does not test it (Spells/common/global_zap.lua:40; magicDamage.lua tests it but nothing calls that
+        // script). Here the swings are the two melee kinds; every other kind asks DamageImmune, the five wards above,
+        // exactly as before.
+        bool warded = intake.Kind is DamageKind.MobMelee or DamageKind.PlayerMelee ? HardBodyWarded : DamageImmune;
+        if (!intake.IgnoresHardenBody && warded) return 0;
 
         WakeUp(byDamage: true);   // being hit ends a Doze (RTK on_takedamage_while_cast) — see ReceiveSleep
 

@@ -134,7 +134,21 @@ public sealed class SubpathTeacherTests
                              "tigers_might 99 5000 [10 bears_liver, 10 tiger_meat, 5 antler]; " +
                              "wilderness_guise 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "wilderness_weapon 99 40000 [1 il_san_spike, 2 dragons_liver, 2 electra]")]
-    [InlineData("Chongun",   "")]
+    // The Chongun spells slice: eleven of the fourteen at their scripts' prices, the copied list as written (Spirit of war
+    // asks Chung ryong rage's), Art of war as the readout its script reaches for (the project owner's Q-A); Employ troop and
+    // Title of nobility, whose price names boiled_meat (in no item table), and Recognize honorable act, with no script, off
+    // sale.
+    [InlineData("Chongun",   "art_of_war 99 25000 [1 ambrosia, 20 lean_beef]; " +
+                             "charge_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
+                             "chongun_uniform 99 0 [1 spring_robes, 20 light_fox_fur]; " +
+                             "enhanced_drink 99 1000 [1 aqua_potion, 1 brown_potion, 1 muddy_potion]; " +
+                             "evaluate_opponent 99 5000 [3 fox_blade, 5 fine_rabbit_meat, 80 red_fox_fur]; " +
+                             "harden_weapon 99 40000 [1 il_san_spike, 2 dragons_liver, 2 electra]; " +
+                             "inspire_valor 99 15000 [10 electra, 10 lean_beef]; " +
+                             "invincibility 99 0 [1 charm, 1 moon_helm, 20 tigers_heart]; " +
+                             "protectors_fury 99 20000 [1 dragons_liver, 1 electra, 1 spike]; " +
+                             "sharpen_weapon 99 20000 [1 dragons_liver, 1 electra, 1 spike]; " +
+                             "spirit_of_war 99 50000 [1 chung_ryong_key, 1 dragons_liver, 1 spike]")]
     [InlineData("Do",        "assess_opponent_do 99 5000 [3 fox_blade, 5 fine_rabbit_meat, 80 red_fox_fur]; " +
                              "balance_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
                              "blend 99 0 [1 fox_tail, 1 topaz]; " +

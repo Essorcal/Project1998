@@ -235,16 +235,19 @@ public sealed class SpellContext
     /// verbs, so a spell sees a potion's ward — which is how the five warrior strikes read the Black Potion's
     /// <c>chin_baek_ho_ryung</c>, exactly as RTK's scripts do.</summary>
     public bool hasDuration(string key)               => _s.LuaHasDuration(key);
-    /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds.</summary>
-    public void setDuration(string key, double ms)    => _s.LuaSetDuration(key, (int)ms);
+    /// <summary>Start/refresh a named duration for <paramref name="ms"/> milliseconds. With <paramref name="endLine"/>, the
+    /// caster reads that line once when it has run out or been cleared (RTK's uncast message: Invincibility's); see
+    /// <c>Session.SayLapsedDurationLines</c>.</summary>
+    public void setDuration(string key, double ms, string endLine = "") => _s.LuaSetDuration(key, (int)ms, endLine);
     /// <summary>Milliseconds left on a named duration (0 if not running) — for a tiered spell re-arming its
     /// effects onto the run it is already inside instead of opening a new window.</summary>
     public double durationLeft(string key)            => _s.LuaDurationLeft(key);
     /// <summary>The caster's effective armour, clamped to RTK's [-80, 70] — Harden Body's success roll
     /// scales with it (better armour is MORE negative, hence better odds).</summary>
     public double armor                               => _s.ItemArmor;
-    /// <summary>Is the caster currently untouchable (any Harden Body ward, spell or scroll)?</summary>
-    public bool immune                                => _s.DamageImmune;
+    /// <summary>Is the caster under a hard-body ward (any Harden Body ward, spell or scroll, or Chongun's Invincibility;
+    /// RTK <c>checkIfCast(hardBodies)</c>)? What a hard-body spell reads as "You already cast that spell.".</summary>
+    public bool immune                                => _s.HardBodyWarded;
     /// <summary>The self-only cast pose (RTK action 6).</summary>
     public void castPose()                            => _s.ItemCastPose();
     /// <summary>Is a named cooldown (RTK aether) still ticking?</summary>
@@ -777,8 +780,10 @@ public sealed class SpellContext
     // note above Session.LuaAsk for what each box is, and its locks.
     /// <summary>Ask the caster for a line of text (RTK <c>inputSeq</c>): an input box carrying <paramref name="prompt"/>,
     /// with no portrait. A submitted answer runs the verb <paramref name="verb"/> for this caster and spell, against the
-    /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.</summary>
-    public void ask(string prompt, string verb) => _s.LuaAsk(_sp, prompt, verb);
+    /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.
+    /// <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Title of nobility's typed name, which
+    /// its second question's step needs), so nothing a later cast resolves can stand in for it.</summary>
+    public void ask(string prompt, string verb, string carry = "") => _s.LuaAsk(_sp, prompt, verb, carry);
     /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
     /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
     /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
@@ -951,4 +956,46 @@ public sealed class SpellContext
     /// <summary>End the caster's creature form now, as when it runs out (RTK <c>removeDuras(morphs)</c>). False with
     /// none.</summary>
     public bool endMorph() => _s.LuaEndMorph();
+
+    // ---- the Chongun spells' primitives (RTK Spells/Subpaths/Chongun/) --------------------------------------------------
+    // As the halves above: Inspire valor's buff and Title of nobility's title land on another player inside that player's
+    // own monitor (ReceiveAreaBuff, ReceiveTitle, entered by StateRank); a troop is written through World's own methods.
+    // No new lock. See Session.Spells.cs, "the Chongun spells".
+    /// <summary>The value the verb before handed on with <see cref="ask"/> (Title of nobility's typed name, carried to the
+    /// step that runs on its second answer); "" when none.</summary>
+    public string carried { get; init; } = "";
+    /// <summary>The time now, in whole seconds since 1970 UTC (RTK <c>os.time()</c>): Title of nobility's saved wait.</summary>
+    public double osTime => System.DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+    /// <summary>Does the caster's bag hold an <paramref name="itemKey"/> (an Items.csv key)? RTK's loop over
+    /// <c>getInventoryItem</c> comparing <c>yname</c> (Enhanced drink's Water jug); worn gear is not in the bag.</summary>
+    public bool hasItem(string itemKey) => _s.LuaHasItem(itemKey);
+    /// <summary>The Items.csv name of the weapon the caster wields (RTK <c>getEquippedItem(EQ_WEAP).name</c>, the item's own
+    /// name, not an engraving); "" unarmed, where RTK's scripts stop on the missing weapon.</summary>
+    public string weaponName => _s.LuaWeaponName;
+    /// <summary>Is the caster invisible (the rogue's Invisible family, or Blend's hide; RTK <c>checkIfCast(invis)</c> or
+    /// state 2)?</summary>
+    public bool stealthed => _s.LuaStealthed;
+    /// <summary>The key of the spell whose form the caster wears now (RTK <c>hasDuration</c> on that form's key); "" with
+    /// none.</summary>
+    public string morphSpell => _s.LuaMorphSpell;
+    /// <summary>Wear this spell's own look from its Morphs.csv row for that row's time, in the caster's war-paint colour
+    /// (RTK <c>disguise</c> and <c>disguiseColor = armorColor</c>, state 4), with this spell's graphic; any other form ends
+    /// first. False, changing nothing, for a spell with no fixed look.</summary>
+    public bool wearForm() => _s.LuaWearForm(_sp);
+    /// <summary>A line to the caster in the blue whisper channel (RTK <c>player:msg(0, text, player.ID)</c>).</summary>
+    public void blue(string msg) => _s.LuaBlue(msg);
+    /// <summary>Inspire valor's sweep: every OTHER player on the caster's map within <paramref name="range"/> tiles on both
+    /// axes, a ghost included, has every buff in <paramref name="category"/> ended and takes <paramref name="stat"/>
+    /// <paramref name="amount"/> for <paramref name="durMs"/> in that slot under this spell's name, with this spell's
+    /// graphic over them and <paramref name="line"/>; the spell's sound plays at the caster. Returns how many.</summary>
+    public double buffAround(string stat, double amount, double durMs, string category, double range, string line) =>
+        _s.LuaBuffAround(_sp, stat, (int)System.Math.Round(amount), (int)durMs, category, (int)range, line);
+    /// <summary>Employ troop's troop: a <paramref name="mobKey"/> (a mobs.csv identifier) owned by the caster for
+    /// <paramref name="durMs"/>, on the faced tile unless it is impassable or a creature or player stands there, else on the
+    /// caster's own (RTK <c>cotw_SpawnSetThreat</c>). Returns its name, "" when none was made.</summary>
+    public string summonTroop(string mobKey, double durMs) => _s.LuaSummonTroop(_sp, mobKey, (int)durMs);
+    /// <summary>Title of nobility's title: the online player named <paramref name="name"/> (any map, any case) takes
+    /// <paramref name="title"/> as their title, saved with them, and reads <paramref name="line"/> in blue, inside their own
+    /// monitor. False, changing nothing, when nobody online goes by that name or they are leaving.</summary>
+    public bool bestowTitle(string name, string title, string line) => _s.LuaBestowTitle(_sp, name, title, line);
 }

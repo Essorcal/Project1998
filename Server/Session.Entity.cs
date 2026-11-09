@@ -218,6 +218,9 @@ public sealed partial class Session
     /// writers under the monitor they already hold (see <c>Session.Items.cs</c>).</item>
     /// <item><c>_crRageTier</c> is an <c>int</c> written only under the monitor; a fury is either up or it
     /// is not.</item>
+    /// <item><c>_durationLineDue</c> is the earliest a duration's end line can be due (Invincibility's), written only
+    /// under the monitor (<c>LuaSetDuration</c>, <c>SayLapsedDurationLines</c>, <c>ClearAllTimedEffects</c>) and read with
+    /// <c>Volatile</c>, as <c>_nextBuffExpiry</c> is.</item>
     /// </list>
     /// Everything the method actually DOES still happens under the monitor, including a second, guarded
     /// look at each condition — the pre-check only decides whether to bother acquiring.</para>
@@ -247,6 +250,7 @@ public sealed partial class Session
         bool due = regenDue
                 || _mailAccum >= MailBackstopMs
                 || Volatile.Read(ref _nextBuffExpiry) <= Environment.TickCount64
+                || Volatile.Read(ref _durationLineDue) <= Environment.TickCount64
                 || Volatile.Read(ref _crRageTier) > 0
                 || sightDue;
         if (!due) return;   // the common case: no monitor entered at all
@@ -255,6 +259,7 @@ public sealed partial class Session
         if (_mailAccum >= MailBackstopMs) { _mailAccum = 0; RefreshMailFlags(); }
 
         ExpireBuffs();   // send each faded buff's live "fade" line + drop it (runs even when dead/topped-off)
+        SayLapsedDurationLines();   // a duration's end line (Invincibility's), once it has run out or been cleared
         // Chung Ryong's Rage draining vita when it wears out (its price) — checked here so it fires whether the
         // fury lapses in or out of combat, resting or not. EffRage/the AC buff already stop themselves on time.
         if (_crRageTier > 0 && Environment.TickCount64 >= _rageUntil) ChungRyongRageWearOff();
@@ -957,6 +962,16 @@ public sealed partial class Session
     {
         get { foreach (var w in HardenBodyWards) if (HasStatusFlag(w)) return true; return false; }
     }
+
+    // Chongun's Invincibility (RTK Spells/Subpaths/Chongun/invincibility.lua) is in RTK's hardBodies list
+    // (Spells/spellTables.lua:252-260), as the five wards above are. Every hard-body spell reads that list as "You
+    // already cast that spell." (HardBodyWarded, ctx.immune), but RTK reads it to stop a blow in its swing script only
+    // (Scripts/hitCritChance.lua:26), so here it stops a swing and nothing else: DamageIntake's gate asks HardBodyWarded
+    // for the two melee kinds and DamageImmune for the rest. A spell lands on it, a creature's or a player's, and so does a
+    // venom tick (TickPoison asks DamageImmune), as in RTK, whose removeHealthExtend tests only the four poet wards
+    // (player.lua:164-170).
+    private const string InvincibilityWard = "invincibility";
+    internal bool HardBodyWarded => DamageImmune || HasStatusFlag(InvincibilityWard);
 
     // Called by World.Tick (the shared mob-AI heartbeat) when a provoked mob lands a swing on us: apply the
     // damage, refresh our HUD, and show the over-head hit/HP-bar to the whole map (the same 0x13 feedback a
