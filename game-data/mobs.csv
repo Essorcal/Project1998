@@ -715,3 +715,8 @@ MobId,Identifier,Description,MobLook,MobLookColor,Vita,Exp,Level,Might,Grace,Wil
 900,tiger_sentry,Tiger sentry,130,31,278500,1675000,94,0,99,94,2600,4050,1000,1,0,5,94,-72,rtk-migration-tigersentries,30
 901,tiger_guardian,Tiger guardian,130,32,1075000,7850000,99,0,99,99,13000,20250,1000,1,0,5,99,-83,rtk-migration-tigersentries,30
 902,tiger_defender,Tiger defender,130,33,5550000,10000000,99,0,130,173,72750,113750,1000,1,0,5,99,-95,rtk-migration-tigersentries,30
+903,dummy_horse,Horse,17,35,1000,0,25,0,25,25,15,30,2000,0,0,0,0,40,owner-design;copy-of=horse,18
+904,dummy_bull,Large bull,27,3,33650,0,67,0,67,67,550,850,2000,0,0,2,47,-20,owner-design;copy-of=large_bull,30
+905,dummy_pig,Stubborn pig,19,6,59850,0,74,0,74,74,800,1000,2000,0,0,3,74,-30,owner-design;copy-of=stubborn_pig,30
+906,dummy_skeleton,Lesser skeleton,30,11,26650,0,50,0,50,50,125,250,2000,0,0,1,50,-10,owner-design;copy-of=lesser_skeleton,18
+907,dummy_dragon,Dragon hatchling,108,20,113500,0,99,0,99,99,2500,3500,1000,0,0,3,75,-57,owner-design;copy-of=dragon_hatchling,30

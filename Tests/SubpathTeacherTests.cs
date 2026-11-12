@@ -180,7 +180,24 @@ public sealed class SubpathTeacherTests
                              "hear_footstep_diviner 99 0 [1 fox_tail, 1 topaz]; " +
                              "read_karma_diviner 60 50 [20 light_fox_fur, 70 acorn]; " +
                              "vanish 99 0 [1 fox_tail, 1 topaz]")]
-    [InlineData("Geomancer", "hailstorm 64 500 [1 amber, 70 acorn]; ice_bombardment 99 500 [1 amber, 70 acorn]")]
+    // The Geomancer spells slice: thirteen beside Hailstorm and Ice bombardment, each at its script's price, the copied
+    // lists as written (ten ask "Empower your mind"'s Ju jak key and surge; Read karma Diviner's); Earths Spite at its
+    // mark; Stone Casing, with no script, off sale.
+    [InlineData("Geomancer", "balance_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "create_green_potion 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "earths_spite 99 40000 [1 il_san_surge, 2 scribes_book, 2 star_staff]; " +
+                             "elemental_mastery 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "elementalists_mark 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "exhume 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "good_earth 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "hailstorm 64 500 [1 amber, 70 acorn]; " +
+                             "honor_of_the_three_sects 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "ice_bombardment 99 500 [1 amber, 70 acorn]; " +
+                             "inner_sect_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "neutrality_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "read_karma_geomancer 60 50 [20 light_fox_fur, 70 acorn]; " +
+                             "reveal_fate 99 50000 [1 ju_jak_key, 1 surge]; " +
+                             "soften_skin 99 20000 [1 scribes_book, 1 star_staff, 1 surge]")]
     [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
     // The Druid spells slice: Control flames, Druid's rodent, Steed, Sea breeze, Nature's bloom and Energy bloom beside the
     // three, each at its script's price, the copied lists as written (Sea breeze asks Druid's rodent's, Nature's bloom
@@ -255,16 +272,17 @@ public sealed class SubpathTeacherTests
     }
 
     /// <summary>The Learn Secret list is the subpath's sold rows at or below the member's level, minus what the book
-    /// holds: a level-63 Geomancer is told to grow (the trainer's line), at 64 is offered Hailstorm, at 99 Hailstorm and
-    /// Ice bombardment, and holding Hailstorm only Ice bombardment.</summary>
+    /// holds: a level-59 Geomancer is told to grow (the trainer's line), at 60 is offered Read karma, at 64 Read karma and
+    /// Hailstorm, and holding Hailstorm only Read karma. (Until the Geomancer spells slice sold Read karma at 60 and
+    /// thirteen more, Hailstorm at 64 was Geomancer's first row.)</summary>
     [Fact]
     public void TheListIsTheRowsAtTheMembersLevelMinusKnown()
     {
         var hail = Content.SpellByKey("hailstorm")!;
-        Assert.Equal(new[] { SecretLessons.NothingMoreForNow }, LearnSecretBoxes("Geomancer", 63));
-        Assert.Equal(new[] { "Hailstorm" }, LearnSecretOptions("Geomancer", 64));
-        Assert.Equal(new[] { "Hailstorm", "Ice bombardment" }, LearnSecretOptions("Geomancer", 99));
-        Assert.Equal(new[] { "Ice bombardment" }, LearnSecretOptions("Geomancer", 99, c => c.Spells.Add(hail.Id)));
+        Assert.Equal(new[] { SecretLessons.NothingMoreForNow }, LearnSecretBoxes("Geomancer", 59));
+        Assert.Equal(new[] { "Read karma" }, LearnSecretOptions("Geomancer", 60));
+        Assert.Equal(new[] { "Read karma", "Hailstorm" }, LearnSecretOptions("Geomancer", 64));
+        Assert.Equal(new[] { "Read karma" }, LearnSecretOptions("Geomancer", 64, c => c.Spells.Add(hail.Id)));
     }
 
     // ---- a sale, and the refusals -------------------------------------------------------------------------------

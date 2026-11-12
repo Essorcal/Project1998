@@ -787,8 +787,10 @@ public sealed class SpellContext
     /// with no portrait. A submitted answer runs the verb <paramref name="verb"/> for this caster and spell, against the
     /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.
     /// <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Title of nobility's typed name, which
-    /// its second question's step needs), so nothing a later cast resolves can stand in for it.</summary>
-    public void ask(string prompt, string verb, string carry = "") => _s.LuaAsk(_sp, prompt, verb, carry);
+    /// its second question's step needs), so nothing a later cast resolves can stand in for it. The box's portrait is
+    /// read as <see cref="dialog"/> reads it, none by default (Geomancer's recognitions and Reveal fate set one).</summary>
+    public void ask(string prompt, string verb, string carry = "", double look = 0, double color = 0, string item = "") =>
+        _s.LuaAsk(_sp, prompt, verb, carry, (int)look, (int)color, item);
     /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
     /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
     /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
@@ -890,13 +892,16 @@ public sealed class SpellContext
     /// <paramref name="verb"/> for this spell, with this spell's SpellParams.csv row and the picked option as
     /// <see cref="answer"/>, on the caster's own thread and monitor, unless they have died or are leaving by then. A closed
     /// box runs nothing. <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Forgive's target's
-    /// name, which its pick's step needs). See <c>Session.LuaSpellMenu</c>.</summary>
-    public void menu(string prompt, string options, string verb, string carry = "") =>
-        _s.LuaSpellMenu(_sp, prompt, options, verb, carry);
+    /// name, which its pick's step needs). Its portrait is read as <see cref="dialog"/> reads it, none by default
+    /// (Geomancer's recognitions set the Staff of chi's icon). See <c>Session.LuaSpellMenu</c>.</summary>
+    public void menu(string prompt, string options, string verb, string carry = "", double look = 0, double color = 0,
+                     string item = "") =>
+        _s.LuaSpellMenu(_sp, prompt, options, verb, carry, (int)look, (int)color, item);
     /// <summary>Take on the form this spell's Morphs.csv row gives <paramref name="answer"/> (its answers column), for its
     /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
-    /// row does not list.</summary>
-    public bool morphTo(string answer) => _s.LuaMorphTo(_sp, answer);
+    /// row does not list. With <paramref name="warPaint"/> the form wears the caster's war paint (RTK
+    /// <c>disguiseColor = player.armorColor</c>; Geomancer's Elemental mastery), else its own colours.</summary>
+    public bool morphTo(string answer, bool warPaint = false) => _s.LuaMorphTo(_sp, answer, warPaint);
     /// <summary>Resolve the first living player on the faced tile, on any map, as this cast's player target (RTK
     /// <c>getTargetFacing(player, BL_PC)</c>, which passes over the dead, so a living player standing on a ghost's tile
     /// is found); no aimed id is read. False, and silent, with nobody living there. <see cref="pushTarget"/>, <see cref="speechStatus"/> and <see cref="tellTargetLine"/> act on it.</summary>
@@ -1091,4 +1096,78 @@ public sealed class SpellContext
     /// saved registry key <paramref name="regKey"/> 0 and their legend <paramref name="mark"/> gone. Saved with them. False,
     /// changing nothing, with no target or one who is leaving.</summary>
     public bool unmarkTarget(string regKey, string mark) => _s.LuaUnmarkTarget(_sp, regKey, mark);
+
+    // ---- the Geomancer spells' primitives (RTK Spells/Subpaths/Geomancer/) --------------------------------------------
+    // A legend or a fate's outcome on a named player (the recognitions and Reveal fate, P10) lands inside that player's own
+    // monitor, and a player who is leaving or replaced is given nothing; the caster's tally, Exhume's creature and Good
+    // earth's traps refuse a caster who is gone. No new lock. See Session.Spells.cs, "the Geomancer spells".
+    /// <summary>On the player <see cref="pcTargetNamed"/> resolved, inside their own monitor: every legend named in
+    /// <paramref name="remove"/> ('|' between them) goes, then, when <paramref name="text"/> is not empty, a legend named
+    /// <paramref name="mark"/> reading it in icon <paramref name="icon"/> and colour <paramref name="color"/> (RTK
+    /// <c>removeLegendbyName</c>, <c>addLegend</c>). Saved. False, changing nothing, with no target or one gone.</summary>
+    public bool legendTarget(string remove, string mark, string text, double icon, double color) =>
+        _s.LuaLegendTarget(_sp, remove, mark, text, (int)icon, (int)color);
+    /// <summary>Which of the legends named in <paramref name="names"/> ('|' between them) the player
+    /// <see cref="pcTargetNamed"/> resolved holds, in the order given, '|' between them (RTK <c>target:hasLegend</c>), read
+    /// inside their monitor; "" with none.</summary>
+    public string targetLegends(string names) => _s.LuaTargetLegends(names);
+    /// <summary>On the caster: the saved registry key <paramref name="regKey"/> one more, the legend <paramref name="mark"/>
+    /// gone and written again at the end with "%d" the new count (Reveal fate's "Performed N Ba Gua experiences"). False
+    /// for a caster who is gone.</summary>
+    public bool markSelf(string regKey, string mark, string text, double icon, double color) =>
+        _s.LuaMarkSelf(_sp, regKey, mark, text, (int)icon, (int)color);
+    /// <summary>A box with no button to the player <see cref="pcTargetNamed"/> resolved, alone, their waiting conversation
+    /// dropped first (Reveal fate's last box, RTK <c>target:freeAsync()</c>, <c>target:dialogSeq({t, text}, 0)</c>), with the
+    /// portrait <see cref="dialog"/> reads. Nothing with no target, or to one going away.</summary>
+    public void boxTarget(string text, double look = 0, double color = 0, string item = "") =>
+        _s.LuaBoxTarget(_sp, text, (int)look, (int)color, item);
+    /// <summary>Is the player <see cref="pcTargetNamed"/> resolved married (RTK <c>target.partner ~= 0</c>)? A bare read;
+    /// false with none.</summary>
+    public bool targetMarried => _s.LuaPcTarget?.LuaMarried ?? false;
+    /// <summary>Reveal fate's outcomes, each on the player <see cref="pcTargetNamed"/> resolved, inside their own monitor,
+    /// and false, changing nothing, with no target or one gone. Their war paint becomes <paramref name="color"/>, redrawn
+    /// (RTK <c>target.armorColor</c>, <c>updateState</c>).</summary>
+    public bool targetArmorColor(double color) => _s.LuaTargetArmorColor((int)color);
+    /// <summary>The named duration <paramref name="key"/> on them for <paramref name="ms"/> (RTK <c>target:setDuration</c>).</summary>
+    public bool targetDuration(string key, double ms) => _s.LuaTargetDuration(key, (int)ms);
+    /// <summary>The flush a won Dispell makes on them, then <paramref name="anim"/> and <paramref name="sound"/> over them (RTK
+    /// <c>dispell.cast(target)</c>).</summary>
+    public bool dispelTarget(double anim, double sound) => _s.LuaDispelTarget((int)anim, (int)sound);
+    /// <summary>Their coins <paramref name="delta"/>, never below 0, then <paramref name="line"/>.</summary>
+    public bool targetGold(double delta, string line) => _s.LuaTargetGold((long)delta, line);
+    /// <summary>Their karma <paramref name="delta"/> (a negative one taken), with the karma graphic and RTK's line (addKarma,
+    /// removeKarma).</summary>
+    public bool addTargetKarma(double delta) => _s.LuaTargetKarma(delta);
+    /// <summary>The first of their saved registry keys <paramref name="keys"/> ('|' between them) above
+    /// <paramref name="above"/> takes <paramref name="delta"/>, and they read <paramref name="linePrefix"/> and the key.</summary>
+    public bool targetCraft(string keys, double above, double delta, string linePrefix) =>
+        _s.LuaTargetCraft(keys, (int)above, (int)delta, linePrefix);
+    /// <summary>Below 99, <paramref name="bandFraction"/> of their level's band, at 99 <paramref name="topFraction"/> of their
+    /// experience, rounded up, given (positive) or taken (negative), then <paramref name="line"/>.</summary>
+    public bool targetExp(double bandFraction, double topFraction, string line) =>
+        _s.LuaTargetExp(bandFraction, topFraction, line);
+    /// <summary>Their base vita <paramref name="delta"/>; a loss their base vita cannot cover changes nothing and answers
+    /// false, as the script returns there.</summary>
+    public bool targetBaseVita(double delta) => _s.LuaTargetBaseVita((int)delta);
+    /// <summary>Exhume's creature: the mobs.csv creature <paramref name="mobKey"/>, unowned, on the caster's own tile (RTK
+    /// <c>player:spawn(mob, player.x, player.y, 1, player.m)</c>). False for a caster who is gone.</summary>
+    public bool spawnHere(string mobKey) => _s.LuaSpawnHere(_sp, mobKey);
+    /// <summary>End this caster's run of this spell on themselves now (RTK <c>setDuration(key, 0)</c>).</summary>
+    public void endSelfTick() => _s.LuaEndSelfTick(_sp);
+    /// <summary>Milliseconds left on this caster's run of this spell on themselves, 0 with none (RTK <c>getDuration</c>).</summary>
+    public double selfTickLeft() => _s.LuaSelfTickLeft(_sp);
+    /// <summary>Good earth's traps: an unowned <paramref name="kind"/> trap, gone in <paramref name="lifetimeMs"/>, on each
+    /// open tile of the 3x3 around the caster with no NPC or trap on it. Returns how many.</summary>
+    public double setTrapsAround(string kind, double lifetimeMs) => _s.LuaSetTrapsAround(_sp, kind, (int)lifetimeMs);
+    /// <summary>Does the target <see cref="aimedTarget"/> found carry a status of <paramref name="category"/>?</summary>
+    public bool aimedHasStatus(string category) => _s.LuaAimedHasStatus(category);
+    /// <summary>Soften skin's curse on the target <see cref="aimedTarget"/> found: a creature for
+    /// <paramref name="creatureMs"/> with <paramref name="beatAnim"/> every <paramref name="beatMs"/>; a player, inside their
+    /// own monitor and unless a category in <paramref name="blockedBy"/> holds by then, for <paramref name="playerMs"/>, with
+    /// <paramref name="line"/>; then the spell's sound at the caster and its graphic over the target. False when nothing
+    /// landed.</summary>
+    public bool curseAimed(string category, string stat, double amount, double playerMs, double creatureMs, string blockedBy,
+                           string line, double beatAnim, double beatMs) =>
+        _s.LuaCurseAimed(_sp, category, stat, (int)System.Math.Round(amount), (int)playerMs, (int)creatureMs, blockedBy, line,
+                         (int)beatAnim, (int)beatMs);
 }
