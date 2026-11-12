@@ -548,10 +548,14 @@ public sealed partial class World
     // removeTrapItem, called by every trap NPC right before it deletes itself). Filled from inside the tick's
     // _lock by TriggerTrapLocked, flushed with _deferredFx once the lock is released — the clear is socket I/O.
     private readonly List<(ushort map, uint trapId)> _deferredTrapClears = new();
-    // Pit trap strikes sprung by a creature (the owner's half max vita plus half max mana, read at the spring), filled from
-    // inside the tick's _lock by SpringPitTrapLocked and landed by FlushTick after the beat's other trap damage
-    // (ApplyPitStrike), so the "never the last vita" rule reads the vita the creature has when the strike lands.
-    private readonly List<(ushort map, Mob mob, double raw, uint ownerId)> _deferredPitStrikes = new();
+    // Pit trap strikes sprung by a creature: for a beat's trap-damage list, the index of each strike in it and the strike's
+    // figure as it sprang (the owner's half max vita plus half max mana, the creature's armour and sleep amplifier), before
+    // the last-vita rule. Filled from inside the tick's _lock by SpringPitTrapLocked, which queues the strike at its own
+    // place in that list; read by FlushTick, which lands that entry through ApplyPitStrike, so the rule reads the vita the
+    // creature has when the strike lands (#423's review, F2; its re-check, R1 and R2). Weak on the list: a list nothing
+    // flushes (a test's) takes its entry with it.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<List<(ushort map, Mob mob, int dmg, uint ownerId)>,
+                                                                          Dictionary<int, double>> _pitStrikeFigures = new();
 
     // Lua mob hooks raised from inside the lock, run by the next Tick OUTSIDE it. This queue is the whole
     // reason MobScript is safe: a hook is free to speak, heal, vanish or touch a player's quest registry,
@@ -1292,7 +1296,7 @@ public sealed partial class World
                 SpringSpyTrapLocked(mapId, mob, trap);
                 break;
             case PitTrap:
-                SpringPitTrapLocked(mapId, mob, trap);
+                SpringPitTrapLocked(mapId, mob, trap, damageQueue);
                 break;
         }
     }
@@ -1307,10 +1311,12 @@ public sealed partial class World
     // (Scripts/scripts.lua:1163-1227: the sleep amplifier, the deduction, armour clamped to the victim's floor and to 100),
     // then never the last vita (PitTrapDamage), "CHOMP!" to a player, graphic 44, credited to the owner. The script sets no
     // duration on its victim, so no creature timer applies. Its plain removeHealth tests no ward (DamageIntake's note on
-    // IgnoresHardenBody names this file), so no ward stops it. RTK reads the victim's vita when the trap fires, so the strike
-    // is worked out against the vita the victim has when it lands: on a player at once, inside their monitor; on a creature
-    // in the tick's deferred pass, after the beat's other blows on it (a poison tick, a pet's swing) have landed
-    // (ApplyPitStrike; #423's review, F2).
+    // IgnoresHardenBody names this file), so no ward stops it. RTK reads the victim's vita when the trap fires, so the
+    // last-vita rule reads the vita the victim has when the strike lands: on a player at once, inside their monitor; on a
+    // creature at the strike's own place in the beat's trap-damage list, after whatever landed on it before that place (a
+    // pet's swing, a poison tick queued before its step) and before whatever is queued after it (#423's review, F2, and its
+    // re-check, R1). The figure itself, with the creature's armour and sleep amplifier, is worked out when it springs, as
+    // the slice first had it (R2).
     internal const string PitTrap = "pit_trap";
     internal const int PitTrapAnim = 44;                        // block:sendAnimation(44), "big teeth"
     private const int PitTrapArmorCap = 100;                    // calculateDamage: armoramount > 100 -> 100
@@ -1336,29 +1342,45 @@ public sealed partial class World
     internal static double PitTrapArmorFactor(int armor, int floor) => Combat.ArmorFactor(Math.Min(armor, PitTrapArmorCap), floor);
 
     /// <summary>A creature springs the Pit trap (caller holds <c>_lock</c>, mid-step; its owner is online, checked above):
-    /// the owner's half max vita plus half max mana, read now, as RTK's click reads them, is kept for the tick's deferred
-    /// pass (<see cref="_deferredPitStrikes"/>), where <see cref="ApplyPitStrike"/> lands it; graphic 44 goes with the
-    /// tick's deferred effects. The owner's figures are a peer read (<see cref="Session.PeerMaxVitaMana"/>: one published
-    /// snapshot, no monitor of theirs taken, which would be the wrong order inside <c>_lock</c>).</summary>
-    private void SpringPitTrapLocked(ushort mapId, Mob mob, Trap trap)
+    /// the strike is queued with the tick's other trap damage, at its place in <paramref name="damageQueue"/>, credited to
+    /// the owner, and graphic 44 goes with the tick's deferred effects. The owner's max vita and mana are a peer read
+    /// (<see cref="Session.PeerMaxVitaMana"/>: one published snapshot, no monitor of theirs taken, which would be the wrong
+    /// order inside <c>_lock</c>). The figure, with the creature's armour and its sleep amplifier (spent here, so the hit
+    /// that lands it finds none), is kept for that entry (<see cref="_pitStrikeFigures"/>), and <see cref="FlushTick"/>
+    /// lands it through <see cref="ApplyPitStrike"/>, capped against the vita left then. The queued figure is the strike
+    /// capped against the vita now, which is what a list not flushed by FlushTick lands. At 1 vita the strike is 0 and
+    /// nothing is queued (RTK's removeHealth(0) takes nothing).</summary>
+    private void SpringPitTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         if (Online.ByIdLocked(trap.OwnerId) is not { } owner) return;
         var (vita, mana) = owner.PeerMaxVitaMana;
-        _deferredPitStrikes.Add((mapId, mob, vita * 0.5 + mana * 0.5, trap.OwnerId));
+        int hp = mob.Hp;
+        if (hp != 1)
+        {
+            double raw = vita * 0.5 + mana * 0.5, armor = PitTrapArmorFactor(mob.Ac, -95);
+            double amp = mob.TakeDamageAmp(Environment.TickCount64);
+            int dmg = PitTrapDamage(raw, armor, amp, 1.0, hp);
+            if (dmg > 0)
+            {
+                // PitTrapDamage's own product, so the cap at landing (every factor 1) compares the very same figure.
+                _pitStrikeFigures.GetOrCreateValue(damageQueue)[damageQueue.Count] = raw * armor * (amp > 1.0 ? amp : 1.0) * 1.0;
+                damageQueue.Add((mapId, mob, dmg, trap.OwnerId));
+            }
+        }
         _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, PitTrapAnim, 0));
     }
 
-    /// <summary>A creature's Pit trap strike lands (the tick's deferred pass, after the beat's pet swings and its other trap
-    /// damage and poison ticks; #423's review, F2). Under <c>_lock</c>, against the creature as it stands now: its armour,
-    /// its sleep amplifier (spent here, and not at 1 vita, where RTK's removeHealth(0) runs no on-hit script) and the vita
-    /// it has left (<see cref="PitTrapDamage"/>), so the strike never takes the last vita whatever landed on it first in
-    /// the beat. A strike that leaves it standing lands inside that same hold of the lock, so no other blow can come
-    /// between the cap and the hit (and a hit that does not kill sends nothing from inside the lock: no drops), then the
-    /// over-head bar. Only a strike exactly equal to the vita left kills (RTK's strict test); it lands outside the lock
-    /// through <see cref="ApplyTrapDamage"/>, as every killing trap hit does, since a kill sends its drops, and is
-    /// credited to the owner.</summary>
-    private void ApplyPitStrike(ushort mapId, Mob mob, double raw, uint ownerId)
+    /// <summary>A creature's Pit trap strike lands (the tick's trap-damage pass, at the strike's own place in it; #423's
+    /// review, F2, and its re-check, R1). <paramref name="figure"/> is the strike as it sprang, armour and sleep amplifier
+    /// in (<see cref="SpringPitTrapLocked"/>). Under <c>_lock</c>, against the vita the creature has now
+    /// (<see cref="PitTrapDamage"/>, every factor already in the figure), so the strike never takes the last vita whatever
+    /// landed on it first in the beat. A strike that leaves it standing lands inside that same hold of the lock, so no other
+    /// blow can come between the cap and the hit (and a hit that does not kill sends nothing from inside the lock: no
+    /// drops), then the over-head bar. Only a strike exactly equal to the vita left kills (RTK's strict test); it lands
+    /// outside the lock through <see cref="ApplyTrapDamage"/>, as every killing trap hit does, since a kill sends its drops,
+    /// and is credited to the owner.</summary>
+    private void ApplyPitStrike(ushort mapId, Mob mob, double figure, uint ownerId)
     {
         int dmg;
         bool landed = false;
@@ -1366,8 +1388,7 @@ public sealed partial class World
         {
             if (!mob.Alive || mob.IsNpc) return;
             int hp = mob.Hp;
-            dmg = hp == 1 ? 0 : PitTrapDamage(raw, PitTrapArmorFactor(mob.Ac, -95), mob.TakeDamageAmp(Environment.TickCount64),
-                                              1.0, hp);
+            dmg = hp == 1 ? 0 : PitTrapDamage(figure, 1.0, 1.0, 1.0, hp);
             if (dmg <= 0) return;
             if (dmg < hp)
             {
@@ -3565,13 +3586,17 @@ public sealed partial class World
         List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> deferred;
         List<(string key, string hook, ushort map, Mob mob, Session? actor)> hooks;
         List<(ushort map, uint trapId)> trapClears;
-        List<(ushort map, Mob mob, double raw, uint ownerId)> pitStrikes;
+        Dictionary<int, double>? pitFigures = null;
         lock (_lock)
         {
             deferred = new List<(ushort, uint, ushort, ushort, int, int)>(_deferredFx); _deferredFx.Clear();
             hooks = new List<(string, string, ushort, Mob, Session?)>(_hooks); _hooks.Clear();
             trapClears = new List<(ushort, uint)>(_deferredTrapClears); _deferredTrapClears.Clear();
-            pitStrikes = new List<(ushort, Mob, double, uint)>(_deferredPitStrikes); _deferredPitStrikes.Clear();
+            if (_pitStrikeFigures.TryGetValue(q.TrapDamage, out var figures))
+            {
+                pitFigures = figures;
+                _pitStrikeFigures.Remove(q.TrapDamage);
+            }
         }
         // Traps that went off this tick: rub out their revealed marker on everyone who had spotted them.
         foreach (var tc in trapClears) Broadcast(tc.map, p => p.ClearTrapMarker(tc.trapId));
@@ -3649,11 +3674,15 @@ public sealed partial class World
 
         // Trap hits + poison ticks queued above (same reasoning as the mob-swing pass: Session-facing
         // broadcasts/exp can't run under the lock).
-        foreach (var td in q.TrapDamage)
-            Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
-        // Pit trap strikes last, each against the vita its creature has once the beat's other blows have landed.
-        foreach (var ps in pitStrikes)
-            Try(() => ApplyPitStrike(ps.map, ps.mob, ps.raw, ps.ownerId), "ApplyPitStrike (tick)");
+        // A Pit trap's strike lands at its own place in the list, capped against the vita its creature has then.
+        for (int i = 0; i < q.TrapDamage.Count; i++)
+        {
+            var td = q.TrapDamage[i];
+            if (pitFigures is not null && pitFigures.TryGetValue(i, out double figure))
+                Try(() => ApplyPitStrike(td.map, td.mob, figure, td.ownerId), "ApplyPitStrike (tick)");
+            else
+                Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
+        }
         MarkPhase(PhPetTrap);
 
         // Expired pets queued above — plain despawn, no kill/loot.

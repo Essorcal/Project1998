@@ -22,7 +22,7 @@ namespace Tests;
 /// <c>Session.SpringPitTrap</c>.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Ranger facing east, on
-/// content-free maps 63600-63626 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
+/// content-free maps 63600-63628 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
 /// class's facts use. A player springs a trap by a real walk frame; a creature by the mob tick's committed step. A menu,
 /// an input box or a box is answered from a thread of its own with no synchronisation context, as a read loop answers it,
 /// so the step resumes inline as on the server.</para>
@@ -38,6 +38,8 @@ public sealed class RangerSpellTests
                          ScoutBoxHeldMap = 63622, Arena = 3045;
     // Fix round 1 (#423's review, F1-F3): content-free too, claimed by no other class.
     private const ushort PitBeatMap = 63623, CarveGoneMap = 63624, GoneCasterMap = 63625, ScrollMap = 63626;
+    // Fix round 2 (#423's re-check, R1 and R2): the same.
+    private const ushort PitOrderMap = 63627, PitAmpMap = 63628;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 400_000, Mana = 400_000, Hp = 10_000;
     private const byte Will = 41;
@@ -443,8 +445,8 @@ public sealed class RangerSpellTests
     /// 1,000 whose due poison tick of 100 its own beat queues before it steps onto the trap ends at 1, the strike taking
     /// 899; one at 2 whose tick of 1 lands first is at 1 when the strike lands, which takes nothing; one a pet swings at for
     /// 50 in the same beat ends at 1 too. Red with <c>Server/World.cs</c> at 6f3c4d5, which capped the strike when it was
-    /// sprung (the creature dies, credited to the trap's owner), and with the strikes landed before the beat's other
-    /// blows.</summary>
+    /// sprung (the creature dies, credited to the trap's owner), and with the cap at landing taken out of
+    /// <c>World.FlushTick</c> (the same).</summary>
     [Theory]
     [InlineData("poison", 1_000, 100)]
     [InlineData("poison", 2, 1)]
@@ -485,6 +487,102 @@ public sealed class RangerSpellTests
             _fx.World.DespawnMob(PitBeatMap, mob);
             if (pet is not null) _fx.World.DespawnMob(PitBeatMap, pet);
             Leave(PitBeatMap, owner);
+        }
+    }
+
+    /// <summary>A trap hit queued after the Pit trap's strike in the same beat lands after it, so it still finishes a
+    /// creature the strike left at 1, and its owner is paid (#423's re-check, R1, the re-checker's two probes; RTK fires each
+    /// trap as its creature steps). A creature at 5,000 vita steps onto the Pit trap (the strike leaves it 1); then, in the
+    /// same beat, another creature steps onto another player's bladestorm trap with the first in its cone (5% of 20,000 on
+    /// this content-free map: 1,000), or the first darts on across that player's spear trap (3,500). Red with
+    /// <c>Server/World.cs</c> at 562cc69, which landed every Pit strike after the beat's whole trap-damage list: the later
+    /// hit landed first, the strike then left 1, and nobody was paid.</summary>
+    [Theory]
+    [InlineData("bladestorm")]
+    [InlineData("spear")]
+    public void ATrapHitQueuedAfterThePitStrikeStillFinishesTheCreature(string later)
+    {
+        int y = later == "bladestorm" ? CY : CY + 8;
+        var (owner, _, _) = Caster("set_pit_trap", PitOrderMap, CX + 10, y);
+        var (rogue, _, rc) = Caster("set_pit_trap", PitOrderMap, CX + 10, y + 4);   // the other trap's owner
+        var a = AddCreature(PitOrderMap, CX, y, hp: 5_000, maxHp: 1_000_000);
+        var b = later == "bladestorm" ? AddCreature(PitOrderMap, CX - 2, y, hp: 20_000, maxHp: 20_000) : null;
+        a.Exp = 777;
+        if (b is not null) b.Dir = East;
+        try
+        {
+            long now = Environment.TickCount64;
+            uint before = rc.Exp;
+            _fx.World.PlaceTrap(PitOrderMap, CX + 1, (ushort)y, "pit_trap", owner.PlayerId, now + 20_000);
+            if (b is not null) _fx.World.PlaceTrap(PitOrderMap, CX - 1, (ushort)y, "bladestorm", rogue.PlayerId, now + 20_000);
+            else _fx.World.PlaceTrap(PitOrderMap, CX + 2, (ushort)y, "spear", rogue.PlayerId, now + 20_000);
+            var q = new World.TickQueues();
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                var ctx = _fx.World.MobTickContextForTest(PitOrderMap, q);
+                Assert.True(World.MobMovement.StepToForTest(ctx, a, CX + 1, y, East));
+                if (b is not null) Assert.True(World.MobMovement.StepToForTest(ctx, b, CX - 1, y, East));   // A in its cone
+                else Assert.True(World.MobMovement.StepToForTest(ctx, a, CX + 2, y, East));                // the next hop
+            });
+            _fx.World.FlushTickForTest(q);
+            Assert.True(!a.Alive && rc.Exp > before, $"{later} after the strike: vita {a.Hp}, alive {a.Alive}, rogue exp {before} -> {rc.Exp}");
+        }
+        finally
+        {
+            ClearTraps(PitOrderMap);
+            _fx.World.DespawnMob(PitOrderMap, a);
+            if (b is not null) _fx.World.DespawnMob(PitOrderMap, b);
+            Leave(PitOrderMap, owner, rogue);
+        }
+    }
+
+    /// <summary>A creature's sleep amplifier (x1.5 here) goes to the Pit trap's strike, spent when it springs, as RTK's
+    /// calculateDamage spends it in the click (#423's re-check, R2, the re-checker's two probes): the strike takes 307,500
+    /// (the owner's credit), and a poison tick its own beat queued before the step lands at its plain 100, a pet's 50 swing in
+    /// the same beat at its plain roll. Red with <c>Server/World.cs</c> at 562cc69, which spent it when the strike landed,
+    /// last in the beat: the tick or the swing landed first and took it (150, 76) and the strike landed at 205,000.</summary>
+    [Theory]
+    [InlineData("poison")]
+    [InlineData("pet")]
+    public void ACreaturesSleepAmplifierGoesToThePitStrike(string other)
+    {
+        int y = other == "poison" ? CY : CY + 8;
+        var (owner, _, _) = Caster("set_pit_trap", PitAmpMap, CX + 5, y);
+        var mob = AddCreature(PitAmpMap, CX, y, hp: 1_000_000, maxHp: 1_000_000);
+        var pet = other == "pet" ? AddCreature(PitAmpMap, CX, y + 1, hp: 1_000, maxHp: 1_000) : null;
+        try
+        {
+            long now = Environment.TickCount64;
+            _fx.World.ArmDamageAmp(mob, 1.5, 60_000);
+            _fx.World.PlaceTrap(PitAmpMap, CX + 1, (ushort)y, "pit_trap", owner.PlayerId, now + 20_000);
+            var q = new World.TickQueues();
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                var ctx = _fx.World.MobTickContextForTest(PitAmpMap, q);
+                if (pet is not null)
+                {
+                    pet.MinDam = 50; pet.MaxDam = 50;
+                    q.MobHits.Add((PitAmpMap, pet, mob));
+                }
+                else
+                {
+                    mob.PoisonUntil = now + 60_000; mob.PoisonNextTick = now - 1; mob.PoisonTickDam = 100; mob.PoisonOwnerId = 0;
+                    mob.FrozenUntil = now + 60_000;
+                    World.MobAiTick.Step(ctx, mob);
+                }
+                Assert.True(World.MobMovement.StepToForTest(ctx, mob, CX + 1, y, East));
+            });
+            _fx.World.FlushTickForTest(q);
+            long strike = mob.ThreatOf(owner.PlayerId), rest = 1_000_000 - mob.Hp - strike;
+            Assert.True(strike == 307_500 && (other == "poison" ? rest == 100 : rest < 70),
+                        $"{other}: the strike {strike} (want 307,500), the {other}'s blow {rest}");
+        }
+        finally
+        {
+            ClearTraps(PitAmpMap);
+            _fx.World.DespawnMob(PitAmpMap, mob);
+            if (pet is not null) _fx.World.DespawnMob(PitAmpMap, pet);
+            Leave(PitAmpMap, owner);
         }
     }
 
