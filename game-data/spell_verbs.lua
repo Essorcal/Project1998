@@ -1431,9 +1431,10 @@ local CR_RAGE_DURATION_MS = 938000                        -- RTK `local duration
 --     (Q16, "As RTK"): it armed its 120 s wait and nothing checked it, so a climb could run 1 to 6 back to back.
 --   * weak: the line for too little mana. Chung Ryong's is ctx:enoughMana's "You do not have enough mana.".
 --   * top: what a cast at the top tier does. "hold": nothing, silently and for free (the scripts have no branch for
---     it). Chung Ryong's ladder casts its top tier again, as it always has.
+--     it). "say": the ladder's topLine, for free (Spy's Skill up, whose script has that branch). Chung Ryong's ladder
+--     casts its top tier again, as it always has.
 --   * A ladder's tiers may carry their own msg (Chung Ryong's do); otherwise each spell's own six lines are
---     RAGE_LINES[its key], shown after "[Rage N] ".
+--     RAGE_LINES[its key], shown after "[Rage N] ", or after "[<label> N] " for a ladder that names a label.
 --   * A climb continues only the fury it climbed: on a row ladder, the running fury must be this spell
 --     (ctx.rageName), else the cast starts at tier 1, as the scripts' hasDuration(<own key>) reads it.
 -- What a lapsed climb costs in vita is the engine's, looked up by the same ladder name (Session.ChungRyongRageWearOff).
@@ -1485,6 +1486,7 @@ function verbs.chungryong_rage(ctx, row)
   local climbing = ctx.rageActive and (row.category == nil or ctx.rageName == ctx.spellName)
   local base = climbing and ctx.crRageTier or 0
   if base >= #tiers and ladder.top == "hold" then return false end   -- silent, free: the top tier holds
+  if base >= #tiers and ladder.top == "say" then ctx:say(ladder.topLine); return false end   -- its line, free
   local tier = math.min(base + 1, #tiers)
   local t    = tiers[tier]
   local line = t.msg or (RAGE_LINES[ctx.spellKey] or {})[tier]
@@ -1498,7 +1500,7 @@ function verbs.chungryong_rage(ctx, row)
   ctx:setCrRage(tier, t.mult, t.ac, base > 0 and 0 or (row.duration or CR_RAGE_DURATION_MS))
   ctx:setCooldown(ctx.spellKey, ctx.spellAether > 0 and ctx.spellAether or 120000)
   ctx:fxSelf()
-  ctx:say("[Rage " .. tier .. "] " .. line)
+  ctx:say("[" .. (ladder.label or "Rage") .. " " .. tier .. "] " .. line)
   ctx:narrated()                                          -- this line REPLACES the central "You cast X."
   return true
 end
@@ -2987,5 +2989,115 @@ function verbs.revive_map(ctx, row)
     ctx:reviveMap(ctx.name .. " cast " .. ctx.spellName .. " on you.")
   end
   ctx:narrated()                                                   -- its line comes before the sweep's
+  return true
+end
+
+-- =========================================================================================================
+-- SPY (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Spy/ and NPCs/trap/rogue_traps/Spy/). The project owner,
+-- 2026-10-26 (P5, each spell as its RTK script; P1 and P3, on sale once it works, at its script's price) and
+-- 2026-10-30 (Q3, spells only, the KSG chain later; Q4, Dagger to throat on any player on any map, no PK check), and
+-- 2026-11-09 for Spy kit's traps ("Tick its full time": Toxic spray's poison takes its vita every beat for its whole
+-- time, credited to the trap's owner, whatever the victim casts; "Line and slot only": Smoke screen on a player is its
+-- line and its blinds slot, the view unchanged). The verbs here are Spy kit and Dagger to throat, and Skill up's ladder
+-- (RAGE_LADDERS.skill_up, below; it climbs chungryong_rage). The others are rows on verbs that exist: Incognito on
+-- Blend's hide (its script is Diviner's Vanish under its own key), Hear footstep and Assess opponent on Do's (the same
+-- scripts), Mimic on Muse's disguise (Costume's script and numbers), Assassinate on #390's, and Apply stealth, whose
+-- script's cast is empty (RTK casts nothing), on not_castable. Each is bound by its SpellParams.csv row, which carries
+-- its numbers, and is the shape of its script, in that script's order. RTK is weight 0 for balance; these numbers are
+-- its scripts', as RTK under P5.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * Each wait is checked first, with this file's own line (subpath_waiting, or the ladder's gate). RTK waives Skill
+--     up's and Dagger to throat's for a GM; no verb here waives anything for staff.
+--   * A ghost and a mounted caster cast nothing (the engine's gates), where Skill up's canCast(0, ...) lets a ghost.
+--     The cast pose is the engine's, on a cast that lands.
+--   * Skill up strips no lesser fury on a refused cast: RTK's removeDuras(lesserFuries) runs before its mana check. A
+--     fresh climb replaces whatever fury holds the rage slot, as Crossing swords' does.
+--   * Spy kit's menu is not dropped by a later cast (RTK's cast handler frees a waiting script, sl_async_freeco).
+--   * A player springs a trap by walking onto it (RTK also when a refused step, a refresh or a warp puts them on its
+--     tile, clif_sendxy); with two traps on one tile the older springs (RTK: the first NPC its cell lists). Tripwire's
+--     beat graphic plays over a creature only (players have no repeating status graphic here, Insult's rule). The
+--     rest of the traps' rules are World.cs's (the Spy kit block, at TriggerTrapLocked and CheckPlayerTrapTrigger).
+-- =========================================================================================================
+
+-- Skill up (RTK Subpaths/Spy/skill_up.lua; Merchant's and Ranger's skill_up.lua are this file under their own keys).
+-- Its own ladder on chungryong_rage: rage 6, 7, 9, 10, 12, 14 for 3,000, 4,711, 17,960, 53,646, 135,327, 269,420 mana
+-- (tier 6 is the script's, its comment "TESTING ONLY" notwithstanding), no AC (the script has no recast), each line
+-- after "[Skill up N] ", graphic 250 and sound 705 (its spell_effects.csv row, with its 150 s wait as the aether). The
+-- first cast arms the row's 938 s run. Short of mana, "You do not have enough mana.", free; at tier 6, "You have
+-- reached your max potential.", free. When the run lapses the caster keeps all their vita (its uncast only sets rage
+-- 1; Session.RageLadderVitaKept).
+RAGE_LADDERS.skill_up = {
+  gated = true, label = "Skill up", weak = "You do not have enough mana.",
+  top = "say", topLine = "You have reached your max potential.",
+  tiers = {
+    { mult = 6,  mana =   3000, ac = 0 },
+    { mult = 7,  mana =   4711, ac = 0 },
+    { mult = 9,  mana =  17960, ac = 0 },
+    { mult = 10, mana =  53646, ac = 0 },
+    { mult = 12, mana = 135327, ac = 0 },
+    { mult = 14, mana = 269420, ac = 0 },
+  },
+}
+RAGE_LINES.skill_up_spy = {
+  "Your senses sharpen.",
+  "You hone your skills.",
+  "Agility becomes your strongest suit..",
+  "Acquiring cat-like reflex.",
+  "Incredible skill!",
+  "Sagat would be jealous.",
+}
+
+-- Spy kit (RTK Subpaths/Spy/spy_kit.lua), two steps: the cast, then the menu's pick. The cast: inside its wait, the
+-- wait line; short of `mana`, "Your will is too weak." (the script checks 1 and never takes it); then "You cast Spy
+-- Kit." (its own capital K), the `duration` ms wait, and RTK's menu "Which trap would you like to use?" over Toxic
+-- spray, Tripwire and Smoke screen, all before the pick, so a closed menu still costs the wait. The pick (spy_kit_pick)
+-- sets that trap on the tile the caster stands on then, owned by the caster, gone in `durationMax` ms if nothing has
+-- sprung it (ctx:setTrap), and says the script's line. Row: mana 1, duration 10000, durationMax 20000.
+local SPY_KIT_LINE   = "You cast Spy Kit."
+local SPY_KIT_PROMPT = "Which trap would you like to use?"
+local SPY_KIT_TRAPS  = {
+  ["Toxic spray"]  = { kind = "toxic_spray",  line = "You make a toxic spray." },
+  ["Tripwire"]     = { kind = "tripwire",     line = "The tripwire has been set." },
+  ["Smoke screen"] = { kind = "smoke_screen", line = "The smoke screen is set." },
+}
+
+function verbs.spy_kit(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  ctx:say(SPY_KIT_LINE)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:menu(SPY_KIT_PROMPT, "Toxic spray|Tripwire|Smoke screen", "spy_kit_pick")
+  ctx:narrated()                                                   -- its line comes before the menu
+  return true
+end
+
+function verbs.spy_kit_pick(ctx, row)
+  local trap = SPY_KIT_TRAPS[ctx.answer]
+  if not trap then return false end
+  ctx:setTrap(trap.kind, row.durationMax or 0)
+  ctx:say(trap.line)
+  return true
+end
+
+-- Dagger to throat (RTK Subpaths/Spy/dagger_to_throat.lua). Inside its wait, the wait line; short of `mana`, "Your will
+-- is too weak.", free. Then the mana, the `duration` ms wait and "You cast Dagger to throat.", whatever stands there;
+-- and the living player on the faced tile, on any map with no PK check (Q4), reads "You feel the cold steel from a
+-- blade pressed to your neck. ((<caster>))" and cannot Say or Shout for `durationMax` ms ("Your anxiety renders you
+-- speechless." when they try, speech.lua:14-17; the mute speech status), and at its end reads "Your anxiety subsides."
+-- (its SpellText.csv fade line, the script's uncast). A player already muted reads the line again and keeps the mute's
+-- time, as RTK's setDuration leaves a running duration. Row: mana 5000, duration 1000000, durationMax 20000.
+local THROAT_LINE = "You feel the cold steel from a blade pressed to your neck. ((%s))"
+
+function verbs.dagger_to_throat(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  if ctx:facedPlayer() then
+    ctx:tellTargetLine(string.format(THROAT_LINE, ctx.name))
+    ctx:speechStatus("mute", row.durationMax or 0)
+  end
   return true
 end

@@ -667,7 +667,14 @@ balance_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 master_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 ki_strike,18,99,500,acorn,70,amber,1,,,,,rtk-lua
 crossing_swords,18,99,50000,spike,1,chung_ryong_key,1,dragons_liver,1,,,rtk-lua
+skill_up_spy,19,0,0,,,,,,,,,rtk-lua
+incognito,19,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+hear_footstep_spy,19,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
+spy_kit,19,0,0,,,,,,,,,rtk-lua
+mimic_spy,19,0,0,,,,,,,,,rtk-lua
 assassinate,19,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
+assess_opponent_spy,19,99,5000,red_fox_fur,80,fine_rabbit_meat,5,fox_blade,3,,,rtk-lua
+dagger_to_throat,19,99,10000,angels_tear,1,dark_amber,20,electra,1,,,rtk-lua
 read_karma_diviner,12,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
 hear_footstep_diviner,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
 divine_time,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua

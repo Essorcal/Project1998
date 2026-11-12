@@ -2270,6 +2270,14 @@ public sealed partial class Session
     // Whole-second bounds for a RAGGED tick cadence, when the venom that applied this one asked for it
     // (game-data/MobSpells.csv TickMinMs/TickMaxMs). 0 = the fixed World.PoisonTickMs beat.
     private int  _poisonTickMin, _poisonTickMax;
+    // Spy kit's Toxic spray on a player (Session.SpringSpyTrap): its tick line only on an even second of the clock, as its
+    // script's `os.time() % 2 == 0` sends it, at 1 vita too; and no line when it ends (its script has no uncast). The
+    // other poisons keep the line on every tick that takes vita and "The poison passes.".
+    private bool _poisonLineEven;
+    private string _poisonEndLine = PoisonEndText;
+    private const string PoisonEndText = "The poison passes.";
+    /// <summary>The clock Toxic spray's line reads (seconds since the epoch, RTK's <c>os.time()</c>). A seam for its facts.</summary>
+    internal static Func<long> PoisonLineClock = () => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
     /// <summary>The line the status box gets on every tick that takes health, or would but for a ward (#82: the
     /// ward blocks the loss, not the line). Venom is not a hit —
@@ -2308,9 +2316,13 @@ public sealed partial class Session
     /// under (2). Set <c>pcPerTick</c> in SpellParams.csv to switch readings without doing the conversion
     /// in your head.</para>
     /// Also occupies the <c>venoms</c> category, which is what blocks a second venom and lets the eight
-    /// <c>cureCat = venoms</c> cures clear it.</summary>
+    /// <c>cureCat = venoms</c> cures clear it.
+    /// <para><paramref name="openLine"/>, <paramref name="lineOnEvenSeconds"/> and <paramref name="endLine"/> are a
+    /// script's own lines where it has its own (Toxic spray's "Poison.", its even-second tick line, no end line); the
+    /// defaults are every other poison's.</para></summary>
     internal void ReceivePoison(int dps, int durMs, uint by, int anim, string key, string name, int perTick = 0,
-                                int tickMinMs = 0, int tickMaxMs = 0)
+                                int tickMinMs = 0, int tickMaxMs = 0, string openLine = "Poison courses through you.",
+                                bool lineOnEvenSeconds = false, string endLine = PoisonEndText)
     {
         using var _ = EnterState();   // #29: cross-thread entry into this session's state
         if (durMs <= 0 || IsDead) return;
@@ -2323,8 +2335,10 @@ public sealed partial class Session
         _poisonNextTick = Environment.TickCount64 + NextPoisonGap();
         _poisonFxAnim  = anim;
         _poisonBy      = by;
+        _poisonLineEven = lineOnEvenSeconds;
+        _poisonEndLine  = endLine ?? "";
         ReceiveCurse("", 0, durMs, key, name, "venoms");   // the exclusivity slot + the profile duration line
-        SendMiniText("Poison courses through you.");
+        if (!string.IsNullOrEmpty(openLine)) SendMiniText(openLine);
     }
 
     /// <summary>Clear the venom (a cure of category <c>venoms</c>, or the timer lapsing).</summary>
@@ -2334,8 +2348,17 @@ public sealed partial class Session
         bool was = Poisoned;
         _poisonUntil = 0; _poisonFxAnim = 0;
         _poisonTickMin = 0; _poisonTickMax = 0;
+        string end = _poisonEndLine;
+        _poisonLineEven = false; _poisonEndLine = PoisonEndText;
         BuffRemoveAll(b => b.Category == "venoms");
-        if (was) { SendMiniText("The poison passes."); SendStats(); }
+        if (was) { if (end.Length > 0) SendMiniText(end); SendStats(); }
+    }
+
+    /// <summary>The tick's line: on every tick, or for a poison that asked for it (Toxic spray) only on an even second.</summary>
+    private void PoisonLine()
+    {
+        if (_poisonLineEven && PoisonLineClock() % 2 != 0) return;
+        SendMiniText(PoisonTickText);
     }
 
     /// <summary>Driven by the world heartbeat. Deals the tick, redraws the venom animation, and lapses the
@@ -2368,7 +2391,11 @@ public sealed partial class Session
 
         int dam = Math.Min(_poisonPerTick, Math.Max(0, (int)_char.Hp - 1));   // never the killing blow
         if (_poisonFxAnim > 0) BroadcastStatusFx(_poisonFxAnim);
-        if (dam <= 0) return;                       // already at 1 HP: keep flashing, stop hurting
+        if (dam <= 0)                               // already at 1 HP: keep flashing, stop hurting
+        {
+            if (_poisonLineEven) PoisonLine();      // Toxic spray's line comes at 1 vita too (its `health = 1` branch)
+            return;
+        }
         // A WARD BLOCKS THE TICK'S HP LOSS (#82; owner, 2026-10-21, decision sheet item 14). Harden Body, its
         // three alignment reskins and the Scroll of Immortality (DamageImmune) stop the health coming off, and
         // with it everything that follows from a loss: the over-head bar (DamageOver), the stats push, the wake
@@ -2384,11 +2411,11 @@ public sealed partial class Session
         //
         // Gated here, on the heartbeat, under the monitor taken above; the tick does not go through TakeDamage,
         // whose PvP foe mark enters another session's monitor (DamageIntake.cs, the note at its end).
-        if (DamageImmune) { SendMiniText(PoisonTickText); return; }
+        if (DamageImmune) { PoisonLine(); return; }
         _char.Hp -= (uint)dam;
         WakeUp(byDamage: true);                     // poison counts as damage for the sleep-breaks-on-hit rule
         SendStats();
-        SendMiniText(PoisonTickText);               // only on a tick that TOOK health — see the const
+        PoisonLine();                               // only on a tick that TOOK health — see the const
         BroadcastPoisonBar();
         if (_poisonBy != 0 && _poisonBy != _char.Id) MarkPvpFoe(_poisonBy);
     }
@@ -3694,6 +3721,64 @@ public sealed partial class Session
     {
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, "bladestorm", _char.Id, Environment.TickCount64 + lifetimeMs);
         Log.Info($"      Bladestorm(lua) -> trap placed at ({_char.X},{_char.Y}), expires in {lifetimeMs}ms");
+    }
+
+    /// <summary>Spy kit's pick (<c>ctx:setTrap</c>; RTK <c>Spells/Subpaths/Spy/spy_kit.lua:35-74</c>): a hidden trap of
+    /// <paramref name="kind"/> on the caster's own tile, owned by the caster, cleared by the world's expiry sweep after
+    /// <paramref name="lifetimeMs"/> if nothing springs it (RTK's trap NPC's 20 s <c>endAction</c>). Written through
+    /// <see cref="World.PlaceTrap"/>, which takes the world lock inside, as every trap is placed.</summary>
+    internal void LuaSetSpyTrap(SpellDef sp, string kind, int lifetimeMs)
+    {
+        if (!World.IsSpyTrap(kind)) throw new ArgumentException($"no Spy kit trap '{kind}'", nameof(kind));
+        if (lifetimeMs <= 0) throw new ArgumentException("a Spy kit trap needs a lifetime", nameof(lifetimeMs));
+        _world.PlaceTrap(_char.Map, _char.X, _char.Y, kind, _char.Id, Environment.TickCount64 + lifetimeMs);
+        Log.Info($"      {sp.Name}(lua) -> {kind} trap at ({_char.X},{_char.Y}) on map {_char.Map}, gone in {lifetimeMs}ms");
+    }
+
+    /// <summary>This player walked onto a Spy kit trap where it may touch them (<see cref="World.CheckPlayerTrapTrigger"/>,
+    /// on their own thread, after the world lock is released): the trap's spell, as RTK's
+    /// <c>NPCs/trap/rogue_traps/Spy/</c> scripts cast it on a player, written inside this player's own monitor. Nothing is
+    /// written to anyone else: the trap's owner is only named as the poison's source. The trap is already gone.
+    /// <list type="bullet">
+    /// <item>toxic_spray (<c>toxic_spray.lua:26-82</c>): refused while any poison holds; else "Poison.", graphic 1, and 40 s of
+    /// the poison (<see cref="ReceivePoison"/>): a beat every second taking 1% of base vita (at least 1, at most 1,000, never
+    /// the last), graphic 1 each beat, "Poison is spreading through your veins." on even seconds, no line at the end, the
+    /// owner its source for the whole time (the project owner, 2026-11-09, "Tick its full time").</item>
+    /// <item>tripwire (<c>tripwire.lua:27-71</c>): refused while a curse or a protection holds; else armour +30 (more damage
+    /// taken) for 37 s in the curses slot, graphic 1 and "Tripwire". No line at its end (the script's uncast has none).</item>
+    /// <item>smoke_screen (<c>smoke_screen.lua:26-49</c>): refused while a blind holds; else "You cannot see anything." and the
+    /// blinds slot for 25 s. The view is not darkened: the 4.95 client has no known way to (the project owner, 2026-11-09,
+    /// "Line and slot only"; the rule creature blinds on a player already follow, Session.MobSpells.cs).</item>
+    /// </list></summary>
+    internal void SpringSpyTrap(string kind, uint ownerId)
+    {
+        using var _ = EnterState();   // #29: this player's own state, on their own thread
+        if (IsDead) return;
+        string name = Content.SpellByKey(kind)?.Name ?? kind;
+        switch (kind)
+        {
+            case World.ToxicSprayTrap:
+                if (HasStatusCategory("venoms")) break;
+                ReceivePoison(0, World.ToxicSprayPcMs, ownerId, World.SpyTrapCastAnim, kind, name,
+                              perTick: World.ToxicSprayTick(_char.MaxHp), tickMinMs: 1000, tickMaxMs: 1000,
+                              openLine: "Poison.", lineOnEvenSeconds: true, endLine: "");
+                BroadcastFx(_char.Id, World.SpyTrapCastAnim, 0);
+                break;
+            case World.TripwireTrap:
+                if (HasStatusCategory("curses") || HasStatusCategory("protections")) break;
+                ReceiveCurse("armor", World.TripwireArmor, World.TripwireFigure, kind, name, "curses");
+                BroadcastFx(_char.Id, World.SpyTrapCastAnim, 0);
+                SendMiniText("Tripwire");
+                break;
+            case World.SmokeScreenTrap:
+                if (HasStatusCategory("blinds")) break;
+                SendMiniText("You cannot see anything.");
+                ReceiveCurse("", 0, World.SmokeScreenFigure, kind, name, "blinds");
+                break;
+            default:
+                throw new ArgumentException($"no Spy kit trap '{kind}'", nameof(kind));
+        }
+        Log.Info($"   -> {_char.Name} sprang a {kind} trap (owner {ownerId}) on map {_char.Map} at ({_char.X},{_char.Y})");
     }
 
     // Pet Summon core (see CastPetSummon): spawn this pet spell's mob on the first free tile of a CLOCKWISE
@@ -5100,6 +5185,9 @@ public sealed partial class Session
         new Dictionary<string, double[]>(StringComparer.OrdinalIgnoreCase)
         {
             ["rtk_rage"] = new[] { 0.8, 0.8, 0.8, 0.6, 0.4, 0.1 },
+            // Spy's Skill up (Spells/Subpaths/Spy/skill_up.lua; Merchant's and Ranger's are its file): its uncast only sets
+            // rage 1, so a lapsed run keeps all its vita at every tier.
+            ["skill_up"] = new[] { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 },
         };
 
     /// <summary>The ladder named by the SpellParams.csv row (<c>category</c>) of the spell called <paramref name="name"/>
@@ -5770,13 +5858,14 @@ public sealed partial class Session
     //     cave mob-spawn traps; "Spots Ambushes on ground and marks them off as Steel daggers."
     //   * class 2 (Rogue)   — dog/spot_traps.lua       — reveals the rogue combat-trap family (dart/snare/
     //     repeating/flash/spear/poison/death/sleep).
-    // Neither reveals the cosmetic shiver echo (Session.TryMythicFallRoom), the tiger warp-traps, or a
-    // bladestorm decoy. A non-warrior caster of either spell gets the rogue set (RTK only special-cases class 1).
+    // Neither reveals the cosmetic shiver echo (Session.TryMythicFallRoom), the tiger warp-traps, a bladestorm decoy, or
+    // Spy kit's three traps (RTK's rogue list names only the eight, spotTraps.lua:20-27). A non-warrior caster of either
+    // spell gets the rogue set (RTK only special-cases class 1).
     private Trap[] RevealableTrapsNear() =>
         _world.TrapsNear(_char.Map, _char.X, _char.Y, 15)
             .Where(t => CharBasePathId == 1
                 ? t.Kind == "ambush"
-                : t.Kind != "ambush" && t.Kind != "shiver" && t.Kind != "bladestorm")
+                : t.Kind != "ambush" && t.Kind != "shiver" && t.Kind != "bladestorm" && !World.IsSpyTrap(t.Kind))
             .ToArray();
 
     // Watchful Eye (warrior) + Spot Traps (dog/rogue), see Content.IsSpotTrapsSpell and RevealableTrapsNear:

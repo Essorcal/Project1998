@@ -66,6 +66,14 @@
 # verb=faith_strike row and mass_resurrect to verb=revive_map row. The row binds by identifier, so the path-99
 # mass_resurrect row (50010), which RTK's Spells table keeps under the same identifier and RTK casts with the same
 # script, moved with it. bless_drink stays on verb=generic (RTK finds no script of its own). No other line changed.
+# The Spy spells slice (2026-11-09) then moved eight PC-subpath spells off verb=generic (the project owner's P5, Q4
+# and the slice's two trap answers: RTK's scripts; the smaller calls as RTK under P5), each bound by a SpellParams.csv
+# row: skill_up_spy to verb=chungryong_rage row (its own ladder), incognito to verb=hide row (Vanish's shape),
+# hear_footstep_spy to verb=hear_footstep row and assess_opponent_spy to verb=assess row (Do's verbs), spy_kit to
+# verb=spy_kit row, mimic_spy to verb=disguise row (Costume's verb), dagger_to_throat to verb=dagger_to_throat row,
+# and apply_stealth, both rows 30807 and 30810 (one identifier), to verb=not_castable row (its script's cast is empty).
+# The trap spells toxic_spray, tripwire and smoke_screen (50043-50045) stay on verb=generic: Spy kit's traps cast
+# their effects without them. No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -83,8 +91,8 @@ ancestors_touch_mage	3081	verb=arch_heal
 ancestors_touch_poet	4046	verb=arch_heal
 anger_warrior	1002	verb=arch_damage
 anoint_poet	4049	verb=area_heal
-apply_stealth	30807	verb=generic
-apply_stealth	30810	verb=generic
+apply_stealth	30807	verb=not_castable row
+apply_stealth	30810	verb=not_castable row
 appraise_rogue	2016	verb=divine row
 apprentices_wisdom	403	verb=sage_shout row
 approach_spell	104	verb=approach row
@@ -94,7 +102,7 @@ assassinate	30806	verb=assassinate row
 assault	50032	verb=generic
 assault_warrior	1085	verb=arch_damage
 assess_opponent_do	30405	verb=assess row
-assess_opponent_spy	30808	verb=generic
+assess_opponent_spy	30808	verb=assess row
 atone_poet	4081	verb=arch_cure
 augmentation_rogue	2044	verb=stance_rage
 augmentation_warrior	1008	verb=stance_rage
@@ -207,7 +215,7 @@ cure_paralysis_poet	4065	verb=arch_cure
 curse	50023	verb=curse row
 curse_of_the_void_mage	3125	verb=arch_debuff
 curse_protection	412	verb=generic
-dagger_to_throat	30809	verb=generic
+dagger_to_throat	30809	verb=dagger_to_throat row
 dagger_uniform	2124	verb=morph
 daggers_remedy_rogue	2116	verb=arch_heal
 damage_will_poet	4106	verb=curse row
@@ -388,7 +396,7 @@ health_shrine_spell	50037	verb=arch_buff
 healths_return_warrior	1095	verb=arch_heal
 hear_footstep_diviner	31002	verb=hear_footstep row
 hear_footstep_do	30404	verb=hear_footstep row
-hear_footstep_spy	30803	verb=generic
+hear_footstep_spy	30803	verb=hear_footstep row
 hear_spirits_poet	4090	verb=arch_buff
 heavens_kiss_poet	4117	verb=area_heal
 hellfire_mage	3148	verb=arch_damage
@@ -411,7 +419,7 @@ ignite_rogue	2025	verb=arch_damage
 immunity_warrior	1077	verb=ward row
 impact_mage	3084	verb=arch_damage
 improve_sight_poet	4091	verb=arch_buff
-incognito	30802	verb=generic
+incognito	30802	verb=hide row
 inferno_mage	3162	verb=target_area_zap
 infuse_energy_mage	3062	verb=arch_heal
 infuse_energy_poet	4011	verb=arch_heal
@@ -525,7 +533,7 @@ mentor	106	verb=mentor
 mentors_wisdom	402	verb=sage_shout row
 might_mage	3002	verb=arch_buff
 might_rogue	2009	verb=arch_buff
-mimic_spy	30805	verb=generic
+mimic_spy	30805	verb=disguise row
 mind_control	50026	verb=generic
 mingken_assistant_poet	4710	verb=pet_summon
 mingken_avatar_poet	4725	verb=pet_summon
@@ -762,7 +770,7 @@ singe_poet	4029	verb=arch_damage
 singe_rogue	2017	verb=arch_damage
 skill_up_merchant	30601	verb=generic
 skill_up_ranger	30701	verb=generic
-skill_up_spy	30801	verb=generic
+skill_up_spy	30801	verb=chungryong_rage row
 slash_warrior	1058	verb=arch_damage
 sleep_mage	3128	verb=arch_debuff
 sleep_trap	503	verb=generic
@@ -837,7 +845,7 @@ spiritual_guide_rogue	2038	verb=divine row
 spiritual_jump_rogue	2103	verb=leap
 spot_traps	407	verb=spot_traps row
 spot_unbalance_warrior	1049	verb=spot_traps row
-spy_kit	30804	verb=generic
+spy_kit	30804	verb=spy_kit row
 spy_rogue	2037	verb=divine row
 stagger	50033	verb=generic
 static_mage	3007	verb=arch_debuff
