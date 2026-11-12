@@ -55,8 +55,9 @@ public sealed class Trap
 {
     public uint   Id;
     public ushort X, Y;
-    public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm", or Spy
-                               // kit's "toxic_spray"/"tripwire"/"smoke_screen" (World.IsSpyTrap)
+    public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm", Spy
+                               // kit's "toxic_spray"/"tripwire"/"smoke_screen" (World.IsSpyTrap), or Ranger's "pit_trap"
+                               // (World.PitTrap; the four are World.IsSubpathTrap)
     public uint   OwnerId;     // caster's player id — credited with any exp from a trap kill
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
@@ -991,22 +992,26 @@ public sealed partial class World
     public void CheckPlayerTrapTrigger(Session player, ushort mapId, ushort x, ushort y, byte facing)
     {
         Trap? trap;
+        Session? pitOwner = null;
         var coneTargets = new List<Mob>();
         string? ambushMsg = null;
-        // Spy kit's traps spring on a player only where the trap may touch them, and never on a ghost: RTK's click returns
-        // first for `block.state == 1` and for `not block:canPK(block)` (this server's canPK, the PvP map), leaving the
-        // trap where it is. Read on the stepper's own thread, before the lock.
+        // Spy kit's traps and Ranger's Pit trap spring on a player only where the trap may touch them, and never on a
+        // ghost: RTK's click returns first for `block.state == 1` and for `not block:canPK(block)` (this server's canPK, the
+        // PvP map), leaving the trap where it is. Read on the stepper's own thread, before the lock.
         bool spySprings = !player.IsDead && Content.IsPvpMap(mapId);
         lock (_lock)
         {
             var m = Map(mapId);
             // The trap kinds a PLAYER sets off: bladestorm (an AoE decoy), shiver (a cosmetic fall echo — see
             // Session.TryMythicFallRoom), ambush (a cave mob-spawn tile — see Content.AmbushMapDef), and Spy kit's three
-            // where they may touch the stepper. The hazard family (dart/snare/…) stays mob-only.
+            // and the Pit trap where they may touch the stepper. The hazard family (dart/snare/…) stays mob-only.
             trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush"
-                                                || t.Kind == SuteAi.FrigidTrapKind || (spySprings && IsSpyTrap(t.Kind)))
+                                                || t.Kind == SuteAi.FrigidTrapKind || (spySprings && IsSubpathTrap(t.Kind)))
                                                && t.X == x && t.Y == y);
             if (trap is null) return;
+            // A Pit trap whose owner is gone does nothing and stays (RTK pit_trap.lua's click opens on Player(npc.owner),
+            // which is nil then, and stops with a Lua error at owner.maxHealth before it touches anything).
+            if (trap.Kind == PitTrap && (pitOwner = Online.ByIdLocked(trap.OwnerId)) is null) return;
             m.Traps.Remove(trap);
             if (trap.Kind == SuteAi.FrigidTrapKind) RefillFrigidLocked(mapId);   // relocate the sprung tile
             if (trap.Kind == "bladestorm")
@@ -1024,6 +1029,14 @@ public sealed partial class World
         Broadcast(mapId, p => p.ClearTrapMarker(trap.Id));
         // Spy kit's trap: its spell on the stepper, written on their own thread inside their own monitor.
         if (IsSpyTrap(trap.Kind)) { player.SpringSpyTrap(trap.Kind, trap.OwnerId); return; }
+        // The Pit trap: its strike on the stepper, from its owner's max vita and mana as they stand now (a peer read of
+        // the owner, no monitor of theirs taken), written on the stepper's own thread inside their own monitor.
+        if (trap.Kind == PitTrap)
+        {
+            var (vita, mana) = pitOwner!.PeerMaxVitaMana;
+            player.SpringPitTrap(trap.OwnerId, vita, mana);
+            return;
+        }
         // Shiver is pure flavor: sense the sprung trap, nothing else (RTK WarpTrapShiverNpc).
         if (trap.Kind == "shiver") { player.FeelShiver(); return; }
         // Sute's Cave cold tile: a flat hit and its own line. Its replacement was already placed under the
@@ -1233,6 +1246,11 @@ public sealed partial class World
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         long now = Environment.TickCount64;
+        // A Pit trap whose owner is gone does nothing and stays where it was: RTK pit_trap.lua's click opens on
+        // Player(npc.owner), which is nil then, and stops with a Lua error at owner.maxHealth before it touches anything
+        // (the error is caught and the engine goes on, rtk/src/map/sl.c, sl_doscript). The step took it off the list
+        // (MobMovement.StepMobTo), so it goes back at the head, which keeps it the first trap on its tile.
+        if (trap.Kind == PitTrap && Online.ByIdLocked(trap.OwnerId) is null) { Map(mapId).Traps.Insert(0, trap); return; }
         // RTK's every-trap epilogue: removeTrapItem(npc) before npc:delete(). A trap that has gone off takes
         // its revealed marker with it, so a Spot Traps / Watchful Eye sword never outlives the trap it marks.
         _deferredTrapClears.Add((mapId, trap.Id));
@@ -1269,7 +1287,63 @@ public sealed partial class World
             case ToxicSprayTrap or TripwireTrap or SmokeScreenTrap:
                 SpringSpyTrapLocked(mapId, mob, trap);
                 break;
+            case PitTrap:
+                SpringPitTrapLocked(mapId, mob, trap, damageQueue);
+                break;
         }
+    }
+
+    // ---- Ranger's Pit trap (RTK NPCs/trap/rogue_traps/Ranger/pit_trap.lua, set by Spells/Subpaths/Ranger/pit_trap.lua) ----
+    // RTK's trap NPC, as Spy kit's are: never drawn, never shown by Spot traps or Watchful Eye (Session.RevealableTrapsNear),
+    // gone after its 20 s if nothing has sprung it (the expiry sweep in Tick). A creature that steps onto it always springs
+    // it (TriggerTrapLocked); a player only where the trap may touch them, alive (CheckPlayerTrapTrigger,
+    // Session.SpringPitTrap). Its click reads its owner first (Player(npc.owner)): with the owner gone (logged out) the
+    // script stops there with a Lua error, so the trap does nothing and stays, for anyone, until its time. Else the strike:
+    // half the owner's max vita plus half their max mana, as they stand when it springs, through RTK's calculateDamage
+    // (Scripts/scripts.lua:1163-1227: the sleep amplifier, the deduction, armour clamped to the victim's floor and to 100),
+    // then never the last vita (PitTrapDamage), "CHOMP!" to a player, graphic 44, credited to the owner. The script sets no
+    // duration on its victim, so no creature timer applies. Its plain removeHealth tests no ward (DamageIntake's note on
+    // IgnoresHardenBody names this file), so no ward stops it.
+    internal const string PitTrap = "pit_trap";
+    internal const int PitTrapAnim = 44;                        // block:sendAnimation(44), "big teeth"
+    private const int PitTrapArmorCap = 100;                    // calculateDamage: armoramount > 100 -> 100
+
+    /// <summary>Is <paramref name="kind"/> a PC subpath's trap: Spy kit's three or Ranger's Pit trap?</summary>
+    internal static bool IsSubpathTrap(string kind) => IsSpyTrap(kind) || kind == PitTrap;
+
+    /// <summary>The Pit trap's strike before its last line, from RTK pit_trap.lua:5-25: <paramref name="raw"/> (the owner's
+    /// max vita and max mana, half each) times the victim's armour factor (its armour clamped to its floor and to
+    /// <see cref="PitTrapArmorCap"/>), its sleep amplifier and its deduction, then, where the victim has more than 1 vita and
+    /// fewer than the figure, its vita less 1 (RTK's strict <c>block.health &lt; damage</c>, so a figure exactly equal to
+    /// the vita left still takes it all), at 1 vita nothing, else the figure floored once (at least 1).</summary>
+    internal static int PitTrapDamage(double raw, double armorFactor, double amp, double deduction, int hp)
+    {
+        double figure = raw * armorFactor * (amp > 1.0 ? amp : 1.0) * deduction;
+        if (hp > 1 && hp < figure) return hp - 1;
+        if (hp == 1) return 0;
+        return Combat.FloorOnce(figure);
+    }
+
+    /// <summary>The Pit trap's armour factor for a victim of armour <paramref name="armor"/> whose floor is
+    /// <paramref name="floor"/> (-95 a creature, -80 a player): RTK calculateDamage's clamp and <c>1 + armour / 100</c>.</summary>
+    internal static double PitTrapArmorFactor(int armor, int floor) => Combat.ArmorFactor(Math.Min(armor, PitTrapArmorCap), floor);
+
+    /// <summary>A creature springs the Pit trap (caller holds <c>_lock</c>, mid-step; its owner is online, checked above):
+    /// the strike, queued with the tick's other trap damage and credited to the owner, and graphic 44 with the tick's
+    /// deferred effects. The owner's max vita and mana are a peer read (<see cref="Session.PeerMaxVitaMana"/>: one published
+    /// snapshot, no monitor of theirs taken, which would be the wrong order inside <c>_lock</c>). The creature's sleep
+    /// amplifier is spent here, so the queued figure is the whole strike and the hit that applies it finds none; at 1 vita
+    /// the strike is 0 and nothing is queued (RTK's removeHealth(0) takes nothing).</summary>
+    private void SpringPitTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        if (Online.ByIdLocked(trap.OwnerId) is not { } owner) return;
+        var (vita, mana) = owner.PeerMaxVitaMana;
+        int hp = mob.Hp;
+        int dmg = hp == 1 ? 0 : PitTrapDamage(vita * 0.5 + mana * 0.5, PitTrapArmorFactor(mob.Ac, -95),
+                                              mob.TakeDamageAmp(Environment.TickCount64), 1.0, hp);
+        if (dmg > 0) damageQueue.Add((mapId, mob, dmg, trap.OwnerId));
+        _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, PitTrapAnim, 0));
     }
 
     // ---- Spy kit's traps (RTK NPCs/trap/rogue_traps/Spy/, set by Spells/Subpaths/Spy/spy_kit.lua) -------------------
