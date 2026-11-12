@@ -548,6 +548,10 @@ public sealed partial class World
     // removeTrapItem, called by every trap NPC right before it deletes itself). Filled from inside the tick's
     // _lock by TriggerTrapLocked, flushed with _deferredFx once the lock is released — the clear is socket I/O.
     private readonly List<(ushort map, uint trapId)> _deferredTrapClears = new();
+    // Pit trap strikes sprung by a creature (the owner's half max vita plus half max mana, read at the spring), filled from
+    // inside the tick's _lock by SpringPitTrapLocked and landed by FlushTick after the beat's other trap damage
+    // (ApplyPitStrike), so the "never the last vita" rule reads the vita the creature has when the strike lands.
+    private readonly List<(ushort map, Mob mob, double raw, uint ownerId)> _deferredPitStrikes = new();
 
     // Lua mob hooks raised from inside the lock, run by the next Tick OUTSIDE it. This queue is the whole
     // reason MobScript is safe: a hook is free to speak, heal, vanish or touch a player's quest registry,
@@ -1288,7 +1292,7 @@ public sealed partial class World
                 SpringSpyTrapLocked(mapId, mob, trap);
                 break;
             case PitTrap:
-                SpringPitTrapLocked(mapId, mob, trap, damageQueue);
+                SpringPitTrapLocked(mapId, mob, trap);
                 break;
         }
     }
@@ -1303,7 +1307,10 @@ public sealed partial class World
     // (Scripts/scripts.lua:1163-1227: the sleep amplifier, the deduction, armour clamped to the victim's floor and to 100),
     // then never the last vita (PitTrapDamage), "CHOMP!" to a player, graphic 44, credited to the owner. The script sets no
     // duration on its victim, so no creature timer applies. Its plain removeHealth tests no ward (DamageIntake's note on
-    // IgnoresHardenBody names this file), so no ward stops it.
+    // IgnoresHardenBody names this file), so no ward stops it. RTK reads the victim's vita when the trap fires, so the strike
+    // is worked out against the vita the victim has when it lands: on a player at once, inside their monitor; on a creature
+    // in the tick's deferred pass, after the beat's other blows on it (a poison tick, a pet's swing) have landed
+    // (ApplyPitStrike; #423's review, F2).
     internal const string PitTrap = "pit_trap";
     internal const int PitTrapAnim = 44;                        // block:sendAnimation(44), "big teeth"
     private const int PitTrapArmorCap = 100;                    // calculateDamage: armoramount > 100 -> 100
@@ -1329,21 +1336,48 @@ public sealed partial class World
     internal static double PitTrapArmorFactor(int armor, int floor) => Combat.ArmorFactor(Math.Min(armor, PitTrapArmorCap), floor);
 
     /// <summary>A creature springs the Pit trap (caller holds <c>_lock</c>, mid-step; its owner is online, checked above):
-    /// the strike, queued with the tick's other trap damage and credited to the owner, and graphic 44 with the tick's
-    /// deferred effects. The owner's max vita and mana are a peer read (<see cref="Session.PeerMaxVitaMana"/>: one published
-    /// snapshot, no monitor of theirs taken, which would be the wrong order inside <c>_lock</c>). The creature's sleep
-    /// amplifier is spent here, so the queued figure is the whole strike and the hit that applies it finds none; at 1 vita
-    /// the strike is 0 and nothing is queued (RTK's removeHealth(0) takes nothing).</summary>
-    private void SpringPitTrapLocked(ushort mapId, Mob mob, Trap trap, List<(ushort map, Mob mob, int dmg, uint ownerId)> damageQueue)
+    /// the owner's half max vita plus half max mana, read now, as RTK's click reads them, is kept for the tick's deferred
+    /// pass (<see cref="_deferredPitStrikes"/>), where <see cref="ApplyPitStrike"/> lands it; graphic 44 goes with the
+    /// tick's deferred effects. The owner's figures are a peer read (<see cref="Session.PeerMaxVitaMana"/>: one published
+    /// snapshot, no monitor of theirs taken, which would be the wrong order inside <c>_lock</c>).</summary>
+    private void SpringPitTrapLocked(ushort mapId, Mob mob, Trap trap)
     {
         Debug.Assert(Monitor.IsEntered(_lock));
         if (Online.ByIdLocked(trap.OwnerId) is not { } owner) return;
         var (vita, mana) = owner.PeerMaxVitaMana;
-        int hp = mob.Hp;
-        int dmg = hp == 1 ? 0 : PitTrapDamage(vita * 0.5 + mana * 0.5, PitTrapArmorFactor(mob.Ac, -95),
-                                              mob.TakeDamageAmp(Environment.TickCount64), 1.0, hp);
-        if (dmg > 0) damageQueue.Add((mapId, mob, dmg, trap.OwnerId));
+        _deferredPitStrikes.Add((mapId, mob, vita * 0.5 + mana * 0.5, trap.OwnerId));
         _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, PitTrapAnim, 0));
+    }
+
+    /// <summary>A creature's Pit trap strike lands (the tick's deferred pass, after the beat's pet swings and its other trap
+    /// damage and poison ticks; #423's review, F2). Under <c>_lock</c>, against the creature as it stands now: its armour,
+    /// its sleep amplifier (spent here, and not at 1 vita, where RTK's removeHealth(0) runs no on-hit script) and the vita
+    /// it has left (<see cref="PitTrapDamage"/>), so the strike never takes the last vita whatever landed on it first in
+    /// the beat. A strike that leaves it standing lands inside that same hold of the lock, so no other blow can come
+    /// between the cap and the hit (and a hit that does not kill sends nothing from inside the lock: no drops), then the
+    /// over-head bar. Only a strike exactly equal to the vita left kills (RTK's strict test); it lands outside the lock
+    /// through <see cref="ApplyTrapDamage"/>, as every killing trap hit does, since a kill sends its drops, and is
+    /// credited to the owner.</summary>
+    private void ApplyPitStrike(ushort mapId, Mob mob, double raw, uint ownerId)
+    {
+        int dmg;
+        bool landed = false;
+        lock (_lock)
+        {
+            if (!mob.Alive || mob.IsNpc) return;
+            int hp = mob.Hp;
+            dmg = hp == 1 ? 0 : PitTrapDamage(raw, PitTrapArmorFactor(mob.Ac, -95), mob.TakeDamageAmp(Environment.TickCount64),
+                                              1.0, hp);
+            if (dmg <= 0) return;
+            if (dmg < hp)
+            {
+                if (!TryDamage(mapId, mob, dmg, out _, ownerId)) return;
+                landed = true;
+            }
+        }
+        if (!landed) { ApplyTrapDamage(mapId, mob, dmg, ownerId); return; }
+        byte pct = (byte)Math.Clamp(mob.Hp * 100 / Math.Max(1, mob.MaxHp), 1, 100);
+        BroadcastWideArea(mapId, mob.X, mob.Y, p => p.DamageOver(mob.Id, pct, 33));
     }
 
     // ---- Spy kit's traps (RTK NPCs/trap/rogue_traps/Spy/, set by Spells/Subpaths/Spy/spy_kit.lua) -------------------
@@ -3531,11 +3565,13 @@ public sealed partial class World
         List<(ushort map, uint id, ushort x, ushort y, int anim, int sound)> deferred;
         List<(string key, string hook, ushort map, Mob mob, Session? actor)> hooks;
         List<(ushort map, uint trapId)> trapClears;
+        List<(ushort map, Mob mob, double raw, uint ownerId)> pitStrikes;
         lock (_lock)
         {
             deferred = new List<(ushort, uint, ushort, ushort, int, int)>(_deferredFx); _deferredFx.Clear();
             hooks = new List<(string, string, ushort, Mob, Session?)>(_hooks); _hooks.Clear();
             trapClears = new List<(ushort, uint)>(_deferredTrapClears); _deferredTrapClears.Clear();
+            pitStrikes = new List<(ushort, Mob, double, uint)>(_deferredPitStrikes); _deferredPitStrikes.Clear();
         }
         // Traps that went off this tick: rub out their revealed marker on everyone who had spotted them.
         foreach (var tc in trapClears) Broadcast(tc.map, p => p.ClearTrapMarker(tc.trapId));
@@ -3615,6 +3651,9 @@ public sealed partial class World
         // broadcasts/exp can't run under the lock).
         foreach (var td in q.TrapDamage)
             Try(() => ApplyTrapDamage(td.map, td.mob, td.dmg, td.ownerId), "ApplyTrapDamage (tick)");
+        // Pit trap strikes last, each against the vita its creature has once the beat's other blows have landed.
+        foreach (var ps in pitStrikes)
+            Try(() => ApplyPitStrike(ps.map, ps.mob, ps.raw, ps.ownerId), "ApplyPitStrike (tick)");
         MarkPhase(PhPetTrap);
 
         // Expired pets queued above — plain despawn, no kill/loot.

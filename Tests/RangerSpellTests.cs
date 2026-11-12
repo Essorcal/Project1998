@@ -22,7 +22,7 @@ namespace Tests;
 /// <c>Session.SpringPitTrap</c>.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Ranger facing east, on
-/// content-free maps 63600-63627 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
+/// content-free maps 63600-63626 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
 /// class's facts use. A player springs a trap by a real walk frame; a creature by the mob tick's committed step. A menu,
 /// an input box or a box is answered from a thread of its own with no synchronisation context, as a read loop answers it,
 /// so the step resumes inline as on the server.</para>
@@ -36,6 +36,8 @@ public sealed class RangerSpellTests
                          CarveFullMap = 63614, CompanionMap = 63615, CompanionRefuseMap = 63616, ScoutMap = 63617,
                          ScoutUnmarkMap = 63618, ScoutRefuseMap = 63619, ScoutFarMap = 63620, ScoutHeldMap = 63621,
                          ScoutBoxHeldMap = 63622, Arena = 3045;
+    // Fix round 1 (#423's review, F1-F3): content-free too, claimed by no other class.
+    private const ushort PitBeatMap = 63623, CarveGoneMap = 63624, GoneCasterMap = 63625, ScrollMap = 63626;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 400_000, Mana = 400_000, Hp = 10_000;
     private const byte Will = 41;
@@ -58,6 +60,10 @@ public sealed class RangerSpellTests
         typeof(Session).GetField("_durationLineDue", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo RevealMethod =
         typeof(Session).GetMethod("RevealableTrapsNear", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ReplacedField =
+        typeof(Session).GetField("_replaced", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo LeavingField =
+        typeof(Session).GetField("_leaving", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -239,6 +245,31 @@ public sealed class RangerSpellTests
         finally { Leave(BarkWardMap, caster); }
     }
 
+    /// <summary>A Scroll of Immortality read under any of RTK's hardBodies says "You already cast that spell." and is not
+    /// spent, nor rolled, nor its Harden Body set (RTK <c>Items/Consumables/scrolls/scroll_of_immortality.lua:7-10</c>:
+    /// <c>checkIfCast(hardBodies)</c>; #423's review, F3): under Tree bark, Invincibility, or the poet's Harden Body. Red
+    /// with <c>game-data/item_verbs.lua</c> at 6f3c4d5, which refused under the scroll's own <c>harden_body</c> alone (the
+    /// scroll rolls, and is spent when the roll lands).</summary>
+    [Theory]
+    [InlineData("tree_bark")]
+    [InlineData("invincibility")]
+    [InlineData("harden_body_poet")]
+    public void AScrollOfImmortalityIsRefusedUnspentUnderAHardBody(string ward)
+    {
+        var scroll = Content.ItemByKey("scroll_of_immortality")!;
+        int y = CY + 4 * (Interlocked.Increment(ref _serial) % 12);
+        var (reader, rOut, rc) = Caster("tree_bark", ScrollMap, CX, y, configure: ch => ch.Inventory.Add(new InvItem(0, scroll.Id, 1)));
+        try
+        {
+            reader.ItemSetStatus(ward, 60_000);
+            reader.Receive(SessionFixture.Frame(ClientOp.UseItem, new byte[] { 1 }));
+            long hardened = StatusLeft(reader, "harden_body");
+            Assert.True(Lines(rOut) == "You already cast that spell." && Amount(rc, 0) == 1 && hardened == 0,
+                        $"under {ward}: [{Lines(rOut)}], scrolls left {Amount(rc, 0)}, Harden Body {hardened} ms");
+        }
+        finally { Leave(ScrollMap, reader); }
+    }
+
     /// <summary>Under Tree bark a creature's swing and another player's swing deal nothing, while a creature's spell and
     /// another player's spell land, as under Invincibility (RTK reads hardBodies to stop a blow in its swing script alone,
     /// Scripts/hitCritChance.lua). Each damage kind through its real entry point. Red without Tree bark in
@@ -348,12 +379,11 @@ public sealed class RangerSpellTests
             _fx.World.PlaceTrap(PitCreatureMap, CX + 1, (ushort)y, "pit_trap", owner.PlayerId, Environment.TickCount64 + 20_000);
             var q = StepQueued(PitCreatureMap, mob, CX + 1, y, 1);
             bool gone = _fx.World.TrapsNear(PitCreatureMap, CX + 1, y, 0).Length == 0;
-            var hits = q.TrapDamage.Select(h => (h.mob.Id, h.dmg, h.ownerId)).ToList();
             oOut.Clear();
             _fx.World.FlushTickForTest(q);
-            Assert.True(gone && hits.SequenceEqual(new[] { (mob.Id, want, owner.PlayerId) }) && mob.Hp == 1_000_000 - want
-                        && Effects(oOut, mob.Id).Contains(World.PitTrapAnim),
-                        $"AC {ac}: gone {gone}, queued [{string.Join(", ", hits)}] (want {want}), vita {mob.Hp}, graphics " +
+            long credit = mob.ThreatOf(owner.PlayerId);
+            Assert.True(gone && mob.Hp == 1_000_000 - want && credit == want && Effects(oOut, mob.Id).Contains(World.PitTrapAnim),
+                        $"AC {ac}: gone {gone}, vita {mob.Hp} (want {1_000_000 - want}), owner's threat {credit}, graphics " +
                         $"[{string.Join(",", Effects(oOut, mob.Id))}]");
         }
         finally { ClearTraps(PitCreatureMap); _fx.World.DespawnMob(PitCreatureMap, mob); Leave(PitCreatureMap, owner); }
@@ -372,18 +402,18 @@ public sealed class RangerSpellTests
         try
         {
             _fx.World.PlaceTrap(PitCreatureMap, CX + 41, CY, "pit_trap", owner.PlayerId, Environment.TickCount64 + 20_000);
-            var q = StepQueued(PitCreatureMap, mob, CX + 41, CY, 1);
-            var hits = q.TrapDamage.Select(h => h.dmg).ToList();
-            Assert.True(hits.SequenceEqual(new[] { (10_000 + 1_000) / 2 + (400_000 + 1_000) / 2 }),
-                        $"queued [{string.Join(", ", hits)}] (want {(10_000 + 1_000) / 2 + (400_000 + 1_000) / 2})");
+            _fx.World.FlushTickForTest(StepQueued(PitCreatureMap, mob, CX + 41, CY, 1));
+            int took = 1_000_000 - mob.Hp;
+            Assert.True(took == (10_000 + 1_000) / 2 + (400_000 + 1_000) / 2,
+                        $"took {took} (want {(10_000 + 1_000) / 2 + (400_000 + 1_000) / 2})");
         }
         finally { ClearTraps(PitCreatureMap); _fx.World.DespawnMob(PitCreatureMap, mob); Leave(PitCreatureMap, owner); }
     }
 
     /// <summary>The strike never takes a creature's last vita: more than it has left takes all but 1, and at 1 vita it takes
-    /// nothing (nothing queued), the trap still used up. RTK's test is strict (<c>block.health &lt; damage</c>), so a strike
-    /// exactly equal to what is left takes it all. Red with the cap taken out of <c>World.PitTrapDamage</c>; red, for the
-    /// exact case, with the test made inclusive.</summary>
+    /// nothing, the trap still used up. RTK's test is strict (<c>block.health &lt; damage</c>), so a strike exactly equal to
+    /// what is left takes it all. Red with the cap taken out of <c>World.PitTrapDamage</c>; red, for the exact case, with
+    /// the test made inclusive.</summary>
     [Theory]
     [InlineData(1_000, 999)]
     [InlineData(1, 0)]
@@ -400,11 +430,62 @@ public sealed class RangerSpellTests
             _fx.World.PlaceTrap(PitCreatureMap, CX + 21, (ushort)y, "pit_trap", owner.PlayerId, Environment.TickCount64 + 20_000);
             var q = StepQueued(PitCreatureMap, mob, CX + 21, y, 1);
             bool gone = _fx.World.TrapsNear(PitCreatureMap, CX + 21, y, 0).Length == 0;
-            int queued = q.TrapDamage.Where(h => ReferenceEquals(h.mob, mob)).Sum(h => h.dmg);
-            Assert.True(gone && queued == want && (want > 0 || q.TrapDamage.Count == 0),
-                        $"vita {hp}: gone {gone}, queued {queued} in {q.TrapDamage.Count} (want {want})");
+            _fx.World.FlushTickForTest(q);
+            int took = hp - Math.Max(0, mob.Hp);
+            Assert.True(gone && took == want && mob.Alive == (want < hp),
+                        $"vita {hp}: gone {gone}, took {took} (want {want}), alive {mob.Alive}");
         }
         finally { ClearTraps(PitCreatureMap); _fx.World.DespawnMob(PitCreatureMap, mob); Leave(PitCreatureMap, owner); }
+    }
+
+    /// <summary>The last-vita rule reads the creature's vita when the strike lands, after the beat's other blows on it
+    /// (#423's review, F2, the reviewer's two probes; RTK reads <c>block.health</c> when the trap fires): a creature at
+    /// 1,000 whose due poison tick of 100 its own beat queues before it steps onto the trap ends at 1, the strike taking
+    /// 899; one at 2 whose tick of 1 lands first is at 1 when the strike lands, which takes nothing; one a pet swings at for
+    /// 50 in the same beat ends at 1 too. Red with <c>Server/World.cs</c> at 6f3c4d5, which capped the strike when it was
+    /// sprung (the creature dies, credited to the trap's owner), and with the strikes landed before the beat's other
+    /// blows.</summary>
+    [Theory]
+    [InlineData("poison", 1_000, 100)]
+    [InlineData("poison", 2, 1)]
+    [InlineData("pet", 1_000, 50)]
+    public void APitTrapStrikeReadsTheVitaLeftWhenItLands(string first, int hp, int blow)
+    {
+        int y = CY + 4 * (Interlocked.Increment(ref _serial) % 12);
+        var (owner, _, _) = Caster("set_pit_trap", PitBeatMap, CX + 5, y);
+        var mob = AddCreature(PitBeatMap, CX, y, hp: hp, maxHp: 1_000_000);
+        var pet = first == "pet" ? AddCreature(PitBeatMap, CX, y + 1, hp: 1_000, maxHp: 1_000) : null;
+        try
+        {
+            long now = Environment.TickCount64;
+            _fx.World.PlaceTrap(PitBeatMap, CX + 1, (ushort)y, "pit_trap", owner.PlayerId, now + 20_000);
+            var q = new World.TickQueues();
+            _fx.World.UnderWorldLockForTest(() =>
+            {
+                var ctx = _fx.World.MobTickContextForTest(PitBeatMap, q);
+                if (pet is not null)
+                {
+                    pet.MinDam = blow; pet.MaxDam = blow;
+                    q.MobHits.Add((PitBeatMap, pet, mob));   // a pet's swing, landed by the deferred pass before trap damage
+                }
+                else
+                {
+                    mob.PoisonUntil = now + 60_000; mob.PoisonNextTick = now - 1; mob.PoisonTickDam = blow; mob.PoisonOwnerId = 0;
+                    mob.FrozenUntil = now + 60_000;            // its beat queues the tick and does not move it; the step does
+                    World.MobAiTick.Step(ctx, mob);
+                }
+                Assert.True(World.MobMovement.StepToForTest(ctx, mob, CX + 1, y, 1));
+            });
+            _fx.World.FlushTickForTest(q);
+            Assert.True(mob.Alive && mob.Hp == 1, $"{first} of {blow} then the strike, from {hp}: vita {mob.Hp}, alive {mob.Alive}");
+        }
+        finally
+        {
+            ClearTraps(PitBeatMap);
+            _fx.World.DespawnMob(PitBeatMap, mob);
+            if (pet is not null) _fx.World.DespawnMob(PitBeatMap, pet);
+            Leave(PitBeatMap, owner);
+        }
     }
 
     /// <summary>A Pit trap whose owner has gone (logged out) does nothing and stays, for a creature and for a player on a
@@ -427,6 +508,7 @@ public sealed class RangerSpellTests
             Assert.Null(_fx.World.Online.ById(ownerId));
             _fx.World.PlaceTrap(PitGoneMap, CX + 5, CY + 4, "pit_trap", ownerId, Environment.TickCount64 + 20_000);
             var q = StepQueued(PitGoneMap, mob, CX + 5, CY + 4, 1);
+            _fx.World.FlushTickForTest(q);
             wOut.Clear();
             Walk(walker, East);
             Assert.True(q.TrapDamage.Count == 0 && mob.Hp == 100_000 && (mob.X, mob.Y) == (CX + 5, CY + 4)
@@ -708,6 +790,119 @@ public sealed class RangerSpellTests
         {
             foreach (var g in _fx.World.ItemsOn(CarveFullMap)) _fx.World.PickUp(CarveFullMap, g.X, g.Y);
             Leave(CarveFullMap, caster);
+        }
+    }
+
+    /// <summary>A Carve arrow pick that waits at a contended Lua gate while a second login replaces the caster (the gate's
+    /// slow path lets the caster's monitor go, so the kick gets in, writes the row and latches the fence) takes nothing and
+    /// makes nothing, with a full bag (no arrow on the floor) and with room (none in the bag): the materials in memory and
+    /// in the saved row are as they were (#423's review, F1, the reviewer's probe). Red with
+    /// <c>Server/Session.Spells.cs</c> at 6f3c4d5: with a full bag an arrow lies on the floor while the saved row still
+    /// holds all the wood and pebbles, an arrow out of nothing; with room the take and the arrow are in memory only.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AReplacedCastersCarvePickTakesAndMakesNothing(bool fullBag)
+    {
+        var wood = Content.ItemByKey("ginko_wood")!;
+        var pebble = Content.ItemByKey("pebble")!;
+        var filler = Content.ItemByKey("acorn")!;
+        var arrows = Content.ItemByKey("flame_head_arrows")!;
+        int x = fullBag ? CX : CX + 10;
+        var (caster, _, cc) = Caster("carve_arrow", CarveGoneMap, x, CY, configure: ch =>
+        {
+            ch.Inventory.Add(new InvItem(0, wood.Id, 7));
+            ch.Inventory.Add(new InvItem(1, pebble.Id, 2));
+            if (fullBag) for (byte s = 2; s < ch.MaxInv; s++) ch.Inventory.Add(new InvItem(s, filler.Id, 1));
+        });
+        string name = cc.Name;
+        var gateHeld = new ManualResetEventSlim();
+        var release = new ManualResetEventSlim();
+        Thread? holder = null;
+        try
+        {
+            OnOwnThread(() => caster.Receive(SpellCastSupport.CastFrame(0)));
+            holder = new Thread(() => { using (Session.EnterScriptGate()) { gateHeld.Set(); release.Wait(); } }) { IsBackground = true };
+            holder.Start();
+            Assert.True(gateHeld.Wait(TimeSpan.FromSeconds(30)), "the gate was never taken");
+            Exception? pickFault = null;
+            var picker = new Thread(() => { try { caster.Receive(MenuFrame(4)); } catch (Exception e) { pickFault = e; } }) { IsBackground = true };
+            picker.Start();                                    // Flame head: 3 Ginko wood and a Pebble
+            WaitUntilDoneOrBlocked(picker);
+            Assert.True(picker.IsAlive, "the pick did not wait at the gate");
+            var kicker = new Thread(() => caster.KickForReplacement()) { IsBackground = true };
+            kicker.Start();
+            Assert.True(kicker.Join(TimeSpan.FromSeconds(10)), "the kick did not land while the pick waited");
+            release.Set();
+            Assert.True(picker.Join(TimeSpan.FromSeconds(30)), "the pick never finished");
+            Assert.Null(pickFault);
+            int floor = _fx.World.ItemsOn(CarveGoneMap).Where(g => g.X == x && g.Y == CY && g.ItemId == arrows.Id).Sum(g => g.Amount);
+            int Held(IEnumerable<InvItem> bag, ItemDef def) => bag.Where(i => i.ItemId == def.Id).Sum(i => i.Amount);
+            var saved = _fx.Store.Load(name).Character!;
+            Assert.True(caster.IsReplaced && floor == 0 && Held(cc.Inventory, arrows) == 0
+                        && Held(cc.Inventory, wood) == 7 && Held(cc.Inventory, pebble) == 2
+                        && Held(saved.Inventory, wood) == 7 && Held(saved.Inventory, pebble) == 2 && Held(saved.Inventory, arrows) == 0,
+                        $"full bag {fullBag}: replaced {caster.IsReplaced}, floor arrows {floor}, in memory arrows " +
+                        $"{Held(cc.Inventory, arrows)} wood {Held(cc.Inventory, wood)} pebble {Held(cc.Inventory, pebble)}; " +
+                        $"saved wood {Held(saved.Inventory, wood)} pebble {Held(saved.Inventory, pebble)} arrows {Held(saved.Inventory, arrows)}");
+        }
+        finally
+        {
+            release.Set();
+            holder?.Join(TimeSpan.FromSeconds(10));
+            foreach (var g in _fx.World.ItemsOn(CarveGoneMap)) _fx.World.PickUp(CarveGoneMap, g.X, g.Y);
+            Leave(CarveGoneMap, caster);
+        }
+    }
+
+    /// <summary>Each primitive this slice adds that writes the caster's saved state or the world refuses a caster who is
+    /// leaving or whose session a second login has replaced, asked under the caster's monitor (#423's review, F1):
+    /// <c>ctx:takeItem</c> takes nothing, <c>ctx:giveItem</c> gives nothing to the bag or (with the bag full) the floor,
+    /// and <c>ctx:setTrap</c> sets no Pit trap. Red with each primitive's <c>CasterGone</c> test taken out of
+    /// <c>Server/Session.Spells.cs</c>.</summary>
+    [Theory]
+    [InlineData("leaving")]
+    [InlineData("replaced")]
+    public void TheItemAndTrapPrimitivesRefuseAGoneCaster(string why)
+    {
+        var wood = Content.ItemByKey("ginko_wood")!;
+        var filler = Content.ItemByKey("acorn")!;
+        var arrows = Content.ItemByKey("flame_head_arrows")!;
+        int x = why == "leaving" ? CX : CX + 10;
+        var (caster, _, cc) = Caster("set_pit_trap", GoneCasterMap, x, CY, configure: ch =>
+        {
+            ch.Inventory.Add(new InvItem(0, wood.Id, 7));
+            for (byte s = 1; s < ch.MaxInv; s++) ch.Inventory.Add(new InvItem(s, filler.Id, 1));
+        });
+        var pit = Content.SpellByKey("set_pit_trap")!;
+        bool took = true;
+        int given = -1;
+        try
+        {
+            caster.WithState(() =>
+            {
+                if (why == "leaving") LeavingField.SetValue(caster, true); else ReplacedField.SetValue(caster, 1);
+                try
+                {
+                    took = caster.LuaTakeItem("ginko_wood", 3);
+                    given = caster.LuaGiveItem("flame_head_arrows", 1);
+                    caster.LuaSetSpyTrap(pit, "pit_trap", 20_000);
+                }
+                finally
+                {
+                    if (why == "leaving") LeavingField.SetValue(caster, false); else ReplacedField.SetValue(caster, 0);
+                }
+            });
+            int floor = _fx.World.ItemsOn(GoneCasterMap).Count(g => g.ItemId == arrows.Id);
+            int traps = _fx.World.TrapsNear(GoneCasterMap, x, CY, 0).Length;
+            Assert.True(!took && given == 0 && Amount(cc, 0) == 7 && cc.Inventory.All(i => i.ItemId != arrows.Id) && floor == 0 && traps == 0,
+                        $"{why}: took {took}, gave {given}, wood {Amount(cc, 0)}, floor arrows {floor}, traps {traps}");
+        }
+        finally
+        {
+            ClearTraps(GoneCasterMap);
+            foreach (var g in _fx.World.ItemsOn(GoneCasterMap)) _fx.World.PickUp(GoneCasterMap, g.X, g.Y);
+            Leave(GoneCasterMap, caster);
         }
     }
 

@@ -3730,11 +3730,15 @@ public sealed partial class Session
     /// <c>Spells/Subpaths/Ranger/pit_trap.lua:16-25</c>): a hidden trap of <paramref name="kind"/> (a subpath trap kind,
     /// <see cref="World.IsSubpathTrap"/>) on the caster's own tile, owned by the caster, cleared by the world's expiry sweep after
     /// <paramref name="lifetimeMs"/> if nothing springs it (RTK's trap NPC's 20 s <c>endAction</c>). Written through
-    /// <see cref="World.PlaceTrap"/>, which takes the world lock inside, as every trap is placed.</summary>
+    /// <see cref="World.PlaceTrap"/>, which takes the world lock inside, as every trap is placed. No trap for a caster who
+    /// is leaving or whose session a second login has replaced (<see cref="CasterGone"/>; #423's review, F1): the trap is
+    /// a world write, and Spy kit's pick, like Carve arrow's, can wait at the Lua gate while a kick lands.</summary>
     internal void LuaSetSpyTrap(SpellDef sp, string kind, int lifetimeMs)
     {
         if (!World.IsSubpathTrap(kind)) throw new ArgumentException($"no subpath trap '{kind}'", nameof(kind));
         if (lifetimeMs <= 0) throw new ArgumentException("a subpath trap needs a lifetime", nameof(lifetimeMs));
+        using var _ = EnterState();   // #29: held by the verb already; the gone-caster test reads under it
+        if (CasterGone($"{kind} trap")) return;
         _world.PlaceTrap(_char.Map, _char.X, _char.Y, kind, _char.Id, Environment.TickCount64 + lifetimeMs);
         Log.Info($"      {sp.Name}(lua) -> {kind} trap at ({_char.X},{_char.Y}) on map {_char.Map}, gone in {lifetimeMs}ms");
     }
@@ -4881,12 +4885,15 @@ public sealed partial class Session
     /// (<c>ctx:takeItem</c>), as RTK's <c>player:removeItem(name, n)</c> takes them (sl.c, pcl_removeinventoryitem;
     /// pc.c, pc_delitem): the part-full stacks first, then the rest, each in slot order; a stack that empties goes with
     /// "&lt;item&gt; removed.", one left part-full redraws with the line "&lt;item&gt; (&lt;n&gt;)", n the number taken
-    /// from it. False, taking nothing, when there are not that many (RTK's scripts ask hasItem first). Saved.
+    /// from it. False, taking nothing, when there are not that many (RTK's scripts ask hasItem first), or for a caster who
+    /// is leaving or whose session a second login has replaced (<see cref="CasterGone"/>). Saved.
     /// <paramref name="reason"/> is RTK's third <c>removeItem</c> argument, the delete reason byte its <c>pc_delitem</c>
     /// sends for a stack that empties (0, "&lt;item&gt; removed.", when the script passes none; BekyunArrow's 9, which the
     /// 4.95 client words "You gave &lt;item&gt;.", <see cref="DelReason.Gave"/>).</summary>
     internal bool LuaTakeItem(string? itemKey, int amount, int reason = 0)
     {
+        using var _ = EnterState();   // #29: held by the verb already; the gone-caster test reads under it
+        if (CasterGone($"take of '{itemKey}'")) return false;
         var def = string.IsNullOrEmpty(itemKey) ? null : Content.ItemByKey(itemKey);
         if (def is null || amount <= 0 || LuaItemCount(itemKey) < amount) return false;
         int need = amount;
@@ -4910,9 +4917,12 @@ public sealed partial class Session
     /// (<c>itemdb_dura</c>; 30 for Carve arrow's arrows), into the bag as far as it fits; what does not fit lies on the floor at
     /// the caster's feet, with the bag's own line ("You can't have more.", or the carry cap's), as RTK's
     /// <c>pc_dropitemfull</c> drops it. The floor pile is its own: this server's floor never merges piles, where RTK's adds
-    /// it to a matching one on that tile. Returns how many went into the bag. Saved.</summary>
+    /// it to a matching one on that tile. Returns how many went into the bag. Saved. Nothing at all, bag or floor, for a
+    /// caster who is leaving or whose session a second login has replaced (<see cref="CasterGone"/>).</summary>
     internal int LuaGiveItem(string? itemKey, int amount)
     {
+        using var _ = EnterState();   // #29: held by the verb already; the gone-caster test reads under it
+        if (CasterGone($"give of '{itemKey}'")) return 0;
         var def = string.IsNullOrEmpty(itemKey) ? null : Content.ItemByKey(itemKey);
         if (def is null || amount <= 0) return 0;
         ushort dura = def.Durability;
@@ -4925,6 +4935,23 @@ public sealed partial class Session
         SaveChar();
         Log.Info($"      (lua) gave {placed} {def.Key} to '{_char.Name}'{(left > 0 ? $", {left} dropped at their feet" : "")}");
         return placed;
+    }
+
+    /// <summary>Is this caster leaving, or has a second login replaced their session (#423's review, F1)? Then a primitive
+    /// that writes the caster's saved state or the world refuses, as <see cref="ReceiveTitle"/> refuses a replaced player.
+    /// A verb runs in the Lua gate, whose slow path lets the caster's monitor go while it waits
+    /// (<see cref="EnterScriptGate"/>), and a second login's <see cref="KickForReplacement"/> can land in that gap: it writes
+    /// the row and latches the fence, so a take after it would be in memory only, and a give to the floor a real item,
+    /// an arrow out of nothing. Asked under the caster's monitor, which the kick takes, so it cannot change while the
+    /// write it guards runs. The tests made before the gate need no replaced test of their own: the kick closes the
+    /// connection in the same hold of the monitor in which it latches the fence, and no frame is dispatched after the
+    /// close, so only the gate's wait lets a replaced session go on.</summary>
+    private bool CasterGone(string what)
+    {
+        AssertStateHeld(nameof(CasterGone));
+        if (!_leaving && !IsReplaced) return false;
+        Log.Info($"      -x (lua) no {what} for '{_char.Name}': {(IsReplaced ? "replaced by a second login" : "leaving")}");
+        return true;
     }
 
     /// <summary>The Items.csv name of <paramref name="itemKey"/> (<c>ctx:itemName</c>; RTK <c>Item(name).name</c>, the
