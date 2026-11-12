@@ -3039,17 +3039,17 @@ public sealed partial class Session
 
     /// <summary>Ask the caster for a line of text inside a cast (<c>ctx:ask</c>, RTK <c>inputSeq</c>); a submitted answer
     /// runs <paramref name="verb"/> for this caster and spell, with the text as <c>ctx.answer</c>.</summary>
-    internal void LuaAsk(SpellDef sp, string prompt, string verb, string? carry = null)
+    internal void LuaAsk(SpellDef sp, string prompt, string verb, string? carry = null, string? item = null, bool plain = false)
     {
         if (string.IsNullOrEmpty(verb)) return;
-        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb, carry ?? "");
+        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb, carry ?? "", SpellDialogPortrait(0, 0, item, plain));
     }
 
-    private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb, string carry)
+    private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb, string carry, DialogPortrait portrait)
     {
         try
         {
-            string? typed = await DlgInputPush(0, 0, prompt);
+            string? typed = await DlgInputPush(portrait, prompt);
             if (typed is null) return;   // a reply that is not a submit: nothing runs
             RunSpellStep(sp, verb, typed, carry);
         }
@@ -3071,20 +3071,23 @@ public sealed partial class Session
 
     /// <summary>The portrait of a spell's dialog box (RTK <c>convertGraphic</c>): the Items.csv item
     /// <paramref name="item"/>'s icon when one is named, as an NPC's item portrait is drawn (<see cref="DlgSayItem"/>);
-    /// else creature look <paramref name="look"/> in palette <paramref name="color"/>; none for look 0.</summary>
-    private DialogPortrait SpellDialogPortrait(int look, int color, string? item)
+    /// else creature look <paramref name="look"/> in palette <paramref name="color"/>; none for look 0. With
+    /// <paramref name="plain"/> the item's icon is drawn at colour 0, its base frame (RTK's <c>{graphic = item.icon,
+    /// item.iconC}</c>, a table with no <c>color</c> key, so the box's colour reads 0: Engrave's picked item).</summary>
+    private DialogPortrait SpellDialogPortrait(int look, int color, string? item, bool plain = false)
     {
         if (!string.IsNullOrEmpty(item) && Content.ItemByKey(item) is { } def)
-            return DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
+            return plain ? DialogPortrait.Item(def.Icon, 0)
+                         : DialogPortrait.Item(IconOf(def), _ver == ClientVersion.V533 ? def.IconColor : (byte)0);
         return DialogPortrait.Look(look, color);
     }
 
     /// <summary>A box with no button on the caster (<c>ctx:dialog</c>, RTK <c>dialogSeq(..., 0)</c>), under the caster's
     /// own entity id. It waits for nothing.</summary>
-    internal void LuaDialog(string text, int look, int color, string? item)
+    internal void LuaDialog(string text, int look, int color, string? item, bool plain = false)
     {
         using var _ = EnterState();
-        SendScriptMessageP(_char.Id, text ?? "", SpellDialogPortrait(look, color, item), prev: false, next: false);
+        SendScriptMessageP(_char.Id, text ?? "", SpellDialogPortrait(look, color, item, plain), prev: false, next: false);
     }
 
     /// <summary>The caster's box with the next arrow, then the target's box (<c>ctx:dialogThenTarget</c>): RTK
@@ -4028,11 +4031,14 @@ public sealed partial class Session
     /// <summary>A menu inside a cast (<c>ctx:menu</c>; RTK <c>player:menuString</c> from a spell, Wilderness guise's
     /// "Which guise would you like to use?"): sent now, with no portrait (RTK's <c>npcGraphic = 0</c> under
     /// <c>dialogType 0</c>), on the caster's own entity id, and answered later. The cast returns at once.
-    /// <paramref name="carry"/> is handed on to the pick's step as <c>ctx.carried</c> (Forgive's target's name).</summary>
-    internal void LuaSpellMenu(SpellDef sp, string prompt, string options, string verb, string? carry = null)
+    /// <paramref name="carry"/> is handed on to the pick's step as <c>ctx.carried</c> (Forgive's target's name). With an
+    /// Items.csv <paramref name="item"/> the menu carries that item's icon (Gambling's coins, Engrave's picked item),
+    /// as <see cref="SpellDialogPortrait"/> draws it.</summary>
+    internal void LuaSpellMenu(SpellDef sp, string prompt, string options, string verb, string? carry = null,
+                               string? item = null, bool plain = false)
     {
         var opts = options.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        _ = RunSpellMenuAsync(sp, prompt, opts, verb, carry ?? "");
+        _ = RunSpellMenuAsync(sp, prompt, opts, verb, carry ?? "", SpellDialogPortrait(0, 0, item, plain));
     }
 
     /// <summary>The menu's answer. It resumes on the caster's own handler thread, inside their monitor
@@ -4041,11 +4047,12 @@ public sealed partial class Session
     /// <c>ctx.carried</c>. A closed box never answers, so nothing runs; a warp lets the box go (<see cref="EnterMap"/>), as
     /// for every prompt. A caster who has died or is leaving by the time they pick runs nothing. The verb's verdict is not
     /// read: the cast it belongs to has long since landed.</summary>
-    private async Task RunSpellMenuAsync(SpellDef sp, string prompt, string[] options, string verb, string carry)
+    private async Task RunSpellMenuAsync(SpellDef sp, string prompt, string[] options, string verb, string carry,
+                                         DialogPortrait portrait)
     {
         try
         {
-            int choice = await DlgMenuPush(DialogPortrait.None, prompt, options);
+            int choice = await DlgMenuPush(portrait, prompt, options);
             if (choice < 1 || choice > options.Length) return;
             if (IsDead || _leaving) return;
             Content.SpellParams.TryGetValue(sp.Key, out var row);
@@ -4874,8 +4881,11 @@ public sealed partial class Session
     /// (<c>ctx:takeItem</c>), as RTK's <c>player:removeItem(name, n)</c> takes them (sl.c, pcl_removeinventoryitem;
     /// pc.c, pc_delitem): the part-full stacks first, then the rest, each in slot order; a stack that empties goes with
     /// "&lt;item&gt; removed.", one left part-full redraws with the line "&lt;item&gt; (&lt;n&gt;)", n the number taken
-    /// from it. False, taking nothing, when there are not that many (RTK's scripts ask hasItem first). Saved.</summary>
-    internal bool LuaTakeItem(string? itemKey, int amount)
+    /// from it. False, taking nothing, when there are not that many (RTK's scripts ask hasItem first). Saved.
+    /// <paramref name="reason"/> is RTK's third <c>removeItem</c> argument, the delete reason byte its <c>pc_delitem</c>
+    /// sends for a stack that empties (0, "&lt;item&gt; removed.", when the script passes none; BekyunArrow's 9, which the
+    /// 4.95 client words "You gave &lt;item&gt;.", <see cref="DelReason.Gave"/>).</summary>
+    internal bool LuaTakeItem(string? itemKey, int amount, int reason = 0)
     {
         var def = string.IsNullOrEmpty(itemKey) ? null : Content.ItemByKey(itemKey);
         if (def is null || amount <= 0 || LuaItemCount(itemKey) < amount) return false;
@@ -4887,7 +4897,7 @@ public sealed partial class Session
             int take = Math.Min(need, it.Amount);
             it.Amount -= take;
             need -= take;
-            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem(it.Slot, DelReason.Removed); }
+            if (it.Amount <= 0) { _char.Inventory.Remove(it); SendDelItem(it.Slot, (DelReason)reason); }
             else { SendMiniText($"{def.Name} ({take})"); SendAddItem(it); }
         }
         SaveChar();
@@ -4987,6 +4997,344 @@ public sealed partial class Session
         Log.Info($"   -> MARK CLEARED: {_char.Name} {regKey}");
         return true;
     }
+
+    // ---- the Merchant spells (RTK Spells/Subpaths/Merchant/) ----------------------------------------------------------
+    // The engine half of the Merchant verbs in game-data/spell_verbs.lua: Engrave's and Gambling's hand-offs between
+    // players (P13: a menu, an input box or a box on another player, whose answer runs the next step on that player's own
+    // session, as RTK's `async` runs presentOffer in the customer's own coroutine), the customer's item-list window, RTK's
+    // popUp, the two settles that move gold (and Engrave's name), Pilfer's reach and BekyunArrow's room check.
+    //
+    // LOCKS. As the Ranger half: a verb runs on its player's packet or handler thread, inside that player's monitor and the
+    // Lua gate, never World._lock. A prompt on another player is sent, and their waiting conversation dropped, inside their
+    // own monitor (taken here by StateRank, AwaitReply's shape); their answer resumes on their own thread under their own
+    // monitor and runs the next verb there through the gate, as a menu's pick does. Each settle is one section holding
+    // both players' monitors (WithStatePair, rank order), with no Lua inside it, which reads presence and gold again and
+    // then writes: so a party who left, was replaced or spent the gold since the last check moves nothing, and a party
+    // cannot be paid without the other paying. The paired save follows the section (FlushPair), as the trade's does.
+    // Pilfer's floor is taken through World.PickUp, which takes World._lock inside; the bag and purse are the caster's own,
+    // under the monitor the cast holds. No new lock.
+
+    /// <summary>The caster's gold (<c>ctx.gold</c>; RTK <c>player.money</c>): a read of their own purse, under the monitor
+    /// the cast or step holds.</summary>
+    internal uint LuaGold => _char.Coins;
+
+    /// <summary>The Items.csv key of what lies in bag slot <paramref name="slot"/> (0-based), "" for an empty slot
+    /// (<c>ctx:slotItem</c>; RTK <c>getInventoryItem(slot).yname</c>).</summary>
+    internal string LuaSlotItem(int slot) => InvAt(slot) is { } it ? Content.ItemById(it.ItemId)?.Key ?? "" : "";
+
+    /// <summary>The engraved name of what lies in bag slot <paramref name="slot"/>, "" for none or an empty slot
+    /// (<c>ctx:slotEngraving</c>; RTK <c>getInventoryItem(slot).realName</c>).</summary>
+    internal string LuaSlotEngraving(int slot) => InvAt(slot)?.CustomName ?? "";
+
+    /// <summary>A prompt on the player this cast resolved (<c>ctx:menuTarget</c>, <c>askTarget</c>, <c>boxTarget</c>):
+    /// RTK's <c>target:freeAsync()</c> then the target's own <c>menuSeq</c>, <c>inputSeq</c> or <c>dialogSeq(..., 1)</c> in
+    /// a coroutine of theirs (Engrave's and Gambling's hand-offs). Their waiting conversation is dropped and the prompt sent
+    /// on their own entity id, inside their monitor; their answer runs <paramref name="verb"/> for <paramref name="sp"/> on
+    /// their session (they are <c>ctx</c> there), with the picked option, the typed text or "" as <c>ctx.answer</c> and
+    /// <paramref name="carry"/> as <c>ctx.carried</c>. An empty <paramref name="verb"/> runs nothing on the answer (the
+    /// caster's own offer to themselves: RTK's script drops it). False, sending nothing, with no target or one who is going
+    /// away or replaced.</summary>
+    internal bool LuaPromptTarget(SpellDef sp, char kind, string? prompt, string? options, string? verb, string? carry,
+                                  string? item, bool plain)
+    {
+        if (_pcSpellTarget is not { } target) return false;
+        var opts = (options ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string from = $"{_char.Name}'s {sp.Name}";
+        bool sent = target.WithState(() =>
+        {
+            if (GoingAway(target) || target.IsReplaced) return false;
+            target.DropWaitingDialog(from);
+            // The async method's first part (the send and the pending reply) runs here, inside the target's monitor.
+            _ = target.RunPromptStepAsync(sp, kind, prompt ?? "", opts, verb ?? "", carry ?? "",
+                                          target.SpellDialogPortrait(0, 0, item, plain));
+            return true;
+        });
+        Log.Info($"      (lua) {sp.Name} -> {(sent ? "a prompt" : "no prompt (going away)")} from {_char.Name} to {target.CharName}");
+        return sent;
+    }
+
+    /// <summary>A box with the next arrow on THIS player (<c>ctx:dialogNext</c>; RTK <c>dialogSeq({t, text}, 1)</c>), whose
+    /// answer runs <paramref name="verb"/> here, or nothing for an empty one (Engrave's "too long" box, after which the
+    /// script returns).</summary>
+    internal void LuaDialogNext(SpellDef sp, string? text, string? verb, string? carry, string? item, bool plain)
+    {
+        using var held = EnterState();
+        _ = RunPromptStepAsync(sp, 'b', text ?? "", Array.Empty<string>(), verb ?? "", carry ?? "",
+                               SpellDialogPortrait(0, 0, item, plain));
+    }
+
+    /// <summary>The prompt and the step after it, on THIS player's session: 'm' a menu of <paramref name="options"/>, 'a'
+    /// an input box, 'b' a box with the next arrow. A closed box never answers, so nothing runs (the 4.95 client sends
+    /// nothing on a close); a menu reply that is no pick, or an input reply that is no submit, runs nothing either.</summary>
+    private async Task RunPromptStepAsync(SpellDef sp, char kind, string prompt, string[] options, string verb, string carry,
+                                          DialogPortrait portrait)
+    {
+        try
+        {
+            string answer;
+            switch (kind)
+            {
+                case 'm':
+                    int choice = await DlgMenuPush(portrait, prompt, options);
+                    if (choice < 1 || choice > options.Length) return;
+                    answer = options[choice - 1];
+                    break;
+                case 'a':
+                    string? typed = await DlgInputPush(portrait, prompt);
+                    if (typed is null) return;
+                    answer = typed;
+                    break;
+                default:
+                    await AwaitReply(() => SendScriptMessageP(_char.Id, prompt, portrait, prev: false, next: true));
+                    answer = "";
+                    break;
+            }
+            if (verb.Length > 0) RunSpellStep(sp, verb, answer, carry);
+        }
+        catch (Exception e) { Log.Error($"{sp.Name}'s prompt for '{_char.Name}' threw: {LuaVerbHost.Describe(e)}", e); }
+    }
+
+    /// <summary>RTK's <c>player:popUp(text)</c> (<c>ctx:popUp</c>): a message box on THIS player. RTK's popup is the 0x0A
+    /// frame with type 8, which this server has never shown on the 4.95 client, so it is the box with no button every
+    /// spell box here uses, with no portrait, on the player's own entity id. It drops nothing they have waiting.</summary>
+    internal void LuaPopUp(string? text)
+    {
+        using var _ = EnterState();
+        SendScriptMessageP(_char.Id, text ?? "", DialogPortrait.None, prev: false, next: false);
+    }
+
+    /// <summary><see cref="LuaPopUp"/> on the online player named <paramref name="name"/> (<c>ctx:popUpNamed</c>; Engrave's
+    /// lines to the other party), found again by name and sent inside their own monitor. False, sending nothing, when
+    /// nobody online has that name or they are going away or replaced.</summary>
+    internal bool LuaPopUpNamed(SpellDef sp, string? name, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(name) || _world.Online.FindPlayer(name.Trim()) is not { } other) return false;
+        bool sent = other.WithState(() =>
+        {
+            if (GoingAway(other) || other.IsReplaced) return false;
+            other.SendScriptMessageP(other._char.Id, text ?? "", DialogPortrait.None, prev: false, next: false);
+            return true;
+        });
+        Log.Info($"      (lua) {sp.Name} -> a popup from {_char.Name} to {name}{(sent ? "" : " (not sent: going away)")}");
+        return sent;
+    }
+
+    /// <summary>Engrave's item list (<c>ctx:pickItem</c>; RTK <c>engravee:buy(prompt, ids, counts, engraves, owners)</c>,
+    /// as the script means it: the project owner's answer, 2026-11-12, "As the script means"): RTK's item-list window
+    /// (the buy grid) of THIS player's bag items of types <paramref name="minType"/> to <paramref name="maxType"/>, in slot
+    /// order, each under its engraved name if it has one and " - BONDED" after an owned one (RTK <c>clif_buydialog</c>),
+    /// with its count where a shop shows a price, as RTK's bank lists show theirs; on this player's own entity id, with
+    /// the <paramref name="item"/>'s icon as its portrait. The window answers with a row's name, so a name two rows share
+    /// is told apart as the bank's list does, "&lt;name&gt; (2)"; the row picked names its slot, and <paramref name="verb"/>
+    /// runs with that slot (0-based) as <c>ctx.answer</c>. A closed window picks nothing.</summary>
+    internal void LuaPickItem(SpellDef sp, string? prompt, int minType, int maxType, string? verb, string? carry, string? item)
+    {
+        using var held = EnterState();
+        var bySlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var rows = new List<GridRow>();
+        foreach (var it in _char.Inventory.OrderBy(i => i.Slot))
+        {
+            if (Content.ItemById(it.ItemId) is not { } def || def.Type < minType || def.Type > maxType) continue;
+            string name = it.CustomName.Length > 0 ? it.CustomName : def.Name;
+            if (it.Owner.Length > 0) name += " - BONDED";
+            string label = name;
+            for (int n = 2; bySlot.ContainsKey(label); n++) label = $"{name} ({n})";
+            bySlot[label] = it.Slot;
+            rows.Add(ShopRow(def, it.Amount) with { Name = label });
+        }
+        _ = RunPickItemAsync(sp, prompt ?? "", rows, bySlot, verb ?? "", carry ?? "", SpellDialogPortrait(0, 0, item));
+    }
+
+    private async Task RunPickItemAsync(SpellDef sp, string prompt, List<GridRow> rows, Dictionary<string, int> bySlot,
+                                        string verb, string carry, DialogPortrait portrait)
+    {
+        try
+        {
+            SendBuyGrid(_char.Id, portrait, prompt, rows);
+            var pick = await AwaitShopReply();
+            if (!bySlot.TryGetValue(pick.Name, out int slot)) return;     // closed, or a name the window never had
+            if (verb.Length > 0) RunSpellStep(sp, verb, slot.ToString(System.Globalization.CultureInfo.InvariantCulture), carry);
+        }
+        catch (Exception e) { Log.Error($"{sp.Name}'s item list for '{_char.Name}' threw: {LuaVerbHost.Describe(e)}", e); }
+    }
+
+    /// <summary>Engrave's settle (<c>ctx:engraveItem</c>; RTK <c>Spells/Subpaths/Merchant/engrave.lua:170-200</c>), run by
+    /// the engraver (THIS player): the customer named <paramref name="customerName"/> found again by name, then, in one
+    /// section holding both monitors, the script's re-checks and writes: "gone" when nobody online has the name or they
+    /// are going away or replaced (the script's "That character is no longer online."); "short" when their gold is below
+    /// <paramref name="cost"/>; "leaving" when the engraver is; else their gold goes down by <paramref name="cost"/> ("N gold
+    /// removed.", RTK <c>Player.removeGold</c>) and the engraver's up ("N gold added.", <c>addGold</c>), the engraver's saved
+    /// registry key <paramref name="timerKey"/> becomes now + <paramref name="timerSecs"/> seconds (RTK <c>os.time()</c>), the
+    /// item in the customer's bag slot <paramref name="slot"/> takes the name <paramref name="name"/> (RTK's item object
+    /// is bound to the slot, so whatever lies there now; an empty slot is renamed nothing), the customer's bag is drawn
+    /// again (<c>refreshInventory</c>), and both read <paramref name="line"/> (<c>popUp</c>): "done". Both saved in one
+    /// transaction after the section.</summary>
+    internal string LuaEngraveItem(SpellDef sp, string? customerName, int slot, string? name, long cost, string? timerKey,
+                                   int timerSecs, string? line)
+    {
+        if (cost < 0 || string.IsNullOrWhiteSpace(customerName) || _world.Online.FindPlayer(customerName.Trim()) is not { } customer)
+            return "gone";
+        var engraver = this;
+        string outcome = "gone";
+        WithStatePair(engraver, customer, () =>
+        {
+            if (GoingAway(engraver) || engraver.IsReplaced) { outcome = "leaving"; return; }
+            if (GoingAway(customer) || customer.IsReplaced) { outcome = "gone"; return; }
+            if (customer._char.Coins < cost) { outcome = "short"; return; }
+            customer.RemoveGoldLine((uint)cost);
+            engraver.AddGoldLine((uint)cost);
+            if (!string.IsNullOrEmpty(timerKey))
+                QuestState.Over(engraver._char, QuestState.Registry)
+                    .Set(timerKey, (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() + timerSecs));
+            if (customer.InvAt(slot) is { } it) it.CustomName = name ?? "";
+            customer.RefreshInventory();
+            engraver.MarkDirty();
+            customer.MarkDirty();
+            engraver.SendScriptMessageP(engraver._char.Id, line ?? "", DialogPortrait.None, prev: false, next: false);
+            customer.SendScriptMessageP(customer._char.Id, line ?? "", DialogPortrait.None, prev: false, next: false);
+            outcome = "done";
+        });
+        if (outcome == "done" && !FlushPair(engraver, customer))
+            Log.Warn($"{sp.Name}: the save of '{engraver.CharName}' and '{customer.CharName}' FAILED; both left dirty for retry");
+        Log.Info($"      (lua) {sp.Name} -> {customer.CharName}'s slot {slot}, {cost} gold: {outcome}");
+        return outcome;
+    }
+
+    /// <summary>Gambling's settle (<c>ctx:settleWager</c>; RTK <c>Spells/Subpaths/Merchant/gambling.lua:160-208</c>, the
+    /// script's <c>run</c>), run by the merchant: the two gamblers found again by name (<paramref name="name1"/> is the
+    /// script's target1, the second gambler asked; <paramref name="name2"/> the first), then, in one section holding both
+    /// their monitors: "gone" when either is offline, going away or replaced (the script's "One of the parties logged.",
+    /// the project owner's answer, 2026-11-12, "Find again by name"); "short1" or "short2" when that gambler's gold is
+    /// below <paramref name="amount"/>, the first checked first; else the higher roll wins: graphic 2 over the winner
+    /// (<c>sendAnimation(2, 3)</c>), the winner reads <paramref name="winLine"/> and the loser <paramref name="loseLine"/>,
+    /// then the winner gains <paramref name="amount"/> ("N gold added.") and the loser pays it ("N gold removed."), "win1" or
+    /// "win2"; equal rolls, both read <paramref name="tieLine"/> and nothing moves, "tie". The two saved in one transaction
+    /// after the section when gold moved.</summary>
+    internal string LuaSettleWager(SpellDef sp, string? name1, string? name2, int amount, int roll1, int roll2,
+                                   string? winLine, string? loseLine, string? tieLine)
+    {
+        var p1 = string.IsNullOrWhiteSpace(name1) ? null : _world.Online.FindPlayer(name1.Trim());
+        var p2 = string.IsNullOrWhiteSpace(name2) ? null : _world.Online.FindPlayer(name2.Trim());
+        if (p1 is null || p2 is null || ReferenceEquals(p1, p2) || amount < 0) return "gone";
+        string outcome = "gone";
+        WithStatePair(p1, p2, () =>
+        {
+            if (GoingAway(p1) || p1.IsReplaced || GoingAway(p2) || p2.IsReplaced) { outcome = "gone"; return; }
+            if (p1._char.Coins < (uint)amount) { outcome = "short1"; return; }
+            if (p2._char.Coins < (uint)amount) { outcome = "short2"; return; }
+            if (roll1 == roll2)
+            {
+                p1.SendMiniText(tieLine ?? "");
+                p2.SendMiniText(tieLine ?? "");
+                outcome = "tie";
+                return;
+            }
+            var (winner, loser) = roll1 > roll2 ? (p1, p2) : (p2, p1);
+            winner.BroadcastFx(winner._char.Id, 2, -1);
+            // The script's order: the winner's graphic, p1's line, p2's line, then p1's gold, then p2's.
+            p1.SendMiniText(ReferenceEquals(p1, winner) ? winLine ?? "" : loseLine ?? "");
+            p2.SendMiniText(ReferenceEquals(p2, winner) ? winLine ?? "" : loseLine ?? "");
+            foreach (var p in new[] { p1, p2 })
+            {
+                if (ReferenceEquals(p, winner)) p.AddGoldLine((uint)amount);
+                else p.RemoveGoldLine((uint)amount);
+                p.MarkDirty();
+            }
+            outcome = ReferenceEquals(winner, p1) ? "win1" : "win2";
+        });
+        if (outcome is "win1" or "win2" && !FlushPair(p1, p2))
+            Log.Warn($"{sp.Name}: the save of '{p1.CharName}' and '{p2.CharName}' FAILED; both left dirty for retry");
+        Log.Info($"      (lua) {sp.Name} -> {p1.CharName} ({roll1}) v {p2.CharName} ({roll2}) for {amount}: {outcome}");
+        return outcome;
+    }
+
+    /// <summary>RTK's <c>Player.addGold</c> (<c>rtklua/Accepted/player.lua:3598-3608</c>): the gold, the status, then
+    /// "N gold added.". Under this player's monitor, which the caller holds.</summary>
+    private void AddGoldLine(uint amount)
+    {
+        if (amount == 0) return;
+        _char.Coins += amount;
+        SendStats();
+        SendMiniText($"{amount} gold added.");
+    }
+
+    /// <summary>RTK's <c>Player.removeGold</c> (<c>rtklua/Accepted/player.lua:3610-3626</c>) after its caller's check: the
+    /// gold, the status, then "N gold removed.". Under this player's monitor, which the caller holds.</summary>
+    private void RemoveGoldLine(uint amount)
+    {
+        if (amount == 0) return;
+        _char.Coins -= Math.Min(amount, _char.Coins);
+        SendStats();
+        SendMiniText($"{amount} gold removed.");
+    }
+
+    /// <summary>Pilfer's reach (<c>ctx:pilfer</c>; RTK <c>Spells/Subpaths/Merchant/pilfer.lua:20-114</c>): the tiles 1 to
+    /// <paramref name="spaces"/> ahead of the caster, each passed over when any player stands on it (RTK
+    /// <c>getObjectsInCell(BL_PC)</c>), else every item lying there, newest first: RTK's <c>canLoot</c> refuses each while
+    /// another player stands on the caster's own tile ("You cannot pick up items while stacked.") or while it is a death
+    /// pile still locked to someone else ("That item does not belong to you."), each refusal followed by
+    /// <paramref name="refusal"/>; the rest are taken: coins into the purse (RTK sends no status for them, so the purse
+    /// shows them at the next status), an item into the bag with its durability, engraved name and owner, what does not
+    /// fit lying at the caster's feet with the bag's line (RTK <c>addItem</c>, <c>pc_dropitemfull</c>). Returns how many
+    /// were taken. Nothing for a caster who is going away or replaced. Saved.</summary>
+    internal int LuaPilfer(SpellDef sp, int spaces, string? refusal)
+    {
+        using var _ = EnterState();
+        if (_leaving || IsReplaced) return 0;
+        int taken = 0;
+        for (int i = 1; i <= spaces; i++)
+        {
+            int x = _char.X + (_facing == 1 ? i : _facing == 3 ? -i : 0), y = _char.Y + (_facing == 2 ? i : _facing == 0 ? -i : 0);
+            if (x < 0 || y < 0 || x >= _char.MapXs || y >= _char.MapYs) continue;
+            if (_world.PlayersAt(_char.Map, x, y).Count > 0) continue;
+            var lying = _world.ItemsOn(_char.Map).Where(g => g.X == x && g.Y == y).Reverse().ToList();
+            foreach (var gi in lying)
+            {
+                bool stacked = _world.PlayersAt(_char.Map, _char.X, _char.Y).Any(p => !ReferenceEquals(p, this));
+                if (stacked || gi.LockedAgainst(_char.Id))
+                {
+                    SendMiniText(stacked ? "You cannot pick up items while stacked." : "That item does not belong to you.");
+                    SendMiniText(refusal ?? "");
+                    continue;
+                }
+                if (_world.PickUp(_char.Map, x, y, _char.Id) is not { } got) continue;
+                taken++;
+                if (got.ItemId < 0) { _char.Coins += (uint)Math.Max(0, got.Amount); MarkDirty(); continue; }
+                if (Content.ItemById(got.ItemId) is not { } def) continue;
+                int placed = GivePlaced(def, got.Amount, got.Dura, got.CustomName, owner: got.Owner);
+                int left = got.Amount - placed;
+                if (left > 0)
+                    _world.DropItem(_char.Map, new GroundItem { Id = _world.AllocateItemId(), ItemId = got.ItemId, X = _char.X,
+                                                                Y = _char.Y, Amount = left, Dura = got.Dura, Graphic = got.Graphic,
+                                                                CustomName = got.CustomName, Owner = got.Owner });
+                MarkDirty();
+            }
+        }
+        Log.Info($"      (lua) {sp.Name} -> took {taken} from up to {spaces} tile(s) ahead of ({_char.X},{_char.Y})");
+        return taken;
+    }
+
+    /// <summary>RTK's <c>player:hasSpace(name, n)</c> (<c>ctx:hasRoom</c>; <c>rtk/src/map/sl.c</c>, pcl_hasspace): in slot
+    /// order, the first unowned stack of <paramref name="itemKey"/> that stacks decides it, by whether
+    /// <paramref name="amount"/> more fits on it; with none, any empty slot. False for an item Items.csv does not have.</summary>
+    internal bool LuaHasRoom(string? itemKey, int amount)
+    {
+        var def = string.IsNullOrEmpty(itemKey) ? null : Content.ItemByKey(itemKey);
+        if (def is null) return false;
+        bool open = false;
+        for (int slot = 0; slot < _char.MaxInv; slot++)
+        {
+            if (InvAt(slot) is not { } it) { open = true; continue; }
+            if (it.ItemId == def.Id && it.Owner.Length == 0 && def.StackCap > 1) return it.Amount + amount <= def.StackCap;
+        }
+        return open;
+    }
+
+    /// <summary>The sound a guise's form ends with (Marketer guise's uncast, <c>playSound(410)</c>): the <c>amount</c> of a
+    /// SpellParams.csv row that binds the <c>guise</c> verb; null for any other spell.</summary>
+    private static int? GuiseEndSound(string key) =>
+        key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") == "guise"
+        && int.TryParse(row.GetValueOrDefault("amount", ""), out int sound) ? sound : null;
 
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
@@ -5580,6 +5928,7 @@ public sealed partial class Session
         // player, no sound (Session.PlayDisguiseEnd). Every other morph keeps this server's exit "poof".
         if (IsDisguiseSpell(key)) PlayDisguiseEnd(key);
         else if (IsUniformSpell(key)) { }      // Chongun uniform: its script's uncast plays nothing (LuaWearForm)
+        else if (GuiseEndSound(key) is int guiseEnd) BroadcastFx(_char.Id, -1, guiseEnd);   // Marketer guise: its uncast's playSound(410)
         else BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
         _world.Broadcast(_char.Map, p => p.ShowPlayer(this), except: this);

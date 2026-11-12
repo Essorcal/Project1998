@@ -80,6 +80,12 @@
 # verb=disguise row (Costume's verb), tree_bark to verb=invincible row (Invincibility's verb), set_pit_trap to
 # verb=pit_trap row, carve_arrow to verb=carve_arrow row, call_companion to verb=companion_menu row and scouting_trip to
 # verb=scouting_trip row. No other line changed.
+# The Merchant spells slice (2026-11-12) then moved seven PC-subpath spells off verb=generic (the project owner's P5
+# and the slice's three answers, "Offers as written", "As the script means" and "Find again by name": RTK's scripts; the
+# smaller calls as RTK under P5), each bound by a SpellParams.csv row: skill_up_merchant to verb=chungryong_rage row
+# (Spy's skill_up ladder), engrave to verb=engrave row, marketer_guise to verb=guise row, pilfer to verb=pilfer row,
+# bekyunarrow to verb=bekyun_arrow row, gambling to verb=gambling row and golden_fist to verb=lesser_fury row
+# (Protectors fury's verb). No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -136,7 +142,7 @@ beach_war_respawn	10	verb=generic
 beast_mage	3096	Become what?
 beast_rogue	2057	Become what?
 beastly_frenzy_rogue	2071	verb=sacrifice
-bekyunarrow	30605	verb=generic
+bekyunarrow	30605	verb=bekyun_arrow row
 bekyuns_heal_mage	3158	verb=arch_heal
 berserk_warrior	1064	verb=sacrifice
 bestow_power_poet	4103	verb=mana_gift
@@ -294,7 +300,7 @@ endear	50034	verb=endear row
 endear_poet	4061	verb=endear row
 energy_bloom	31408	verb=ranged_strike row
 energy_flow_mage	3169	verb=arch_heal
-engrave	30602	verb=generic
+engrave	30602	verb=engrave row
 enhanced_drink	30308	verb=drink_line row
 ensure_poet	4162	verb=ward row
 enthrall_charm	413	verb=generic
@@ -352,7 +358,7 @@ freeform_rogue	2131	verb=sacrifice
 freeze	50035	verb=magic_damage row
 from_the_brink_warrior	1091	verb=arch_heal
 furious_charge	12021	verb=arch_damage
-gambling	30606	verb=generic
+gambling	30606	verb=gambling row
 gangrel_mage	3076	Become what?
 gangrel_rogue	2045	Become what?
 gateway	103	verb=gateway
@@ -369,7 +375,7 @@ gm_dispell	11993	verb=misc
 gm_push	12026	verb=misc
 gm_res	11994	verb=misc
 gm_sage	11999	verb=misc
-golden_fist	30607	verb=generic
+golden_fist	30607	verb=lesser_fury row
 good_earth	31111	verb=generic
 greater_blessing	29504	verb=arch_buff
 groundstrike_poet	4112	verb=target_area_zap
@@ -523,7 +529,7 @@ magic_shrine_spell	50038	verb=arch_buff
 magics_shield_warrior	1079	verb=ward row
 magis_bane	3167	verb=misc
 map_editor	10001	verb=generic
-marketer_guise	30603	verb=generic
+marketer_guise	30603	verb=guise row
 maros_remedy_rogue	2093	verb=arch_heal
 masos_remedy_rogue	2098	verb=arch_heal
 mass_res	11998	verb=misc
@@ -633,7 +639,7 @@ peck	50007	verb=generic
 pestilence_mage	3006	verb=curse row
 phantoms_kiss_rogue	2135	verb=arch_heal
 phoenix_flames	31202	verb=ring_strike row
-pilfer	30604	verb=generic
+pilfer	30604	verb=pilfer row
 ping	1	verb=generic
 poison_dart_trap	502	verb=generic
 poisoned_bracelet_spell	50048	verb=generic
@@ -774,7 +780,7 @@ siege_warrior	1097	verb=sacrifice
 singe_mage	3016	verb=arch_damage
 singe_poet	4029	verb=arch_damage
 singe_rogue	2017	verb=arch_damage
-skill_up_merchant	30601	verb=generic
+skill_up_merchant	30601	verb=chungryong_rage row
 skill_up_ranger	30701	verb=chungryong_rage row
 skill_up_spy	30801	verb=chungryong_rage row
 slash_warrior	1058	verb=arch_damage
