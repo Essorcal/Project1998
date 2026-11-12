@@ -4897,7 +4897,7 @@ public sealed partial class Session
 
     /// <summary>Give <paramref name="amount"/> of <paramref name="itemKey"/> to the caster (<c>ctx:giveItem</c>), as RTK's
     /// <c>player:addItem(name, n)</c> gives it (sl.c, pcl_additem; pc.c, pc_additem): at the item's own durability
-    /// (<c>itemdb_dura</c>, 30 shots for an arrow), into the bag as far as it fits; what does not fit lies on the floor at
+    /// (<c>itemdb_dura</c>; 30 for Carve arrow's arrows), into the bag as far as it fits; what does not fit lies on the floor at
     /// the caster's feet, with the bag's own line ("You can't have more.", or the carry cap's), as RTK's
     /// <c>pc_dropitemfull</c> drops it. The floor pile is its own: this server's floor never merges piles, where RTK's adds
     /// it to a matching one on that tile. Returns how many went into the bag. Saved.</summary>
