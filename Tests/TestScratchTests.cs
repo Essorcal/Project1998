@@ -130,7 +130,8 @@ public class TestScratchTests
 
     /// <summary>A process the run started keeps the run's folder after the run's own process is gone: it inherited the
     /// run's lock. Played here by a run this process starts, a child started after it, and the run's marker then
-    /// pointed at no process and its handle on the lock closed, as its process's death would.
+    /// pointed at no process and its handle on the lock let go of as its process's death would
+    /// (<see cref="TestScratch.AbandonLock"/>: on Linux a dispose would unlock for the child too, and a death does not).
     /// <para>Once the child has stopped, the fact waits for the folder to read as ended rather than reading it once: a
     /// process another test started while this run's lock was open (the synthetic boot's server) inherited it too,
     /// and holds it until it stops.</para></summary>
@@ -145,7 +146,7 @@ public class TestScratchTests
         {
             File.WriteAllText(Path.Combine(run.Folder, TestScratch.MarkerName),
                               TestScratch.FormatMarker(new TestScratch.Marker(NoSuchProcess, now.AddHours(-1), Keep: false)));
-            run.ReleaseLock();
+            run.AbandonLock();
 
             Assert.Equal(TestScratch.RunState.Live, TestScratch.StateOf(run.Folder, now));
             TestScratch.Sweep(root, now);

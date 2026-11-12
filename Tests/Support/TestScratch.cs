@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 
 namespace Tests.Support;
 
@@ -143,8 +144,8 @@ internal sealed class TestScratch
         }
     }
 
-    /// <summary>Close this process's handle on the run's lock, as the process's exit would. A process the run started
-    /// keeps the handle it inherited.</summary>
+    /// <summary>Close this process's handle on the run's lock. On Windows a process the run started keeps the handle it
+    /// inherited, and the lock with it; on Linux this unlocks for every holder (see <see cref="AbandonLock"/>).</summary>
     internal void ReleaseLock()
     {
         lock (_gate)
@@ -153,6 +154,36 @@ internal sealed class TestScratch
             _lock = null;
         }
     }
+
+    /// <summary>Let go of the lock as this process's death would, for a fact that plays a run whose process has gone.
+    /// On Windows that is <see cref="ReleaseLock"/>. Elsewhere it is not: .NET's dispose unlocks before it closes
+    /// (<c>flock(LOCK_UN)</c>), and that drops the lock for every process sharing the open file, a child that inherited
+    /// it included, while a dying process's descriptors are closed by the kernel with no unlock, so the lock stays as
+    /// long as a child holds its copy. So here the descriptor is closed directly, and the handle marked invalid so that
+    /// .NET neither unlocks nor closes it again.</summary>
+    internal void AbandonLock()
+    {
+        lock (_gate)
+        {
+            if (_lock is null) return;
+            if (OperatingSystem.IsWindows())
+            {
+                _lock.Dispose();
+            }
+            else
+            {
+                var handle = _lock.SafeFileHandle;
+                int descriptor = (int)handle.DangerousGetHandle();
+                handle.SetHandleAsInvalid();
+                GC.SuppressFinalize(_lock);
+                _ = CloseDescriptor(descriptor);
+            }
+            _lock = null;
+        }
+    }
+
+    [DllImport("libc", EntryPoint = "close", SetLastError = true)]
+    private static extern int CloseDescriptor(int descriptor);
 
     // ---- the marker ---------------------------------------------------------------------------------------------
 
