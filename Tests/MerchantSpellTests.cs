@@ -21,7 +21,7 @@ namespace Tests;
 /// Session.Spells.cs's "the Merchant spells".</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Merchant facing east, on
-/// content-free maps 63700-63728 (no Maps.csv row: no terrain, PvP off). A menu, an input box, a box or the item-list
+/// content-free maps 63700-63729 (no Maps.csv row: no terrain, PvP off). A menu, an input box, a box or the item-list
 /// window is answered from a thread of its own with no synchronisation context, as a read loop answers it, so the next
 /// step resumes inline as on the server, on the session of the player who answered.</para>
 /// </summary>
@@ -35,7 +35,7 @@ public sealed class MerchantSpellTests
                          EngraveClosedMap = 63716, EngraveHeldMap = 63717, EngraveBoxHeldMap = 63718, GambleMap = 63719,
                          GambleRefuseMap = 63720, GambleAnswerMap = 63721, GambleRecheckMap = 63722, GambleSelfMap = 63723,
                          GambleClosedMap = 63724, GambleHeldMap = 63725, GambleSettleMap = 63726, PilferStackMap = 63727,
-                         EngraveDropMap = 63728;
+                         EngraveDropMap = 63728, GoneCasterMap = 63729;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 400_000, Mana = 400_000, Hp = 10_000;
 
@@ -50,6 +50,8 @@ public sealed class MerchantSpellTests
         typeof(Session).GetField("_rageUntil", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo ShopReplyField =
         typeof(Session).GetField("_shopReply", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo ReplacedField =
+        typeof(Session).GetField("_replaced", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo LeavingField =
         typeof(Session).GetField("_leaving", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo MorphLookField =
@@ -1132,6 +1134,52 @@ public sealed class MerchantSpellTests
             Assert.True(ac.Coins + bc.Coins == 10_000, "the wager was not conserved");
         }
         finally { if (run.Settled) Leave(GambleHeldMap, merchant, a, b); }
+    }
+
+    /// <summary>Each primitive this slice adds that writes saved state or the world refuses a caster who is leaving or
+    /// whose session a second login has replaced, asked under the caster's monitor (<c>Session.CasterGone</c>, #423's
+    /// review, F1): Pilfer takes nothing from the floor; Engrave's settle and Gambling's settle answer "leaving" and move no
+    /// gold, name nothing and set no timer. Red with each primitive's <c>CasterGone</c> test taken out.</summary>
+    [Theory]
+    [InlineData("leaving")]
+    [InlineData("replaced")]
+    public void TheMerchantsWritesRefuseAGoneCaster(string why)
+    {
+        var sword = Content.ItemByKey("steel_sword")!;
+        var acorn = Content.ItemByKey("acorn")!;
+        int y = why == "leaving" ? CY : CY + 6;
+        var (caster, _, cc) = Merchant("pilfer", GoneCasterMap, CX, y);
+        var (customer, _, uc) = Player(GoneCasterMap, CX + 4, y, coins: 5_000, configure: ch =>
+            ch.Inventory.Add(new InvItem(0, sword.Id, 1, sword.Durability)));
+        var (other, _, oc) = Player(GoneCasterMap, CX + 5, y, coins: 5_000);
+        string engraved = "", wagered = "";
+        int taken = -1;
+        try
+        {
+            Lay(GoneCasterMap, CX + 1, y, acorn.Id, 3);
+            caster.WithState(() =>
+            {
+                if (why == "leaving") LeavingField.SetValue(caster, true); else ReplacedField.SetValue(caster, 1);
+                try
+                {
+                    taken = caster.LuaPilfer(Content.SpellByKey("pilfer")!, 2, "But that would be stealing.");
+                    engraved = caster.LuaEngraveItem(Content.SpellByKey("engrave")!, customer.CharName, 0, "** Bob **", 1_000,
+                                                     "engrave_timer", 86_400, "The item has been engraved.");
+                    wagered = caster.LuaSettleWager(Content.SpellByKey("gambling")!, customer.CharName, other.CharName, 1_000,
+                                                    90, 10, "You win.", "You lose.", "There was a tie, so no gold removed.");
+                }
+                finally
+                {
+                    if (why == "leaving") LeavingField.SetValue(caster, false); else ReplacedField.SetValue(caster, 0);
+                }
+            });
+            int floor = _fx.World.ItemsOn(GoneCasterMap).Count(g => g.Y == y);
+            Assert.True(taken == 0 && floor == 1 && cc.Inventory.Count == 0 && engraved == "leaving" && wagered == "leaving"
+                        && uc.Coins == 5_000 && oc.Coins == 5_000 && cc.Coins == 0 && uc.Inventory.Single().CustomName == ""
+                        && QuestState.Over(cc, QuestState.Registry).Get("engrave_timer") == 0,
+                        $"{why}: taken {taken}, floor {floor}, engrave {engraved}, wager {wagered}, coins {uc.Coins}/{oc.Coins}/{cc.Coins}");
+        }
+        finally { Leave(GoneCasterMap, caster, customer, other); ClearFloor(GoneCasterMap); }
     }
 
     // ===== the teacher ==========================================================================================

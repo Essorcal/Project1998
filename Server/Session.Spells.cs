@@ -5189,8 +5189,9 @@ public sealed partial class Session
     /// the engraver (THIS player): the customer named <paramref name="customerName"/> found again by name, then, in one
     /// section holding both monitors, the script's re-checks and writes: "gone" when nobody online has the name or they
     /// are going away or replaced (the script's "That character is no longer online."); "short" when their gold is below
-    /// <paramref name="cost"/>; "leaving" when the engraver is; else their gold goes down by <paramref name="cost"/> ("N gold
-    /// removed.", RTK <c>Player.removeGold</c>) and the engraver's up ("N gold added.", <c>addGold</c>), the engraver's saved
+    /// <paramref name="cost"/>; "leaving" when the engraver is leaving or replaced (<see cref="CasterGone"/>); else their
+    /// gold goes down by <paramref name="cost"/> ("N gold removed.", RTK <c>Player.removeGold</c>) and the engraver's up
+    /// ("N gold added.", <c>addGold</c>), the engraver's saved
     /// registry key <paramref name="timerKey"/> becomes now + <paramref name="timerSecs"/> seconds (RTK <c>os.time()</c>), the
     /// item in the customer's bag slot <paramref name="slot"/> takes the name <paramref name="name"/> (RTK's item object
     /// is bound to the slot, so whatever lies there now; an empty slot is renamed nothing), the customer's bag is drawn
@@ -5205,7 +5206,7 @@ public sealed partial class Session
         string outcome = "gone";
         WithStatePair(engraver, customer, () =>
         {
-            if (GoingAway(engraver) || engraver.IsReplaced) { outcome = "leaving"; return; }
+            if (engraver.CasterGone("engraving") || GoingAway(engraver)) { outcome = "leaving"; return; }
             if (GoingAway(customer) || customer.IsReplaced) { outcome = "gone"; return; }
             if (customer._char.Coins < cost) { outcome = "short"; return; }
             customer.RemoveGoldLine((uint)cost);
@@ -5228,7 +5229,8 @@ public sealed partial class Session
     }
 
     /// <summary>Gambling's settle (<c>ctx:settleWager</c>; RTK <c>Spells/Subpaths/Merchant/gambling.lua:160-208</c>, the
-    /// script's <c>run</c>), run by the merchant: the two gamblers found again by name (<paramref name="name1"/> is the
+    /// script's <c>run</c>), run by the merchant ("leaving", nothing done, for a merchant who is leaving or replaced,
+    /// <see cref="CasterGone"/>): the two gamblers found again by name (<paramref name="name1"/> is the
     /// script's target1, the second gambler asked; <paramref name="name2"/> the first), then, in one section holding both
     /// their monitors: "gone" when either is offline, going away or replaced (the script's "One of the parties logged.",
     /// the project owner's answer, 2026-11-12, "Find again by name"); "short1" or "short2" when that gambler's gold is
@@ -5240,6 +5242,8 @@ public sealed partial class Session
     internal string LuaSettleWager(SpellDef sp, string? name1, string? name2, int amount, int roll1, int roll2,
                                    string? winLine, string? loseLine, string? tieLine)
     {
+        using (EnterState())   // #29: held by the verb already; the gone-merchant test reads under it
+            if (CasterGone("wager")) return "leaving";
         var p1 = string.IsNullOrWhiteSpace(name1) ? null : _world.Online.FindPlayer(name1.Trim());
         var p2 = string.IsNullOrWhiteSpace(name2) ? null : _world.Online.FindPlayer(name2.Trim());
         if (p1 is null || p2 is null || ReferenceEquals(p1, p2) || amount < 0) return "gone";
@@ -5307,7 +5311,7 @@ public sealed partial class Session
     internal int LuaPilfer(SpellDef sp, int spaces, string? refusal)
     {
         using var _ = EnterState();
-        if (_leaving || IsReplaced) return 0;
+        if (CasterGone("pilfer")) return 0;
         int taken = 0;
         for (int i = 1; i <= spaces; i++)
         {
