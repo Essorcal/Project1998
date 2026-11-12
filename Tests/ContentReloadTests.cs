@@ -67,7 +67,7 @@ public class ContentReloadTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-mob-drops-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-mob-drops-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "MobDrops.csv");
             File.WriteAllText(path,
@@ -119,7 +119,7 @@ public class ContentReloadTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-sheet2-bogus-count-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-sheet2-bogus-count-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "Tile533Map.csv");
             File.WriteAllText(path,
@@ -169,7 +169,7 @@ public class ContentReloadTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-sheet2-wrap-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-sheet2-wrap-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "Tile533Map.csv");
             File.WriteAllText(path,
@@ -215,7 +215,7 @@ public class ContentReloadTests
             var beforeDoor = Doors.For(64000, 1, 1);
             bool beforeHook = MobScript.Has("content_reload_probe", MobScript.OnSpawn);
 
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-reload-failure-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-reload-failure-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string caves = Path.Combine(dir, "MythicCaves.csv");
             File.WriteAllText(caves,
@@ -262,7 +262,7 @@ public class ContentReloadTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-external-content-failure-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-external-content-failure-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string oldOverrides = Path.Combine(dir, "old-overrides.csv");
             string newOverrides = Path.Combine(dir, "new-overrides.csv");
@@ -333,7 +333,7 @@ public class ContentReloadTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-external-content-success-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-external-content-success-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string oldOverrides = Path.Combine(dir, "old-overrides.csv");
             string newOverrides = Path.Combine(dir, "new-overrides.csv");
@@ -475,7 +475,7 @@ public class ContentReloadTests
             var beforeDoor = Doors.For(64000, 1, 1);
             bool beforeHook = MobScript.Has("content_reload_probe", MobScript.OnSpawn);
 
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-before-publish-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-before-publish-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\nEraDate,19990103\n");

@@ -35,7 +35,7 @@ public class SyntheticProfileTests
     [Fact]
     public void The_committed_profile_is_the_generators_output_byte_for_byte()
     {
-        string temp = Path.Combine(Path.GetTempPath(), $"p1998-synthetic-profile-{Guid.NewGuid():N}");
+        string temp = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-synthetic-profile-{Guid.NewGuid():N}");
         try
         {
             var written = SyntheticProfile.Write(temp);

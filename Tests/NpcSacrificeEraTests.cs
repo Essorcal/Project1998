@@ -162,7 +162,7 @@ public sealed class NpcSacrificeEraTests : IClassFixture<SessionFixture>
     {
         lock (TestProcessState.Gate)
         {
-            var dir = Path.Combine(Path.GetTempPath(), "nexus-era-" + Guid.NewGuid().ToString("N"));
+            var dir = Path.Combine(TestProcessState.ScratchDirectory, "nexus-era-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             var tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");

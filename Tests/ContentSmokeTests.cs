@@ -1817,7 +1817,7 @@ public class ContentSmokeTests
         lock (TestProcessState.Gate)
         {
             var previous = Content.OverridePathForTests(Content.TableId.MobChatter,
-                Path.Combine(Path.GetTempPath(), $"p1998-not-here-{Guid.NewGuid():N}.csv"));
+                Path.Combine(TestProcessState.ScratchDirectory, $"p1998-not-here-{Guid.NewGuid():N}.csv"));
             try
             {
                 TestProcessState.LoadContent();
@@ -1846,7 +1846,7 @@ public class ContentSmokeTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "p1998-renamed-header-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "p1998-renamed-header-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "MobChatter.csv");
             File.WriteAllText(path, "MobIdentifier,Lines,Chance,Channel\n" +   // MobKey renamed
@@ -1891,7 +1891,7 @@ public class ContentSmokeTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "p1998-areaspawns-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "p1998-areaspawns-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string grouped = Path.Combine(dir, "AreaSpawns.csv");
             string trap = Path.Combine(dir, "AreaSpawnsTrap.csv");
