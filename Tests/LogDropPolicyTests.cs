@@ -156,7 +156,7 @@ public class LogDropPolicyTests
         // deliberately leaves the sink open and the temp directory behind rather than fight an open handle;
         // the cost is that the rest of this process's log lines are also teed to that file.
         string path = Path.Combine(
-            Path.GetTempPath(), "p1998-log-marker-" + Guid.NewGuid().ToString("N"), "server.log");
+            TestProcessState.ScratchDirectory, "p1998-log-marker-" + Guid.NewGuid().ToString("N"), "server.log");
 
         // Thread-scoped for the same reason as the counter facts above: AttachFile enqueues its control line
         // on this thread, so refusing only this thread still refuses every record the fact is about, without

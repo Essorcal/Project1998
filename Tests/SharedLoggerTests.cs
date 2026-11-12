@@ -125,7 +125,7 @@ public class SharedLoggerTests
     {
         const int Lines = 200;
         string tag = "flush-fact-" + Guid.NewGuid().ToString("N");
-        string path = Path.Combine(Path.GetTempPath(), "p1998-log-flush-" + tag, "login.log");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, "p1998-log-flush-" + tag, "login.log");
 
         using var closing = LogShutdownWindow.Enter();
         try

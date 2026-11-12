@@ -49,7 +49,7 @@ public class LuaVerbHostTests
     /// the host does not keep it open.</summary>
     private static LuaVerbHost Load(string lua)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"p1998-verbs-{Guid.NewGuid():N}.lua");
+        var path = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-verbs-{Guid.NewGuid():N}.lua");
         File.WriteAllText(path, lua);
         try
         {
@@ -98,7 +98,7 @@ public class LuaVerbHostTests
     public void ABrokenReloadKeepsThePreviousVerbs()
     {
         var host = Load(VerbFile);
-        var bad = Path.Combine(Path.GetTempPath(), $"p1998-verbs-{Guid.NewGuid():N}.lua");
+        var bad = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-verbs-{Guid.NewGuid():N}.lua");
         File.WriteAllText(bad, "verbs = { silent = function() end,\n  oops = function() return 1 + end }");
         try
         {

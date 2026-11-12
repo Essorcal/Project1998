@@ -17,7 +17,7 @@ public sealed class MapSearchTests : IDisposable
 
     private const ushort MapId = 4242;
 
-    private readonly string _root = Path.Combine(Path.GetTempPath(), $"p1998-map-search-{Guid.NewGuid():N}");
+    private readonly string _root = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-map-search-{Guid.NewGuid():N}");
 
     public void Dispose()
     {

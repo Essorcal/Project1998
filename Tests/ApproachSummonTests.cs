@@ -483,7 +483,7 @@ public sealed class ApproachSummonTests : IClassFixture<SessionFixture>
             fields[column] = cell;
             return string.Join(",", fields);
         }
-        string path = Path.Combine(Path.GetTempPath(), $"p1998-map-can-summon-{Guid.NewGuid():N}.csv");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-map-can-summon-{Guid.NewGuid():N}.csv");
         File.WriteAllLines(path, new[] { real[0], Copy(1, "0"), Copy(2, "1"), Copy(3, "") });
         try
         {

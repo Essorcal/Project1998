@@ -45,7 +45,7 @@ public class StartPointTests
     {
         lock (TestProcessState.Gate)
         {
-            var dir = Path.Combine(Path.GetTempPath(), "nexus-start-era-" + Guid.NewGuid().ToString("N"));
+            var dir = Path.Combine(TestProcessState.ScratchDirectory, "nexus-start-era-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             var tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\nEraDate," + yyyymmdd + "\n");
@@ -260,7 +260,7 @@ public class StartPointTests
 
         lock (TestProcessState.Gate)
         {
-            var dir = Path.Combine(Path.GetTempPath(), "nexus-map-index-" + Guid.NewGuid().ToString("N"));
+            var dir = Path.Combine(TestProcessState.ScratchDirectory, "nexus-map-index-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, MapIndexTable.File);
             File.WriteAllText(path, table, new UTF8Encoding(false));

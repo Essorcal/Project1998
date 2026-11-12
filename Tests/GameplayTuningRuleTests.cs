@@ -25,7 +25,7 @@ public class GameplayTuningRuleTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), "project1998-tuning-rule-" + Guid.NewGuid().ToString("N"));
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-tuning-rule-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             string tuning = Path.Combine(dir, "ServerTuning.csv");
             File.WriteAllText(tuning, "key,value\n" + row + "\n");

@@ -130,7 +130,7 @@ public class ChannelPortsTests
     [Fact]
     public async Task Bad_arity_is_logged_and_returns_failure_without_throwing()
     {
-        string logDirectory = Path.Combine(Path.GetTempPath(), $"p1998-port-arity-{Guid.NewGuid():N}");
+        string logDirectory = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-port-arity-{Guid.NewGuid():N}");
         var start = new ProcessStartInfo
         {
             FileName = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
