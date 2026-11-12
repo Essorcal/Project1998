@@ -1419,31 +1419,34 @@ public sealed partial class World
     /// <summary>A creature's Pit trap strike lands (the tick's trap-damage pass, at the strike's own place in it; #423's
     /// review, F2, and its re-check, R1). <paramref name="figure"/> is the strike as it sprang, armour and sleep amplifier
     /// in (<see cref="SpringPitTrapLocked"/>). Under <c>_lock</c>, against the vita the creature has now
-    /// (<see cref="PitTrapDamage"/>, every factor already in the figure), so the strike never takes the last vita whatever
-    /// landed on it first in the beat. A strike that leaves it standing lands inside that same hold of the lock, so no other
-    /// blow can come between the cap and the hit (and a hit that does not kill sends nothing from inside the lock: no
-    /// drops), then the over-head bar. Only a strike exactly equal to the vita left kills (RTK's strict test); it lands
+    /// (<see cref="PitTrapDamage"/>), so the strike never takes the last vita whatever landed on it first in the beat. An
+    /// amplifier armed on the creature since the spring (a Sleep or Doze cast between the tick's step and this pass) is the
+    /// one <see cref="TryDamage"/> would multiply the hit by: it is spent here, into the figure the cap reads, so the cap
+    /// holds against the blow that really lands and <see cref="TryDamage"/> finds none (#423's second re-check, S1). A
+    /// strike that leaves the creature standing lands inside that same hold of the lock, so no other blow can come between
+    /// the cap and the hit; with nothing left to multiply it, that hit cannot kill and sends nothing from inside the lock (no
+    /// drops). Then the over-head bar. Only a strike exactly equal to the vita left kills (RTK's strict test); it lands
     /// outside the lock through <see cref="ApplyTrapDamage"/>, as every killing trap hit does, since a kill sends its drops,
     /// and is credited to the owner.</summary>
     private void ApplyPitStrike(ushort mapId, Mob mob, double figure, uint ownerId)
     {
         int dmg;
-        bool landed = false;
+        bool landed = false, died = false;
         lock (_lock)
         {
             if (!mob.Alive || mob.IsNpc) return;
             int hp = mob.Hp;
-            dmg = hp == 1 ? 0 : PitTrapDamage(figure, 1.0, 1.0, 1.0, hp);
+            dmg = hp == 1 ? 0 : PitTrapDamage(figure, 1.0, mob.TakeDamageAmp(Environment.TickCount64), 1.0, hp);
             if (dmg <= 0) return;
             if (dmg < hp)
             {
-                if (!TryDamage(mapId, mob, dmg, out _, ownerId)) return;
+                if (!TryDamage(mapId, mob, dmg, out died, ownerId)) return;
+                Debug.Assert(!died, "a Pit strike capped below the vita left killed inside the world lock");
                 landed = true;
             }
         }
         if (!landed) { ApplyTrapDamage(mapId, mob, dmg, ownerId); return; }
-        byte pct = (byte)Math.Clamp(mob.Hp * 100 / Math.Max(1, mob.MaxHp), 1, 100);
-        BroadcastWideArea(mapId, mob.X, mob.Y, p => p.DamageOver(mob.Id, pct, 33));
+        ShowTrapHit(mapId, mob, died, ownerId);
     }
 
     // ---- Spy kit's traps (RTK NPCs/trap/rogue_traps/Spy/, set by Spells/Subpaths/Spy/spy_kit.lua) -------------------
@@ -1520,6 +1523,14 @@ public sealed partial class World
     private void ApplyTrapDamage(ushort mapId, Mob mob, int dmg, uint ownerId)
     {
         if (!TryDamage(mapId, mob, dmg, out bool died, ownerId)) return;
+        ShowTrapHit(mapId, mob, died, ownerId);
+    }
+
+    /// <summary>What a trap hit that landed shows, outside <c>_lock</c>: the over-head bar, and on a kill the delayed corpse
+    /// despawn and the trap owner's exp. <see cref="ApplyTrapDamage"/>'s own steps, shared with
+    /// <see cref="ApplyPitStrike"/>, which no longer drops its hit's <paramref name="died"/>.</summary>
+    private void ShowTrapHit(ushort mapId, Mob mob, bool died, uint ownerId)
+    {
         byte pct = died ? (byte)0 : (byte)Math.Clamp(mob.Hp * 100 / Math.Max(1, mob.MaxHp), 1, 100);
         BroadcastWideArea(mapId, mob.X, mob.Y, p => p.DamageOver(mob.Id, pct, 33));
         if (died)

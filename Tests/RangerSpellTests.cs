@@ -22,7 +22,7 @@ namespace Tests;
 /// <c>Session.SpringPitTrap</c>.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Ranger facing east, on
-/// content-free maps 63600-63628 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
+/// content-free maps 63600-63630 (no Maps.csv row: no terrain, PvP off) and on Seasons Arena (3045), a PvP map no other
 /// class's facts use. A player springs a trap by a real walk frame; a creature by the mob tick's committed step. A menu,
 /// an input box or a box is answered from a thread of its own with no synchronisation context, as a read loop answers it,
 /// so the step resumes inline as on the server.</para>
@@ -40,6 +40,8 @@ public sealed class RangerSpellTests
     private const ushort PitBeatMap = 63623, CarveGoneMap = 63624, GoneCasterMap = 63625, ScrollMap = 63626;
     // Fix round 2 (#423's re-check, R1 and R2): the same.
     private const ushort PitOrderMap = 63627, PitAmpMap = 63628;
+    // Fix round 3 (#423's second re-check, S1): the same.
+    private const ushort PitGapMap = 63629, PitGapKillMap = 63630;
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 400_000, Mana = 400_000, Hp = 10_000;
     private const byte Will = 41;
@@ -583,6 +585,80 @@ public sealed class RangerSpellTests
             _fx.World.DespawnMob(PitAmpMap, mob);
             if (pet is not null) _fx.World.DespawnMob(PitAmpMap, pet);
             Leave(PitAmpMap, owner);
+        }
+    }
+
+    /// <summary>A sleep-family amplifier armed on the creature after it springs the Pit trap and before the beat's trap
+    /// pass lands the strike (a Sleep x1.5 or a Doze x1.3 cast in that gap, through <c>World.ArmDamageAmp</c>, the call
+    /// <c>Session.LuaAmplify</c> makes) goes into the cap, so the strike still leaves a creature at 5,000 vita its last
+    /// vita, credited to the owner (#423's second re-check, S1, the re-checker's probe). Red with <c>Server/World.cs</c> at
+    /// 64f43df, whose cap at landing read no amplifier while the hit that landed the strike multiplied by it: the creature
+    /// died inside the world lock, the owner unpaid.</summary>
+    [Theory]
+    [InlineData(1.5)]
+    [InlineData(1.3)]
+    public void AnAmplifierArmedBeforeTheStrikeLandsStillLeavesTheLastVita(double amp)
+    {
+        int y = amp == 1.5 ? CY : CY + 8;
+        var (owner, _, _) = Caster("set_pit_trap", PitGapMap, CX + 5, y);
+        var mob = AddCreature(PitGapMap, CX, y, hp: 5_000, maxHp: 1_000_000);
+        try
+        {
+            _fx.World.PlaceTrap(PitGapMap, CX + 1, (ushort)y, "pit_trap", owner.PlayerId, Environment.TickCount64 + 20_000);
+            var q = StepQueued(PitGapMap, mob, CX + 1, y, East);
+            _fx.World.ArmDamageAmp(mob, amp, 60_000);   // the gap: after the tick's lock, before its flush
+            _fx.World.FlushTickForTest(q);
+            long credit = mob.ThreatOf(owner.PlayerId);
+            Assert.True(mob.Alive && mob.Hp == 1 && credit == 4_999,
+                        $"x{amp} armed in the gap: vita {mob.Hp}, alive {mob.Alive}, owner's threat {credit}");
+        }
+        finally { ClearTraps(PitGapMap); _fx.World.DespawnMob(PitGapMap, mob); Leave(PitGapMap, owner); }
+    }
+
+    /// <summary>A strike that the amplifier armed in that gap makes exactly equal to the vita left (205,000 x1.5 on 307,500)
+    /// kills, as RTK's strict test lets it, outside the world lock: the owner is paid the creature's exp, and the item it
+    /// was handed falls to the floor with its 0x07 sent to a watcher from outside that lock (#423's second re-check, S1, the
+    /// re-checker's probe; <c>docs/common/Locking.md</c>). Red with <c>Server/World.cs</c> at 64f43df: the kill landed inside
+    /// the lock, the owner unpaid and the drop sent under it.</summary>
+    [Fact]
+    public void AnExactAmplifiedStrikeKillsOutsideTheWorldLockAndPaysTheOwner()
+    {
+        var (owner, _, oc) = Caster("set_pit_trap", PitGapKillMap, CX + 5, CY);
+        var spy = new LockSpyOutbound(_fx.World);
+        var watcherChar = new Character
+        {
+            SchemaVersion = Character.CurrentSchemaVersion, Id = _fx.World.AllocatePlayerId(), Name = Letters("Watcher"),
+            Map = PitGapKillMap, X = CX + 3, Y = CY + 1, MapXs = 100, MapYs = 100, MaxHp = 1_000, Hp = 1_000, Level = 50,
+        };
+        var watcher = new Session(spy, 2005, _fx.Store, _fx.World, watcherChar);
+        _fx.World.EnterMap(watcher, PitGapKillMap);
+        var mob = AddCreature(PitGapKillMap, CX, CY, hp: 307_500, maxHp: 1_000_000);
+        mob.Exp = 777;
+        var wood = Content.ItemByKey("ginko_wood")!;
+        mob.Handed = new List<InvItem> { new InvItem { ItemId = wood.Id, Amount = 1, Dura = wood.Durability } };
+        try
+        {
+            _fx.World.PlaceTrap(PitGapKillMap, CX + 1, CY, "pit_trap", owner.PlayerId, Environment.TickCount64 + 20_000);
+            var q = StepQueued(PitGapKillMap, mob, CX + 1, CY, East);
+            uint before = oc.Exp;
+            lock (spy.Sent) spy.Sent.Clear();
+            _fx.World.ArmDamageAmp(mob, 1.5, 60_000);
+            _fx.World.FlushTickForTest(q);
+            List<(byte op, bool under)> sent;
+            lock (spy.Sent) sent = spy.Sent.ToList();
+            var under = sent.Where(f => f.under).Select(f => $"0x{f.op:X2}").ToList();
+            bool dropSent = sent.Any(f => f.op == 0x07);
+            Assert.True(!mob.Alive && oc.Exp > before && dropSent && under.Count == 0,
+                        $"alive {mob.Alive}, vita {mob.Hp}, owner exp {before} -> {oc.Exp}; drop sent {dropSent}, " +
+                        $"{sent.Count} frames, under the world lock [{string.Join(",", under)}]");
+        }
+        finally
+        {
+            ClearTraps(PitGapKillMap);
+            foreach (var g in _fx.World.ItemsOn(PitGapKillMap)) _fx.World.PickUp(PitGapKillMap, g.X, g.Y);
+            _fx.World.DespawnMob(PitGapKillMap, mob);
+            _fx.World.LeaveMap(watcher, PitGapKillMap);
+            Leave(PitGapKillMap, owner);
         }
     }
 
@@ -1599,6 +1675,24 @@ public sealed class RangerSpellTests
     private void Leave(ushort map, params Session[] sessions)
     {
         foreach (var s in sessions) _fx.World.LeaveMap(s, map);
+    }
+
+    /// <summary>An outbound that notes, for each frame sent, its opcode and whether the sending thread holds the world
+    /// lock (the second re-check's probe's).</summary>
+    private sealed class LockSpyOutbound : IOutbound
+    {
+        private readonly World _w;
+        public readonly List<(byte op, bool under)> Sent = new();
+        public LockSpyOutbound(World w) => _w = w;
+        public string Remote => "lockspy";
+        public int Capacity => int.MaxValue;
+        public int QueueDepth => 0;
+        public bool Send(byte[] frame)
+        {
+            lock (Sent) Sent.Add((frame.Length > 3 ? frame[3] : (byte)0, _w.HoldsWorldLock));
+            return true;
+        }
+        public void Close() { }
     }
 
     // ---- the held-monitor run (MonkSpellTests' shape) -----------------------------------------------------------------
