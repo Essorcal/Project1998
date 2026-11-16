@@ -4208,7 +4208,12 @@ public sealed partial class Session
     /// category in <paramref name="blockedBy"/> already (RTK <c>checkIfCast(curses)</c>, <c>cursed == 0</c>,
     /// <c>checkIfCast(protections)</c>): the curse's slot and stat, the spell's graphic over them, and for a player
     /// <paramref name="line"/>, inside their monitor (<see cref="ReceiveCurse"/>, as every curse lands); a creature redraws
-    /// <paramref name="beatAnim"/> every <paramref name="beatMs"/> while it holds (RTK's while_cast). Returns how many.</summary>
+    /// <paramref name="beatAnim"/> every <paramref name="beatMs"/> while it holds (RTK's while_cast). Returns how many.
+    /// <para>A player holds it for <paramref name="durMs"/> of clock time. A creature holds it, its armour and its beat
+    /// for <paramref name="durMs"/> as RTK's creature timer counts that figure (<see cref="World.CreatureTimerMs"/>, 1,000
+    /// off every 1.5 s): the scripts' <c>setDuration</c> of 425,000 (<c>insult.lua:42</c>) lasts 637.5 s on a creature
+    /// (<c>rtk/src/map/mob.c</c>, <c>mob_timer_spawns</c> and <c>mob_duratimer</c>), the project owner's ruling
+    /// (2026-11-12, "As RTK: 637.5 s"). The base-class curses (<see cref="LuaApplyCurse"/>) keep clock time.</para></summary>
     internal int LuaCurseAround(SpellDef sp, string category, string stat, int amount, int durMs, string blockedBy,
                                 string line, int beatAnim, int beatMs)
     {
@@ -4217,6 +4222,7 @@ public sealed partial class Session
         int snd  = row is not null ? Content.EffectSound(row, sp.PathId) : -1;
         var blocks = blockedBy.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         bool pvp = Content.IsPvpMap(_char.Map);
+        int creatureMs = World.CreatureTimerMs(durMs);
         int cursed = 0;
         bool ended = false;
         foreach (var (dx, dy) in AroundNesw)
@@ -4244,9 +4250,9 @@ public sealed partial class Session
                 if (mob.IsNpc) continue;
                 if (blocks.Any(c => _world.MobHasStatus(mob, CatFamily(c)) || (CatFamily(c) == "curses" && _world.MobHasStatus(mob, "minorcurses"))))
                     continue;
-                if (!_world.ApplyMobStatus(mob, CatFamily(category), durMs, hold: false, blind: false,
+                if (!_world.ApplyMobStatus(mob, CatFamily(category), creatureMs, hold: false, blind: false,
                                            fxAnim: beatAnim, fxSound: 0, fxEveryMs: beatMs, spellKey: sp.Key)) continue;
-                if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, durMs, sp.Key);
+                if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, creatureMs, sp.Key);
                 BroadcastFx(mob.Id, anim, snd);
                 cursed++;
             }
