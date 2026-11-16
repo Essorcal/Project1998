@@ -396,6 +396,81 @@ public class PersistenceTests : IDisposable
     }
 
     /// <summary>
+    /// A contention that clears AFTER the provider's window has run out, but inside SQLite's own wait, still
+    /// ends in a successful save. The window (<c>DefaultTimeout</c>, 3 s) is shorter than the busy_timeout
+    /// (5,000 ms), so this band is new: a lock let go at about four seconds has to be waited out inside
+    /// SQLite, not given up on when the provider's window ends. The fact above holds the lock for a second,
+    /// inside both, and cannot see the band.
+    ///
+    /// <para>In one wait: SQLite's first wait lasts about five seconds, so at four the save is still inside
+    /// it and takes the lock there. The provider could only add a second wait after a first one that ended
+    /// before its window, which the floor of
+    /// <see cref="SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld"/> rules out.</para>
+    ///
+    /// <para>Why 4 s sits inside the band on both builds. With no SQLite wait, the provider alone tries every
+    /// 150 ms and makes its last try at about 3.1 s, most of a second before the lock goes. SQLite tries the
+    /// lock again after each of its sleeps: on Windows after sleeps of at most 100 ms (a little longer in
+    /// practice), until about 5.5 s; on Linux after each whole second, the last try at 5 s, so a lock let go
+    /// at 4 s is taken at the 4 s try or the 5 s one. Either way about a second inside the wait.</para>
+    ///
+    /// <para>Red with the busy_timeout pragma taken out of <c>Db.Open</c>: the provider alone gives up at
+    /// about 3.1 s while the lock is still held, and the save fails.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>), like every fact here that holds the
+    /// write lock.</para>
+    /// </summary>
+    [Fact]
+    public void SaveMany_StillSucceeds_WhenTheContentionClearsAfterTheProvidersWindow()
+    {
+        using var db = new IsolatedDatabase();
+
+        var a = Make(_a, 100);
+        Assert.True(db.Store.SaveMany(new[] { a }));
+        a.Coins = 777;
+
+        const int holdMs = 4000;
+        int windowMs;
+        using (var probe = db.Open()) windowMs = probe.DefaultTimeout * 1000;
+        Assert.True(windowMs < holdMs && holdMs < Db.BusyTimeoutMs,
+            $"the hold ({holdMs}ms) has to outlast the provider's window ({windowMs}ms) and end inside SQLite's " +
+            $"wait ({Db.BusyTimeoutMs}ms) for this to test anything");
+
+        using var locked = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            Thread.Sleep(holdMs);
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true };
+        holder.Start();
+
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        bool saved = db.Store.SaveMany(new[] { a });
+        clock.Stop();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never released the write lock");
+
+        Measured($"a save contended for {holdMs} ms {(saved ? "saved" : "FAILED")} after " +
+                 $"{clock.Elapsed.TotalMilliseconds:F0} ms (window {windowMs} ms, busy_timeout {Db.BusyTimeoutMs} ms)");
+
+        Assert.True(saved,
+            $"a save contended for {holdMs}ms — past the provider's {windowMs}ms window, inside the " +
+            $"{Db.BusyTimeoutMs}ms busy_timeout — failed after {clock.Elapsed.TotalSeconds:F1}s: SQLite did not " +
+            "wait the lock out, so only the provider's window bounded the save");
+        Assert.Equal(777u, LoadOk(db.Store, _a).Coins);
+        // It waited until about the release, past the window, rather than slipping in early.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.9),
+            $"the save returned in {clock.Elapsed.TotalMilliseconds:F0}ms, before the lock was let go");
+    }
+
+    /// <summary>
     /// The other half of shortening the timeout: a failed UNCONDITIONAL save must be retried, not lost. The
     /// throttled autosave path always put the dirty flag back when a write failed, but
     /// <c>Session.StoreSave</c> — the spellbook, legend and profile writes that persist whether or not the

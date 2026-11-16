@@ -21,7 +21,10 @@ namespace Shared;
 /// <see cref="Open()"/> therefore sets both from the same constant, the provider's window two whole seconds
 /// shorter (<see cref="BusyTimeoutSeconds"/>, which says how far short a wait would have to end to beat it):
 /// it has run out by the time SQLite's first wait returns, so a contended statement ends after that one
-/// wait.
+/// wait. One statement of ours has no SQLite wait at all: startup's <c>PRAGMA journal_mode=WAL</c> in
+/// <see cref="InitializeDatabase"/>, which runs before that connection's <c>PRAGMA busy_timeout</c>, so the
+/// provider's window alone bounds it — about three seconds now, about five before
+/// (<see cref="BusyTimeoutSeconds"/>).
 ///
 /// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
 /// catch the exception, log it and return false; <c>Session.CaptureAndWrite</c> puts the dirty flag back
@@ -61,10 +64,18 @@ public static class Db
     /// each early end costs up to a whole second. At 3 s a step needs three of its five sleeps cut short
     /// before it can earn a second wait; at 4 s, two.</para>
     ///
-    /// <para>What it costs: a step SQLite fails busy WITHOUT waiting is retried by the provider, every 150 ms,
-    /// for 3 s instead of 5. SQLite does that to a read transaction that tries to start writing while another
-    /// connection writes (waiting could deadlock the two). Every transaction here begins IMMEDIATE
-    /// (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours does.</para>
+    /// <para>What it costs: a statement SQLite fails busy WITHOUT waiting is retried by the provider, every
+    /// 150 ms, for 3 s instead of 5. SQLite does that in two cases. One is a read transaction that tries to
+    /// start writing while another connection writes (waiting could deadlock the two); every transaction here
+    /// begins IMMEDIATE (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours
+    /// does. The other is any statement run before its connection has a busy_timeout, and we have exactly
+    /// one: startup's <c>PRAGMA journal_mode=WAL</c> in <see cref="InitializeDatabase"/>, which comes before
+    /// that connection's <c>PRAGMA busy_timeout</c>. When another connection holds the file exclusively, that
+    /// statement gives up after about 3 s instead of about 5, and the process fails at startup, loudly, as
+    /// before. Shown with a first-ever database, still in rollback-journal mode, held with
+    /// <c>BEGIN EXCLUSIVE</c>, which login and game starting together on a new file can meet; a WAL file
+    /// being recovered should take the same path (not shown). Every other statement of ours runs after its
+    /// connection's busy_timeout and waits inside SQLite first.</para>
     ///
     /// <para>It must stay at least 1: to the provider, 0 means retry for ever.</para>
     /// </summary>
@@ -243,6 +254,8 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
         // The same window as Open(string): shorter than the busy_timeout below, so one wait (BusyTimeoutSeconds).
+        // Not for the first statement, journal_mode=WAL: it runs before that pragma, so SQLite fails it busy at
+        // once and this window alone bounds it, about 3 s.
         cn.DefaultTimeout = BusyTimeoutSeconds;
         cn.Open();
         using var cmd = cn.CreateCommand();
