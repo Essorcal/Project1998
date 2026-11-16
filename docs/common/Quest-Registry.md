@@ -30,10 +30,12 @@ verbs' `reg`/`setReg`, `mob_ai.lua`'s `actorQuest`, `@quest`'s raw keys, and the
 features share (`home`, `sage_rung`, `sage_timer`, `dog_flag`, `carnage_wins`, `mentored`, `craft_*`,
 `damage_shotgun`, `baekhos_cunning`, `title_of_nobility_timer`, Title of nobility's 4-hour wait: the Unix time it
 ends, as RTK's `player.registry` key, `been_forgiven`, how many times Monk's Forgive has restored the player's
-karma, as RTK's `player.registry` key, which its legend counts, and `scouted_with_rangers`, how many times a Ranger's
+karma, as RTK's `player.registry` key, which its legend counts, `scouted_with_rangers`, how many times a Ranger's
 Scouting trip has marked the player (0 once a mark is removed), as RTK's `player.registry` key, which its legend counts,
-and `engrave_timer`, the Unix time a Merchant's next Engrave may be cast (24 hours after an item was engraved), as
-RTK's `player.registry` key) all live there.
+`engrave_timer`, the Unix time a Merchant's next Engrave may be cast (24 hours after an item was engraved), as RTK's
+`player.registry` key, and Geomancer's, each RTK's `player.registry` key, each counted by its legend:
+`practiced_the_elemental_arts`, `balanced_the_flow_of_qi` and `studied_with_the_sages`, how many times Honor of the
+Three Sects has recognized the player for each (a Remove leaves them)) all live there.
 
 | Namespace (= stage key) | Slot | Saved key |
 |---|---|---|

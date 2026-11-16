@@ -3729,3 +3729,528 @@ function verbs.gambling_run(ctx, row)
   end
   return true
 end
+
+-- =========================================================================================================
+-- GEOMANCER (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Geomancer/). The project owner, 2026-10-26 (P5, each spell
+-- as its RTK script; P1 and P3, on sale once it works, at its script's price), and 2026-11-12 for two of them: Exhume's
+-- five creatures RTK has no row for ("Pick five creatures": stand-ins, mobs.csv dummy_horse, dummy_bull, dummy_pig,
+-- dummy_skeleton and dummy_dragon); and the recognitions' Remove ("From the target": it takes the mark off the named
+-- player, and Honor of the Three Sects counts the named player's tally). Reveal fate stays as it is today, casting
+-- nothing and not sold (the project owner's choice, 2026-11-16, "Keep it off"): it has no row and falls to the generic
+-- verb. The verbs here are Exhume, GreenPotion, Elemental mastery, the five recognitions, Good earth and Soften skin
+-- (Earths Spite is Soften skin's body under its own key); Read karma is Diviner's read_karma verb (Geomancer's
+-- read_karma.lua is that script under its own key); Hailstorm and Ice bombardment are #390's splash_strike rows. Stone
+-- Casing has no script and stays as it is. Each verb is bound by its SpellParams.csv row, which carries its numbers, and
+-- is the shape of its script, in that script's order. RTK is weight 0 for balance; these numbers are its scripts', as
+-- RTK under P5.
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * Each wait is checked first, with this file's own line (subpath_waiting). RTK waives Good earth's and the
+--     recognitions' for a GM; no verb here waives anything for staff. A wait is the session's, as every wait here is, so
+--     a relog ends it (RTK keeps an aether across a relog); Exhume's run on the caster ends with the session too.
+--   * A ghost and a mounted caster cast nothing (the engine's gates), where GreenPotion's and the recognitions' scripts
+--     have no canCast at all. The cast pose is the engine's, on a cast that lands.
+--   * A later cast does not drop a menu, an input box or a box these spells leave open (RTK's cast handler frees a waiting
+--     script), as for every menu here.
+--   * An input box carries the script's question alone (the recognitions' "The one known as" and "has caught my eye" are
+--     not sent, as no input box here sends them: Read karma's departure), with the portrait the script set. A typed name
+--     is trimmed and found in any case, as every typed name here is.
+--   * A legend that names its marker ("$player") is written with the caster's name in it, as Scouting trip's is: RTK
+--     writes "$player" with the caster's id and puts their name in at each showing, which this server's legends do not
+--     carry.
+--   * A menu's pick finds the named player again by name (any map) when it is made, as Forgive's does: one who has logged
+--     out, or is logging out, by then is given nothing and nothing more happens. RTK's script holds the player's object
+--     across its menus.
+--   * Exhume's creatures and Good earth's traps follow the trap and spawn rules the earlier slices keep (World.cs's Good
+--     earth block, Session.LuaSpawnHere).
+-- =========================================================================================================
+
+-- The recognitions' portrait: convertGraphic(803, "item"), icon 803, the Staff of chi's (Items.csv staff_of_chi), on
+-- their input box, menus and boxes, as the scripts set npcGraphic to it before any of them.
+local RECOG_ITEM = "staff_of_chi"
+
+-- The recognitions' cast (honor_of_the_three_sects.lua and the four like it, :2-32), the same five times: inside its
+-- wait, the wait line; short of `mana`, "Your will is too weak.", for free; then the mana and the `duration` ms wait (5 s),
+-- both before the question, and the input box "Whom is it that has caught your eye?". The answer runs `step`.
+local function recog_cast(ctx, row, step)
+  if subpath_waiting(ctx, row) then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:ask("Whom is it that has caught your eye?", step, "", RECOG_ITEM)
+  ctx:narrated()                                                   -- the scripts send no line
+  return true
+end
+
+-- The typed name's refusals, in the scripts' order, each a box with the portrait that ends it: anything but letters,
+-- spaces and an apostrophe, "You can only enter letters and spaces." (inputLetterCheck, after which Player(nil) stops the
+-- script); nobody online by it, "That player is currently not online."; the caster, "You cannot provide your own
+-- recognition." (not for Elementalist's mark, whose check is commented out, :40). True once the name is a player.
+local function recog_found(ctx, selfOk)
+  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces.", 0, 0, RECOG_ITEM); return false end
+  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("That player is currently not online.", 0, 0, RECOG_ITEM); return false end
+  if ctx.targetIsSelf and not selfOk then ctx:dialog("You cannot provide your own recognition.", 0, 0, RECOG_ITEM); return false end
+  return true
+end
+
+-- A recognition's box to the caster, with the portrait and no button.
+local function recog_box(ctx, text) ctx:dialog(text, 0, 0, RECOG_ITEM) end
+
+-- A menu with the recognitions' portrait, its pick running `step` with `carry`.
+local function recog_menu(ctx, prompt, options, step, carry) ctx:menu(prompt, options, step, carry, RECOG_ITEM) end
+
+-- The named player again, at a pick (`carried` is their name, or "name|more"); false, and nothing more, once gone.
+local function recog_again(ctx)
+  local name = string.match(ctx.carried, "^([^|]*)")
+  return ctx:pcTargetNamed(name)
+end
+
+-- What follows the name in `carried` ("name|more").
+local function recog_rest(ctx) return string.match(ctx.carried, "|(.*)$") or "" end
+
+-- "Remove recognition" (the four scripts' last branch, and Elementalist's mark's): the named player's marks among
+-- `marks` ({ name = legend name, label = what the menu shows }, in the script's order) in a menu "Which recognition would
+-- you like to remove?" (target:hasLegend, the project owner's "From the target"); its pick runs `step`.
+local function recog_offer_remove(ctx, marks, step)
+  local names = {}
+  for _, m in ipairs(marks) do names[#names + 1] = m.name end
+  local held = {}
+  for name in string.gmatch(ctx:targetLegends(table.concat(names, "|")), "[^|]+") do held[name] = true end
+  local labels = {}
+  for _, m in ipairs(marks) do if held[m.name] then labels[#labels + 1] = m.label end end
+  recog_menu(ctx, "Which recognition would you like to remove?", table.concat(labels, "|"), step, ctx.targetName)
+end
+
+-- The remove's pick: the mark the label names comes off the named player (removeLegendbyName on the target, the project
+-- owner's answer; the scripts take it off the caster), and the caster reads `line`.
+local function recog_remove(ctx, marks, line)
+  if not recog_again(ctx) then return false end
+  for _, m in ipairs(marks) do
+    if m.label == ctx.answer then
+      if not ctx:legendTarget(m.name, "", "", 0, 0) then return false end
+      recog_box(ctx, line)
+      return true
+    end
+  end
+  return false
+end
+
+-- Honor of the Three Sects (RTK Subpaths/Geomancer/honor_of_the_three_sects.lua). The cast and the name as above; then
+-- the menu "What do you wish to bestow on them?". Each recognition, inside the named player's own monitor: their saved
+-- registry key one more, their legend of that name gone and written again at the end, "<recognition> N times, recognized
+-- by <caster>" in the script's icon and colour (ctx:markTarget), then the caster's box. The Elemental Arts legend counts
+-- the named player's tally (the project owner's answer; the script reads the caster's, :71-72). "Remove recognition"
+-- offers the named player's three marks and takes the picked one off them (the project owner's answer; the script takes
+-- it off the caster, :146); their tallies stay. Row: mana 100, duration 5000.
+local HONOR = {
+  ["Elemental Arts recognition"] = { key = "practiced_the_elemental_arts", text = "Practiced the Elemental Arts",
+                                     icon = 76, color = 5 },
+  ["Flow of Qi recognition"]     = { key = "balanced_the_flow_of_qi", text = "Balanced the flow of Qi", icon = 122, color = 61 },
+  ["Sage Study recognition"]     = { key = "studied_with_the_sages", text = "Studied with the Sages", icon = 145, color = 61 },
+}
+local HONOR_MARKS = {
+  { name = "practiced_the_elemental_arts", label = "Practiced the elemental arts" },
+  { name = "balanced_the_flow_of_qi",      label = "Balanced the flow of Qi" },
+  { name = "studied_with_the_sages",       label = "Studied with the Sages" },
+}
+local RECOG_REMOVE = "Remove recognition"
+
+function verbs.honor_sects(ctx, row) return recog_cast(ctx, row, "honor_sects_named") end
+
+function verbs.honor_sects_named(ctx, row)
+  if not recog_found(ctx, false) then return false end
+  recog_menu(ctx, "What do you wish to bestow on them?",
+             "Elemental Arts recognition|Flow of Qi recognition|Sage Study recognition|" .. RECOG_REMOVE,
+             "honor_sects_pick", ctx.targetName)
+  return true
+end
+
+function verbs.honor_sects_pick(ctx, row)
+  if not recog_again(ctx) then return false end
+  if ctx.answer == RECOG_REMOVE then recog_offer_remove(ctx, HONOR_MARKS, "honor_sects_remove"); return true end
+  local h = HONOR[ctx.answer]
+  if not h then return false end
+  if not ctx:markTarget(h.key, h.key, h.text .. " %d times, recognized by " .. ctx.name, h.icon, h.color) then return false end
+  recog_box(ctx, ctx.targetName .. " has been recognized for \"" .. h.text .. "\"")
+  return true
+end
+
+function verbs.honor_sects_remove(ctx, row)
+  return recog_remove(ctx, HONOR_MARKS, ctx.carried .. " has had their recognition removed for " .. ctx.answer)
+end
+
+-- Balance recognition (RTK Subpaths/Geomancer/balance_recognition.lua). The cast and the name as above; then the menu
+-- "What do you wish to bestow on them?". Keeper or Disruptor, inside the named player's own monitor: both marks gone,
+-- then "Keeper of Balance, Marked by <caster>" (icon 11, colour 1) or "Disruptor of Balance, Marked by <caster>" (11, 4)
+-- (ctx:legendTarget), and the caster's box. "Remove recognition" offers the named player's marks and takes the picked
+-- one off them (the project owner's answer). Row: mana 100, duration 5000.
+local BALANCE = {
+  ["Keeper recognition"]    = { key = "keeper_of_balance", text = "Keeper of Balance", color = 1 },
+  ["Disruptor recognition"] = { key = "disruptor_of_balance", text = "Disruptor of Balance", color = 4 },
+}
+local BALANCE_MARKS = {
+  { name = "keeper_of_balance",    label = "Keeper of Balance" },
+  { name = "disruptor_of_balance", label = "Disruptor of Balance" },
+}
+
+function verbs.balance_recognition(ctx, row) return recog_cast(ctx, row, "balance_named") end
+
+function verbs.balance_named(ctx, row)
+  if not recog_found(ctx, false) then return false end
+  recog_menu(ctx, "What do you wish to bestow on them?", "Keeper recognition|Disruptor recognition|" .. RECOG_REMOVE,
+             "balance_pick", ctx.targetName)
+  return true
+end
+
+function verbs.balance_pick(ctx, row)
+  if not recog_again(ctx) then return false end
+  if ctx.answer == RECOG_REMOVE then recog_offer_remove(ctx, BALANCE_MARKS, "balance_remove"); return true end
+  local b = BALANCE[ctx.answer]
+  if not b then return false end
+  if not ctx:legendTarget("disruptor_of_balance|keeper_of_balance", b.key, b.text .. ", Marked by " .. ctx.name, 11, b.color) then
+    return false
+  end
+  recog_box(ctx, ctx.targetName .. " has been recognized as a \"" .. b.text .. "\"")
+  return true
+end
+
+function verbs.balance_remove(ctx, row)
+  return recog_remove(ctx, BALANCE_MARKS, ctx.carried .. " has had their recognition removed for " .. ctx.answer)
+end
+
+-- Inner sect recognition (RTK Subpaths/Geomancer/inner_sect_recognition.lua). The cast and the name as above; then the
+-- menu "What would you like to do?". "Recognize for specialized training": the menus "Which specialized training?" (Wu
+-- Wei, Wu Xing, Tiaoli) and "Which level have they attained?" (Initiate, Apprentice, Follower, Sage, Master); then, inside
+-- the named player's own monitor, that training's five level marks gone and "<training> <level>, Chosen by <caster>
+-- (<date>)" in the training's icon and colour (ctx:legendTarget); then the caster's box with the next arrow, "<player> has
+-- been recognized as a <training> <level>", and once they answer it one box to the player, "You have been recognized as a
+-- <training> <level>", which drops any conversation they had waiting, the caster's script ending there
+-- (ctx:dialogThenTarget). RTK sends that box from the caster's coroutine after target:freeAsync() (:102-109), the shape
+-- Scouting trip's player box has, built as the project owner's answer for that box built it ("Plain boxes": one box that
+-- drops their waiting conversation; the script ends there); the portrait is the script's own, the Staff of chi's.
+-- "Remove recognition" offers each training the named player holds a level of and takes all five of its marks off them
+-- (the project owner's answer; the script lists and removes the caster's own, :119, :136). Row: mana 100, duration 5000.
+local SECT_TRAININGS = { "Wu Wei", "Wu Xing", "Tiaoli" }
+local SECT_LEVELS = { "Initiate", "Apprentice", "Follower", "Sage", "Master" }
+local SECT_ICONS = { 145, 76, 122 }
+local SECT_COLORS = { 145, 5, 20 }
+local SECT_RECOGNIZE = "Recognize for specialized training"
+
+-- A training's mark for a level: "wu_wei_initiate" (string.lower of the training with "_" for " ", "_", the level).
+local function sect_mark(training, level)
+  return string.lower((string.gsub(training, " ", "_"))) .. "_" .. string.lower(level)
+end
+
+local function sect_marks(training)
+  local names = {}
+  for _, level in ipairs(SECT_LEVELS) do names[#names + 1] = sect_mark(training, level) end
+  return table.concat(names, "|")
+end
+
+function verbs.inner_sect(ctx, row) return recog_cast(ctx, row, "inner_sect_named") end
+
+function verbs.inner_sect_named(ctx, row)
+  if not recog_found(ctx, false) then return false end
+  recog_menu(ctx, "What would you like to do?", SECT_RECOGNIZE .. "|" .. RECOG_REMOVE, "inner_sect_pick", ctx.targetName)
+  return true
+end
+
+function verbs.inner_sect_pick(ctx, row)
+  if not recog_again(ctx) then return false end
+  if ctx.answer == SECT_RECOGNIZE then
+    recog_menu(ctx, "Which specialized training?", table.concat(SECT_TRAININGS, "|"), "inner_sect_training", ctx.targetName)
+    return true
+  end
+  if ctx.answer ~= RECOG_REMOVE then return false end
+  -- each training once for every level of it the named player holds, in the script's order (:113-123)
+  local all = {}
+  for _, training in ipairs(SECT_TRAININGS) do
+    for _, level in ipairs(SECT_LEVELS) do all[#all + 1] = sect_mark(training, level) end
+  end
+  local labels = {}
+  for name in string.gmatch(ctx:targetLegends(table.concat(all, "|")), "[^|]+") do
+    for _, training in ipairs(SECT_TRAININGS) do
+      if string.find(sect_marks(training), name, 1, true) then labels[#labels + 1] = training; break end
+    end
+  end
+  recog_menu(ctx, "Which recognition would you like to remove?", table.concat(labels, "|"), "inner_sect_remove",
+             ctx.targetName)
+  return true
+end
+
+function verbs.inner_sect_training(ctx, row)
+  for _, training in ipairs(SECT_TRAININGS) do
+    if training == ctx.answer then
+      recog_menu(ctx, "Which level have they attained?", table.concat(SECT_LEVELS, "|"), "inner_sect_level",
+                 ctx.carried .. "|" .. training)
+      return true
+    end
+  end
+  return false
+end
+
+function verbs.inner_sect_level(ctx, row)
+  if not recog_again(ctx) then return false end
+  local training, level = recog_rest(ctx), ctx.answer
+  local icon, color
+  for i, t in ipairs(SECT_TRAININGS) do if t == training then icon, color = SECT_ICONS[i], SECT_COLORS[i] end end
+  local known = false
+  for _, l in ipairs(SECT_LEVELS) do if l == level then known = true end end
+  if not icon or not known then return false end
+  if not ctx:legendTarget(sect_marks(training), sect_mark(training, level),
+                          training .. " " .. level .. ", Chosen by " .. ctx.name .. " (" .. ctx.gameDate .. ")", icon, color) then
+    return false
+  end
+  ctx:dialogThenTarget(ctx.targetName .. " has been recognized as a " .. training .. " " .. level,
+                       "You have been recognized as a " .. training .. " " .. level, 0, 0, RECOG_ITEM)
+  return true
+end
+
+function verbs.inner_sect_remove(ctx, row)
+  if not recog_again(ctx) then return false end
+  for _, training in ipairs(SECT_TRAININGS) do
+    if training == ctx.answer then
+      if not ctx:legendTarget(sect_marks(training), "", "", 0, 0) then return false end
+      recog_box(ctx, ctx.carried .. " has had their recognition removed for " .. training)
+      return true
+    end
+  end
+  return false
+end
+
+-- Neutrality recognition (RTK Subpaths/Geomancer/neutrality_recognition.lua). The cast and the name as above; then the
+-- menu "What do you wish to bestow on them?". "Neutrality recognition", inside the named player's own monitor: the mark
+-- gone and "Learned to walk the neutral path, Marked by <caster>" (icon 145, colour 1), then the caster's box. "Remove
+-- recognition" offers the named player's mark and takes it off them (the project owner's answer). Row: mana 100,
+-- duration 5000.
+local NEUTRAL_KEY = "learned_to_walk_the_neutral_path"
+local NEUTRAL_MARKS = { { name = NEUTRAL_KEY, label = "Learned to walk the neutral path" } }
+
+function verbs.neutrality(ctx, row) return recog_cast(ctx, row, "neutrality_named") end
+
+function verbs.neutrality_named(ctx, row)
+  if not recog_found(ctx, false) then return false end
+  recog_menu(ctx, "What do you wish to bestow on them?", "Neutrality recognition|" .. RECOG_REMOVE, "neutrality_pick",
+             ctx.targetName)
+  return true
+end
+
+function verbs.neutrality_pick(ctx, row)
+  if not recog_again(ctx) then return false end
+  if ctx.answer == RECOG_REMOVE then recog_offer_remove(ctx, NEUTRAL_MARKS, "neutrality_remove"); return true end
+  if ctx.answer ~= "Neutrality recognition" then return false end
+  if not ctx:legendTarget(NEUTRAL_KEY, NEUTRAL_KEY, "Learned to walk the neutral path, Marked by " .. ctx.name, 145, 1) then
+    return false
+  end
+  recog_box(ctx, ctx.targetName .. " has been recognized for walking the neutral path")
+  return true
+end
+
+function verbs.neutrality_remove(ctx, row)
+  return recog_remove(ctx, NEUTRAL_MARKS, ctx.carried .. " has had their recognition removed for " .. ctx.answer)
+end
+
+-- Elementalist's mark (RTK Subpaths/Geomancer/elementalists_mark.lua). The cast and the name as above, the caster's own
+-- name taken too (the script's check is commented out, :40); then the menu "What do you wish to bestow on them?".
+-- "Recognize as elemental mage": the menu "Which element?" (Earth, Fire, Metal, Water, Wood); then, inside the named
+-- player's own monitor, the five element marks gone and "Recognized as <element> Mage, by <caster> (<date>)" (icon 145,
+-- colour 1), and the caster's box. "Remove recognition" offers the named player's element marks and takes the picked one
+-- off them, as the script does. Row: mana 100, duration 5000.
+local ELEMENTS = { "Earth", "Fire", "Metal", "Water", "Wood" }
+local function element_mark(element) return "recognized_as_" .. string.lower(element) .. "_mage" end
+local ELEMENT_MARKS = {}
+for _, e in ipairs(ELEMENTS) do ELEMENT_MARKS[#ELEMENT_MARKS + 1] = { name = element_mark(e), label = e } end
+
+function verbs.elementalist_mark(ctx, row) return recog_cast(ctx, row, "elementalist_named") end
+
+function verbs.elementalist_named(ctx, row)
+  if not recog_found(ctx, true) then return false end
+  recog_menu(ctx, "What do you wish to bestow on them?", "Recognize as elemental mage|" .. RECOG_REMOVE, "elementalist_pick",
+             ctx.targetName)
+  return true
+end
+
+function verbs.elementalist_pick(ctx, row)
+  if not recog_again(ctx) then return false end
+  if ctx.answer == RECOG_REMOVE then recog_offer_remove(ctx, ELEMENT_MARKS, "elementalist_remove"); return true end
+  if ctx.answer ~= "Recognize as elemental mage" then return false end
+  recog_menu(ctx, "Which element?", table.concat(ELEMENTS, "|"), "elementalist_element", ctx.targetName)
+  return true
+end
+
+function verbs.elementalist_element(ctx, row)
+  if not recog_again(ctx) then return false end
+  local names = {}
+  for _, m in ipairs(ELEMENT_MARKS) do names[#names + 1] = m.name end
+  for _, element in ipairs(ELEMENTS) do
+    if element == ctx.answer then
+      if not ctx:legendTarget(table.concat(names, "|"), element_mark(element),
+                              "Recognized as " .. element .. " Mage, by " .. ctx.name .. " (" .. ctx.gameDate .. ")", 145, 1) then
+        return false
+      end
+      recog_box(ctx, ctx.targetName .. " has been recognized as a " .. element .. " Mage")
+      return true
+    end
+  end
+  return false
+end
+
+function verbs.elementalist_remove(ctx, row)
+  return recog_remove(ctx, ELEMENT_MARKS, ctx.carried .. " has had their " .. ctx.answer .. " mage recognition removed.")
+end
+
+-- Exhume (RTK Subpaths/Geomancer/exhume.lua). Inside its wait, the wait line; short of `mana`, "Your will is too
+-- weak.", for free; then the `duration` ms wait (1,250 s) and a run of `durationMax` ms (100 s) whose beat each second
+-- (RTK's player duration timer runs while_cast every second, the last as the run reaches 0, so the run is given one
+-- millisecond past its last beat) takes `mana` (200), or, short of it, says "Your will is too weak." and ends the run
+-- (setDuration("exhume", 0)). No line at the cast: the script sends none. While the run lasts an item dropped that is one
+-- of the script's sixteen (on_drop_while_cast) is spent, one of it, nothing lands, graphic 14 plays over the caster and
+-- that item's creature appears on the caster's own tile, unowned (exhume_cast_drop); any other item drops as always. Five
+-- of the sixteen creatures exist in neither RTK's table nor this server's, so they are the project owner's stand-ins
+-- ("Pick five creatures"): mobs.csv dummy_bull, dummy_pig, dummy_horse, dummy_skeleton and dummy_dragon, no-reward copies
+-- of Large bull, Stubborn pig, Horse, Lesser skeleton and Dragon hatchling. Row: mana 200, duration 1250000, durationMax
+-- 100000.
+local EXHUME = {
+  fox_fur = "dummy_fox", red_fox_fur = "dummy_blood_fox", light_fox_fur = "dummy_sun_fox", bears_liver = "dummy_bear",
+  rat_meat = "dummy_rat", antler = "dummy_deer", beef = "dummy_bull", rare_pork = "dummy_pig", rabbit_meat = "dummy_rabbit",
+  wool = "dummy_sheep", horse_meat = "dummy_horse", bone = "dummy_skeleton", dragons_tooth = "dummy_dragon",
+  tigers_heart = "dummy_tiger", snake_meat = "dummy_snake", acorn = "dummy_squirrel",
+}
+local EXHUME_ANIM = 14                                            -- player:sendAnimation(14, 1)
+local SELF_BEAT_MS = 1000                                         -- RTK's player duration timer, pc.c bl_duratimer
+
+function verbs.exhume(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:startSelfTick("exhume_beat", SELF_BEAT_MS, (row.durationMax or 0) + 1)
+  ctx:narrated()                                                   -- the script sends no line
+  return true
+end
+
+function verbs.exhume_beat(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); ctx:endSelfTick(); return true end
+  ctx:debitMana(mana)
+  return true
+end
+
+function verbs.exhume_cast_drop(ctx, row)
+  local creature = EXHUME[ctx.dropped]
+  if not creature then return false end
+  if not ctx:takeDropped() then return true end                   -- nothing to spend, or the caster going: nothing
+  ctx:fx(EXHUME_ANIM, -1)
+  ctx:spawnHere(creature)
+  return true
+end
+
+-- GreenPotion (RTK Subpaths/Geomancer/green_potion.lua, the table create_green_potion). Inside its wait, the wait line.
+-- No Limestone, the box "Where did you put that limestone?" with Limestone's icon; no Fine snake meat, "Where did you put
+-- that Fine Snake Meat?" with its icon; either ends it, for free. Else one of each goes (ctx:takeItem, RTK's removeItem),
+-- a Lime potion comes (ctx:giveItem, RTK's addItem: onto the caster's tile when the bag is full), the `duration` ms wait
+-- (3,120 s) is armed, on a cast that made one only, and "You create a lime potion.". No mana: the script names 500 and
+-- neither checks nor takes it. Row: duration 3120000.
+function verbs.green_potion(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx:itemCount("limestone") < 1 then ctx:dialog("Where did you put that limestone?", 0, 0, "limestone"); return false end
+  if ctx:itemCount("fine_snake_meat") < 1 then
+    ctx:dialog("Where did you put that Fine Snake Meat?", 0, 0, "fine_snake_meat"); return false
+  end
+  ctx:takeItem("limestone", 1)
+  ctx:takeItem("fine_snake_meat", 1)
+  ctx:giveItem("lime_potion", 1)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:say("You create a lime potion.")
+  ctx:narrated()
+  return true
+end
+
+-- Elemental mastery (RTK Subpaths/Geomancer/elemental_mastery.lua), the cast and its menu's pick. The cast: in its own
+-- form already, "Spell already cast." (hasDuration("elemental_mastery")); short of `mana`, "Your will is too weak."; both
+-- free. Then the menu "Which element do you choose to manifest?" with no portrait. The pick: that manifest's look from the
+-- spell's Morphs.csv row (Water 325, Fire 519, Earth 186, Metal 248, Wood 192) in the caster's war paint
+-- (disguiseColor = player.armorColor) for the row's 120 s, as a form here, so any other form ends first (Wilderness
+-- guise's and Chongun uniform's kept departure); it ends with nothing played, as its uncast. The mana is checked and
+-- never taken, no wait is armed and no line is said, as the script. A closed menu does nothing. Row: mana 2000.
+function verbs.manifest(ctx, row)
+  if ctx.morphSpell == ctx.spellKey then ctx:say("Spell already cast."); return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  ctx:menu("Which element do you choose to manifest?",
+           "Water manifest|Fire manifest|Earth manifest|Metal manifest|Wood manifest", "manifest_pick")
+  ctx:narrated()
+  return true
+end
+
+function verbs.manifest_pick(ctx, row)
+  return ctx:morphTo(ctx.answer, true)
+end
+
+-- Good earth (RTK Subpaths/Geomancer/good_earth.lua). Inside its wait, the wait line; short of `mana`, "Your will is too
+-- weak.", for free. Then an unowned trap (World.GoodEarthTrap, RTK's GoodEarthAsvTrapNpc) on each tile of the 3x3 around
+-- the caster that is inside RTK's bounds, open and passable, with no NPC or trap on it, gone in GOOD_EARTH_TRAP_MS
+-- (ctx:setTrapsAround; RTK addNPC(..., 2, 1000, 20000)); the `duration` ms wait (125 s); and a run of `durationMax` ms
+-- (125 s) whose beat every 1.5 s (while_cast_1500) takes `mana` (100) while 90 s or more of the run remain, or, short of
+-- it, says "Your will is too weak." and ends the run. No mana at the cast and no line: the script takes none and sends
+-- none. What a trap does when stepped on is World.cs's Good earth block and Session.SpringGoodEarth. Row: mana 100,
+-- duration 125000, durationMax 125000.
+local GOOD_EARTH_TRAP = "good_earth"
+local GOOD_EARTH_TRAP_MS = 20000                                  -- addNPC(..., 2, 1000, 20000)
+local GOOD_EARTH_BEAT_MS = 1500                                   -- while_cast_1500
+local GOOD_EARTH_CHARGED_MS = 90000                               -- if duration >= 90000
+
+function verbs.good_earth(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  ctx:setTrapsAround(GOOD_EARTH_TRAP, GOOD_EARTH_TRAP_MS)
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:startSelfTick("good_earth_beat", GOOD_EARTH_BEAT_MS, row.durationMax or 0)
+  ctx:narrated()                                                   -- the script sends no line
+  return true
+end
+
+function verbs.good_earth_beat(ctx, row)
+  if ctx:selfTickLeft() < GOOD_EARTH_CHARGED_MS then return true end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); ctx:endSelfTick(); return true end
+  ctx:debitMana(mana)
+  return true
+end
+
+-- Soften skin (RTK Subpaths/Geomancer/soften_skin.lua) and Earths Spite (earths_spite.lua, its body with armour +45), at
+-- the target RTK's engine aims it at (ctx:aimedTarget, #421's: an aimed id within 21 tiles on the caster's map, else the
+-- faced tile; nothing there, nothing and free). In the script's order, each refusal free: short of `mana`, "Not enough
+-- mana."; a dead player, "That is no longer useful."; a player the caster may not attack (off a PvP map, this server's
+-- canPK), "You cannot attack that target." (an NPC is no target, as RTK's engine runs no script at one); a curse already
+-- on the target (checkIfCast(curses) or cursed), "Another spell of this type is in effect."; a protection, "The target is
+-- already protected.". Then the curse lands (ctx:curseAimed): armour +`amount` (RTK's sign: the target takes more
+-- damage) in the curses slot, for `duration` ms on a player (425 s), who reads "<caster> casts <spell> on you.", and for
+-- `durationMax` ms on a creature (637.5 s: the script's 425 s as RTK's creature timer counts it, 1,000 off every 1.5 s, the
+-- project owner's Insult ruling), whose graphic 34 is drawn again every 1.5 s while it holds (its while_cast); the spell's
+-- sound plays at the caster and its graphic over the target; then the mana goes and the caster reads "You cast <spell>."
+-- in the script's words ("Earths spite"). No wait. RTK's removal of the target's snare_trap duration has nothing to
+-- remove here: this server's snare trap is a hold (Insult's kept departure). Row: mana 500, amount 35 (45), category
+-- curses, stat armor, duration 425000, durationMax 637500.
+local SOFTEN_WORDS = { soften_skin = "Soften skin", earths_spite = "Earths spite" }
+local SOFTEN_BEAT_ANIM, CREATURE_BEAT_MS = 34, 1500
+
+function verbs.soften(ctx, row)
+  local aimed = ctx:aimedTarget()
+  if aimed == "none" then return false end
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Not enough mana."); return false end
+  if aimed == "player" and ctx.targetIsDead then ctx:say("That is no longer useful."); return false end
+  if aimed == "player" and not ctx:mapPvp(ctx.map) then ctx:say("You cannot attack that target."); return false end
+  if ctx:aimedHasStatus("curses") then ctx:say("Another spell of this type is in effect."); return false end
+  if ctx:aimedHasStatus("protections") then ctx:say("The target is already protected."); return false end
+  local word = SOFTEN_WORDS[ctx.spellKey] or ctx.spellName
+  if not ctx:curseAimed(row.category or "curses", row.stat or "armor", row.amount or 0, row.duration or 0,
+                        row.durationMax or 0, "curses|protections", ctx.name .. " casts " .. word .. " on you.",
+                        SOFTEN_BEAT_ANIM, CREATURE_BEAT_MS) then
+    return false
+  end
+  ctx:debitMana(mana)
+  ctx:say("You cast " .. word .. ".")
+  ctx:narrated()
+  return true
+end

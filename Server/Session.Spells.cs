@@ -4069,12 +4069,14 @@ public sealed partial class Session
     /// that row's time: the morph verb's two steps, staged then applied, so the look, the graphic, the buff box line and
     /// the redraw are the morph family's, and any other form ends (RTK's <c>removeDuras(morphs)</c>). False, changing
     /// nothing, for an answer the row does not list.</summary>
-    internal bool LuaMorphTo(SpellDef sp, string? answer)
+    internal bool LuaMorphTo(SpellDef sp, string? answer, bool warPaint = false)
     {
         if (Content.MorphDispatchFor(sp) is not (Dictionary<string, ushort> answers, int mana, int dur)) return false;
         if (!answers.TryGetValue((answer ?? "").Trim().ToLowerInvariant(), out var look)) return false;
         LuaSetPendingMorph(look, 0, mana, dur);
-        LuaApplyMorph(sp);
+        // With warPaint (Geomancer's Elemental mastery, RTK disguiseColor = player.armorColor) the form wears the caster's
+        // war paint, as Chongun uniform's does (LuaWearForm); every other answered form keeps its own colours.
+        LuaApplyMorph(sp, warPaint ? _char.ArmorColor : (byte)0);
         return true;
     }
 
@@ -4299,8 +4301,21 @@ public sealed partial class Session
     /// gate, and may lose the monitor while it does (the gate's gap, above). The caller decides the drop again after it.</para></summary>
     private bool RunDropHooks(ItemDef def)
     {
-        if (_aether.Count == 0) return false;
+        if (_aether.Count == 0 && _spellTicks.Count == 0) return false;
         long now = Environment.TickCount64;
+        // RTK's on_drop_while_cast first (clif.c:6628-6632): every spell whose duration is still running. A duration with a
+        // beat of its own is a run on the caster here (LuaStartSelfTick; Geomancer's Exhume), so for each of the caster's
+        // live self runs whose spell has a SpellParams.csv row, the verb named after that row's verb with "_cast_drop" on
+        // the end, when spell_verbs.lua has one, is handed the item, as the waits' hooks below are.
+        foreach (var t in _spellTicks.ToArray())   // a copy: a hook may start or end a run
+        {
+            if (!t.Self || t.Ended || now >= t.Until || !Content.SpellParams.TryGetValue(t.SpellKey, out var runRow)) continue;
+            string castHook = runRow.GetValueOrDefault("verb", "") + "_cast_drop";
+            if (!SpellScript.HasVerbUngated(castHook) || Content.SpellByKey(t.SpellKey) is not { } runSp) continue;
+            if (SpellScript.Run(castHook, new SpellContext(this, runSp, def.Key), runRow) != true) continue;
+            Log.Info($"      {runSp.Name}(lua): the drop of '{def.Key}' taken over by {castHook}");
+            return true;
+        }
         foreach (var (key, until) in _aether.ToArray())   // a copy: a hook may arm or clear a wait
         {
             if (until <= now || !Content.SpellParams.TryGetValue(key, out var row)) continue;
@@ -4501,10 +4516,12 @@ public sealed partial class Session
     /// <summary>The key of the spell whose form the caster wears (<c>ctx.morphSpell</c>), "" with none.</summary>
     internal string LuaMorphSpell => IsMorphed ? _morphKey : "";
 
-    /// <summary>Is <paramref name="key"/> a uniform, one whose SpellParams.csv row binds the <c>uniform</c> verb (Chongun
-    /// uniform)? Its form then ends with nothing played, as its script's uncast ends it (<see cref="RevertMorph"/>).</summary>
+    /// <summary>Is <paramref name="key"/> a form whose script's uncast plays nothing: one whose SpellParams.csv row binds the
+    /// <c>uniform</c> verb (Chongun uniform) or the <c>manifest</c> verb (Geomancer's Elemental mastery,
+    /// <c>Spells/Subpaths/Geomancer/elemental_mastery.lua:57-65</c>)? Its form then ends with nothing played
+    /// (<see cref="RevertMorph"/>).</summary>
     private static bool IsUniformSpell(string key) =>
-        key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") == "uniform";
+        key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") is "uniform" or "manifest";
 
     /// <summary>Chongun uniform's look (<c>ctx:wearForm</c>; RTK <c>Spells/Subpaths/Chongun/chongun_uniform.lua:25-33</c>):
     /// the spell's own Morphs.csv look (37) for that row's time, by the morph family's two steps, so any other form ends
@@ -4679,12 +4696,17 @@ public sealed partial class Session
     {
         _approachPlace = null;   // a place read for an earlier target is not this target's (Session.ApproachSummon.cs)
         _pcSpellTarget = null;
+        _aimedMob = null;
         int cx = _char.X, cy = _char.Y;
         bool InReach(int x, int y) => Math.Max(Math.Abs(x - cx), Math.Abs(y - cy)) <= AimedSpellReach;
         if (targetId is uint id && id != 0)
         {
             if (_world.MobById(_char.Map, id) is { } mob)
-                return mob.Alive && !mob.IsNpc && InReach(mob.X, mob.Y) ? "creature" : Aimless(sp, "an NPC, a dead creature or one out of reach");
+            {
+                if (!mob.Alive || mob.IsNpc || !InReach(mob.X, mob.Y)) return Aimless(sp, "an NPC, a dead creature or one out of reach");
+                _aimedMob = mob;
+                return "creature";
+            }
             if (_world.Online.ById(id) is { } pc && !pc.IsReplaced && pc.CharMap == CharMap && InReach(pc._char.X, pc._char.Y))
             {
                 _pcSpellTarget = pc;
@@ -4699,8 +4721,13 @@ public sealed partial class Session
             _pcSpellTarget = faced;
             return "player";
         }
-        return _world.MobsAt(_char.Map, fx, fy).Any(m => m.Alive && !m.IsNpc) ? "creature" : Aimless(sp, "nothing faced");
+        _aimedMob = _world.MobsAt(_char.Map, fx, fy).FirstOrDefault(m => m.Alive && !m.IsNpc);
+        return _aimedMob is not null ? "creature" : Aimless(sp, "nothing faced");
     }
+
+    /// <summary>The creature <see cref="LuaResolveAimedTarget"/> found, when it answered "creature" (Geomancer's Soften skin
+    /// and Earths Spite curse it, <see cref="LuaCurseAimed"/>); null otherwise. Reset at every aimed resolve.</summary>
+    private Mob? _aimedMob;
 
     private string Aimless(SpellDef sp, string why)
     {
@@ -5386,6 +5413,263 @@ public sealed partial class Session
         key.Length > 0 && Content.SpellParams.TryGetValue(key, out var row) && row.GetValueOrDefault("verb", "") == "guise"
         && int.TryParse(row.GetValueOrDefault("amount", ""), out int sound) ? sound : null;
 
+    // ---- the Geomancer spells (RTK rtklua/Accepted/Spells/Subpaths/Geomancer/) ----------------------------------------
+    // The engine half of the Geomancer verbs in game-data/spell_verbs.lua: legends on a named player (the five
+    // recognitions, P10), a creature on the caster's own tile (Exhume, P6), the end and the time left of a run on the
+    // caster (Exhume's and Good earth's beats, P2), Good earth's traps around the caster (P8) and what one does to a player
+    // who steps on it, and Soften skin's curse on the target RTK's engine aims it at. Reveal fate stays as it is today,
+    // casting nothing (the project owner's choice, 2026-11-16), so nothing here is its.
+    //
+    // LOCKS. As the Ranger half: a verb runs on the caster's packet thread (or, for an answer or a menu pick, the caster's
+    // handler thread), inside the caster's monitor and the Lua gate, never World._lock. Every write to another player is
+    // decided and made inside that player's own monitor, by a Receive* method that enters it here by StateRank (the
+    // ReceiveMarkCount shape), one player at a time, and a player who is leaving or whose session a second login has
+    // replaced is given nothing. The caster's own writes to the world (the creature, the traps) refuse a caster who is gone
+    // (CasterGone, #423's review, F1). A creature and a trap are written through World's
+    // own methods, which take World._lock inside. A player who steps on a Good earth trap is written on their own walk
+    // thread, inside their own monitor, as the Pit trap's player is. No new lock.
+
+    /// <summary>A legend on the player <see cref="LuaResolveNamedPcTarget"/> resolved, wherever they stand
+    /// (<c>ctx:legendTarget</c>; the recognitions' <c>target:removeLegendbyName</c>, then
+    /// <c>target:addLegend</c>): <see cref="ReceiveLegend"/> inside their own monitor. False, changing nothing, with no target
+    /// or one who is leaving or replaced.</summary>
+    internal bool LuaLegendTarget(SpellDef sp, string? remove, string? mark, string? text, int icon, int color)
+    {
+        if (_pcSpellTarget is not { } target) return false;
+        var names = (remove ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        bool done = target.ReceiveLegend(names, mark ?? "", text ?? "", (byte)icon, (byte)color);
+        Log.Info($"      (lua) {sp.Name} -> legend '{mark}' {(done ? "written on" : "not written on (leaving)")} '{target.CharName}'" +
+                 $" (off: {string.Join(", ", names)})");
+        return done;
+    }
+
+    /// <summary>A legend lands on THIS player (<see cref="LuaLegendTarget"/>), inside this player's own monitor, in the
+    /// scripts' order: every legend named in <paramref name="remove"/> goes (<c>removeLegendbyName</c>), then, when
+    /// <paramref name="text"/> is not empty, a legend named <paramref name="mark"/> reading it, in icon
+    /// <paramref name="icon"/> and colour <paramref name="color"/>, at the end of the list (<c>addLegend</c>). Saved. Nothing
+    /// for a player who is logging out or replaced. Returns whether it landed.
+    /// <para>Cross-session: called from the caster's thread, which holds the caster's monitor and the Lua gate and never
+    /// <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the
+    /// <see cref="ReceiveMarkCount"/> shape; on the caster themselves (Elementalist's mark names anyone) it is the monitor
+    /// already held.</para></summary>
+    internal bool ReceiveLegend(IReadOnlyList<string> remove, string mark, string text, byte icon, byte color)
+    {
+        using var _ = EnterState();   // #29: cross-thread entry into this session's state
+        if (_leaving || IsReplaced) return false;
+        foreach (var name in remove) _char.Legends.RemoveAll(l => l.Name == name);
+        if (text.Length > 0 && mark.Length > 0) _char.Legends.Add(new Legend(icon, color, text, mark));
+        SaveChar();
+        Log.Info($"   -> LEGEND: {_char.Name} '{mark}'{(text.Length > 0 ? "" : " (removed only)")}");
+        return true;
+    }
+
+    /// <summary>Which of the legends named in <paramref name="names"/> ('|' between them) the player
+    /// <see cref="LuaResolveNamedPcTarget"/> resolved holds, in the order given, '|' between them (<c>ctx:targetLegends</c>;
+    /// the recognitions' <c>target:hasLegend</c> loop for "Remove recognition"). Read inside that player's own monitor,
+    /// since their list is written there; "" with no target.</summary>
+    internal string LuaTargetLegends(string? names)
+    {
+        if (_pcSpellTarget is not { } target) return "";
+        var want = (names ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return target.WithState(() => string.Join("|", want.Where(target.HasLegend)));
+    }
+
+    /// <summary>Exhume's creature (<c>ctx:spawnHere</c>; RTK <c>player:spawn(mob, player.x, player.y, 1, player.m)</c>,
+    /// <c>Spells/Subpaths/Geomancer/exhume.lua:91</c>): the mobs.csv creature <paramref name="mobKey"/>, unowned, on the
+    /// caster's own tile with no test of it (RTK's <c>mobspawn_onetime</c> makes none), facing north (RTK's spawn sets no
+    /// side). Nothing for a caster who is gone (<see cref="CasterGone"/>): the drop's hook can wait at the Lua gate while a
+    /// kick lands. Throws for a creature mobs.csv does not have.</summary>
+    internal bool LuaSpawnHere(SpellDef sp, string mobKey)
+    {
+        var def = Content.MobByKey(mobKey)
+                  ?? throw new InvalidOperationException($"{sp.Key}: no creature '{mobKey}' in mobs.csv to spawn");
+        using var _ = EnterState();   // #29: held by the verb already; the gone-caster test reads under it
+        if (CasterGone($"{mobKey} spawn")) return false;
+        var mob = SummonWorldMob(def.Look, _char.X, _char.Y, def.Name, def.Hp, dir: 0, color: def.Color, exp: def.Exp,
+                                 moveTime: def.MoveTime, key: def.Key, def: def);
+        Log.Info($"      {sp.Name}(lua) -> spawned '{def.Key}' ({mob.Id}) on the caster's tile ({_char.X},{_char.Y})");
+        return true;
+    }
+
+    /// <summary>End this caster's run of <paramref name="sp"/> on themselves now (<c>ctx:endSelfTick</c>; RTK
+    /// <c>player:setDuration(key, 0)</c>, Exhume's and Good earth's "Your will is too weak."). No beat follows.</summary>
+    internal void LuaEndSelfTick(SpellDef sp)
+    {
+        AssertStateHeld("a spell tick's end");
+        foreach (var t in _spellTicks)
+            if (t.Self && t.SpellKey.Equals(sp.Key, StringComparison.OrdinalIgnoreCase)) t.Ended = true;
+        PublishSpellTickDue();
+    }
+
+    /// <summary>Milliseconds left on this caster's run of <paramref name="sp"/> on themselves, 0 with none
+    /// (<c>ctx:selfTickLeft</c>; RTK <c>player:getDuration(key)</c>, Good earth's beat).</summary>
+    internal int LuaSelfTickLeft(SpellDef sp)
+    {
+        long now = Environment.TickCount64;
+        return LiveSelfTick(sp.Key, now) is { } t ? (int)Math.Max(0, t.Until - now) : 0;
+    }
+
+    /// <summary>Good earth's traps (<c>ctx:setTrapsAround</c>; RTK <c>good_earth.setASVTraps</c>,
+    /// <c>Spells/Subpaths/Geomancer/good_earth.lua:41-68</c>): on each tile of the 3x3 around the caster, their own
+    /// included, that lies inside RTK's bounds (<c>x &gt; 0</c>, <c>y &gt; 0</c>, <c>x &lt; getMapXMax</c>,
+    /// <c>y &lt; getMapYMax</c>, the map's width and height less one), carries no map object and is passable
+    /// (<c>getObject == 0</c>, <c>getPass == 0</c>), and has no NPC on it (<c>getObjectsInCell(BL_NPC)</c>: an NPC, or a
+    /// trap, which RTK keeps as an NPC), an unowned trap of <paramref name="kind"/>, gone after
+    /// <paramref name="lifetimeMs"/> (<c>addNPC("GoodEarthAsvTrapNpc", m, x, y, 2, 1000, 20000)</c>). Returns how many. None
+    /// for a caster who is gone (<see cref="CasterGone"/>). What a trap does when stepped on is <see cref="SpringGoodEarth"/>
+    /// and World's (the Good earth block).</summary>
+    internal int LuaSetTrapsAround(SpellDef sp, string kind, int lifetimeMs)
+    {
+        if (kind != World.GoodEarthTrap) throw new ArgumentException($"no trap '{kind}' to set around", nameof(kind));
+        if (lifetimeMs <= 0) throw new ArgumentException("a trap needs a lifetime", nameof(lifetimeMs));
+        using var _ = EnterState();   // #29: held by the verb already; the gone-caster test reads under it
+        if (CasterGone($"{kind} traps")) return 0;
+        ushort map = _char.Map, xs = _char.MapXs, ys = _char.MapYs;
+        var terrain = MapData.For(map, xs, ys);
+        long expires = Environment.TickCount64 + lifetimeMs;
+        int placed = 0;
+        for (int x = _char.X - 1; x <= _char.X + 1; x++)
+            for (int y = _char.Y - 1; y <= _char.Y + 1; y++)
+            {
+                if (x <= 0 || y <= 0 || x >= xs - 1 || y >= ys - 1) continue;
+                if (terrain is not null && (terrain.Obj(x, y) != 0 || terrain.Pass(x, y) != 0)) continue;
+                if (_world.PlaceTrapWhereNoNpc(map, (ushort)x, (ushort)y, kind, expires)) placed++;
+            }
+        Log.Info($"      {sp.Name}(lua) -> {placed} {kind} trap(s) around ({_char.X},{_char.Y}) on map {map}, gone in {lifetimeMs}ms");
+        return placed;
+    }
+
+    // Good earth's trap on a player (RTK GoodEarthAsvTrapNpc.click and the NPC spells it casts, Spells/NPCs/sanctuary.lua,
+    // harden_armor.lua, valor.lua). RTK constants, the scripts' own.
+    private const int GoodEarthAnim = 18;                       // player:sendAnimation(18, 500)
+    private const double GoodEarthSanctuary = 0.5;              // sanctuary.lua: deduction - .5
+    private const int GoodEarthSanctuaryMs = 300_000;           // sanctuary.lua: local duration = 300000
+    private const int GoodEarthWardMs = 300_000, GoodEarthWardPvpMs = 185_000;   // harden_armor.lua, valor.lua (185000 when canPK)
+    private const int GoodEarthArmor = -10;                     // harden_armor.lua's recast: armor - 10 (better)
+    private const int GoodEarthMight = 3;                       // valor.lua's recast: might + 3
+
+    /// <summary>This player stepped on a Good earth trap (<see cref="World.CheckPlayerTrapTrigger"/>, on their own walk thread,
+    /// after the world lock is released): RTK <c>GoodEarthAsvTrapNpc.click</c> (<c>good_earth.lua:79-86</c>) on them, inside
+    /// their own monitor, on any map, alive or a ghost (the click checks nothing). Graphic 18 and "It is peaceful here.";
+    /// then the three NPC spells' bodies, each with its own refusals:
+    /// <list type="bullet">
+    /// <item>Sanctuary (<c>Spells/NPCs/sanctuary.lua</c>): nothing in a sanctuary already (<c>checkIfCast(sanctuaries)</c>,
+    /// the Sanctuary line's slot, <see cref="SancDeductActive"/>); else "You have found sanctuary.", the Sanctuary line's half
+    /// damage for 300 s under "Sanctuary", graphic 2, and "&lt;their name&gt; casts Sanctuary on you.". A ghost too.</item>
+    /// <item>Harden armor (<c>harden_armor.lua</c>): RTK's <c>canCast(1, 1, 0)</c>, "Spirits can't do that." for a ghost and
+    /// "You can't do that while riding a mount." on a mount; nothing under a harden armor already
+    /// (<c>checkIfCast(hardarmors)</c>); else "Your armor is strengthened.", sound 5, "You cast Harden Armor.", armour 10
+    /// better for 300 s (185 s on a PvP map, RTK's <c>canPK(player)</c>) in the hardarmors slot under "harden_armor", and
+    /// graphic 2.</item>
+    /// <item>Valor (<c>valor.lua</c>): the same <c>canCast</c>; nothing under a might already (<c>checkIfCast(mights)</c>);
+    /// else "Your muscles develop.", the cast pose, Might +3 for 300 s (185 s on a PvP map) in the mights slot under
+    /// "valor", sound 12 and graphic 11.</item>
+    /// </list>
+    /// The trap stays: the click deletes nothing, so it springs again on every step until its 20 s are up.</summary>
+    internal void SpringGoodEarth()
+    {
+        using var _ = EnterState();   // #29: this player's own state, on their own thread
+        BroadcastFx(_char.Id, GoodEarthAnim, 0);
+        SendMiniText("It is peaceful here.");
+        if (!SancDeductActive)
+        {
+            SendMiniText("You have found sanctuary.");
+            ApplySanctuaryDeduction(GoodEarthSanctuary, GoodEarthSanctuaryMs, Content.SpellByKey("sanctuary")?.Name ?? "Sanctuary");
+            BroadcastFx(_char.Id, 2, 0);
+            SendMiniText($"{_char.Name} casts Sanctuary on you.");
+        }
+        int wardMs = Content.IsPvpMap(_char.Map) ? GoodEarthWardPvpMs : GoodEarthWardMs;
+        if (GoodEarthCanCast() && !HasStatusCategory("hardarmors"))
+        {
+            SendMiniText("Your armor is strengthened.");
+            BroadcastFx(_char.Id, -1, 5);
+            SendMiniText("You cast Harden Armor.");
+            ReceiveCurse("armor", GoodEarthArmor, wardMs, "harden_armor", Content.SpellByKey("harden_armor")?.Name ?? "Harden armor", "hardarmors");
+            BroadcastFx(_char.Id, 2, 0);
+        }
+        if (GoodEarthCanCast() && !HasStatusCategory("mights"))
+        {
+            SendMiniText("Your muscles develop.");
+            SendAction(_char.Id, ActionType.Magic, 35, 0);
+            _world.BroadcastSameArea(_char.Map, _char.X, _char.Y, p => p.ActionOver(_char.Id, ActionType.Magic, 35, 0), except: this);
+            ReceiveTimedBuff(new[] { "might" }, new[] { GoodEarthMight.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                             wardMs, "valor", Content.SpellByKey("valor")?.Name ?? "Valor", "mights");
+            BroadcastFx(_char.Id, 11, 12);
+        }
+        SendStats();
+        Log.Info($"   -> {_char.Name} stepped on a Good earth trap on map {_char.Map} at ({_char.X},{_char.Y})");
+    }
+
+    /// <summary>RTK's <c>canCast(1, 1, 0)</c> on the stepper (<c>rtklua/Accepted/player.lua:3710-3732</c>): a ghost reads
+    /// "Spirits can't do that.", a rider "You can't do that while riding a mount.", and either is refused.</summary>
+    private bool GoodEarthCanCast()
+    {
+        if (IsDead) { SendMiniText("Spirits can't do that."); return false; }
+        if (_char.Mounted) { SendMiniText("You can't do that while riding a mount."); return false; }
+        return true;
+    }
+
+    /// <summary>Does this cast's aimed target (<see cref="LuaResolveAimedTarget"/>) carry a status of
+    /// <paramref name="category"/> (<c>ctx:aimedHasStatus</c>; RTK <c>target:checkIfCast(curses) or target.cursed == 1</c>,
+    /// <c>checkIfCast(protections)</c>)? A creature's slot, its curses family with the minor curses, as every curse here
+    /// reads it; a player's categorised statuses, read as <see cref="LuaCurseHasCategory"/> reads them. False with none.</summary>
+    internal bool LuaAimedHasStatus(string? category)
+    {
+        if (string.IsNullOrEmpty(category)) return false;
+        if (_aimedMob is { } mob)
+        {
+            string fam = CatFamily(category);
+            return _world.MobHasStatus(mob, fam) || (fam == "curses" && _world.MobHasStatus(mob, "minorcurses"));
+        }
+        return _pcSpellTarget?.HasStatusCategory(category) ?? false;
+    }
+
+    /// <summary>Soften skin's and Earths Spite's curse (<c>ctx:curseAimed</c>; RTK <c>Spells/Subpaths/Geomancer/soften_skin.lua:39-53</c>)
+    /// on this cast's aimed target (<see cref="LuaResolveAimedTarget"/>). A creature: <paramref name="category"/>'s slot and
+    /// <paramref name="stat"/> <paramref name="amount"/> (RTK's <c>target.armor + 35</c>, its sign) for
+    /// <paramref name="creatureMs"/>, the script's 425 s as RTK's creature timer counts it (1,000 off every 1.5 s), with
+    /// <paramref name="beatAnim"/> redrawn every <paramref name="beatMs"/> while it holds (its while_cast); refused when
+    /// the slot is taken by then. A player: inside their own monitor, unless a status of a category in
+    /// <paramref name="blockedBy"/> holds by then or they are gone, the curse for <paramref name="playerMs"/>
+    /// (<see cref="ReceiveCurse"/>) and <paramref name="line"/>. Then the spell's sound at the caster and its graphic over
+    /// the target (<c>playSound(702)</c>, <c>target:sendAnimation(1, 0)</c>). False, with nothing written or played, when
+    /// nothing landed.</summary>
+    internal bool LuaCurseAimed(SpellDef sp, string category, string stat, int amount, int playerMs, int creatureMs,
+                                string blockedBy, string line, int beatAnim, int beatMs)
+    {
+        var fx = Content.FxFor(sp);
+        int anim = fx is not null ? Content.EffectAnim(fx, sp.PathId) : -1;
+        int snd  = fx is not null ? Content.EffectSound(fx, sp.PathId) : -1;
+        uint over;
+        if (_aimedMob is { } mob)
+        {
+            if (!_world.ApplyMobStatus(mob, CatFamily(category), creatureMs, hold: false, blind: false,
+                                       fxAnim: beatAnim, fxSound: 0, fxEveryMs: beatMs, spellKey: sp.Key)) return false;
+            if (!string.IsNullOrEmpty(stat) && amount != 0) _world.ApplyMobBuff(mob, stat, amount, creatureMs, sp.Key);
+            over = mob.Id;
+        }
+        else if (_pcSpellTarget is { } pc)
+        {
+            var blocks = (blockedBy ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            bool landed = pc.WithState(() =>
+            {
+                if (pc._leaving || pc.IsReplaced || blocks.Any(pc.HasStatusCategory)) return false;
+                pc.ReceiveCurse(stat, amount, playerMs, sp.Key, sp.Name, category);
+                if (!string.IsNullOrEmpty(line)) pc.SendMiniText(line);
+                return true;
+            });
+            if (!landed) return false;
+            over = pc.PlayerId;
+        }
+        else return false;
+        BroadcastFx(_char.Id, -1, snd);
+        BroadcastFx(over, anim, -1);
+        SendStats();
+        Log.Info($"      (lua) {sp.Name} -> curse [{category}] {stat}{amount:+0;-0} on {(_aimedMob is not null ? "mob" : "player")} {over} " +
+                 $"({(_aimedMob is not null ? creatureMs : playerMs)}ms)");
+        return true;
+    }
+
     // ---- combat-stray primitives (sacrifice strikes + ambush) ----------------------------------------------
     // The facing-tile physical strikes. The per-family FORMULAS (damage/mana/cooldown/HP cost) live in the Lua
     // verb; these primitives do the irreducible engine ops — resolve the faced mob, armor-net + apply, the
@@ -5977,7 +6261,7 @@ public sealed partial class Session
         // A disguise as a creature (Costume) ends as its script's uncast ends it: the spell's own graphic over the
         // player, no sound (Session.PlayDisguiseEnd). Every other morph keeps this server's exit "poof".
         if (IsDisguiseSpell(key)) PlayDisguiseEnd(key);
-        else if (IsUniformSpell(key)) { }      // Chongun uniform: its script's uncast plays nothing (LuaWearForm)
+        else if (IsUniformSpell(key)) { }      // Chongun uniform, Elemental mastery: their scripts' uncasts play nothing
         else if (GuiseEndSound(key) is int guiseEnd) BroadcastFx(_char.Id, -1, guiseEnd);   // Marketer guise: its uncast's playSound(410)
         else BroadcastFx(_char.Id, -1, 411);   // morph-exit "poof" (anim skipped, sound only) — RTK is silent on exit; ours plays 411 to the whole map
         _world.Broadcast(_char.Map, p => p.DespawnEntity(_char.Id), except: this);   // force-clear the morphed entity (incl. its nameplate) on peers before restoring the real look
@@ -6445,13 +6729,15 @@ public sealed partial class Session
     //   * class 2 (Rogue)   — dog/spot_traps.lua       — reveals the rogue combat-trap family (dart/snare/
     //     repeating/flash/spear/poison/death/sleep).
     // Neither reveals the cosmetic shiver echo (Session.TryMythicFallRoom), the tiger warp-traps, a bladestorm decoy,
-    // Spy kit's three traps or Ranger's Pit trap (RTK's rogue list names only the eight, spotTraps.lua:20-27). A
+    // Spy kit's three traps, Ranger's Pit trap or Geomancer's Good earth traps (RTK's rogue list names only the eight,
+    // spotTraps.lua:20-27). A
     // non-warrior caster of either spell gets the rogue set (RTK only special-cases class 1).
     private Trap[] RevealableTrapsNear() =>
         _world.TrapsNear(_char.Map, _char.X, _char.Y, 15)
             .Where(t => CharBasePathId == 1
                 ? t.Kind == "ambush"
-                : t.Kind != "ambush" && t.Kind != "shiver" && t.Kind != "bladestorm" && !World.IsSubpathTrap(t.Kind))
+                : t.Kind != "ambush" && t.Kind != "shiver" && t.Kind != "bladestorm" && !World.IsSubpathTrap(t.Kind)
+                  && t.Kind != World.GoodEarthTrap)
             .ToArray();
 
     // Watchful Eye (warrior) + Spot Traps (dog/rogue), see Content.IsSpotTrapsSpell and RevealableTrapsNear:
