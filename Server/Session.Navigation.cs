@@ -1467,6 +1467,9 @@ public sealed partial class Session
         _mobs.Clear();
         ResetStreamCoverage();   // terrain streamed for the old map says nothing about the new one
         _dlgReply = null;    // orphan any NPC prompt awaiting a reply — its NPC is on the old map
+        if (_pickListReply is { } pickList && ReferenceEquals(_shopReply, pickList))
+            _shopReply = null;   // and a spell's item list (Engrave's) with it; an NPC shop's or bank's window stays
+        _pickListReply = null;
         _worldMapPending = false;   // any open world-map screen is meaningless once we've already warped
         ForgetShownMobs();   // new map -> the client wiped every foreign entity; re-stream from scratch
 

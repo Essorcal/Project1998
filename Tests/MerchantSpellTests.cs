@@ -35,7 +35,10 @@ public sealed class MerchantSpellTests
                          EngraveClosedMap = 63716, EngraveHeldMap = 63717, EngraveBoxHeldMap = 63718, GambleMap = 63719,
                          GambleRefuseMap = 63720, GambleAnswerMap = 63721, GambleRecheckMap = 63722, GambleSelfMap = 63723,
                          GambleClosedMap = 63724, GambleHeldMap = 63725, GambleSettleMap = 63726, PilferStackMap = 63727,
-                         EngraveDropMap = 63728, GoneCasterMap = 63729;
+                         EngraveDropMap = 63728, GoneCasterMap = 63729, EngraveSaveMap = 63730, GambleSaveMap = 63731,
+                         EngraveWarpMap = 63732;
+    private const ushort InnMap = 2;           // Walsuk Tavern
+    private const int WalsukNpcId = 52;        // its inn keeper (InnNpc: shop and bank), at (18, 4)
     private const ushort CX = 30, CY = 30;
     private const uint MaxMana = 400_000, Mana = 400_000, Hp = 10_000;
 
@@ -58,6 +61,10 @@ public sealed class MerchantSpellTests
         typeof(Session).GetField("_morphLook", BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly FieldInfo MorphColorField =
         typeof(Session).GetField("_morphColor", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly FieldInfo WriteGateField =
+        typeof(Session).GetField("_writeGate", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo EnterMapMethod =
+        typeof(Session).GetMethod("EnterMap", BindingFlags.Instance | BindingFlags.NonPublic)!;
 
     private readonly SessionFixture _fx;
     private static int _serial;
@@ -452,6 +459,81 @@ public sealed class MerchantSpellTests
         finally { Leave(EngraveDropMap, customer, first, second); }
     }
 
+    /// <summary>A map change lets Engrave's item list go, as it lets every other Engrave and Gambling prompt go (#425's
+    /// review, F2): with the list up, a warp leaves no list waiting, and a pick from it afterwards asks no name. Controls,
+    /// as before the change: the offer menu answered after a warp opens no list (the prompts' own rule); an NPC shop window
+    /// (Walsuk's buy grid, the inn keeper's shop and bank) still waits after a warp, also when it took the place of a list
+    /// the player had open. Red without the list's release in <c>Session.EnterMap</c> (the list still waits after the
+    /// warp and the pick asks the name).</summary>
+    [Fact]
+    public void AWarpLetsEngravesItemListGo()
+    {
+        var sword = Content.ItemByKey("steel_sword")!;
+        var home = Content.Maps[SessionFixture.HomeMap];
+        var inn = Content.Maps[InnMap];
+        Action<Character> bag = ch => ch.Inventory.Add(new InvItem(0, sword.Id, 1, sword.Durability));
+        Action<Character> atInn = ch => { ch.MapXs = inn.Xs; ch.MapYs = inn.Ys; };
+        var (c1, c1Out, _) = Player(EngraveWarpMap, CX + 1, CY, coins: 50_000, configure: bag);
+        var (c2, c2Out, _) = Player(EngraveWarpMap, CX + 1, CY + 4, coins: 50_000, configure: bag);
+        var (e1, _, _) = Merchant("engrave", EngraveWarpMap, CX, CY);
+        var (e2, _, _) = Merchant("engrave", EngraveWarpMap, CX, CY + 4);
+        var (shopper, sOut, _) = Player(InnMap, 18, 6, coins: 1_000, configure: atInn);
+        var (c3, c3Out, _) = Player(InnMap, 19, 6, coins: 1_000, configure: ch => { bag(ch); atInn(ch); });
+        var def = Content.NpcById(WalsukNpcId)!;
+        var walsuk = _fx.World.NpcsNear(def.Map, def.X, def.Y, 0).First(m => m.NpcDefId == WalsukNpcId);
+        void Offer(Session engraver, Session customer) => OnOwnThread(() =>
+        {
+            engraver.Receive(SpellCastSupport.CastFrame(0, customer.PlayerId));
+            engraver.Receive(InputFrame("100"));
+        });
+        void Warp(Session s, ushort x) => s.WithState(() =>
+            EnterMapMethod.Invoke(s, new object[] { home.Id, home.Xs, home.Ys, x, (ushort)10, home.Name, ArrivalPolicy.Clamp }));
+        object? Pending(Session s) => s.WithState(() => ShopReplyField.GetValue(s));
+        try
+        {
+            // The offer menu up, then a warp, then "Yes": no list (the control for the prompts).
+            Offer(e1, c1);
+            Warp(c1, 5);
+            c1Out.Clear();
+            OnOwnThread(() => c1.Receive(MenuFrame(1)));
+            int listsAfterWarpedOffer = Grids(c1Out).Count;
+            // The item list up, then a warp, then a pick.
+            Offer(e2, c2);
+            OnOwnThread(() => c2.Receive(MenuFrame(1)));
+            int listsUp = Grids(c2Out).Count;
+            Warp(c2, 6);
+            bool listWaiting = Pending(c2) is not null;
+            c2Out.Clear();
+            OnOwnThread(() => c2.Receive(BuyPick("Steel sword")));
+            var named = Boxes(c2Out);
+            // An NPC shop window up, then a warp: it still waits.
+            OnOwnThread(() => { shopper.Receive(Click(walsuk)); shopper.Receive(InnMenuPick(1)); });   // Buy
+            object? shop = Pending(shopper);
+            Warp(shopper, 7);
+            bool shopKept = shop is not null && sOut.BodiesOf(ServerOp.Shop).Count == 1 && ReferenceEquals(Pending(shopper), shop);
+            // Engrave's list up (its primitive, as the offer's "Yes" runs it), then an NPC shop window in its place (the
+            // click drops the list), then a warp.
+            OnOwnThread(() => c3.LuaPickItem(Content.SpellByKey("engrave")!, "What item would you like to engrave?", 3, 17,
+                                             "engrave_pick", $"{e1.CharName}|100", null));
+            object? list = Pending(c3);
+            OnOwnThread(() => { c3.Receive(Click(walsuk)); c3.Receive(InnMenuPick(1)); });
+            object? shopAfterList = Pending(c3);
+            Warp(c3, 8);
+            bool shopAfterListKept = list is not null && shopAfterList is not null && !ReferenceEquals(list, shopAfterList)
+                                     && c3Out.BodiesOf(ServerOp.Shop).Count == 2 && ReferenceEquals(Pending(c3), shopAfterList);
+            Assert.True(listsAfterWarpedOffer == 0 && listsUp == 1 && !listWaiting && named.Count == 0 && shopKept && shopAfterListKept,
+                        $"offer answered after a warp opened {listsAfterWarpedOffer} list(s); list up {listsUp}, waiting after the warp " +
+                        $"{listWaiting}, the pick then asked [{string.Join(" / ", named)}]; NPC window kept {shopKept}, kept after a list " +
+                        $"{shopAfterListKept} (list {list is not null}, then a window {shopAfterList is not null}, " +
+                        $"{c3Out.BodiesOf(ServerOp.Shop).Count} grid(s), the same after the warp {ReferenceEquals(Pending(c3), shopAfterList)})");
+        }
+        finally
+        {
+            Leave(SessionFixture.HomeMap, c1, c2, shopper, c3);
+            Leave(EngraveWarpMap, e1, e2);
+        }
+    }
+
     /// <summary>Inside the engraver's saved engrave_timer, the box "You have engraved too recently." (icon 71) and nothing
     /// more; with nothing faced and no id, nothing at all. Red without the timer test.</summary>
     [Fact]
@@ -815,6 +897,55 @@ public sealed class MerchantSpellTests
         finally { if (run.Settled) Leave(EngraveBoxHeldMap, engraver, customer, earlier); }
     }
 
+    /// <summary>Engrave's settle saves both players inside its section, as the trade does (#425's review, F1): while the
+    /// pair's save waits to be written (another thread holds the customer's write gate, as a write of that row in flight
+    /// holds it), the customer's monitor stays with the settle, so a second login's kick, which latches under it, cannot
+    /// come between the settle's re-check and its save. A thread that enters the customer's monitor then gets in only once
+    /// the save is written, and reads the row paid and named. In both <c>StateRank</c> orders. Red with the save after the
+    /// section: the thread gets in while the save waits and reads the row unpaid.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void EngraveSavesBothInsideItsSection(bool engraverRanksFirst)
+    {
+        var sword = Content.ItemByKey("steel_sword")!;
+        var sp = Content.SpellByKey("engrave")!;
+        int y = engraverRanksFirst ? CY : CY + 6;
+        Session engraver, customer;
+        Character uc;
+        Action<Character> bag = ch => ch.Inventory.Add(new InvItem(0, sword.Id, 1, sword.Durability));
+        if (engraverRanksFirst)
+        {
+            (engraver, _, _) = Merchant("engrave", EngraveSaveMap, CX, y);
+            (customer, _, uc) = Player(EngraveSaveMap, CX + 1, y, coins: 50_000, configure: bag);
+        }
+        else
+        {
+            (customer, _, uc) = Player(EngraveSaveMap, CX + 1, y, coins: 50_000, configure: bag);
+            (engraver, _, _) = Merchant("engrave", EngraveSaveMap, CX, y);
+        }
+        Assert.Equal(engraverRanksFirst, engraver.StateRank < customer.StateRank);
+        var run = new GateRun();
+        string outcome = "";
+        try
+        {
+            SaveRow(customer, uc);
+            WhileAWriteGateIsHeld(run, customer,
+                act: () => outcome = engraver.WithState(() => engraver.LuaEngraveItem(sp, customer.CharName, 0, "** Bob **", 1_000,
+                                                                                       "engrave_timer", 86_400, "The item has been engraved.")),
+                readInside: () => SavedPurseAndName(uc.Name));
+            Assert.Null(run.HolderFault);
+            Assert.Null(run.ActorFault);
+            Assert.Null(run.ReaderFault);
+            Assert.False(run.ActorDoneWhileHeld, "the settle finished while its save could not be written");
+            Assert.True(!run.ReaderInWhileHeld && run.ReadInside == "49000 '** Bob **'" && outcome == "done"
+                        && SavedPurseAndName(uc.Name) == "49000 '** Bob **'",
+                        $"in the customer's monitor while the save waited: {run.ReaderInWhileHeld}, and read {run.ReadInside}; " +
+                        $"outcome {outcome}; saved now {SavedPurseAndName(uc.Name)}");
+        }
+        finally { if (run.Settled) Leave(EngraveSaveMap, engraver, customer); }
+    }
+
     // ===== Gambling =============================================================================================
 
     /// <summary>The whole flow. 120 mana checked and never spent, the 30 s wait, "Who shall be gambling?" (the coins' icon);
@@ -1136,6 +1267,56 @@ public sealed class MerchantSpellTests
         finally { if (run.Settled) Leave(GambleHeldMap, merchant, a, b); }
     }
 
+    /// <summary>Gambling's settle saves both gamblers inside its section, as the trade does (#425's review, F1): while the
+    /// pair's save waits to be written (another thread holds the winner's write gate), the winner's monitor stays with the
+    /// settle; a thread that enters it gets in only once the save is written, and reads the win saved. In both
+    /// <c>StateRank</c> orders. Red with the save after the section: the thread gets in while the save waits and reads
+    /// the purse before the wager.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void GamblingSavesBothInsideItsSection(bool merchantRanksFirst)
+    {
+        var sp = Content.SpellByKey("gambling")!;
+        int y = merchantRanksFirst ? CY : CY + 6;
+        Session merchant, a, b;
+        Character ac, bc;
+        if (merchantRanksFirst)
+        {
+            (merchant, _, _) = Merchant("gambling", GambleSaveMap, CX, y);
+            (a, _, ac) = Player(GambleSaveMap, CX + 1, y, coins: 5_000);
+            (b, _, bc) = Player(GambleSaveMap, CX + 2, y, coins: 5_000);
+        }
+        else
+        {
+            (b, _, bc) = Player(GambleSaveMap, CX + 2, y, coins: 5_000);
+            (a, _, ac) = Player(GambleSaveMap, CX + 1, y, coins: 5_000);
+            (merchant, _, _) = Merchant("gambling", GambleSaveMap, CX, y);
+        }
+        Assert.Equal(merchantRanksFirst, merchant.StateRank < a.StateRank);
+        Assert.Equal(merchantRanksFirst, a.StateRank < b.StateRank);
+        var run = new GateRun();
+        string outcome = "";
+        try
+        {
+            SaveRow(a, ac);
+            SaveRow(b, bc);
+            WhileAWriteGateIsHeld(run, a,
+                act: () => outcome = merchant.WithState(() => merchant.LuaSettleWager(sp, a.CharName, b.CharName, 1_000, 90, 10,
+                                                                                        "You win.", "You lose.", "There was a tie, so no gold removed.")),
+                readInside: () => SavedPurse(ac.Name));
+            Assert.Null(run.HolderFault);
+            Assert.Null(run.ActorFault);
+            Assert.Null(run.ReaderFault);
+            Assert.False(run.ActorDoneWhileHeld, "the settle finished while its save could not be written");
+            Assert.True(!run.ReaderInWhileHeld && run.ReadInside == "6000" && outcome == "win1"
+                        && SavedPurse(ac.Name) == "6000" && SavedPurse(bc.Name) == "4000",
+                        $"in the winner's monitor while the save waited: {run.ReaderInWhileHeld}, and read {run.ReadInside}; " +
+                        $"outcome {outcome}; saved now {SavedPurse(ac.Name)}/{SavedPurse(bc.Name)}");
+        }
+        finally { if (run.Settled) Leave(GambleSaveMap, merchant, a, b); }
+    }
+
     /// <summary>Each primitive this slice adds that writes saved state or the world refuses a caster who is leaving or
     /// whose session a second login has replaced, asked under the caster's monitor (<c>Session.CasterGone</c>, #423's
     /// review, F1): Pilfer takes nothing from the floor; Engrave's settle and Gambling's settle answer "leaving" and move no
@@ -1277,6 +1458,26 @@ public sealed class MerchantSpellTests
         body[7] = (byte)n.Length;
         n.CopyTo(body, 8);
         return SessionFixture.Frame(ClientOp.ShopReply, body);
+    }
+
+    /// <summary>A click on an entity (<c>0x43</c>): <c>01 id(u32) 00</c>.</summary>
+    private static byte[] Click(Mob npc)
+    {
+        uint id = npc.Id;
+        return SessionFixture.Frame(ClientOp.ClickInfo,
+            new byte[] { 0x01, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id, 0x00 });
+    }
+
+    /// <summary>A pick in an NPC's menu as DialogReleaseTests sends it (<c>0x3A</c>: kind 2, step 2, then 01 and the
+    /// 1-based row at [10]).</summary>
+    private static byte[] InnMenuPick(byte row)
+    {
+        var body = new byte[12];
+        body[0] = 0x02;
+        body[8] = 0x02;
+        body[9] = 0x01;
+        body[10] = row;
+        return SessionFixture.Frame(ClientOp.NpcDialog, body);
     }
 
     /// <summary>Every menu (0x30 kind 2) the player was shown, as "prompt|option|option...".</summary>
@@ -1502,6 +1703,92 @@ public sealed class MerchantSpellTests
         }
         Assert.True(holder.Join(TimeSpan.FromSeconds(60)), "the holder never let go");
         Assert.True(actor.Join(TimeSpan.FromSeconds(60)), "the action never finished after the monitor was free");
+        run.Settled = true;
+    }
+
+    /// <summary>Write the row of <paramref name="s"/> (whose character is <paramref name="c"/>) as it stands, under its
+    /// monitor, as its login's save left it.</summary>
+    private void SaveRow(Session s, Character c) =>
+        s.WithState(() => Assert.True(_fx.Store.SaveJson(CharacterStore.Key(c.Name), CharacterStore.Serialize(c))));
+
+    /// <summary>The saved row's gold, as a second login would load it.</summary>
+    private string SavedPurse(string name)
+    {
+        var load = _fx.Store.Load(name);
+        return load.Status != CharacterLoadStatus.Ok ? $"no row ({load.Status})"
+             : load.Character!.Coins.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>The saved row's gold and the name of the item in bag slot 0, as a second login would load them.</summary>
+    private string SavedPurseAndName(string name)
+    {
+        var load = _fx.Store.Load(name);
+        return load.Status != CharacterLoadStatus.Ok ? $"no row ({load.Status})"
+             : $"{load.Character!.Coins} '{load.Character.Inventory.Single(i => i.Slot == 0).CustomName}'";
+    }
+
+    // ---- the held-write-gate run ----------------------------------------------------------------------------------------
+
+    private sealed class GateRun
+    {
+        public bool Settled = true;
+        public bool ActorDoneWhileHeld;
+        public bool ReaderInWhileHeld;
+        public string ReadInside = "";
+        public Exception? HolderFault, ActorFault, ReaderFault;
+    }
+
+    /// <summary>A third thread takes <paramref name="target"/>'s write gate, as a write of that player's row in flight holds
+    /// it; then <paramref name="act"/> runs on a thread of its own until it finishes or sits blocked for 100 ms; then a
+    /// reader enters <paramref name="target"/>'s monitor on a thread of its own and runs <paramref name="readInside"/>
+    /// there, and is given the same until it finishes or sits blocked. Then the gate goes and all three are joined.</summary>
+    private static void WhileAWriteGateIsHeld(GateRun run, Session target, Action act, Func<string> readInside)
+    {
+        object gate = WriteGateField.GetValue(target)!;
+        var held = new ManualResetEventSlim();
+        var letGo = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            try
+            {
+                lock (gate)
+                {
+                    held.Set();
+                    letGo.Wait();
+                }
+            }
+            catch (Exception e) { run.HolderFault = e; }
+        }) { IsBackground = true };
+        var actor = new Thread(() =>
+        {
+            try { act(); }
+            catch (Exception e) { run.ActorFault = e; }
+        }) { IsBackground = true };
+        var reader = new Thread(() =>
+        {
+            try { target.WithState(() => run.ReadInside = readInside()); }
+            catch (Exception e) { run.ReaderFault = e; }
+        }) { IsBackground = true };
+
+        run.Settled = false;
+        try
+        {
+            holder.Start();
+            Assert.True(held.Wait(TimeSpan.FromSeconds(30)), "the holder never took the write gate");
+            actor.Start();
+            WaitUntilDoneOrBlocked(actor);
+            run.ActorDoneWhileHeld = !actor.IsAlive;
+            reader.Start();
+            WaitUntilDoneOrBlocked(reader);
+            run.ReaderInWhileHeld = !reader.IsAlive;
+        }
+        finally
+        {
+            letGo.Set();
+        }
+        Assert.True(holder.Join(TimeSpan.FromSeconds(60)), "the holder never let go");
+        Assert.True(actor.Join(TimeSpan.FromSeconds(60)), "the settle never finished after the gate was free");
+        Assert.True(reader.Join(TimeSpan.FromSeconds(60)), "the reader never got in after the settle");
         run.Settled = true;
     }
 
