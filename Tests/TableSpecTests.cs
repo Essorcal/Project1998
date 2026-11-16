@@ -69,7 +69,7 @@ public sealed class TableSpecTests
     {
         lock (TestProcessState.Gate)
         {
-            string missing = Path.Combine(Path.GetTempPath(), $"p1998-readme-not-here-{Guid.NewGuid():N}.csv");
+            string missing = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-readme-not-here-{Guid.NewGuid():N}.csv");
             var id = Content.TableId.MobFlees;
             var original = Content.Spec(id);
             try
@@ -109,7 +109,7 @@ public sealed class TableSpecTests
     [Fact]
     public void EmptySuppliedHeaderUsesTheFilesOwnHeader()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"p1998-empty-spec-header-{Guid.NewGuid():N}.csv");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-empty-spec-header-{Guid.NewGuid():N}.csv");
         try
         {
             File.WriteAllText(path, "Id,Name\n1,alpha\n");
@@ -139,7 +139,7 @@ public sealed class TableSpecTests
             try
             {
                 Environment.SetEnvironmentVariable("P1998_MOB_FLEES",
-                    Path.Combine(Path.GetTempPath(), $"p1998-retired-{Guid.NewGuid():N}.csv"));
+                    Path.Combine(TestProcessState.ScratchDirectory, $"p1998-retired-{Guid.NewGuid():N}.csv"));
 
                 var table = Content.OpenTable(Content.TableId.MobFlees);
 
@@ -167,7 +167,7 @@ public sealed class TableSpecTests
         lock (TestProcessState.Gate)
         {
             const string consequence = "test script consequence";
-            string missing = Path.Combine(Path.GetTempPath(), $"p1998-script-not-here-{Guid.NewGuid():N}.lua");
+            string missing = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-script-not-here-{Guid.NewGuid():N}.lua");
             var id = Content.TableId.SpellVerbs;
             var original = Content.Spec(id);
             try
@@ -193,7 +193,7 @@ public sealed class TableSpecTests
     private static void AssertFallbackUsesSpec(Content.TableId id, Func<Shared.CsvTable> open,
                                                string contents, string column, string expected)
     {
-        string path = Path.Combine(Path.GetTempPath(), $"p1998-spec-fallback-{Guid.NewGuid():N}.csv");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-spec-fallback-{Guid.NewGuid():N}.csv");
         var original = Content.Spec(id);
         try
         {

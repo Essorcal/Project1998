@@ -114,7 +114,7 @@ public sealed class CsvTests
     private sealed class TempCsv : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(), $"p1998-csv-{Guid.NewGuid():N}.csv");
+            TestProcessState.ScratchDirectory, $"p1998-csv-{Guid.NewGuid():N}.csv");
 
         public TempCsv(string contents, Encoding? encoding = null) =>
             File.WriteAllText(Path, contents, encoding ?? new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
