@@ -745,9 +745,10 @@ public sealed class BarbarianSpellTests
     // ===== Insult and Dishonor ==================================================================================
 
     /// <summary>Each creature on the caster's four sides takes the curse: its curses slot under the spell's key, AC +30 (it
-    /// takes more damage, RTK's sign), the scripts' while_cast graphic 34 every second; 200 mana, "You cast Insult.", and no
-    /// wait (the script never arms its 150 s). Dishonor is the same with +50. Red on 912ba3c: generic's 5 mana and nothing
-    /// cursed.</summary>
+    /// takes more damage, RTK's sign), the scripts' while_cast graphic 34 every 1.5 s (RTK's creature beat, the project
+    /// owner's "As RTK: 1.5 s"); 200 mana, "You cast Insult.", and no wait (the script never arms its 150 s). Dishonor is
+    /// the same with +50. Red on 912ba3c: generic's 5 mana and nothing cursed. Red on 7aac034: the graphic every
+    /// second.</summary>
     [Theory]
     [InlineData("insult", 30)]
     [InlineData("dishonor", 50)]
@@ -763,7 +764,7 @@ public sealed class BarbarianSpellTests
             Assert.True(cc.Mp == Mana - 200 && Lines(cOut) == $"You cast {name}." && SpellCastSupport.AetherLeft(caster, key) == 0,
                         $"spent {Mana - cc.Mp}, lines [{Lines(cOut)}], wait {SpellCastSupport.AetherLeft(caster, key)}");
             foreach (var m in mobs)
-                Assert.True(_fx.World.MobStatusKey(m, "curses") == key && m.Ac == armor && m.FxRepeatAnim == 34 && m.FxRepeatEvery == 1_000,
+                Assert.True(_fx.World.MobStatusKey(m, "curses") == key && m.Ac == armor && m.FxRepeatAnim == 34 && m.FxRepeatEvery == 1_500,
                             $"creature at ({m.X},{m.Y}): slot {_fx.World.MobStatusKey(m, "curses")}, AC {m.Ac}, beat {m.FxRepeatAnim}/{m.FxRepeatEvery}");
         }
         finally { Leave(CurseMap, caster); foreach (var m in mobs) _fx.World.DespawnMob(CurseMap, m); }
@@ -838,6 +839,113 @@ public sealed class BarbarianSpellTests
         }
         finally { Leave(Arena, caster, other); Leave(CurseMap, townCaster, townOther); }
     }
+
+    /// <summary>On a creature the curse runs as RTK's creature timer counts the scripts' 425,000 (<c>insult.lua:42</c>'s
+    /// <c>setDuration</c>), 1,000 off every 1.5 s (<c>rtk/src/map/mob.c</c>: <c>mob_timer_spawns</c> runs
+    /// <c>mob_duratimer</c> on one step of its 30, every 50 ms): 637.5 s, the project owner's ruling (2026-11-12, "As RTK:
+    /// 637.5 s"). Its slot still holds it at 425 s and a beat and is free at 637.5 s and a beat; its armour and its
+    /// while_cast graphic run as long, the graphic redrawn every 1.5 s, the creature timer's beat, as RTK's
+    /// <c>mob_duratimer</c> runs it (the project owner's "As RTK: 1.5 s"). Red on e95d50a: 425 s, clock time. Red on
+    /// 7aac034: the graphic every second.</summary>
+    [Theory]
+    [InlineData("insult", 30)]
+    [InlineData("dishonor", 50)]
+    public void OnACreatureTheCurseRunsAsRtksCreatureTimerCountsIt(string key, int armor)
+    {
+        int y = key == "insult" ? CY : CY + 10;
+        var (caster, _, _) = Caster(key, CurseMap, CX + 30, y);
+        var mob = AddCreature(CurseMap, CX + 31, y, 1_000);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            var curse = CreatureCurse(mob, key);
+            Assert.True(curse.KeyPast425s == key && curse.KeyPast637s == "" && Near(curse.SlotLeft, CreatureCurseMs)
+                        && Near(curse.ArmorLeft, CreatureCurseMs) && Near(curse.BeatLeft, CreatureCurseMs) && mob.Ac == armor
+                        && mob.FxRepeatAnim == 34 && mob.FxRepeatEvery == CreatureBeatMs,
+                        $"{key} on a creature: {curse}, AC {mob.Ac}, beat {mob.FxRepeatAnim}/{mob.FxRepeatEvery}");
+        }
+        finally { Leave(CurseMap, caster); _fx.World.DespawnMob(CurseMap, mob); }
+    }
+
+    /// <summary>One cast, two clocks: on the arena the player east of the caster holds the curse for the scripts' 425 s
+    /// of clock time, as before (RTK runs a player's durations at clock time), and the creature west of the caster for
+    /// 637.5 s. Red on e95d50a: the creature's 425 s.</summary>
+    [Theory]
+    [InlineData("insult", 5)]
+    [InlineData("dishonor", 6)]
+    public void OnAPlayerTheCurseStillRunsClockTime(string key, int spot)
+    {
+        var (x, y) = ArenaSpot(spot);
+        var (caster, _, _) = Caster(key, Arena, x, y);
+        var (other, _, _) = Player(Arena, x + 1, y);
+        var mob = AddCreature(Arena, x - 1, y, 1_000);
+        try
+        {
+            caster.Receive(SpellCastSupport.CastFrame(0));
+            var entry = SpellCastSupport.BuffEntry(other, key);
+            var curse = CreatureCurse(mob, key);
+            Assert.True(entry is { Category: "curses" } held && Near(held.LeftMs, PlayerCurseMs)
+                        && Near(curse.SlotLeft, CreatureCurseMs) && Near(curse.ArmorLeft, CreatureCurseMs),
+                        $"{key}: the player's entry {entry?.ToString() ?? "none"}, the creature's {curse}");
+        }
+        finally { Leave(Arena, caster, other); _fx.World.DespawnMob(Arena, mob); }
+    }
+
+    /// <summary>The base-class curses keep clock time on a creature (the ruling: "base-class curses stay as they are"):
+    /// the Poet's Scourge (<c>verbs.curse</c>), the same curses slot and the same 425,000, holds a creature for 425 s and
+    /// is gone at 425 s and a beat. A curse rolls to take hold (75%), so fresh casters at fresh creatures until one does,
+    /// at most 20. Green on e95d50a as well; red with <c>World.CreatureTimerMs</c> put into
+    /// <c>Session.LuaApplyCurse</c>'s creature branch.</summary>
+    [Fact]
+    public void ABaseCurseOnACreatureStillRunsClockTime()
+    {
+        Assert.Equal("curse", Content.SpellParams["scourge_poet"]["verb"]);
+        Assert.Equal("425000", Content.SpellParams["scourge_poet"]["duration"]);
+        for (int i = 0; i < 20; i++)
+        {
+            var (caster, _, _) = Caster("scourge_poet", CurseMap, CX + 40, CY);
+            var mob = AddCreature(CurseMap, CX + 41, CY, 1_000);
+            try
+            {
+                caster.Receive(SpellCastSupport.CastFrame(0));
+                if (_fx.World.MobStatusKey(mob, "curses") != "scourge_poet") continue;   // lost its roll
+                var curse = CreatureCurse(mob, "scourge_poet");
+                Assert.True(Near(curse.SlotLeft, PlayerCurseMs) && Near(curse.ArmorLeft, PlayerCurseMs) && curse.KeyPast425s == "",
+                            $"Scourge on a creature: {curse}");
+                return;
+            }
+            finally { Leave(CurseMap, caster); _fx.World.DespawnMob(CurseMap, mob); }
+        }
+        Assert.Fail("Scourge took hold on no creature in 20 casts");
+    }
+
+    /// <summary>Insult's and Dishonor's figure (<c>insult.lua:5</c>): a player's 425 s, and a creature's 637.5 s as RTK's
+    /// creature timer counts it, whose beat is 1.5 s.</summary>
+    private const long PlayerCurseMs = 425_000, CreatureCurseMs = 637_500, CreatureBeatMs = 1_500;
+
+    /// <summary>What a curse left on a creature, read under the world lock: the ms left on its curses slot (when
+    /// <paramref name="key"/> holds it), on its armour (the timed buff under <paramref name="key"/>) and on its repeating
+    /// graphic, and the key its slot will hold 425 s and a beat on, and 637.5 s and a beat on.</summary>
+    private CreatureCurseRead CreatureCurse(Mob mob, string key)
+    {
+        CreatureCurseRead read = default;
+        _fx.World.UnderWorldLockForTest(() =>
+        {
+            long now = Environment.TickCount64;
+            long slot = mob.Statuses is { } st && st.TryGetValue("curses", out var s) && s.Key == key ? s.Until - now : 0;
+            long armor = mob.Buffs?.FirstOrDefault(tb => tb.Key == key) is { } buff ? buff.ExpiresAt - now : 0;
+            long beat = Math.Max(0, mob.FxRepeatUntil - now);
+            read = new CreatureCurseRead(slot, armor, beat, mob.StatusKey("curses", now + PlayerCurseMs + CreatureBeatMs),
+                                         mob.StatusKey("curses", now + CreatureCurseMs + CreatureBeatMs));
+        });
+        return read;
+    }
+
+    private readonly record struct CreatureCurseRead(long SlotLeft, long ArmorLeft, long BeatLeft, string KeyPast425s,
+                                                     string KeyPast637s);
+
+    /// <summary>Is <paramref name="left"/> a run of <paramref name="ms"/> read straight after the cast?</summary>
+    private static bool Near(long left, long ms) => left > ms - SlackMs && left <= ms;
 
     // ===== Envigorate, Tiger's might, Barbarian rage, the two weapons ===========================================
 

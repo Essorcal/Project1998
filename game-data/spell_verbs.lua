@@ -1963,12 +1963,16 @@ end
 -- curse of `stat` `amount` for `duration` ms on whatever stands on the caster's four sides, north, east, south, west,
 -- as RTK's getTargetsAround walks them: each creature, and each player the caster may attack (a PvP map), that carries
 -- no curse or protection already (the category's BLOCKS), with the spell's graphic and, over a creature, the scripts'
--- while_cast graphic 34 each second. A player reads "<caster> attacks you with <spell> spell." and at the end the
--- spell's SpellText.csv fade line. A dead player met on the walk ends it there, as the scripts' `return` does. The
--- mana is spent with nobody around. No wait: the scripts name 150 s and never arm it. Row: mana 200, category curses,
--- stat armor, amount 30 (Insult) or 50 (Dishonor), duration 425000.
+-- while_cast graphic 34 every 1.5 s: RTK runs a creature's while_cast from its creature timer (rtk/src/map/mob.c,
+-- mob_duratimer), once a 1.5 s beat (the project owner, 2026-11-16, "As RTK: 1.5 s"); a player here draws none. A
+-- player holds it for `duration` ms of clock time (425 s); a creature for `duration` as RTK's creature timer counts it,
+-- 1,000 off every 1.5 s (637.5 s; ctx:curseAround converts it with World.CreatureTimerMs; the project owner,
+-- 2026-11-12, "As RTK: 637.5 s"). A player reads "<caster> attacks you with <spell> spell." and at the end the spell's
+-- SpellText.csv fade line. A dead player met on the walk ends it there, as the scripts' `return` does. The mana is
+-- spent with nobody around. No wait: the scripts name 150 s and never arm it.
+-- Row: mana 200, category curses, stat armor, amount 30 (Insult) or 50 (Dishonor), duration 425000.
 local CURSE_AROUND_BEAT_ANIM = 34     -- while_cast: block:sendAnimation(34, 0)
-local CURSE_AROUND_BEAT_MS   = 1000   -- RTK runs while_cast once a second
+local CURSE_AROUND_BEAT_MS   = 1500   -- RTK runs a creature's while_cast once a creature-timer beat
 
 function verbs.curse_around(ctx, row)
   local mana = row.mana or 0

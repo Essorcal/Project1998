@@ -921,10 +921,11 @@ public sealed class SpellContext
     public bool speechStatus(string kind, double ms) => _s.LuaSpeechStatus(_sp, kind, (int)ms);
     /// <summary>The area curse (Insult, Dishonor): on each of the caster's four sides, north, east, south, west, every
     /// player there the caster may attack and every creature (not an NPC) there take <paramref name="category"/>'s curse of
-    /// <paramref name="stat"/> <paramref name="amount"/> for <paramref name="durMs"/>, with this spell's graphic, unless
-    /// they already carry a status of a category in <paramref name="blockedBy"/> ('|' between them). A player reads
-    /// <paramref name="line"/>; a creature redraws <paramref name="beatAnim"/> every <paramref name="beatMs"/>. A dead
-    /// player met on the walk ends it there. Returns how many were cursed.</summary>
+    /// <paramref name="stat"/> <paramref name="amount"/> for <paramref name="durMs"/> (a player in clock time, a creature as
+    /// RTK's creature timer counts the figure, <c>World.CreatureTimerMs</c>: 1.5 times as long), with this spell's
+    /// graphic, unless they already carry a status of a category in <paramref name="blockedBy"/> ('|' between them). A
+    /// player reads <paramref name="line"/>; a creature redraws <paramref name="beatAnim"/> every <paramref name="beatMs"/>.
+    /// A dead player met on the walk ends it there. Returns how many were cursed.</summary>
     public double curseAround(string category, string stat, double amount, double durMs, string blockedBy, string line,
                               double beatAnim, double beatMs) =>
         _s.LuaCurseAround(_sp, category, stat, (int)System.Math.Round(amount), (int)durMs, blockedBy, line,
