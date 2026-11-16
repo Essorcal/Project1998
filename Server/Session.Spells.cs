@@ -5037,7 +5037,7 @@ public sealed partial class Session
     // monitor and runs the next verb there through the gate, as a menu's pick does. Each settle is one section holding
     // both players' monitors (WithStatePair, rank order), with no Lua inside it, which reads presence and gold again and
     // then writes: so a party who left, was replaced or spent the gold since the last check moves nothing, and a party
-    // cannot be paid without the other paying. The paired save follows the section (FlushPair), as the trade's does.
+    // cannot be paid without the other paying. The paired save (FlushPair) runs inside the section, as the trade's.
     // Pilfer's floor is taken through World.PickUp, which takes World._lock inside; the bag and purse are the caster's own,
     // under the monitor the cast holds. No new lock.
 
@@ -5146,6 +5146,12 @@ public sealed partial class Session
         return sent;
     }
 
+    /// <summary>The pending reply of the item list <see cref="LuaPickItem"/> sent last: <c>_shopReply</c>'s completion source
+    /// while that list is the window up. A map change lets it go (<see cref="EnterMap"/>), as it lets every other spell
+    /// prompt go (<c>_dlgReply</c>), and leaves an NPC shop's or bank's window as it is: theirs is never this one. Read and
+    /// written under this player's monitor.</summary>
+    private TaskCompletionSource<ShopReply>? _pickListReply;
+
     /// <summary>Engrave's item list (<c>ctx:pickItem</c>; RTK <c>engravee:buy(prompt, ids, counts, engraves, owners)</c>,
     /// as the script means it: the project owner's answer, 2026-11-12, "As the script means"): RTK's item-list window
     /// (the buy grid) of THIS player's bag items of types <paramref name="minType"/> to <paramref name="maxType"/>, in slot
@@ -5153,7 +5159,8 @@ public sealed partial class Session
     /// with its count where a shop shows a price, as RTK's bank lists show theirs; on this player's own entity id, with
     /// the <paramref name="item"/>'s icon as its portrait. The window answers with a row's name, so a name two rows share
     /// is told apart as the bank's list does, "&lt;name&gt; (2)"; the row picked names its slot, and <paramref name="verb"/>
-    /// runs with that slot (0-based) as <c>ctx.answer</c>. A closed window picks nothing.</summary>
+    /// runs with that slot (0-based) as <c>ctx.answer</c>. A closed window picks nothing; a warp lets the list go
+    /// (<see cref="EnterMap"/>), as every prompt.</summary>
     internal void LuaPickItem(SpellDef sp, string? prompt, int minType, int maxType, string? verb, string? carry, string? item)
     {
         using var held = EnterState();
@@ -5178,7 +5185,9 @@ public sealed partial class Session
         try
         {
             SendBuyGrid(_char.Id, portrait, prompt, rows);
-            var pick = await AwaitShopReply();
+            var reply = AwaitShopReply();
+            _pickListReply = _shopReply;   // a map change lets this list go (EnterMap), as every other prompt here
+            var pick = await reply;
             if (!bySlot.TryGetValue(pick.Name, out int slot)) return;     // closed, or a name the window never had
             if (verb.Length > 0) RunSpellStep(sp, verb, slot.ToString(System.Globalization.CultureInfo.InvariantCulture), carry);
         }
@@ -5196,7 +5205,7 @@ public sealed partial class Session
     /// item in the customer's bag slot <paramref name="slot"/> takes the name <paramref name="name"/> (RTK's item object
     /// is bound to the slot, so whatever lies there now; an empty slot is renamed nothing), the customer's bag is drawn
     /// again (<c>refreshInventory</c>), and both read <paramref name="line"/> (<c>popUp</c>): "done". Both saved in one
-    /// transaction after the section.</summary>
+    /// transaction at the end of the section.</summary>
     internal string LuaEngraveItem(SpellDef sp, string? customerName, int slot, string? name, long cost, string? timerKey,
                                    int timerSecs, string? line)
     {
@@ -5221,9 +5230,12 @@ public sealed partial class Session
             engraver.SendScriptMessageP(engraver._char.Id, line ?? "", DialogPortrait.None, prev: false, next: false);
             customer.SendScriptMessageP(customer._char.Id, line ?? "", DialogPortrait.None, prev: false, next: false);
             outcome = "done";
+            // Saved inside the section, as the trade's (FinalizeTradeLocked): a second login's kick latches under the
+            // customer's monitor, which this section holds, so the customer cannot be replaced between the re-check
+            // above and this write. FlushPair re-enters the two monitors held here.
+            if (!FlushPair(engraver, customer))
+                Log.Warn($"{sp.Name}: the save of '{engraver.CharName}' and '{customer.CharName}' FAILED; both left dirty for retry");
         });
-        if (outcome == "done" && !FlushPair(engraver, customer))
-            Log.Warn($"{sp.Name}: the save of '{engraver.CharName}' and '{customer.CharName}' FAILED; both left dirty for retry");
         Log.Info($"      (lua) {sp.Name} -> {customer.CharName}'s slot {slot}, {cost} gold: {outcome}");
         return outcome;
     }
@@ -5238,7 +5250,7 @@ public sealed partial class Session
     /// (<c>sendAnimation(2, 3)</c>), the winner reads <paramref name="winLine"/> and the loser <paramref name="loseLine"/>,
     /// then the winner gains <paramref name="amount"/> ("N gold added.") and the loser pays it ("N gold removed."), "win1" or
     /// "win2"; equal rolls, both read <paramref name="tieLine"/> and nothing moves, "tie". The two saved in one transaction
-    /// after the section when gold moved.</summary>
+    /// at the end of the section when gold moved.</summary>
     internal string LuaSettleWager(SpellDef sp, string? name1, string? name2, int amount, int roll1, int roll2,
                                    string? winLine, string? loseLine, string? tieLine)
     {
@@ -5272,9 +5284,10 @@ public sealed partial class Session
                 p.MarkDirty();
             }
             outcome = ReferenceEquals(winner, p1) ? "win1" : "win2";
+            // Saved inside the section, as the trade's and Engrave's: neither gambler can be replaced before the write.
+            if (!FlushPair(p1, p2))
+                Log.Warn($"{sp.Name}: the save of '{p1.CharName}' and '{p2.CharName}' FAILED; both left dirty for retry");
         });
-        if (outcome is "win1" or "win2" && !FlushPair(p1, p2))
-            Log.Warn($"{sp.Name}: the save of '{p1.CharName}' and '{p2.CharName}' FAILED; both left dirty for retry");
         Log.Info($"      (lua) {sp.Name} -> {p1.CharName} ({roll1}) v {p2.CharName} ({roll2}) for {amount}: {outcome}");
         return outcome;
     }
