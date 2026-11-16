@@ -57,7 +57,8 @@ public sealed class Trap
     public ushort X, Y;
     public string Kind = "";   // "dart"/"snare"/"repeating"/"flash"/"spear"/"poison"/"death"/"sleep"/"bladestorm", Spy
                                // kit's "toxic_spray"/"tripwire"/"smoke_screen" (World.IsSpyTrap), or Ranger's "pit_trap"
-                               // (World.PitTrap; the four are World.IsSubpathTrap)
+                               // (World.PitTrap; the four are World.IsSubpathTrap), or Geomancer's "good_earth"
+                               // (World.GoodEarthTrap, unowned, and it stays when sprung)
     public uint   OwnerId;     // caster's player id — credited with any exp from a trap kill
     public long   ExpiresAt;   // 0 = never (the 8-kind hazard family); "bladestorm" auto-clears if untriggered
 }
@@ -1003,6 +1004,7 @@ public sealed partial class World
         Session? pitOwner = null;
         var coneTargets = new List<Mob>();
         string? ambushMsg = null;
+        bool goodEarth = false;
         // Spy kit's traps and Ranger's Pit trap spring on a player only where the trap may touch them, and never on a
         // ghost: RTK's click returns first for `block.state == 1` and for `not block:canPK(block)` (this server's canPK, the
         // PvP map), leaving the trap where it is. Read on the stepper's own thread, before the lock.
@@ -1014,13 +1016,17 @@ public sealed partial class World
             // Session.TryMythicFallRoom), ambush (a cave mob-spawn tile — see Content.AmbushMapDef), and Spy kit's three
             // and the Pit trap where they may touch the stepper. The hazard family (dart/snare/…) stays mob-only.
             trap = m.Traps.FirstOrDefault(t => (t.Kind == "bladestorm" || t.Kind == "shiver" || t.Kind == "ambush"
-                                                || t.Kind == SuteAi.FrigidTrapKind || (spySprings && IsSubpathTrap(t.Kind)))
+                                                || t.Kind == SuteAi.FrigidTrapKind || (spySprings && IsSubpathTrap(t.Kind))
+                                                || t.Kind == GoodEarthTrap)
                                                && t.X == x && t.Y == y);
             if (trap is null) return;
+            // A Good earth trap springs on any player who steps on it, on any map, a ghost too (its click tests nothing),
+            // and stays: the click deletes nothing, so it springs again on every step until its 20 s are up.
+            goodEarth = trap.Kind == GoodEarthTrap;
             // A Pit trap whose owner is gone does nothing and stays (RTK pit_trap.lua's click opens on Player(npc.owner),
             // which is nil then, and stops with a Lua error at owner.maxHealth before it touches anything).
             if (trap.Kind == PitTrap && (pitOwner = Online.ByIdLocked(trap.OwnerId)) is null) return;
-            m.Traps.Remove(trap);
+            if (!goodEarth) m.Traps.Remove(trap);
             if (trap.Kind == SuteAi.FrigidTrapKind) RefillFrigidLocked(mapId);   // relocate the sprung tile
             if (trap.Kind == "bladestorm")
                 foreach (var (dx, dy) in BladestormFan[facing & 3])
@@ -1031,6 +1037,8 @@ public sealed partial class World
             else if (trap.Kind == "ambush")
                 ambushMsg = FireAmbushLocked(mapId, x, y);   // spawns the burst + relocates a replacement trap
         }
+        // Good earth's trap: its click on the stepper, written on their own thread inside their own monitor. It stays.
+        if (goodEarth) { player.SpringGoodEarth(); return; }
         // The trap is gone, so its revealed marker goes with it (RTK removeTrapItem before npc:delete) — on
         // every client that spotted it, not just the stepper's. Runs for all three PC-triggerable kinds; only
         // ambush is revealable today, so for the other two it's a no-op on every session.
@@ -1259,6 +1267,9 @@ public sealed partial class World
         // (the error is caught and the engine goes on, rtk/src/map/sl.c, sl_doscript). The step took it off the list
         // (MobMovement.StepMobTo), so it goes back at the head, which keeps it the first trap on its tile.
         if (trap.Kind == PitTrap && Online.ByIdLocked(trap.OwnerId) is null) { Map(mapId).Traps.Insert(0, trap); return; }
+        // A Good earth trap stays too (its click deletes nothing), back at the head as above, and a creature takes its graphic
+        // and nothing more (the Good earth block below).
+        if (trap.Kind == GoodEarthTrap) { Map(mapId).Traps.Insert(0, trap); SpringGoodEarthLocked(mapId, mob); return; }
         // RTK's every-trap epilogue: removeTrapItem(npc) before npc:delete(). A trap that has gone off takes
         // its revealed marker with it, so a Spot Traps / Watchful Eye sword never outlives the trap it marks.
         _deferredTrapClears.Add((mapId, trap.Id));
@@ -1299,6 +1310,40 @@ public sealed partial class World
                 SpringPitTrapLocked(mapId, mob, trap, damageQueue);
                 break;
         }
+    }
+
+    // ---- Geomancer's Good earth traps (RTK GoodEarthAsvTrapNpc, Spells/Subpaths/Geomancer/good_earth.lua:79-91) ----------
+    // An unowned trap NPC on each open tile around the caster (Session.LuaSetTrapsAround), never drawn and never shown by
+    // Spot traps or Watchful Eye (Session.RevealableTrapsNear), gone after its 20 s (the expiry sweep in Tick). Its click
+    // runs on whatever steps on it and deletes nothing, so it stays and springs again on the next step:
+    //   * a player, on any map, a ghost too (CheckPlayerTrapTrigger, Session.SpringGoodEarth): graphic 18, "It is peaceful
+    //     here." and the bodies of the NPC spells Sanctuary, Harden armor and Valor;
+    //   * a creature (TriggerTrapLocked): graphic 18 and nothing more. RTK's click goes on to the Sanctuary body, which a
+    //     creature takes (its deduction, Spells/NPCs/sanctuary.lua), and then stops with a Lua error at harden_armor's
+    //     canCast, a player-only call; this server's creatures have no damage deduction, so the half damage is not given.
+    internal const string GoodEarthTrap = "good_earth";
+    private const int GoodEarthTrapAnim = 18;                   // player:sendAnimation(18, 500)
+
+    /// <summary>Place an unowned trap of <paramref name="kind"/> on (<paramref name="x"/>, <paramref name="y"/>) unless an NPC
+    /// or a trap is already there (RTK's <c>#getObjectsInCell(m, x, y, BL_NPC) == 0</c>, its traps being NPCs), the test
+    /// and the placing in one hold of the lock, gone at <paramref name="expiresAt"/>. True when it was placed.</summary>
+    public bool PlaceTrapWhereNoNpc(ushort mapId, ushort x, ushort y, string kind, long expiresAt)
+    {
+        lock (_lock)
+        {
+            var m = Map(mapId);
+            if (m.Traps.Any(t => t.X == x && t.Y == y) || m.Mobs.Any(o => o.IsNpc && o.X == x && o.Y == y)) return false;
+            m.Traps.Add(new Trap { Id = _nextTrapId++, X = x, Y = y, Kind = kind, OwnerId = 0, ExpiresAt = expiresAt });
+            return true;
+        }
+    }
+
+    /// <summary>A creature stepped on a Good earth trap (<see cref="TriggerTrapLocked"/>, under <c>_lock</c>): its graphic
+    /// over the creature, sent once the lock is released.</summary>
+    private void SpringGoodEarthLocked(ushort mapId, Mob mob)
+    {
+        Debug.Assert(Monitor.IsEntered(_lock));
+        _deferredFx.Add((mapId, mob.Id, mob.X, mob.Y, GoodEarthTrapAnim, 0));
     }
 
     // ---- Ranger's Pit trap (RTK NPCs/trap/rogue_traps/Ranger/pit_trap.lua, set by Spells/Subpaths/Ranger/pit_trap.lua) ----

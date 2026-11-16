@@ -900,8 +900,9 @@ public sealed class SpellContext
         _s.LuaSpellMenu(_sp, prompt, options, verb, carry, item, plain);
     /// <summary>Take on the form this spell's Morphs.csv row gives <paramref name="answer"/> (its answers column), for its
     /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
-    /// row does not list.</summary>
-    public bool morphTo(string answer) => _s.LuaMorphTo(_sp, answer);
+    /// row does not list. With <paramref name="warPaint"/> the form wears the caster's war paint (RTK
+    /// <c>disguiseColor = player.armorColor</c>; Geomancer's Elemental mastery), else its own colours.</summary>
+    public bool morphTo(string answer, bool warPaint = false) => _s.LuaMorphTo(_sp, answer, warPaint);
     /// <summary>Resolve the first living player on the faced tile, on any map, as this cast's player target (RTK
     /// <c>getTargetFacing(player, BL_PC)</c>, which passes over the dead, so a living player standing on a ghost's tile
     /// is found); no aimed id is read. False, and silent, with nobody living there. <see cref="pushTarget"/>, <see cref="speechStatus"/> and <see cref="tellTargetLine"/> act on it.</summary>
@@ -1162,4 +1163,40 @@ public sealed class SpellContext
     /// <summary>RTK's <c>player:hasSpace(name, n)</c>: may <paramref name="amount"/> of <paramref name="itemKey"/> go into the
     /// caster's bag?</summary>
     public bool hasRoom(string itemKey, double amount) => _s.LuaHasRoom(itemKey, (int)amount);
+
+    // ---- the Geomancer spells' primitives (RTK Spells/Subpaths/Geomancer/) --------------------------------------------
+    // A legend on a named player (the recognitions, P10) lands inside that player's own monitor, and a player who is
+    // leaving or replaced is given nothing; Exhume's creature and Good earth's traps refuse a caster who is gone. No new
+    // lock. See Session.Spells.cs, "the Geomancer spells".
+    /// <summary>On the player <see cref="pcTargetNamed"/> resolved, inside their own monitor: every legend named in
+    /// <paramref name="remove"/> ('|' between them) goes, then, when <paramref name="text"/> is not empty, a legend named
+    /// <paramref name="mark"/> reading it in icon <paramref name="icon"/> and colour <paramref name="color"/> (RTK
+    /// <c>removeLegendbyName</c>, <c>addLegend</c>). Saved. False, changing nothing, with no target or one gone.</summary>
+    public bool legendTarget(string remove, string mark, string text, double icon, double color) =>
+        _s.LuaLegendTarget(_sp, remove, mark, text, (int)icon, (int)color);
+    /// <summary>Which of the legends named in <paramref name="names"/> ('|' between them) the player
+    /// <see cref="pcTargetNamed"/> resolved holds, in the order given, '|' between them (RTK <c>target:hasLegend</c>), read
+    /// inside their monitor; "" with none.</summary>
+    public string targetLegends(string names) => _s.LuaTargetLegends(names);
+    /// <summary>Exhume's creature: the mobs.csv creature <paramref name="mobKey"/>, unowned, on the caster's own tile (RTK
+    /// <c>player:spawn(mob, player.x, player.y, 1, player.m)</c>). False for a caster who is gone.</summary>
+    public bool spawnHere(string mobKey) => _s.LuaSpawnHere(_sp, mobKey);
+    /// <summary>End this caster's run of this spell on themselves now (RTK <c>setDuration(key, 0)</c>).</summary>
+    public void endSelfTick() => _s.LuaEndSelfTick(_sp);
+    /// <summary>Milliseconds left on this caster's run of this spell on themselves, 0 with none (RTK <c>getDuration</c>).</summary>
+    public double selfTickLeft() => _s.LuaSelfTickLeft(_sp);
+    /// <summary>Good earth's traps: an unowned <paramref name="kind"/> trap, gone in <paramref name="lifetimeMs"/>, on each
+    /// open tile of the 3x3 around the caster with no NPC or trap on it. Returns how many.</summary>
+    public double setTrapsAround(string kind, double lifetimeMs) => _s.LuaSetTrapsAround(_sp, kind, (int)lifetimeMs);
+    /// <summary>Does the target <see cref="aimedTarget"/> found carry a status of <paramref name="category"/>?</summary>
+    public bool aimedHasStatus(string category) => _s.LuaAimedHasStatus(category);
+    /// <summary>Soften skin's curse on the target <see cref="aimedTarget"/> found: a creature for
+    /// <paramref name="creatureMs"/> with <paramref name="beatAnim"/> every <paramref name="beatMs"/>; a player, inside their
+    /// own monitor and unless a category in <paramref name="blockedBy"/> holds by then, for <paramref name="playerMs"/>, with
+    /// <paramref name="line"/>; then the spell's sound at the caster and its graphic over the target. False when nothing
+    /// landed.</summary>
+    public bool curseAimed(string category, string stat, double amount, double playerMs, double creatureMs, string blockedBy,
+                           string line, double beatAnim, double beatMs) =>
+        _s.LuaCurseAimed(_sp, category, stat, (int)System.Math.Round(amount), (int)playerMs, (int)creatureMs, blockedBy, line,
+                         (int)beatAnim, (int)beatMs);
 }
