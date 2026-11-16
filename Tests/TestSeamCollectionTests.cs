@@ -238,7 +238,8 @@ public class TestSeamCollectionTests
         new(StringComparer.Ordinal) { "ConsoleTap", "LogLineSink", "LogShutdownWindow", "PhaseProbe" };
 
     /// <summary>The module initializer: it points <c>P1998_STATE</c> at the run's temp directory before any
-    /// test exists, so it runs beside nothing.</summary>
+    /// test exists, so it runs beside nothing; and the run's end (<c>EndRun</c>), after every test, beside nothing
+    /// too.</summary>
     private static readonly HashSet<string> Exempt = new(StringComparer.Ordinal) { "TestProcessState" };
 
     /// <summary>The fact the whole rule exists for. Each violation it reports names the file and line, the

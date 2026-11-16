@@ -28,7 +28,7 @@ public class LogWarnErrorLineTests
     public void Warn_writes_a_reject_line_with_exactly_one_bang_pair_and_warn_level()
     {
         string tag = "warn-fact-" + Guid.NewGuid().ToString("N");
-        string path = Path.Combine(Path.GetTempPath(), "p1998-log-warn-" + tag, "server.log");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, "p1998-log-warn-" + tag, "server.log");
         // The exact shape TkAcceptor.cs writes for a rejected connection, minus the "!! " the hand-written
         // call used to add itself.
         string msg = $"REJECT 203.0.113.5:41000 on :7000 (not in P1998_PROXY_ALLOW); 3 live [{tag}]";
@@ -65,7 +65,7 @@ public class LogWarnErrorLineTests
     public void Error_string_overload_writes_the_triple_bang_line_with_no_stack_at_error_level()
     {
         string tag = "error-fact-" + Guid.NewGuid().ToString("N");
-        string path = Path.Combine(Path.GetTempPath(), "p1998-log-error-" + tag, "server.log");
+        string path = Path.Combine(TestProcessState.ScratchDirectory, "p1998-log-error-" + tag, "server.log");
         // The exact shape Server/Program.cs and LoginServer/Program.cs write for a bad --ports argument.
         string msg = $"invalid --ports: not-a-number [{tag}]";
 

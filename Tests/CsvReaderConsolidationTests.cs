@@ -67,7 +67,7 @@ public class CsvReaderConsolidationTests
             var opens = new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             string contentRoot = RepoPaths.GameDataDir();
             string parallelPath = Path.Combine(
-                Path.GetTempPath(), $"p1998-parallel-csv-{Guid.NewGuid():N}.csv");
+                TestProcessState.ScratchDirectory, $"p1998-parallel-csv-{Guid.NewGuid():N}.csv");
             File.WriteAllText(parallelPath, "value\nparallel\n");
             try
             {
@@ -105,7 +105,7 @@ public class CsvReaderConsolidationTests
     {
         lock (TestProcessState.Gate)
         {
-            string missing = Path.Combine(Path.GetTempPath(), $"p1998-era-not-here-{Guid.NewGuid():N}.csv");
+            string missing = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-era-not-here-{Guid.NewGuid():N}.csv");
             var previous = Content.OverridePathForTests(Content.TableId.EraFeatures, missing);
             var warnings = new ConcurrentQueue<string>();
             try
@@ -137,7 +137,7 @@ public class CsvReaderConsolidationTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), $"p1998-ragged-obj533-{Guid.NewGuid():N}");
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-ragged-obj533-{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "Obj533Fix.csv");
             File.WriteAllText(path,
@@ -168,7 +168,7 @@ public class CsvReaderConsolidationTests
     {
         lock (TestProcessState.Gate)
         {
-            string dir = Path.Combine(Path.GetTempPath(), $"p1998-trailing-tile533-{Guid.NewGuid():N}");
+            string dir = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-trailing-tile533-{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
             string path = Path.Combine(dir, "Tile533Map.csv");
             File.WriteAllText(path,
@@ -201,8 +201,8 @@ public class CsvReaderConsolidationTests
     {
         lock (TestProcessState.Gate)
         {
-            string missingObj = Path.Combine(Path.GetTempPath(), $"p1998-obj533-not-here-{Guid.NewGuid():N}.csv");
-            string missingSheet = Path.Combine(Path.GetTempPath(), $"p1998-tile533-not-here-{Guid.NewGuid():N}.csv");
+            string missingObj = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-obj533-not-here-{Guid.NewGuid():N}.csv");
+            string missingSheet = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-tile533-not-here-{Guid.NewGuid():N}.csv");
             var previousObj = Content.OverridePathForTests(Content.TableId.Obj533Fix, missingObj);
             var previousSheet = Content.OverridePathForTests(Content.TableId.Tile533Map, missingSheet);
             try

@@ -13,8 +13,9 @@ namespace Tests.Support;
 /// held write lock in <c>PersistenceTests</c> into "@ban refuses a name with no character row" over in
 /// <c>AnnounceMonitorTests</c>. A lock taken on this file is felt by nothing but this test.</para>
 ///
-/// <para>The directory lives INSIDE the process state directory, so the process-exit cleanup that already
-/// removes that tree removes these too. <see cref="Dispose"/> deletes it eagerly and gives up quietly if the
+/// <para>The directory lives INSIDE the process state directory, so the run's end, which deletes the run's
+/// scratch folder and that directory with it (<c>TestProcessState.EndRun</c>), removes these too.
+/// <see cref="Dispose"/> deletes it eagerly and gives up quietly if the
 /// file is still held: a leaked temp file inside a directory that is about to be deleted is not worth failing
 /// a test over, and pooled connections belonging to other collections must not be closed to hurry it.</para>
 /// </summary>
@@ -45,6 +46,6 @@ internal sealed class IsolatedDatabase : IDisposable
     public void Dispose()
     {
         try { System.IO.Directory.Delete(_dir, recursive: true); }
-        catch { /* the process-exit cleanup of the state directory takes it */ }
+        catch { /* the run's end, which deletes the state directory, takes it */ }
     }
 }

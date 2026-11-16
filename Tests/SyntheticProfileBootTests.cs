@@ -40,12 +40,13 @@ namespace Tests;
 /// <c>finally</c>, so a first trigger <see cref="Leash"/> ahead is in place before the server starts: an
 /// orphaned server stops itself.</para>
 ///
-/// <para>The state, log and run folders sit in one new temp folder per boot, deleted afterwards. A test host that
-/// dies cannot delete its own, so each run first sweeps the ones nobody has written to for
-/// <see cref="StaleAfter"/> (<see cref="SweepStaleBootFolders"/>): renamed, then deleted, so that on Windows a
-/// folder with a file still open in it is left whole rather than emptied around that file. On Linux an open file
-/// stops neither step, so the one server the sweep could reach there, a hung one that has not written for 15
-/// minutes, loses its folder. Every <c>P1998_*</c> variable of this process is dropped from the child's
+/// <para>The state, log and run folders sit in one new folder per boot, deleted afterwards, inside the test run's
+/// scratch folder (<see cref="TestProcessState.ScratchDirectory"/>). A test host that dies cannot delete its own; its
+/// run's folder goes in a later run's sweep (<see cref="TestScratch"/>), and not while the server lives, since the
+/// server inherits the run's lock. Each boot still first sweeps the boot folders in its own run's folder that nobody
+/// has written to for <see cref="StaleAfter"/> (<see cref="SweepStaleBootFolders"/>): renamed, then deleted, so
+/// that on Windows a folder with a file still open in it is left whole rather than emptied around that file. On
+/// Linux an open file stops neither step. Every <c>P1998_*</c> variable of this process is dropped from the child's
 /// environment first, so a developer's shell cannot leak into the boot.</para>
 /// </summary>
 public class SyntheticProfileBootTests
@@ -186,7 +187,7 @@ public class SyntheticProfileBootTests
         string profile = manifest.Value("P1998_GAME_DATA");
         Assert.Equal(manifest.ProfileDir, profile);
 
-        SweepStaleBootFolders(Path.GetTempPath(), DateTime.UtcNow);
+        SweepStaleBootFolders(TestProcessState.ScratchDirectory, DateTime.UtcNow);
 
         BootRun run;
         int attempts = 0;
@@ -249,7 +250,7 @@ public class SyntheticProfileBootTests
     [Fact]
     public void The_sweep_deletes_only_boot_folders_nothing_has_written_to_lately()
     {
-        string root = Path.Combine(Path.GetTempPath(), $"p1998-sweep-probe-{Guid.NewGuid():N}");
+        string root = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-sweep-probe-{Guid.NewGuid():N}");
         var now = DateTime.UtcNow;
         try
         {
@@ -283,7 +284,7 @@ public class SyntheticProfileBootTests
     [Fact]
     public void A_stale_boot_folder_with_a_file_held_open_is_left_whole_on_Windows()
     {
-        string root = Path.Combine(Path.GetTempPath(), $"p1998-sweep-probe-{Guid.NewGuid():N}");
+        string root = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-sweep-probe-{Guid.NewGuid():N}");
         var now = DateTime.UtcNow;
         try
         {
@@ -447,7 +448,7 @@ public class SyntheticProfileBootTests
     {
         public static async Task<BootRun> BootAndStopAsync(SyntheticManifest manifest, int port)
         {
-            string temp = Path.Combine(Path.GetTempPath(), $"{BootFolderPrefix}{Guid.NewGuid():N}");
+            string temp = Path.Combine(TestProcessState.ScratchDirectory, $"{BootFolderPrefix}{Guid.NewGuid():N}");
             string state = Path.Combine(temp, "state"), logs = Path.Combine(temp, "logs"), run = Path.Combine(temp, "run");
             foreach (string dir in new[] { state, logs, run }) Directory.CreateDirectory(dir);
 

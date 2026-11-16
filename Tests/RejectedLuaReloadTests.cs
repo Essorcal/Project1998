@@ -342,7 +342,7 @@ public class RejectedLuaReloadTests
 
     private static string ScratchDir()
     {
-        string dir = Path.Combine(Path.GetTempPath(), "project1998-rejected-lua-" + Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(TestProcessState.ScratchDirectory, "project1998-rejected-lua-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

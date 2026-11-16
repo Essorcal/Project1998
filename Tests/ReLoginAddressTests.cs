@@ -389,8 +389,8 @@ public sealed class ReLoginAddressTests : IDisposable
         public static Link Unix(IPAddress? realIp, World world, CharacterStore store)
         {
             string tag = Guid.NewGuid().ToString("N")[..12];
-            string serverPath = Path.Combine(Path.GetTempPath(), $"p1998-{tag}.s");
-            string clientPath = Path.Combine(Path.GetTempPath(), $"p1998-{tag}.c");
+            string serverPath = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-{tag}.s");
+            string clientPath = Path.Combine(TestProcessState.ScratchDirectory, $"p1998-{tag}.c");
             using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             listener.Bind(new UnixDomainSocketEndPoint(serverPath));
             listener.Listen(1);
