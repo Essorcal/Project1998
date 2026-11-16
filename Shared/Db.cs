@@ -71,8 +71,19 @@ public static class Db
     /// does. The other is any statement run before its connection has a busy_timeout, and we have exactly
     /// one: startup's <c>PRAGMA journal_mode=WAL</c> in <see cref="InitializeDatabase"/>, which comes before
     /// that connection's <c>PRAGMA busy_timeout</c>. When another connection holds the file exclusively, that
-    /// statement gives up after about 3 s instead of about 5, and the process fails at startup, loudly, as
-    /// before. Shown with a first-ever database, still in rollback-journal mode, held with
+    /// statement gives up after about 3 s instead of about 5, and <see cref="EnsureInitialized"/> throws. What
+    /// that does depends on the process:</para>
+    /// <list type="bullet">
+    /// <item>The login process fails at startup, loudly, as before.</item>
+    /// <item>The game process does not, at first. Its first two database reads at startup, the saved door
+    /// unlocks (<c>Doors.LoadUnlocks</c>) and the boards import, log the failure and carry on, so the game
+    /// starts without its saved door unlocks: doors players opened with keys are locked again until the next
+    /// restart or <c>@reload</c>. That happens when the database is held for more than about 3 s at the game's start,
+    /// against about 5 s before. The game fails only at a later try, its character store's, under a hold of
+    /// about 9 s or more.</item>
+    /// <item>A brand-new database has no unlocks to miss.</item>
+    /// </list>
+    /// <para>Shown with a first-ever database, still in rollback-journal mode, held with
     /// <c>BEGIN EXCLUSIVE</c>, which login and game starting together on a new file can meet; a WAL file
     /// being recovered should take the same path (not shown). Every other statement of ours runs after its
     /// connection's busy_timeout and waits inside SQLite first.</para>
