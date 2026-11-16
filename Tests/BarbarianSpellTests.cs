@@ -745,9 +745,10 @@ public sealed class BarbarianSpellTests
     // ===== Insult and Dishonor ==================================================================================
 
     /// <summary>Each creature on the caster's four sides takes the curse: its curses slot under the spell's key, AC +30 (it
-    /// takes more damage, RTK's sign), the scripts' while_cast graphic 34 every second; 200 mana, "You cast Insult.", and no
-    /// wait (the script never arms its 150 s). Dishonor is the same with +50. Red on 912ba3c: generic's 5 mana and nothing
-    /// cursed.</summary>
+    /// takes more damage, RTK's sign), the scripts' while_cast graphic 34 every 1.5 s (RTK's creature beat, the project
+    /// owner's "As RTK: 1.5 s"); 200 mana, "You cast Insult.", and no wait (the script never arms its 150 s). Dishonor is
+    /// the same with +50. Red on 912ba3c: generic's 5 mana and nothing cursed. Red on 7aac034: the graphic every
+    /// second.</summary>
     [Theory]
     [InlineData("insult", 30)]
     [InlineData("dishonor", 50)]
@@ -763,7 +764,7 @@ public sealed class BarbarianSpellTests
             Assert.True(cc.Mp == Mana - 200 && Lines(cOut) == $"You cast {name}." && SpellCastSupport.AetherLeft(caster, key) == 0,
                         $"spent {Mana - cc.Mp}, lines [{Lines(cOut)}], wait {SpellCastSupport.AetherLeft(caster, key)}");
             foreach (var m in mobs)
-                Assert.True(_fx.World.MobStatusKey(m, "curses") == key && m.Ac == armor && m.FxRepeatAnim == 34 && m.FxRepeatEvery == 1_000,
+                Assert.True(_fx.World.MobStatusKey(m, "curses") == key && m.Ac == armor && m.FxRepeatAnim == 34 && m.FxRepeatEvery == 1_500,
                             $"creature at ({m.X},{m.Y}): slot {_fx.World.MobStatusKey(m, "curses")}, AC {m.Ac}, beat {m.FxRepeatAnim}/{m.FxRepeatEvery}");
         }
         finally { Leave(CurseMap, caster); foreach (var m in mobs) _fx.World.DespawnMob(CurseMap, m); }
@@ -843,7 +844,9 @@ public sealed class BarbarianSpellTests
     /// <c>setDuration</c>), 1,000 off every 1.5 s (<c>rtk/src/map/mob.c</c>: <c>mob_timer_spawns</c> runs
     /// <c>mob_duratimer</c> on one step of its 30, every 50 ms): 637.5 s, the project owner's ruling (2026-11-12, "As RTK:
     /// 637.5 s"). Its slot still holds it at 425 s and a beat and is free at 637.5 s and a beat; its armour and its
-    /// while_cast graphic (34, every second, unchanged) run as long. Red on e95d50a: 425 s, clock time.</summary>
+    /// while_cast graphic run as long, the graphic redrawn every 1.5 s, the creature timer's beat, as RTK's
+    /// <c>mob_duratimer</c> runs it (the project owner's "As RTK: 1.5 s"). Red on e95d50a: 425 s, clock time. Red on
+    /// 7aac034: the graphic every second.</summary>
     [Theory]
     [InlineData("insult", 30)]
     [InlineData("dishonor", 50)]
@@ -858,7 +861,7 @@ public sealed class BarbarianSpellTests
             var curse = CreatureCurse(mob, key);
             Assert.True(curse.KeyPast425s == key && curse.KeyPast637s == "" && Near(curse.SlotLeft, CreatureCurseMs)
                         && Near(curse.ArmorLeft, CreatureCurseMs) && Near(curse.BeatLeft, CreatureCurseMs) && mob.Ac == armor
-                        && mob.FxRepeatAnim == 34 && mob.FxRepeatEvery == 1_000,
+                        && mob.FxRepeatAnim == 34 && mob.FxRepeatEvery == CreatureBeatMs,
                         $"{key} on a creature: {curse}, AC {mob.Ac}, beat {mob.FxRepeatAnim}/{mob.FxRepeatEvery}");
         }
         finally { Leave(CurseMap, caster); _fx.World.DespawnMob(CurseMap, mob); }
