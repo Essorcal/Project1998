@@ -789,11 +789,9 @@ public sealed class SpellContext
     /// <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Title of nobility's typed name, which
     /// its second question's step needs), so nothing a later cast resolves can stand in for it. With an Items.csv
     /// <paramref name="item"/> the box carries that item's icon, at colour 0 with <paramref name="plain"/>, as
-    /// <see cref="dialog"/> draws it (Engrave's and Gambling's boxes, Geomancer's recognitions); with no item, creature look
-    /// <paramref name="look"/> in palette <paramref name="color"/> (Reveal fate's Woodland Angel); none by default.</summary>
-    public void ask(string prompt, string verb, string carry = "", string item = "", bool plain = false, double look = 0,
-                    double color = 0) =>
-        _s.LuaAsk(_sp, prompt, verb, carry, item, plain, (int)look, (int)color);
+    /// <see cref="dialog"/> draws it (Engrave's and Gambling's boxes).</summary>
+    public void ask(string prompt, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaAsk(_sp, prompt, verb, carry, item, plain);
     /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
     /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
     /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
@@ -1167,9 +1165,9 @@ public sealed class SpellContext
     public bool hasRoom(string itemKey, double amount) => _s.LuaHasRoom(itemKey, (int)amount);
 
     // ---- the Geomancer spells' primitives (RTK Spells/Subpaths/Geomancer/) --------------------------------------------
-    // A legend or a fate's outcome on a named player (the recognitions and Reveal fate, P10) lands inside that player's own
-    // monitor, and a player who is leaving or replaced is given nothing; the caster's tally, Exhume's creature and Good
-    // earth's traps refuse a caster who is gone. No new lock. See Session.Spells.cs, "the Geomancer spells".
+    // A legend on a named player (the recognitions, P10) lands inside that player's own monitor, and a player who is
+    // leaving or replaced is given nothing; Exhume's creature and Good earth's traps refuse a caster who is gone. No new
+    // lock. See Session.Spells.cs, "the Geomancer spells".
     /// <summary>On the player <see cref="pcTargetNamed"/> resolved, inside their own monitor: every legend named in
     /// <paramref name="remove"/> ('|' between them) goes, then, when <paramref name="text"/> is not empty, a legend named
     /// <paramref name="mark"/> reading it in icon <paramref name="icon"/> and colour <paramref name="color"/> (RTK
@@ -1180,44 +1178,6 @@ public sealed class SpellContext
     /// <see cref="pcTargetNamed"/> resolved holds, in the order given, '|' between them (RTK <c>target:hasLegend</c>), read
     /// inside their monitor; "" with none.</summary>
     public string targetLegends(string names) => _s.LuaTargetLegends(names);
-    /// <summary>On the caster: the saved registry key <paramref name="regKey"/> one more, the legend <paramref name="mark"/>
-    /// gone and written again at the end with "%d" the new count (Reveal fate's "Performed N Ba Gua experiences"). False
-    /// for a caster who is gone.</summary>
-    public bool markSelf(string regKey, string mark, string text, double icon, double color) =>
-        _s.LuaMarkSelf(_sp, regKey, mark, text, (int)icon, (int)color);
-    /// <summary>A box with no button to the player <see cref="pcTargetNamed"/> resolved, alone, their waiting conversation
-    /// dropped first (Reveal fate's last box, RTK <c>target:freeAsync()</c>, <c>target:dialogSeq({t, text}, 0)</c>), with the
-    /// portrait <see cref="dialog"/> reads. Nothing with no target, or to one going away.</summary>
-    public void boxTarget(string text, double look = 0, double color = 0, string item = "") =>
-        _s.LuaBoxTarget(_sp, text, (int)look, (int)color, item);
-    /// <summary>Is the player <see cref="pcTargetNamed"/> resolved married (RTK <c>target.partner ~= 0</c>)? A bare read;
-    /// false with none.</summary>
-    public bool targetMarried => _s.LuaPcTarget?.LuaMarried ?? false;
-    /// <summary>Reveal fate's outcomes, each on the player <see cref="pcTargetNamed"/> resolved, inside their own monitor,
-    /// and false, changing nothing, with no target or one gone. Their war paint becomes <paramref name="color"/>, redrawn
-    /// (RTK <c>target.armorColor</c>, <c>updateState</c>).</summary>
-    public bool targetArmorColor(double color) => _s.LuaTargetArmorColor((int)color);
-    /// <summary>The named duration <paramref name="key"/> on them for <paramref name="ms"/> (RTK <c>target:setDuration</c>).</summary>
-    public bool targetDuration(string key, double ms) => _s.LuaTargetDuration(key, (int)ms);
-    /// <summary>The flush a won Dispell makes on them, then <paramref name="anim"/> and <paramref name="sound"/> over them (RTK
-    /// <c>dispell.cast(target)</c>).</summary>
-    public bool dispelTarget(double anim, double sound) => _s.LuaDispelTarget((int)anim, (int)sound);
-    /// <summary>Their coins <paramref name="delta"/>, never below 0, then <paramref name="line"/>.</summary>
-    public bool targetGold(double delta, string line) => _s.LuaTargetGold((long)delta, line);
-    /// <summary>Their karma <paramref name="delta"/> (a negative one taken), with the karma graphic and RTK's line (addKarma,
-    /// removeKarma).</summary>
-    public bool addTargetKarma(double delta) => _s.LuaTargetKarma(delta);
-    /// <summary>The first of their saved registry keys <paramref name="keys"/> ('|' between them) above
-    /// <paramref name="above"/> takes <paramref name="delta"/>, and they read <paramref name="linePrefix"/> and the key.</summary>
-    public bool targetCraft(string keys, double above, double delta, string linePrefix) =>
-        _s.LuaTargetCraft(keys, (int)above, (int)delta, linePrefix);
-    /// <summary>Below 99, <paramref name="bandFraction"/> of their level's band, at 99 <paramref name="topFraction"/> of their
-    /// experience, rounded up, given (positive) or taken (negative), then <paramref name="line"/>.</summary>
-    public bool targetExp(double bandFraction, double topFraction, string line) =>
-        _s.LuaTargetExp(bandFraction, topFraction, line);
-    /// <summary>Their base vita <paramref name="delta"/>; a loss their base vita cannot cover changes nothing and answers
-    /// false, as the script returns there.</summary>
-    public bool targetBaseVita(double delta) => _s.LuaTargetBaseVita((int)delta);
     /// <summary>Exhume's creature: the mobs.csv creature <paramref name="mobKey"/>, unowned, on the caster's own tile (RTK
     /// <c>player:spawn(mob, player.x, player.y, 1, player.m)</c>). False for a caster who is gone.</summary>
     public bool spawnHere(string mobKey) => _s.LuaSpawnHere(_sp, mobKey);

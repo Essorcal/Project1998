@@ -186,9 +186,9 @@ public sealed class SubpathTeacherTests
                              "hear_footstep_diviner 99 0 [1 fox_tail, 1 topaz]; " +
                              "read_karma_diviner 60 50 [20 light_fox_fur, 70 acorn]; " +
                              "vanish 99 0 [1 fox_tail, 1 topaz]")]
-    // The Geomancer spells slice: thirteen beside Hailstorm and Ice bombardment, each at its script's price, the copied
-    // lists as written (ten ask "Empower your mind"'s Ju jak key and surge; Read karma Diviner's); Earths Spite at its
-    // mark; Stone Casing, with no script, off sale.
+    // The Geomancer spells slice: twelve beside Hailstorm and Ice bombardment, each at its script's price, the copied
+    // lists as written (nine ask "Empower your mind"'s Ju jak key and surge; Read karma Diviner's); Earths Spite at its
+    // mark; Stone Casing, with no script, and Reveal fate, kept off by the project owner, off sale.
     [InlineData("Geomancer", "balance_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "create_green_potion 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "earths_spite 99 40000 [1 il_san_surge, 2 scribes_book, 2 star_staff]; " +
@@ -202,7 +202,6 @@ public sealed class SubpathTeacherTests
                              "inner_sect_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "neutrality_recognition 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "read_karma_geomancer 60 50 [20 light_fox_fur, 70 acorn]; " +
-                             "reveal_fate 99 50000 [1 ju_jak_key, 1 surge]; " +
                              "soften_skin 99 20000 [1 scribes_book, 1 star_staff, 1 surge]")]
     [InlineData("Shaman",    "phoenix_flames 64 500 [1 amber, 70 acorn]; reincarnate 64 500 [1 amber, 70 acorn]; shamans_solace 99 10000 [1 mountain_ginseng]; shamans_torment 0 0 []")]
     // The Druid spells slice: Control flames, Druid's rodent, Steed, Sea breeze, Nature's bloom and Energy bloom beside the
@@ -280,7 +279,7 @@ public sealed class SubpathTeacherTests
     /// <summary>The Learn Secret list is the subpath's sold rows at or below the member's level, minus what the book
     /// holds: a level-59 Geomancer is told to grow (the trainer's line), at 60 is offered Read karma, at 64 Read karma and
     /// Hailstorm, and holding Hailstorm only Read karma. (Until the Geomancer spells slice sold Read karma at 60 and
-    /// thirteen more, Hailstorm at 64 was Geomancer's first row.)</summary>
+    /// eleven more, Hailstorm at 64 was Geomancer's first row.)</summary>
     [Fact]
     public void TheListIsTheRowsAtTheMembersLevelMinusKnown()
     {

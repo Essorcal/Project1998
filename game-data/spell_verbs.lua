@@ -3728,22 +3728,24 @@ end
 
 -- =========================================================================================================
 -- GEOMANCER (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Geomancer/). The project owner, 2026-10-26 (P5, each spell
--- as its RTK script; P1 and P3, on sale once it works, at its script's price), and 2026-11-12 for three of them: Exhume's
+-- as its RTK script; P1 and P3, on sale once it works, at its script's price), and 2026-11-12 for two of them: Exhume's
 -- five creatures RTK has no row for ("Pick five creatures": stand-ins, mobs.csv dummy_horse, dummy_bull, dummy_pig,
--- dummy_skeleton and dummy_dragon); the recognitions' Remove ("From the target": it takes the mark off the named player,
--- and Honor of the Three Sects counts the named player's tally); and Reveal fate ("Outcomes on the target": no "disabled"
--- box, and every outcome lands on the named player). The verbs here are Reveal fate, Exhume, GreenPotion, Elemental
--- mastery, the five recognitions, Good earth and Soften skin (Earths Spite is Soften skin's body under its own key); Read
--- karma is Diviner's read_karma verb (Geomancer's read_karma.lua is that script under its own key); Hailstorm and Ice
--- bombardment are #390's splash_strike rows. Stone Casing has no script and stays as it is. Each verb is bound by its
--- SpellParams.csv row, which carries its numbers, and is the shape of its script, in that script's order. RTK is weight 0
--- for balance; these numbers are its scripts', as RTK under P5.
+-- dummy_skeleton and dummy_dragon); and the recognitions' Remove ("From the target": it takes the mark off the named
+-- player, and Honor of the Three Sects counts the named player's tally). Reveal fate stays as it is today, casting
+-- nothing and not sold (the project owner's choice, 2026-11-16, "Keep it off"): it has no row and falls to the generic
+-- verb. The verbs here are Exhume, GreenPotion, Elemental mastery, the five recognitions, Good earth and Soften skin
+-- (Earths Spite is Soften skin's body under its own key); Read karma is Diviner's read_karma verb (Geomancer's
+-- read_karma.lua is that script under its own key); Hailstorm and Ice bombardment are #390's splash_strike rows. Stone
+-- Casing has no script and stays as it is. Each verb is bound by its SpellParams.csv row, which carries its numbers, and
+-- is the shape of its script, in that script's order. RTK is weight 0 for balance; these numbers are its scripts', as
+-- RTK under P5.
 --
 -- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
---   * Each wait is checked first, with this file's own line (subpath_waiting). RTK waives Reveal fate's, Good earth's and
---     the recognitions' for a GM; no verb here waives anything for staff.
---   * A ghost and a mounted caster cast nothing (the engine's gates), where GreenPotion's, Reveal fate's and the
---     recognitions' scripts have no canCast at all. The cast pose is the engine's, on a cast that lands.
+--   * Each wait is checked first, with this file's own line (subpath_waiting). RTK waives Good earth's and the
+--     recognitions' for a GM; no verb here waives anything for staff. A wait is the session's, as every wait here is, so
+--     a relog ends it (RTK keeps an aether across a relog); Exhume's run on the caster ends with the session too.
+--   * A ghost and a mounted caster cast nothing (the engine's gates), where GreenPotion's and the recognitions' scripts
+--     have no canCast at all. The cast pose is the engine's, on a cast that lands.
 --   * A later cast does not drop a menu, an input box or a box these spells leave open (RTK's cast handler frees a waiting
 --     script), as for every menu here.
 --   * An input box carries the script's question alone (the recognitions' "The one known as" and "has caught my eye" are
@@ -3762,9 +3764,6 @@ end
 -- The recognitions' portrait: convertGraphic(803, "item"), icon 803, the Staff of chi's (Items.csv staff_of_chi), on
 -- their input box, menus and boxes, as the scripts set npcGraphic to it before any of them.
 local RECOG_ITEM = "staff_of_chi"
--- Reveal fate's portrait: NPC("Woodland Angel"), NPCs.csv row 8, look 49 in colour 0 (convertGraphic(npc.look,
--- "monster")), on its input box and its boxes; its menu has none (the script sets npcGraphic 0 before it).
-local ANGEL_LOOK, ANGEL_COLOR = 49, 0
 
 -- The recognitions' cast (honor_of_the_three_sects.lua and the four like it, :2-32), the same five times: inside its
 -- wait, the wait line; short of `mana`, "Your will is too weak.", for free; then the mana and the `duration` ms wait (5 s),
@@ -4095,113 +4094,6 @@ end
 
 function verbs.elementalist_remove(ctx, row)
   return recog_remove(ctx, ELEMENT_MARKS, ctx.carried .. " has had their " .. ctx.answer .. " mage recognition removed.")
-end
-
--- Reveal fate (RTK Subpaths/Geomancer/reveal_fate.lua), as the project owner answered ("Outcomes on the target"): no
--- "Complete but disabled." box (:15), and every outcome lands on the named player, as its lines read; the caster still
--- picks the sign. Three steps, because the script waits twice (its name, then its menu). The cast: inside its wait, the
--- wait line; short of `mana`, "Your will is too weak.", for free; then the input box "Whom would you like to reveal their
--- fate?" with the Woodland Angel's portrait. The name, each refusal a box with that portrait that ends it, for free:
--- anything but letters, spaces and an apostrophe, "You can only enter letters and spaces."; nobody online by it, "That
--- player is currently not online."; the caster, "You cannot reveal your own fate.". Then the mana (what there is, as the
--- script takes it with no second check), the `duration` ms wait, and the menu "Greetings Geomancer. How is the Chi aligned
--- here?" with no portrait. The pick (reveal_fate_pick): one of eight outcomes of its sign, or nine for a married player,
--- the ninth a marriage's (math.random(1, max)), lands on them; then the caster's "Performed N Ba Gua experiences" (icon
--- 145, colour 128, the caster's by its words), the named player's "Experienced the Ba Gua N times, assisted by <caster>
--- (<date>)" counting THEIR tally (the script reads the caster's, :282-288; built on the target's, as the project owner's
--- Honor answer counts the target's), and one box to them with the outcome's words and the Angel's portrait, which drops
--- any conversation they had waiting, the caster's script ending there (Scouting trip's player box, :296-297). "You become
--- weak and a bit faint." at a player with less than 25 base vita ends the script there, as written (:221-223): no tally
--- and no box. A closed menu does nothing; the mana and the wait are gone. Row: mana 100, duration 7500000.
-local FATE_GOOD, FATE_BAD = "It flows well", "It is disrupted"
-local FATE_POSITIVE = {
-  "You stand out from those around you.", "You feel creative.", "Your coinpurse feels heavier.", "The gods smile upon you.",
-  "You're better in your specialized skill.", "You gain knowledge towards the next level.", "You are able to endure more.",
-  "You're a good friend, and it shows.",
-}
-local FATE_NEGATIVE = {
-  "You feel that people do not notice you.", "You lose your train of thought and fail to be creative.",
-  "Your coinpurse feels lighter.", "The gods frown upon you.", "You're worse in your specialized skill.",
-  "You lose knowledge towards the next level.", "You become weak and a bit faint.", "You feel you have let a friend down.",
-}
-local FATE_MARRIED_GOOD = "Married for love"
-local FATE_MARRIED_BAD = { "Married for items", "Married for power", "Married for money" }
--- The crafts, in the script's order, its second "smelting" too (:144-158): registry keys no craft here sets yet.
-local FATE_CRAFTS = "weaving|gemcutting|smelting|woodworking|jewelry making|metalworking|tailoring|scribing|potion making|" ..
-                    "smelting|mining|woodcutting|fishing"
-local FATE_FRIENDS = "needs_to_work_on_relationships|proven_to_be_good_friend"
-local FATE_MARRIAGES = "married_for_items|married_for_power|married_for_money|married_for_love"
-local FATE_CREATIVE_MS = 28800000                                 -- setDuration("creative", 28800000): 8 hours
-local FATE_DISPEL_ANIM, FATE_DISPEL_SOUND = 10, 34                -- Spells/NPCs/dispell.lua: sendAnimation(10), playSound(34)
-local function fate_marriage(text, key) return function(ctx) return ctx:legendTarget(FATE_MARRIAGES, key, text, 6, 1) end end
--- Each outcome, on the named player; false once they are gone, or where the script returns (the base vita's floor).
-local FATE_OUTCOME = {
-  ["You stand out from those around you."] = function(ctx) return ctx:targetArmorColor(5) end,
-  ["You feel that people do not notice you."] = function(ctx) return ctx:targetArmorColor(0) end,
-  ["You feel creative."] = function(ctx) return ctx:targetDuration("creative", FATE_CREATIVE_MS) end,
-  ["You lose your train of thought and fail to be creative."] =
-    function(ctx) return ctx:dispelTarget(FATE_DISPEL_ANIM, FATE_DISPEL_SOUND) end,
-  ["Your coinpurse feels heavier."] = function(ctx) return ctx:targetGold(10000, "10,000 gold added.") end,
-  ["Your coinpurse feels lighter."] = function(ctx) return ctx:targetGold(-10000, "10,000 gold removed.") end,
-  ["The gods smile upon you."] = function(ctx) return ctx:addTargetKarma(0.25) end,
-  ["The gods frown upon you."] = function(ctx) return ctx:addTargetKarma(-0.25) end,
-  ["You're better in your specialized skill."] =
-    function(ctx) return ctx:targetCraft(FATE_CRAFTS, 0, 5, "You have gained some progress in ") end,
-  ["You're worse in your specialized skill."] =
-    function(ctx) return ctx:targetCraft(FATE_CRAFTS, 10, -5, "You have lost some progress in ") end,
-  ["You gain knowledge towards the next level."] =
-    function(ctx) return ctx:targetExp(0.25, 0.25, "You have gained some experience!") end,
-  ["You lose knowledge towards the next level."] =
-    function(ctx) return ctx:targetExp(-0.25, -0.5, "You have lost some experience!") end,
-  ["You are able to endure more."] = function(ctx) return ctx:targetBaseVita(25) end,
-  ["You become weak and a bit faint."] = function(ctx) return ctx:targetBaseVita(-25) end,
-  ["You're a good friend, and it shows."] =
-    function(ctx) return ctx:legendTarget(FATE_FRIENDS, "proven_to_be_good_friend", "Proven to be a good friend", 6, 1) end,
-  ["You feel you have let a friend down."] =
-    function(ctx) return ctx:legendTarget(FATE_FRIENDS, "needs_to_work_on_relationships", "Needs to work on relationships", 1, 1) end,
-  ["Married for love"] = fate_marriage("Married for love", "married_for_love"),
-  ["Married for items"] = fate_marriage("Married for items", "married_for_items"),
-  ["Married for power"] = fate_marriage("Married for power", "married_for_power"),
-  ["Married for money"] = fate_marriage("Married for money", "married_for_money"),
-}
-
-function verbs.reveal_fate(ctx, row)
-  if subpath_waiting(ctx, row) then return false end
-  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
-  ctx:ask("Whom would you like to reveal their fate?", "reveal_fate_named", "", "", false, ANGEL_LOOK, ANGEL_COLOR)
-  ctx:narrated()                                                   -- the script sends no line
-  return true
-end
-
-function verbs.reveal_fate_named(ctx, row)
-  if string.find(ctx.answer, "[^%a%s']") then
-    ctx:dialog("You can only enter letters and spaces.", ANGEL_LOOK, ANGEL_COLOR); return false
-  end
-  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("That player is currently not online.", ANGEL_LOOK, ANGEL_COLOR); return false end
-  if ctx.targetIsSelf then ctx:dialog("You cannot reveal your own fate.", ANGEL_LOOK, ANGEL_COLOR); return false end
-  ctx:debitMana(row.mana or 0)
-  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
-  ctx:menu("Greetings Geomancer. How is the Chi aligned here?", FATE_BAD .. "|" .. FATE_GOOD, "reveal_fate_pick",
-           ctx.targetName)
-  return true
-end
-
-function verbs.reveal_fate_pick(ctx, row)
-  local good = ctx.answer == FATE_GOOD
-  if not good and ctx.answer ~= FATE_BAD then return false end
-  if not ctx:pcTargetNamed(ctx.carried) then return false end     -- gone since the name: nothing
-  local max = ctx.targetMarried and 9 or 8
-  local pick = ctx:rollRange(1, max)
-  local outcome
-  if pick < 9 then outcome = (good and FATE_POSITIVE or FATE_NEGATIVE)[pick]
-  elseif good then outcome = FATE_MARRIED_GOOD
-  else outcome = FATE_MARRIED_BAD[ctx:rollRange(1, #FATE_MARRIED_BAD)] end
-  if not FATE_OUTCOME[outcome](ctx) then return true end          -- gone, or the base vita's return: nothing more
-  ctx:markSelf("performed_ba_gua_experiences", "performed_ba_gua_experiences", "Performed %d Ba Gua experiences", 145, 128)
-  ctx:markTarget("experienced_the_ba_gua", "experienced_the_ba_gua",
-                 "Experienced the Ba Gua %d times, assisted by " .. ctx.name .. " (" .. ctx.gameDate .. ")", 145, 128)
-  ctx:boxTarget(outcome, ANGEL_LOOK, ANGEL_COLOR)
-  return true
 end
 
 -- Exhume (RTK Subpaths/Geomancer/exhume.lua). Inside its wait, the wait line; short of `mana`, "Your will is too

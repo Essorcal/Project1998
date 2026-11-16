@@ -3038,16 +3038,11 @@ public sealed partial class Session
     // conversation (DropWaitingDialog, RTK's freeAsync) and sends one box; it writes nothing else of theirs. No new lock.
 
     /// <summary>Ask the caster for a line of text inside a cast (<c>ctx:ask</c>, RTK <c>inputSeq</c>); a submitted answer
-    /// runs <paramref name="verb"/> for this caster and spell, with the text as <c>ctx.answer</c>. The box carries the
-    /// portrait <see cref="SpellDialogPortrait"/> reads from <paramref name="look"/>, <paramref name="color"/>,
-    /// <paramref name="item"/> and <paramref name="plain"/>, none by default: RTK's input box draws the script's
-    /// <c>npcGraphic</c> (<c>clif_inputseq</c>, <c>clif_input</c>), which Read karma's and Scouting trip's scripts set to 0,
-    /// Merchant's to an item and Geomancer's to an item or a creature.</summary>
-    internal void LuaAsk(SpellDef sp, string prompt, string verb, string? carry = null, string? item = null, bool plain = false,
-                         int look = 0, int color = 0)
+    /// runs <paramref name="verb"/> for this caster and spell, with the text as <c>ctx.answer</c>.</summary>
+    internal void LuaAsk(SpellDef sp, string prompt, string verb, string? carry = null, string? item = null, bool plain = false)
     {
         if (string.IsNullOrEmpty(verb)) return;
-        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb, carry ?? "", SpellDialogPortrait(look, color, item, plain));
+        _ = RunSpellAnswerAsync(sp, prompt ?? "", verb, carry ?? "", SpellDialogPortrait(0, 0, item, plain));
     }
 
     private async Task RunSpellAnswerAsync(SpellDef sp, string prompt, string verb, string carry, DialogPortrait portrait)
@@ -5413,23 +5408,23 @@ public sealed partial class Session
         && int.TryParse(row.GetValueOrDefault("amount", ""), out int sound) ? sound : null;
 
     // ---- the Geomancer spells (RTK rtklua/Accepted/Spells/Subpaths/Geomancer/) ----------------------------------------
-    // The engine half of the Geomancer verbs in game-data/spell_verbs.lua: legends and a fate's outcomes on a named player
-    // (the five recognitions and Reveal fate, P10), the caster's own Ba Gua tally, a box to that player alone, a creature on
-    // the caster's own tile (Exhume, P6), the end and the time left of a run on the caster (Exhume's and Good earth's beats,
-    // P2), Good earth's traps around the caster (P8) and what one does to a player who steps on it, and Soften skin's curse
-    // on the target RTK's engine aims it at.
+    // The engine half of the Geomancer verbs in game-data/spell_verbs.lua: legends on a named player (the five
+    // recognitions, P10), a creature on the caster's own tile (Exhume, P6), the end and the time left of a run on the
+    // caster (Exhume's and Good earth's beats, P2), Good earth's traps around the caster (P8) and what one does to a player
+    // who steps on it, and Soften skin's curse on the target RTK's engine aims it at. Reveal fate stays as it is today,
+    // casting nothing (the project owner's choice, 2026-11-16), so nothing here is its.
     //
     // LOCKS. As the Ranger half: a verb runs on the caster's packet thread (or, for an answer or a menu pick, the caster's
     // handler thread), inside the caster's monitor and the Lua gate, never World._lock. Every write to another player is
     // decided and made inside that player's own monitor, by a Receive* method that enters it here by StateRank (the
     // ReceiveMarkCount shape), one player at a time, and a player who is leaving or whose session a second login has
-    // replaced is given nothing. The caster's own writes to their saved state or to the world (the tally, the creature, the
-    // traps) refuse a caster who is gone (CasterGone, #423's review, F1). A creature and a trap are written through World's
+    // replaced is given nothing. The caster's own writes to the world (the creature, the traps) refuse a caster who is gone
+    // (CasterGone, #423's review, F1). A creature and a trap are written through World's
     // own methods, which take World._lock inside. A player who steps on a Good earth trap is written on their own walk
     // thread, inside their own monitor, as the Pit trap's player is. No new lock.
 
     /// <summary>A legend on the player <see cref="LuaResolveNamedPcTarget"/> resolved, wherever they stand
-    /// (<c>ctx:legendTarget</c>; the recognitions' and Reveal fate's <c>target:removeLegendbyName</c>, then
+    /// (<c>ctx:legendTarget</c>; the recognitions' <c>target:removeLegendbyName</c>, then
     /// <c>target:addLegend</c>): <see cref="ReceiveLegend"/> inside their own monitor. False, changing nothing, with no target
     /// or one who is leaving or replaced.</summary>
     internal bool LuaLegendTarget(SpellDef sp, string? remove, string? mark, string? text, int icon, int color)
@@ -5471,161 +5466,6 @@ public sealed partial class Session
         if (_pcSpellTarget is not { } target) return "";
         var want = (names ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return target.WithState(() => string.Join("|", want.Where(target.HasLegend)));
-    }
-
-    /// <summary>Reveal fate's tally on the caster themselves (<c>ctx:markSelf</c>; RTK <c>reveal_fate.lua:271-280</c>: the
-    /// registry key one more, the legend gone and written again with the count): <see cref="ReceiveMarkCount"/> on this
-    /// session, under the monitor the cast holds. False, writing nothing, for a caster who is leaving or replaced: that is
-    /// <see cref="ReceiveMarkCount"/>'s own test, read under the monitor it enters (the one <see cref="CasterGone"/> asks
-    /// about).</summary>
-    internal bool LuaMarkSelf(SpellDef sp, string? regKey, string? mark, string? text, int icon, int color)
-    {
-        if (string.IsNullOrEmpty(regKey) || string.IsNullOrEmpty(mark)) return false;
-        bool done = ReceiveMarkCount(regKey, mark, text ?? "", (byte)icon, (byte)color);
-        if (!done) Log.Info($"      -x (lua) no {sp.Name} tally for '{_char.Name}': leaving or replaced");
-        return done;
-    }
-
-    /// <summary>A box with no button to the player <see cref="LuaResolveNamedPcTarget"/> resolved, alone
-    /// (<c>ctx:boxTarget</c>; Reveal fate's last box, <c>target:freeAsync()</c> then <c>target:dialogSeq({t, text}, 0)</c>,
-    /// built as Scouting trip's player box: the conversation they had waiting dropped, one box, the caster's script ending
-    /// there). <see cref="SendSpellBoxToTarget"/>, inside their own monitor; nothing for one going away.</summary>
-    internal void LuaBoxTarget(SpellDef sp, string? text, int look, int color, string? item)
-    {
-        if (_pcSpellTarget is not { } target) return;
-        target.SendSpellBoxToTarget(sp, _char.Name, text ?? "", look, color, item);
-    }
-
-    /// <summary>Is this player married (RTK <c>target.partner ~= 0</c>; <see cref="Character.Spouse"/>)? One bare read of a
-    /// string reference, as <see cref="LuaKarma"/> reads karma; never written here.</summary>
-    internal bool LuaMarried => _char.Spouse.Length > 0;
-
-    /// <summary>Reveal fate's armour colour (<c>ctx:targetArmorColor</c>; RTK <c>target.armorColor = n</c>,
-    /// <c>target:updateState()</c>) on the player resolved: inside their own monitor, their war paint becomes
-    /// <paramref name="color"/>, redrawn and saved (<see cref="SetArmorColor"/>). False with no target, or one gone.</summary>
-    internal bool LuaTargetArmorColor(int color) => _pcSpellTarget?.ReceiveFate(s => s.SetArmorColor((byte)color)) ?? false;
-
-    /// <summary>Reveal fate's "creative" (<c>ctx:targetDuration</c>; RTK <c>target:setDuration("creative", 28800000)</c>) on
-    /// the player resolved: the named duration <paramref name="key"/> for <paramref name="ms"/>, in their own monitor, kept
-    /// through a relog with the timed effects as every setDuration here is. False with no target, or one gone.</summary>
-    internal bool LuaTargetDuration(string? key, int ms) =>
-        !string.IsNullOrEmpty(key) && ms > 0 && (_pcSpellTarget?.ReceiveFate(s => { s.SetStatusFlag(key, ms); s.MarkDirty(); }) ?? false);
-
-    /// <summary>Reveal fate's dispel (<c>ctx:dispelTarget</c>; RTK <c>Spells/NPCs/dispell.lua</c> on the player:
-    /// <c>flushDuration()</c>, <c>sendStatus()</c>, graphic 10, sound 34): inside their own monitor, the flush a won
-    /// Dispell makes (<see cref="ReceiveFlush"/>, the holds too, as the poet's Dispell passes), then
-    /// <paramref name="anim"/> and <paramref name="sound"/> over them. False with no target, or one gone.</summary>
-    internal bool LuaDispelTarget(int anim, int sound) =>
-        _pcSpellTarget?.ReceiveFate(s => { s.ReceiveFlush(endHolds: true); s.BroadcastFx(s._char.Id, anim, sound); }) ?? false;
-
-    /// <summary>Reveal fate's purse (<c>ctx:targetGold</c>; RTK <c>reveal_fate.lua:127-138</c>, on the target): their coins
-    /// <paramref name="delta"/>, never below 0 (the script sets 0 under 10,000), then the status and
-    /// <paramref name="line"/>, saved. False with no target, or one gone.</summary>
-    internal bool LuaTargetGold(long delta, string? line) =>
-        _pcSpellTarget?.ReceiveFate(s =>
-        {
-            s._char.Coins = (uint)Math.Clamp((long)s._char.Coins + delta, 0, uint.MaxValue);
-            s.SendStats();
-            if (!string.IsNullOrEmpty(line)) s.SendMiniText(line);
-            s.SaveChar();
-        }) ?? false;
-
-    /// <summary>Reveal fate's karma (<c>ctx:targetKarma</c>; RTK <c>Player.addKarma</c> or <c>removeKarma</c> on the target):
-    /// <see cref="AddKarma"/> or <see cref="RemoveKarma"/>, the karma graphic and RTK's line, saved. False with no target,
-    /// or one gone.</summary>
-    internal bool LuaTargetKarma(double delta) =>
-        _pcSpellTarget?.ReceiveFate(s => { if (delta >= 0) s.AddKarma(delta); else s.RemoveKarma(-delta); s.SaveChar(); }) ?? false;
-
-    /// <summary>Reveal fate's craft (<c>ctx:targetCraft</c>; RTK <c>reveal_fate.lua:143-176</c>, on the target): the first
-    /// saved registry key of <paramref name="keys"/> ('|' between them, in the script's order) whose value is above
-    /// <paramref name="above"/> takes <paramref name="delta"/>, and they read <paramref name="linePrefix"/> and the key;
-    /// none above it, nothing. No key here is set until crafting arrives. False with no target, or one gone.</summary>
-    internal bool LuaTargetCraft(string? keys, int above, int delta, string? linePrefix)
-    {
-        var list = (keys ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries);
-        return _pcSpellTarget?.ReceiveFate(s =>
-        {
-            var registry = s.Quest(QuestState.Registry);
-            foreach (var key in list)
-            {
-                int v = registry.Get(key);
-                if (v <= above) continue;
-                registry.Set(key, v + delta);   // saves
-                s.SendMiniText((linePrefix ?? "") + key);
-                break;
-            }
-        }) ?? false;
-    }
-
-    /// <summary>Reveal fate's experience (<c>ctx:targetExp</c>; RTK <c>reveal_fate.lua:177-215</c>, on the target). Below
-    /// level 99, <paramref name="bandFraction"/> of their level's band (this level's threshold less the last one's,
-    /// <c>getXPforLevel</c>), rounded up; at 99, <paramref name="topFraction"/> of the experience they hold, rounded up. A
-    /// positive fraction gives it (<see cref="AwardExp"/>, RTK's <c>giveXP</c>, levels included); a negative one takes it,
-    /// never below 0, the level kept (as <see cref="DeathExpLoss"/> takes it). Then the status and
-    /// <paramref name="line"/>. False with no target, or one gone.</summary>
-    internal bool LuaTargetExp(double bandFraction, double topFraction, string? line) =>
-        _pcSpellTarget?.ReceiveFate(s => s.ApplyFateExp(bandFraction, topFraction, line ?? "")) ?? false;
-
-    private void ApplyFateExp(double bandFraction, double topFraction, string line)
-    {
-        AssertStateHeld(nameof(ApplyFateExp));
-        int path = CharBasePathId;
-        double fraction = _char.Level < 99 ? bandFraction : topFraction;
-        ulong amount;
-        if (_char.Level < 99)
-        {
-            uint here = Content.ExpToNext(path, _char.Level);
-            uint prev = _char.Level > 1 ? Content.ExpToNext(path, _char.Level - 1) : 0;
-            amount = here > prev ? (ulong)Math.Ceiling((here - prev) * Math.Abs(fraction)) : 0;
-        }
-        else amount = (ulong)Math.Ceiling(_char.Exp * Math.Abs(fraction));
-        if (fraction > 0) AwardExp((uint)Math.Min(amount, uint.MaxValue));
-        else if (amount > 0)
-        {
-            _char.Exp = amount >= _char.Exp ? 0 : _char.Exp - (uint)amount;
-            uint tnlNext = Content.ExpToNext(path, _char.Level);
-            _char.Tnl = tnlNext > _char.Exp ? tnlNext - _char.Exp : 0;
-            SaveChar();
-        }
-        SendStats();
-        if (line.Length > 0) SendMiniText(line);
-        Log.Info($"   -> FATE EXP: {_char.Name} {(fraction > 0 ? "+" : "-")}{amount} -> {_char.Exp}");
-    }
-
-    /// <summary>Reveal fate's endurance (<c>ctx:targetBaseVita</c>; RTK <c>reveal_fate.lua:216-226</c>, on the target): their
-    /// base vita (<see cref="Character.MaxHp"/>, RTK <c>baseHealth</c>) <paramref name="delta"/>, the stats recalculated and
-    /// saved. A loss the base vita cannot cover changes nothing and answers false, as the script returns there
-    /// (<c>if player.baseHealth &lt; 25 then return end</c>), so the verb ends before its tallies. False too with no target,
-    /// or one gone. RTK also copies the base vita into <c>registry["baseHealth"]</c>, which no script reads; no copy here,
-    /// as no base-vita change ported before keeps one.</summary>
-    internal bool LuaTargetBaseVita(int delta)
-    {
-        if (_pcSpellTarget is not { } target) return false;
-        bool landed = false;
-        bool present = target.ReceiveFate(s =>
-        {
-            if (delta < 0 && s._char.MaxHp < (uint)-delta) return;
-            s._char.MaxHp = (uint)((long)s._char.MaxHp + delta);
-            if (s._char.Hp > s.EffMaxHp) s._char.Hp = s.EffMaxHp;
-            s.SendStats();
-            s.SaveChar();
-            landed = true;
-        });
-        return present && landed;
-    }
-
-    /// <summary>One of Reveal fate's outcomes lands on THIS player: <paramref name="write"/> runs inside this player's own
-    /// monitor, unless they are logging out or a second login has replaced their session, when nothing is written and the
-    /// answer is false.
-    /// <para>Cross-session: called from the caster's thread (the menu's pick), which holds the caster's monitor and the Lua
-    /// gate and never <c>World._lock</c>, so this takes this player's monitor here, by <c>StateRank</c>, the
-    /// <see cref="ReceiveMarkCount"/> shape. Each write saves or marks this player for their next save itself.</para></summary>
-    private bool ReceiveFate(Action<Session> write)
-    {
-        using var _ = EnterState();   // #29: cross-thread entry into this session's state
-        if (_leaving || IsReplaced) return false;
-        write(this);
-        return true;
     }
 
     /// <summary>Exhume's creature (<c>ctx:spawnHere</c>; RTK <c>player:spawn(mob, player.x, player.y, 1, player.m)</c>,

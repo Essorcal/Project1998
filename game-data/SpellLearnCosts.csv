@@ -691,7 +691,6 @@ read_karma_diviner,12,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
 hear_footstep_diviner,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
 divine_time,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
 vanish,12,99,0,fox_tail,1,topaz,1,,,,,rtk-lua
-reveal_fate,16,99,50000,surge,1,ju_jak_key,1,,,,,rtk-lua
 exhume,16,99,50000,surge,1,ju_jak_key,1,,,,,rtk-lua
 read_karma_geomancer,16,60,50,acorn,70,light_fox_fur,20,,,,,rtk-lua
 create_green_potion,16,99,50000,surge,1,ju_jak_key,1,,,,,rtk-lua

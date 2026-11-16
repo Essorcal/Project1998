@@ -86,14 +86,15 @@
 # (Spy's skill_up ladder), engrave to verb=engrave row, marketer_guise to verb=guise row, pilfer to verb=pilfer row,
 # bekyunarrow to verb=bekyun_arrow row, gambling to verb=gambling row and golden_fist to verb=lesser_fury row
 # (Protectors fury's verb). No other line changed.
-# The Geomancer spells slice (2026-11-12) then moved thirteen PC-subpath spells off verb=generic (the project owner's
-# P5 and the slice's three answers: RTK's scripts; the smaller calls as RTK under P5), each bound by a SpellParams.csv
-# row: reveal_fate to verb=reveal_fate row, exhume to verb=exhume row, read_karma_geomancer to verb=read_karma row
+# The Geomancer spells slice (2026-11-12) then moved twelve PC-subpath spells off verb=generic (the project owner's
+# P5 and the slice's answers: RTK's scripts; the smaller calls as RTK under P5), each bound by a SpellParams.csv
+# row: exhume to verb=exhume row, read_karma_geomancer to verb=read_karma row
 # (Diviner's verb), create_green_potion to verb=green_potion row, elemental_mastery to verb=manifest row,
 # honor_of_the_three_sects to verb=honor_sects row, balance_recognition to verb=balance_recognition row,
 # inner_sect_recognition to verb=inner_sect row, neutrality_recognition to verb=neutrality row, elementalists_mark to
 # verb=elementalist_mark row, good_earth to verb=good_earth row, and soften_skin and earths_spite to verb=soften row.
-# stone_casing stays on verb=generic (RTK has no script for it). No other line changed.
+# stone_casing stays on verb=generic (RTK has no script for it), and so does reveal_fate (the project owner's choice,
+# 2026-11-16: kept off, as it is today). No other line changed.
 # Re-record with P1998_SPELL_ROUTES_OUT (see the fact's doc). The header a re-record writes is the
 # fact's own, which names only spirit_blade, so carry this history over by hand.
 absorb_rogue	2084	verb=drain row
@@ -734,7 +735,7 @@ return_of_life_warrior	1083	verb=arch_heal
 return_spell	408	verb=return_home row
 return_spirit_poet	4139	verb=revive
 reveal_alignment	31011	verb=generic
-reveal_fate	31101	verb=reveal_fate row
+reveal_fate	31101	verb=generic
 reveal_fortune	31009	verb=generic
 revitalize_poet	4069	verb=arch_heal
 river_of_blood_mage	3133	verb=arch_damage

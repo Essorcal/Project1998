@@ -10,19 +10,19 @@ namespace Tests;
 
 /// <summary>
 /// The Geomancer spells slice (the project owner, 2026-10-26, P5 "each spell as its RTK script", P1 and P3 "on sale once it
-/// works, at its script's price"; 2026-11-12, Exhume's five stand-in creatures, the recognitions' Remove from the target, and
-/// Reveal fate's outcomes on the target; the Insult ruling's creature timer for Soften skin and Earths Spite; the smaller
-/// calls as RTK under P5). Before, thirteen Geomancer rows fell to the <c>generic</c> verb, 5 mana and "You cast X." and
-/// nothing else (<c>Tests/Fixtures/spell-dispatch-routes.txt</c> had them on <c>verb=generic</c>).
+/// works, at its script's price"; 2026-11-12, Exhume's five stand-in creatures and the recognitions' Remove from the target;
+/// 2026-11-16, Reveal fate kept off, as it is today; the Insult ruling's creature timer for Soften skin and Earths Spite; the
+/// smaller calls as RTK under P5). Before, twelve Geomancer rows fell to the <c>generic</c> verb, 5 mana and "You cast X."
+/// and nothing else (<c>Tests/Fixtures/spell-dispatch-routes.txt</c> had them on <c>verb=generic</c>); Reveal fate still
+/// does.
 ///
 /// <para>The scripts: <c>RTK-Server/rtklua/Accepted/Spells/Subpaths/Geomancer/</c>, and the NPC spells Good earth's trap
-/// casts (<c>Spells/NPCs/sanctuary.lua</c>, <c>harden_armor.lua</c>, <c>valor.lua</c>) and Reveal fate's dispel
-/// (<c>Spells/NPCs/dispell.lua</c>). Each spell is bound by its <c>game-data/SpellParams.csv</c> row to the Geomancer region of
-/// <c>game-data/spell_verbs.lua</c> (Read karma to Diviner's <c>read_karma</c>); Good earth's trap is <c>World</c>'s (the Good
-/// earth block) and <c>Session.SpringGoodEarth</c>.</para>
+/// casts (<c>Spells/NPCs/sanctuary.lua</c>, <c>harden_armor.lua</c>, <c>valor.lua</c>). Each spell is bound by its
+/// <c>game-data/SpellParams.csv</c> row to the Geomancer region of <c>game-data/spell_verbs.lua</c> (Read karma to Diviner's
+/// <c>read_karma</c>); Good earth's trap is <c>World</c>'s (the Good earth block) and <c>Session.SpringGoodEarth</c>.</para>
 ///
 /// <para>Every cast is the real 0x0F frame through <c>Session.Receive</c>, by a fresh level-99 Geomancer facing east, on
-/// content-free maps 63700-63731 (no Maps.csv row: no terrain, PvP off) and on Frosted Arena (3049), a PvP map no other
+/// content-free maps 63700-63729 (no Maps.csv row: no terrain, PvP off) and on Frosted Arena (3049), a PvP map no other
 /// class's facts use. A player steps on a trap by a real walk frame; a creature by the mob tick's committed step. A menu, an
 /// input box or a box is answered from a thread of its own with no synchronisation context, as a read loop answers it, so the
 /// step resumes inline as on the server.</para>
@@ -30,14 +30,13 @@ namespace Tests;
 [Collection("world")]
 public sealed class GeomancerSpellTests
 {
-    private const ushort RevealMap = 63700, RevealRefuseMap = 63701, RevealGoodMap = 63702, RevealBadMap = 63703,
-                         RevealTopMap = 63704, RevealFaintMap = 63705, RevealHeldMap = 63706, HonorMap = 63707,
+    private const ushort RevealMap = 63700, RecogGoneMap = 63701, HonorMap = 63707,
                          HonorRemoveMap = 63708, BalanceMap = 63709, InnerMap = 63710, NeutralMap = 63711, ElementMap = 63712,
                          RecogRefuseMap = 63713, RecogHeldMap = 63714, ExhumeMap = 63715, ExhumeBeatMap = 63716,
                          ExhumeDropMap = 63717, PotionMap = 63718, PotionRefuseMap = 63719, MasteryMap = 63720,
                          EarthMap = 63721, EarthBeatMap = 63722, EarthStepMap = 63723, EarthCreatureMap = 63724,
                          GoneMap = 63725, SoftenMap = 63726, SoftenRefuseMap = 63727, StandInMap = 63728, InnerBoxMap = 63729,
-                         FateHeldMap = 63730, Arena = 3049;
+                         Arena = 3049;
     private const ushort CX = 30, CY = 30;
     private const uint Mana = 400_000, Hp = 10_000;
 
@@ -76,383 +75,24 @@ public sealed class GeomancerSpellTests
 
     // ===== Reveal fate ==========================================================================================
 
-    /// <summary>The cast asks "Whom would you like to reveal their fate?" in an input box with the Woodland Angel's portrait
-    /// (look 49), with no line, nothing spent and no wait yet; there is no "Complete but disabled." box (the project owner's
-    /// answer). A name, typed in any case, takes 100 mana and arms the 7,500 s wait, then RTK's menu "Greetings Geomancer. How
-    /// is the Chi aligned here?" with no portrait. Inside the wait, "Reveal fate isn't ready yet."; short of 100, "Your will is
-    /// too weak.", free and no box. Red on the base (generic: 5 mana, no box).</summary>
+    /// <summary>Reveal fate stays as it is today (the project owner's choice, 2026-11-16, "Keep it off"): it has no
+    /// SpellParams.csv row, so the generic verb takes 5 mana and the cast reads "You cast Reveal fate." and nothing else: no
+    /// input box, no menu, no wait. It is not sold (<see cref="TheGeomancerTeacherSellsFourteen"/>). Red with the slice's
+    /// row put back.</summary>
     [Fact]
-    public void RevealFateAsksANameThenSpendsAndOffersTheChi()
+    public void RevealFateStaysAsItIsTodayCastingNothing()
     {
-        var (target, _, _) = Player(RevealMap, CX + 9, CY, name: Letters("Fated"));
         var (caster, cOut, cc) = Caster("reveal_fate", RevealMap, CX, CY);
-        var (poor, pOut, pc) = Caster("reveal_fate", RevealMap, CX, CY + 4, mana: 99);
         try
         {
-            List<Box> asked = new();
-            string castLines = "", menu = "";
-            uint before = 0;
-            List<(int Head, int Gfx)> heads = new();
-            OnOwnThread(() =>
-            {
-                caster.Receive(SpellCastSupport.CastFrame(0));
-                asked = Boxes(cOut);
-                castLines = Lines(cOut);
-                before = cc.Mp;
-                cOut.Clear();
-                caster.Receive(InputFrame(target.CharName.ToUpperInvariant()));
-                menu = string.Join(" / ", Menus(cOut));
-                heads = MenuHeads(cOut);
-            });
+            OnOwnThread(() => caster.Receive(SpellCastSupport.CastFrame(0)));
             long wait = SpellCastSupport.AetherLeft(caster, "reveal_fate");
-            cOut.Clear();
-            FreeSlot(caster);
-            caster.Receive(SpellCastSupport.CastFrame(0));
-            poor.Receive(SpellCastSupport.CastFrame(0));
-            Assert.True(asked is [{ Kind: 0x0404, Head: 1, Gfx: 0x8000 | 49, Color: 0 } a] && a.Text == "Whom would you like to reveal their fate?"
-                        && castLines == "" && before == Mana && cc.Mp == Mana - 100 && wait > 7_500_000 - SlackMs && wait <= 7_500_000
-                        && menu == "Greetings Geomancer. How is the Chi aligned here?|It is disrupted|It flows well"
-                        && heads is [(0, 0)] && Lines(cOut) == "Reveal fate isn't ready yet."
-                        && Lines(pOut) == "Your will is too weak." && Boxes(pOut).Count == 0 && pc.Mp == 99,
-                        $"asked [{string.Join(" / ", asked)}], lines [{castLines}], mana {before} then {cc.Mp}, wait {wait}, menu [{menu}] " +
-                        $"heads [{string.Join(",", heads)}]; again [{Lines(cOut)}]; poor [{Lines(pOut)}] boxes {Boxes(pOut).Count} mana {pc.Mp}");
+            Assert.True(!Content.SpellParams.ContainsKey("reveal_fate") && Lines(cOut) == "You cast Reveal fate."
+                        && Boxes(cOut).Count == 0 && Menus(cOut).Count == 0 && cc.Mp == Mana - 5 && wait == 0,
+                        $"row {Content.SpellParams.ContainsKey("reveal_fate")}, lines [{Lines(cOut)}], boxes {Boxes(cOut).Count}, " +
+                        $"menus {Menus(cOut).Count}, spent {Mana - cc.Mp}, wait {wait}");
         }
-        finally { Leave(RevealMap, target, caster, poor); }
-    }
-
-    /// <summary>The name's refusals, each a box with the Angel's portrait and no button that ends it, for free (no mana, no
-    /// wait, no menu): anything but letters, spaces and an apostrophe, "You can only enter letters and spaces."; nobody online
-    /// by it, "That player is currently not online."; the caster, "You cannot reveal your own fate.". Red on the base.</summary>
-    [Fact]
-    public void RevealFateNameRefusals()
-    {
-        var casters = Enumerable.Range(0, 3).Select(i => Caster("reveal_fate", RevealRefuseMap, CX, CY + 4 * i)).ToList();
-        try
-        {
-            string[] typed = { "Bob1", "Nobodyhereatall", casters[2].session.CharName };
-            string[] want = { "You can only enter letters and spaces.", "That player is currently not online.", "You cannot reveal your own fate." };
-            var problems = new List<string>();
-            OnOwnThread(() =>
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    var (s, o, c) = casters[i];
-                    s.Receive(SpellCastSupport.CastFrame(0));
-                    o.Clear();
-                    s.Receive(InputFrame(typed[i]));
-                    var boxes = Boxes(o);
-                    if (boxes is not [{ Kind: 0x0001, Head: 1, Gfx: 0x8000 | 49, Next: 0 } b] || b.Text != want[i] || c.Mp != Mana
-                        || SpellCastSupport.AetherLeft(s, "reveal_fate") != 0 || Menus(o).Count != 0)
-                        problems.Add($"{typed[i]}: [{string.Join(" / ", boxes)}] mana {c.Mp} menus {Menus(o).Count}");
-                }
-            });
-            Assert.True(problems.Count == 0, string.Join("\n", problems));
-        }
-        finally { Leave(RevealRefuseMap, casters.Select(c => c.session).ToArray()); }
-    }
-
-    /// <summary>Every outcome of a sign lands on the NAMED player, none on the caster (the project owner's answer, "Outcomes
-    /// on the target"), each as its line reads, over repeated casts at a married player until each has come up (nine good,
-    /// eleven bad): the armour colour 5 or 0; the 8 h "creative" duration; the dispel (a buff they held is gone); 10,000 gold
-    /// added or taken, with its line; karma +0.25 or -0.25, with RTK's line; their weaving progress +5 or -5, with its line;
-    /// a quarter of their level's band of experience given (AwardExp's line too) or taken, with its line; base vita +25 or
-    /// -25; the friendship legends and the marriage legends, the others of each group taken off. After each the caster's
-    /// "Performed N Ba Gua experiences" counts on, and the player's "Experienced the Ba Gua N times, assisted by &lt;caster&gt;
-    /// (&lt;date&gt;)" counts THEIR tally, not the caster's (which is 50 here and untouched); and the player gets one box with
-    /// the outcome's words and the Angel's portrait. The caster's gold, karma, experience and vita never move. Red on the
-    /// base (generic), and with the outcomes on the caster (the script as written).</summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void EveryOutcomeOfASignLandsOnTheNamedPlayer(bool good)
-    {
-        ushort map = good ? RevealGoodMap : RevealBadMap;
-        int path = Content.PathIdForClass("Warrior");
-        uint here = Content.ExpToNext(path, 50), prev = Content.ExpToNext(path, 49);
-        uint quarter = (uint)Math.Ceiling((here - prev) * 0.25);
-        var (target, tOut, tc) = Player(map, CX + 3, CY, name: Letters("Fated"), configure: ch =>
-        {
-            ch.ClassName = "Warrior";
-            ch.Spouse = "Somebody";
-            QuestState.Over(ch, QuestState.Registry).Set("experienced_the_ba_gua", 3);
-        });
-        var (caster, cOut, cc) = Caster("reveal_fate", map, CX, CY, configure: ch =>
-        {
-            ch.Coins = 7_000; ch.Karma = 2;
-            QuestState.Over(ch, QuestState.Registry).Set("experienced_the_ba_gua", 50);
-        });
-        uint casterExp = cc.Exp, casterVita = cc.MaxHp;
-        string[] friends = { "needs_to_work_on_relationships", "proven_to_be_good_friend" };
-        string[] marriages = { "married_for_items", "married_for_power", "married_for_money", "married_for_love" };
-        var want = good
-            ? new[] { "You stand out from those around you.", "You feel creative.", "Your coinpurse feels heavier.", "The gods smile upon you.",
-                      "You're better in your specialized skill.", "You gain knowledge towards the next level.", "You are able to endure more.",
-                      "You're a good friend, and it shows.", "Married for love" }
-            : new[] { "You feel that people do not notice you.", "You lose your train of thought and fail to be creative.",
-                      "Your coinpurse feels lighter.", "The gods frown upon you.", "You're worse in your specialized skill.",
-                      "You lose knowledge towards the next level.", "You become weak and a bit faint.", "You feel you have let a friend down.",
-                      "Married for items", "Married for power", "Married for money" };
-        var seen = new HashSet<string>();
-        var problems = new List<string>();
-        string date = Character.GameDate;
-        try
-        {
-            for (int i = 0; i < 700 && seen.Count < want.Length && problems.Count == 0; i++)
-            {
-                target.WithState(() =>
-                {
-                    tc.ArmorColor = 7; tc.Coins = 50_000; tc.Karma = 0; tc.MaxHp = Hp; tc.Hp = Hp; tc.Exp = prev + quarter;
-                    QuestState.Over(tc, QuestState.Registry).Set("weaving", 20);
-                    ((Dictionary<string, long>)StatusFlagsField.GetValue(target)!).Remove("creative");
-                    tc.Legends.RemoveAll(l => friends.Contains(l.Name) || marriages.Contains(l.Name));
-                    foreach (var k in friends.Concat(marriages)) tc.Legends.Add(new Legend(1, 1, k, k));
-                    target.ReceiveCurse("armor", 1, 600_000, "fate_probe", "Probe", "");
-                });
-                int tallyBefore = QuestState.Over(tc, QuestState.Registry).Get("experienced_the_ba_gua");
-                int performedBefore = QuestState.Over(cc, QuestState.Registry).Get("performed_ba_gua_experiences");
-                SpellCastSupport.ClearAether(caster, "reveal_fate");
-                FreeSlot(caster);
-                tOut.Clear();
-                OnOwnThread(() =>
-                {
-                    caster.Receive(SpellCastSupport.CastFrame(0));
-                    caster.Receive(InputFrame(target.CharName));
-                    cOut.Clear();
-                    caster.Receive(MenuFrame(good ? (byte)2 : (byte)1));
-                });
-                var boxes = Boxes(tOut);
-                string lines = Lines(tOut);
-                if (boxes is not [{ Kind: 0x0001, Head: 1, Gfx: 0x8000 | 49, Color: 0, Next: 0 } box])
-                { problems.Add($"#{i}: player's boxes [{string.Join(" / ", boxes)}]"); break; }
-                string o = box.Text;
-                if (!want.Contains(o)) { problems.Add($"#{i}: an outcome of the other sign, \"{o}\""); break; }
-                seen.Add(o);
-                bool ok = o switch
-                {
-                    "You stand out from those around you." => tc.ArmorColor == 5,
-                    "You feel that people do not notice you." => tc.ArmorColor == 0,
-                    "You feel creative." => StatusLeft(target, "creative") is > 28_800_000 - SlackMs and <= 28_800_000,
-                    "You lose your train of thought and fail to be creative." => SpellCastSupport.BuffEntry(target, "fate_probe") is null,
-                    "Your coinpurse feels heavier." => tc.Coins == 60_000 && lines.Contains("10,000 gold added."),
-                    "Your coinpurse feels lighter." => tc.Coins == 40_000 && lines.Contains("10,000 gold removed."),
-                    "The gods smile upon you." => tc.Karma == 0.25 && lines.Contains("Your karma rises slightly."),
-                    "The gods frown upon you." => tc.Karma == -0.25 && lines.Contains("Your karma decreases."),
-                    "You're better in your specialized skill." => Reg(tc, "weaving") == 25 && lines.Contains("You have gained some progress in weaving"),
-                    "You're worse in your specialized skill." => Reg(tc, "weaving") == 15 && lines.Contains("You have lost some progress in weaving"),
-                    "You gain knowledge towards the next level." => tc.Exp == prev + 2 * quarter && tc.Level == 50
-                                                                   && lines.Contains($"{quarter:N0} experience! | You have gained some experience!"),
-                    "You lose knowledge towards the next level." => tc.Exp == prev && lines.Contains("You have lost some experience!"),
-                    "You are able to endure more." => tc.MaxHp == Hp + 25,
-                    "You become weak and a bit faint." => tc.MaxHp == Hp - 25,
-                    "You're a good friend, and it shows." => OneOf(tc, friends, "proven_to_be_good_friend", "Proven to be a good friend", 6, 1),
-                    "You feel you have let a friend down." => OneOf(tc, friends, "needs_to_work_on_relationships", "Needs to work on relationships", 1, 1),
-                    _ => OneOf(tc, marriages, o.ToLowerInvariant().Replace(' ', '_'), o, 6, 1),
-                };
-                int tally = QuestState.Over(tc, QuestState.Registry).Get("experienced_the_ba_gua");
-                int performed = QuestState.Over(cc, QuestState.Registry).Get("performed_ba_gua_experiences");
-                var theirs = tc.Legends.Where(l => l.Name == "experienced_the_ba_gua").Select(l => (l.Text, l.Icon, l.Color)).ToList();
-                var mine = cc.Legends.Where(l => l.Name == "performed_ba_gua_experiences").Select(l => (l.Text, l.Icon, l.Color)).ToList();
-                bool tallies = tally == tallyBefore + 1 && performed == performedBefore + 1
-                               && QuestState.Over(cc, QuestState.Registry).Get("experienced_the_ba_gua") == 50
-                               && theirs.SequenceEqual(new[] { ($"Experienced the Ba Gua {tally} times, assisted by {caster.CharName} ({date})", (byte)145, (byte)128) })
-                               && mine.SequenceEqual(new[] { ($"Performed {performed} Ba Gua experiences", (byte)145, (byte)128) });
-                bool casterSame = cc.Coins == 7_000 && cc.Karma == 2 && cc.Exp == casterExp && cc.MaxHp == casterVita && Lines(cOut) == "";
-                if (!ok || !tallies || !casterSame)
-                    problems.Add($"#{i} \"{o}\": effect {ok} (armour {tc.ArmorColor}, coins {tc.Coins}, karma {tc.Karma}, weaving " +
-                                 $"{Reg(tc, "weaving")}, exp {tc.Exp} of {prev}+{quarter}, level {tc.Level}, vita {tc.MaxHp}, lines [{lines}]); " +
-                                 $"tallies {tallies} ({tallyBefore}->{tally}, {performedBefore}->{performed}, [{string.Join(" / ", theirs)}], " +
-                                 $"[{string.Join(" / ", mine)}]); caster unchanged {casterSame} (coins {cc.Coins}, karma {cc.Karma}, " +
-                                 $"exp {cc.Exp}, vita {cc.MaxHp}, lines [{Lines(cOut)}])");
-            }
-            Assert.True(problems.Count == 0 && seen.Count == want.Length,
-                        $"{string.Join("\n", problems)}\nseen {seen.Count} of {want.Length}: missing [{string.Join(" / ", want.Except(seen))}]");
-        }
-        finally { Leave(map, target, caster); }
-    }
-
-    /// <summary>At level 99 the experience outcomes work on what the named player holds, as written: a quarter of it given
-    /// ("You gain knowledge..."), half of it taken ("You lose knowledge..."), each rounded up. Red on the base.</summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void AtNinetyNineTheExperienceOutcomesWorkOnWhatTheyHold(bool good)
-    {
-        int y = good ? CY : CY + 6;
-        var (target, tOut, tc) = Player(RevealTopMap, CX + 3, y, name: Letters("Topped"), configure: ch => { ch.ClassName = "Warrior"; ch.Level = 99; });
-        var (caster, _, _) = Caster("reveal_fate", RevealTopMap, CX, y);
-        string outcome = good ? "You gain knowledge towards the next level." : "You lose knowledge towards the next level.";
-        try
-        {
-            bool found = false;
-            uint after = 0;
-            for (int i = 0; i < 400 && !found; i++)
-            {
-                target.WithState(() => tc.Exp = 1_000_001);
-                SpellCastSupport.ClearAether(caster, "reveal_fate");
-                FreeSlot(caster);
-                tOut.Clear();
-                OnOwnThread(() =>
-                {
-                    caster.Receive(SpellCastSupport.CastFrame(0));
-                    caster.Receive(InputFrame(target.CharName));
-                    caster.Receive(MenuFrame(good ? (byte)2 : (byte)1));
-                });
-                if (Boxes(tOut) is [{ } b] && b.Text == outcome) { found = true; after = tc.Exp; }
-            }
-            Assert.True(found && after == (good ? 1_000_001u + 250_001u : 1_000_001u - 500_001u),
-                        $"found {found}, exp after {after}");
-        }
-        finally { Leave(RevealTopMap, target, caster); }
-    }
-
-    /// <summary>"You become weak and a bit faint." at a player with less than 25 base vita ends the script there, as
-    /// written: their vita stays, no tally moves on either side and no box goes out. Red on the base.</summary>
-    [Fact]
-    public void AFaintPlayerWithLessThanTwentyFiveBaseVitaEndsTheScript()
-    {
-        var (target, tOut, tc) = Player(RevealFaintMap, CX + 3, CY, hp: 20, maxHp: 20, name: Letters("Frail"), configure: ch => ch.ClassName = "Warrior");
-        var (caster, _, cc) = Caster("reveal_fate", RevealFaintMap, CX, CY);
-        try
-        {
-            bool found = false;
-            int tally = -1, performed = -1, tallyAfter = -1, performedAfter = -1;
-            for (int i = 0; i < 400 && !found; i++)
-            {
-                target.WithState(() => { tc.MaxHp = 20; tc.Hp = 20; });
-                tally = QuestState.Over(tc, QuestState.Registry).Get("experienced_the_ba_gua");
-                performed = QuestState.Over(cc, QuestState.Registry).Get("performed_ba_gua_experiences");
-                SpellCastSupport.ClearAether(caster, "reveal_fate");
-                FreeSlot(caster);
-                tOut.Clear();
-                OnOwnThread(() =>
-                {
-                    caster.Receive(SpellCastSupport.CastFrame(0));
-                    caster.Receive(InputFrame(target.CharName));
-                    caster.Receive(MenuFrame(1));
-                });
-                if (Boxes(tOut).Count == 0)
-                {
-                    found = true;
-                    tallyAfter = QuestState.Over(tc, QuestState.Registry).Get("experienced_the_ba_gua");
-                    performedAfter = QuestState.Over(cc, QuestState.Registry).Get("performed_ba_gua_experiences");
-                }
-            }
-            Assert.True(found && tc.MaxHp == 20 && tallyAfter == tally && performedAfter == performed,
-                        $"found {found}, vita {tc.MaxHp}, tally {tally}->{tallyAfter}, performed {performed}->{performedAfter}");
-        }
-        finally { Leave(RevealFaintMap, target, caster); }
-    }
-
-    /// <summary>Reveal fate's outcome is written inside the named player's own monitor: while another thread holds it the
-    /// caster's pick waits and the player's gold, karma, armour colour, legends, vita, experience, weaving progress, creative
-    /// duration and tally are untouched (so each of the eight good outcomes would show), in both <c>StateRank</c> orders. Red
-    /// with <c>Session.ReceiveFate</c>'s monitor entry taken out (Release).</summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void RevealFateWritesTheNamedPlayerInsideTheirOwnMonitor(bool casterRanksFirst)
-    {
-        int y = casterRanksFirst ? CY : CY + 6;
-        Session caster, target;
-        Character tc;
-        if (casterRanksFirst)
-        {
-            (caster, _, _) = Caster("reveal_fate", RevealHeldMap, CX, y);
-            (target, _, tc) = Player(RevealHeldMap, CX + 1, y, name: Letters("Held"), configure: Fated);
-        }
-        else
-        {
-            (target, _, tc) = Player(RevealHeldMap, CX + 1, y, name: Letters("Held"), configure: Fated);
-            (caster, _, _) = Caster("reveal_fate", RevealHeldMap, CX, y);
-        }
-        Assert.Equal(casterRanksFirst, caster.StateRank < target.StateRank);
-        var run = new HeldRun();
-        try
-        {
-            OnOwnThread(() => { caster.Receive(SpellCastSupport.CastFrame(0)); caster.Receive(InputFrame(target.CharName)); });
-            (uint coins, double karma, byte armour, int legends, uint vita, uint exp) before = default;
-            target.WithState(() => before = (tc.Coins, tc.Karma, tc.ArmorColor, tc.Legends.Count, tc.MaxHp, tc.Exp));
-            WhileAnotherThreadHolds(run, target, () => caster.Receive(MenuFrame(2)),
-                                    untouched: () => (tc.Coins, tc.Karma, tc.ArmorColor, tc.Legends.Count, tc.MaxHp, tc.Exp) == before
-                                                     && Reg(tc, "experienced_the_ba_gua") == 0 && Reg(tc, "weaving") == 20
-                                                     && !((Dictionary<string, long>)StatusFlagsField.GetValue(target)!).ContainsKey("creative"));
-            Assert.Null(run.HolderFault);
-            Assert.Null(run.ActorFault);
-            Assert.False(run.FinishedWhileHeld, "the pick finished while another thread held the player's monitor");
-            Assert.True(run.UntouchedWhileHeld, "the player's fate landed while another thread held their monitor");
-            Assert.True(Reg(tc, "experienced_the_ba_gua") == 1, "the fate never landed");
-        }
-        finally { if (run.Settled) Leave(RevealHeldMap, caster, target); }
-    }
-
-    /// <summary>Each of Reveal fate's outcomes that writes the player's own fields directly (the war paint, the creative
-    /// duration, the gold, the karma, the experience, the base vita) does it inside the player's own monitor: with the
-    /// player resolved by name, the outcome's primitive, run under the caster's monitor as a cast runs it, waits while
-    /// another thread holds the player's, and the player is untouched, in both <c>StateRank</c> orders. (The end-to-end fact
-    /// above draws one outcome at random; three outcomes, the dispel, the legends and the crafting key, also enter the
-    /// monitor further in, so only these six tell <c>ReceiveFate</c>'s own entry apart.) Red with
-    /// <c>Session.ReceiveFate</c>'s monitor entry taken out (Release).</summary>
-    [Theory]
-    [InlineData("armour", true)] [InlineData("armour", false)]
-    [InlineData("creative", true)] [InlineData("creative", false)]
-    [InlineData("gold", true)] [InlineData("gold", false)]
-    [InlineData("karma", true)] [InlineData("karma", false)]
-    [InlineData("exp", true)] [InlineData("exp", false)]
-    [InlineData("vita", true)] [InlineData("vita", false)]
-    public void EachFateOutcomeWritesInsideTheNamedPlayersMonitor(string outcome, bool casterRanksFirst)
-    {
-        int y = 4 + 3 * (Interlocked.Increment(ref _serial) % 30);
-        Session caster, target;
-        Character tc;
-        if (casterRanksFirst)
-        {
-            (caster, _, _) = Caster("reveal_fate", FateHeldMap, CX, y);
-            (target, _, tc) = Player(FateHeldMap, CX + 1, y, name: Letters("Held"), configure: Fated);
-        }
-        else
-        {
-            (target, _, tc) = Player(FateHeldMap, CX + 1, y, name: Letters("Held"), configure: Fated);
-            (caster, _, _) = Caster("reveal_fate", FateHeldMap, CX, y);
-        }
-        Assert.Equal(casterRanksFirst, caster.StateRank < target.StateRank);
-        var fate = Content.SpellByKey("reveal_fate")!;
-        caster.WithState(() => Assert.True(caster.LuaResolveNamedPcTarget(fate, target.CharName)));
-        (uint coins, double karma, byte armour, uint vita, uint exp) before = default;
-        target.WithState(() => before = (tc.Coins, tc.Karma, tc.ArmorColor, tc.MaxHp, tc.Exp));
-        bool Untouched() => (tc.Coins, tc.Karma, tc.ArmorColor, tc.MaxHp, tc.Exp) == before
-                            && !((Dictionary<string, long>)StatusFlagsField.GetValue(target)!).ContainsKey("creative");
-        var run = new HeldRun();
-        try
-        {
-            WhileAnotherThreadHolds(run, target, () => caster.WithState(() =>
-            {
-                bool landed = outcome switch
-                {
-                    "armour" => caster.LuaTargetArmorColor(5),
-                    "creative" => caster.LuaTargetDuration("creative", 28_800_000),
-                    "gold" => caster.LuaTargetGold(10_000, "10,000 gold added."),
-                    "karma" => caster.LuaTargetKarma(0.25),
-                    "exp" => caster.LuaTargetExp(0.25, 0.25, "You have gained some experience!"),
-                    _ => caster.LuaTargetBaseVita(25),
-                };
-                Assert.True(landed, $"{outcome} did not land");
-            }), untouched: Untouched);
-            Assert.Null(run.HolderFault);
-            Assert.Null(run.ActorFault);
-            Assert.False(run.FinishedWhileHeld, $"{outcome} finished while another thread held the player's monitor");
-            Assert.True(run.UntouchedWhileHeld, $"{outcome} landed while another thread held the player's monitor");
-            bool after = false;
-            target.WithState(() => after = !Untouched());
-            Assert.True(after, $"{outcome} never landed");
-        }
-        finally { if (run.Settled) Leave(FateHeldMap, caster, target); }
-    }
-
-    /// <summary>A Warrior with a weaving progress of 20, so every good outcome changes something a fact can read.</summary>
-    private static void Fated(Character ch)
-    {
-        ch.ClassName = "Warrior";
-        QuestState.Over(ch, QuestState.Registry).Set("weaving", 20);
+        finally { Leave(RevealMap, caster); }
     }
 
     // ===== the recognitions =====================================================================================
@@ -803,6 +443,45 @@ public sealed class GeomancerSpellTests
             Assert.True(tc.Legends.Any(l => l.Name == "keeper_of_balance"), "the mark never landed");
         }
         finally { if (run.Settled) Leave(RecogHeldMap, caster, target); }
+    }
+
+    /// <summary>A named player who starts to leave, or whose session a second login replaces, after the pick has found them
+    /// by name is given nothing: the pick reaches their monitor while another thread holds it, the flag is latched inside
+    /// that hold (past the name lookup, which skips a replaced session and nothing else), and once it is let go no Keeper
+    /// mark lands and the caster is shown no box (#426's review, F3). Red with <c>Session.ReceiveLegend</c>'s
+    /// <c>_leaving || IsReplaced</c> test taken out.</summary>
+    [Theory]
+    [InlineData("leaving")]
+    [InlineData("replaced")]
+    public void ARecognitionGivesNothingToANamedPlayerGoneAfterTheName(string why)
+    {
+        int y = why == "leaving" ? CY : CY + 6;
+        var (caster, cOut, _) = Caster("balance_recognition", RecogGoneMap, CX, y);
+        var (target, _, tc) = Player(RecogGoneMap, CX + 1, y, name: Letters("Going"));
+        var run = new HeldRun();
+        bool latched = false;
+        try
+        {
+            OnOwnThread(() => { caster.Receive(SpellCastSupport.CastFrame(0)); caster.Receive(InputFrame(target.CharName)); });
+            cOut.Clear();
+            WhileAnotherThreadHolds(run, target, () => caster.Receive(MenuFrame(1)), untouched: () =>
+            {
+                Gone(target, why, true);
+                latched = true;
+                return tc.Legends.All(l => l.Name != "keeper_of_balance");
+            });
+            Assert.Null(run.HolderFault);
+            Assert.Null(run.ActorFault);
+            Assert.False(run.FinishedWhileHeld, "the pick never reached the player's monitor");
+            Assert.True(run.UntouchedWhileHeld, "the mark landed while another thread held the player's monitor");
+            Assert.True(tc.Legends.All(l => l.Name != "keeper_of_balance") && Boxes(cOut).Count == 0,
+                        $"{why}: legends [{string.Join(", ", tc.Legends.Select(l => l.Name))}], boxes {Boxes(cOut).Count}");
+        }
+        finally
+        {
+            if (latched) Gone(target, why, false);
+            if (run.Settled) Leave(RecogGoneMap, caster, target);
+        }
     }
 
     // ===== Exhume ===============================================================================================
@@ -1214,22 +893,20 @@ public sealed class GeomancerSpellTests
         finally { ClearTraps(EarthCreatureMap); _fx.World.DespawnMob(EarthCreatureMap, mob); Leave(EarthCreatureMap, viewer); }
     }
 
-    /// <summary>The writes this slice adds to the caster's own saved state or the world refuse a caster who is leaving or
-    /// whose session a second login has replaced, asked under the caster's monitor (#423's review, F1, for every new writing
-    /// primitive): Exhume's creature, Good earth's traps and Reveal fate's caster tally. Red with the <c>CasterGone</c> test
-    /// taken out of <c>Session.LuaSpawnHere</c> or <c>Session.LuaSetTrapsAround</c>; the tally's refusal is
-    /// <c>Session.ReceiveMarkCount</c>'s own test (Scouting trip's, #423).</summary>
+    /// <summary>The writes this slice adds to the world refuse a caster who is leaving or whose session a second login has
+    /// replaced, asked under the caster's monitor (#423's review, F1, for every new writing primitive): Exhume's creature
+    /// and Good earth's traps. Red with the <c>CasterGone</c> test taken out of <c>Session.LuaSpawnHere</c> or
+    /// <c>Session.LuaSetTrapsAround</c>.</summary>
     [Theory]
     [InlineData("leaving")]
     [InlineData("replaced")]
     public void TheGeomancerWritesRefuseAGoneCaster(string why)
     {
         int x = why == "leaving" ? CX : CX + 20;
-        var (caster, _, cc) = Caster("exhume", GoneMap, x, CY);
+        var (caster, _, _) = Caster("exhume", GoneMap, x, CY);
         var sp = Content.SpellByKey("exhume")!;
-        var fate = Content.SpellByKey("reveal_fate")!;
         int traps = -1;
-        bool spawned = true, marked = true;
+        bool spawned = true;
         try
         {
             caster.WithState(() =>
@@ -1239,16 +916,15 @@ public sealed class GeomancerSpellTests
                 {
                     spawned = caster.LuaSpawnHere(sp, "dummy_bull");
                     traps = caster.LuaSetTrapsAround(sp, World.GoodEarthTrap, 20_000);
-                    marked = caster.LuaMarkSelf(fate, "performed_ba_gua_experiences", "performed_ba_gua_experiences", "Performed %d Ba Gua experiences", 145, 128);
                 }
                 finally
                 {
                     if (why == "leaving") LeavingField.SetValue(caster, false); else ReplacedField.SetValue(caster, 0);
                 }
             });
-            Assert.True(!spawned && traps == 0 && !marked && _fx.World.MobsAt(GoneMap, x, CY).Count == 0
-                        && _fx.World.TrapsNear(GoneMap, x, CY, 1).Length == 0 && Reg(cc, "performed_ba_gua_experiences") == 0,
-                        $"{why}: spawned {spawned}, traps {traps}, marked {marked}");
+            Assert.True(!spawned && traps == 0 && _fx.World.MobsAt(GoneMap, x, CY).Count == 0
+                        && _fx.World.TrapsNear(GoneMap, x, CY, 1).Length == 0,
+                        $"{why}: spawned {spawned}, traps {traps}");
         }
         finally { ClearTraps(GoneMap); Leave(GoneMap, caster); }
     }
@@ -1387,6 +1063,46 @@ public sealed class GeomancerSpellTests
         finally { if (run.Settled) Leave(Arena, caster, target); }
     }
 
+    /// <summary>Soften skin's player who starts to leave, or whose session a second login replaces, after the cast has
+    /// aimed at them is cursed with nothing: the cast reaches their monitor while another thread holds it, the flag is
+    /// latched inside that hold, and once it is let go no curse lands, they read nothing, and the caster spends nothing and
+    /// reads nothing (#426's review, F3, for the slice's other gone-target test). Red with <c>Session.LuaCurseAimed</c>'s
+    /// <c>_leaving || IsReplaced</c> test taken out.</summary>
+    [Theory]
+    [InlineData("leaving")]
+    [InlineData("replaced")]
+    public void SoftenSkinCursesNothingOnAPlayerGoneAfterTheAim(string why)
+    {
+        var run0 = OpenRun(Arena, 3, why == "leaving" ? 4 : 5);
+        var (caster, cOut, cc) = Caster("soften_skin", Arena, run0.X, run0.Y);
+        var (target, tOut, _) = Player(Arena, run0.X + 1, run0.Y, name: Letters("Going"));
+        var run = new HeldRun();
+        bool latched = false;
+        try
+        {
+            WhileAnotherThreadHolds(run, target, () => caster.Receive(SpellCastSupport.CastFrame(0, target.PlayerId)),
+                                    untouched: () =>
+                                    {
+                                        Gone(target, why, true);
+                                        latched = true;
+                                        return !target.HasStatusFromSpell("soften_skin");
+                                    });
+            Assert.Null(run.HolderFault);
+            Assert.Null(run.ActorFault);
+            Assert.False(run.FinishedWhileHeld, "the cast never reached the player's monitor");
+            Assert.True(run.UntouchedWhileHeld, "the curse landed while another thread held the player's monitor");
+            Assert.True(SpellCastSupport.BuffEntry(target, "soften_skin") is null && Lines(tOut) == "" && Lines(cOut) == ""
+                        && cc.Mp == Mana,
+                        $"{why}: curse {SpellCastSupport.BuffEntry(target, "soften_skin")}, theirs [{Lines(tOut)}], " +
+                        $"mine [{Lines(cOut)}], spent {Mana - cc.Mp}");
+        }
+        finally
+        {
+            if (latched) Gone(target, why, false);
+            if (run.Settled) Leave(Arena, caster, target);
+        }
+    }
+
     // ===== Read karma, and the teacher ==========================================================================
 
     /// <summary>Geomancer's Read karma is Diviner's verb on Geomancer's row: the question, then for a name 250 mana, the 88 s
@@ -1416,10 +1132,11 @@ public sealed class GeomancerSpellTests
         finally { Leave(StandInMap, target, caster); }
     }
 
-    /// <summary>The Geomancer teacher sells fifteen at their scripts' prices: Read karma from 60, Hailstorm from 64, the rest
-    /// from 99, Earths Spite at mark 1 only; Stone Casing, with no script, is not sold. Red without the price rows: two.</summary>
+    /// <summary>The Geomancer teacher sells fourteen at their scripts' prices: Read karma from 60, Hailstorm from 64, the
+    /// rest from 99, Earths Spite at mark 1 only; Stone Casing, with no script, and Reveal fate, kept off by the project
+    /// owner, are not sold. Red without the price rows: two.</summary>
     [Fact]
-    public void TheGeomancerTeacherSellsFifteen()
+    public void TheGeomancerTeacherSellsFourteen()
     {
         int path = Content.PathIdForClass("Geomancer");
         Assert.Equal(16, path);
@@ -1427,10 +1144,11 @@ public sealed class GeomancerSpellTests
             .OrderBy(s => s.Key, StringComparer.Ordinal).Select(s => $"{s.Key}:{s.Level}"));
         Assert.Equal("balance_recognition:99 create_green_potion:99 earths_spite:99 elemental_mastery:99 elementalists_mark:99 exhume:99 " +
                      "good_earth:99 hailstorm:64 honor_of_the_three_sects:99 ice_bombardment:99 inner_sect_recognition:99 " +
-                     "neutrality_recognition:99 read_karma_geomancer:60 reveal_fate:99 soften_skin:99", Sold(99, Content.MaxMark));
+                     "neutrality_recognition:99 read_karma_geomancer:60 soften_skin:99", Sold(99, Content.MaxMark));
         Assert.DoesNotContain("earths_spite", Sold(99, 0));
         Assert.Equal("read_karma_geomancer:60", Sold(63, Content.MaxMark));
         Assert.Null(Content.LearnCostFor(Content.SpellByKey("stone_casing")!, path));
+        Assert.Null(Content.LearnCostFor(Content.SpellByKey("reveal_fate")!, path));
     }
 
     // ===== helpers ==============================================================================================
@@ -1440,6 +1158,13 @@ public sealed class GeomancerSpellTests
     private static string Lines(RecordingOutbound o) => string.Join(" | ", SpellCastSupport.MiniTexts(o));
 
     private static int Reg(Character c, string key) => QuestState.Over(c, QuestState.Registry).Get(key);
+
+    /// <summary>Latch (or clear) the flag a logout (<c>_leaving</c>) or a second login (<c>_replaced</c>) sets on
+    /// <paramref name="s"/>, as <paramref name="why"/> names it.</summary>
+    private static void Gone(Session s, string why, bool on)
+    {
+        if (why == "leaving") LeavingField.SetValue(s, on); else ReplacedField.SetValue(s, on ? 1 : 0);
+    }
 
     /// <summary>The group's only legend is <paramref name="name"/> reading <paramref name="text"/> in the given icon and
     /// colour (the others of the group taken off).</summary>

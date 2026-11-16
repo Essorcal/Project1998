@@ -35,11 +35,7 @@ Scouting trip has marked the player (0 once a mark is removed), as RTK's `player
 `engrave_timer`, the Unix time a Merchant's next Engrave may be cast (24 hours after an item was engraved), as RTK's
 `player.registry` key, and Geomancer's, each RTK's `player.registry` key, each counted by its legend:
 `practiced_the_elemental_arts`, `balanced_the_flow_of_qi` and `studied_with_the_sages`, how many times Honor of the
-Three Sects has recognized the player for each (a Remove leaves them); `experienced_the_ba_gua`, how many times a
-Geomancer's Reveal fate has revealed the player's fate; and `performed_ba_gua_experiences`, how many fates a Geomancer
-has revealed. Reveal fate also reads and moves the crafting keys RTK names (`weaving`, `gemcutting`, `smelting`,
-`woodworking`, `jewelry making`, `metalworking`, `tailoring`, `scribing`, `potion making`, `mining`, `woodcutting`,
-`fishing`), by 5, only where one is already above its floor; nothing sets them until crafting arrives) all live there.
+Three Sects has recognized the player for each (a Remove leaves them)) all live there.
 
 | Namespace (= stage key) | Slot | Saved key |
 |---|---|---|
