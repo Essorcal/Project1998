@@ -667,6 +667,12 @@ balance_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 master_weapon,18,99,60000,ee_san_spike,1,electra,4,dragons_liver,4,,,rtk-lua
 ki_strike,18,99,500,acorn,70,amber,1,,,,,rtk-lua
 crossing_swords,18,99,50000,spike,1,chung_ryong_key,1,dragons_liver,1,,,rtk-lua
+skill_up_merchant,11,0,0,,,,,,,,,rtk-lua
+engrave,11,0,0,,,,,,,,,rtk-lua
+marketer_guise,11,33,0,rat_meat,30,rabbit_meat,20,,,,,rtk-lua
+pilfer,11,99,2000,acorn,130,steel_sword,1,,,,,rtk-lua
+gambling,11,99,1000,,,,,,,,,rtk-lua
+golden_fist,11,99,20000,blood,1,steelthorn,1,magical_dust,1,,,rtk-lua
 skill_up_ranger,15,0,0,,,,,,,,,rtk-lua
 forest_cover,15,0,0,,,,,,,,,rtk-lua
 tree_bark,15,99,0,moon_helm,1,tigers_heart,20,charm,1,,,rtk-lua

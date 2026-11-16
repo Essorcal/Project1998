@@ -787,14 +787,18 @@ public sealed class SpellContext
     /// with no portrait. A submitted answer runs the verb <paramref name="verb"/> for this caster and spell, against the
     /// spell's own row, with the typed text as <see cref="answer"/>; a box closed or replaced runs nothing.
     /// <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Title of nobility's typed name, which
-    /// its second question's step needs), so nothing a later cast resolves can stand in for it.</summary>
-    public void ask(string prompt, string verb, string carry = "") => _s.LuaAsk(_sp, prompt, verb, carry);
+    /// its second question's step needs), so nothing a later cast resolves can stand in for it. With an Items.csv
+    /// <paramref name="item"/> the box carries that item's icon, at colour 0 with <paramref name="plain"/>, as
+    /// <see cref="dialog"/> draws it (Engrave's and Gambling's boxes).</summary>
+    public void ask(string prompt, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaAsk(_sp, prompt, verb, carry, item, plain);
     /// <summary>A box with no button on the caster (RTK <c>dialogSeq({t, text}, 0)</c>). Its portrait is the Items.csv
     /// item <paramref name="item"/>'s icon when one is named, else creature look <paramref name="look"/> in palette
     /// <paramref name="color"/> (RTK <c>convertGraphic(n, "item")</c> and <c>convertGraphic(n, "monster")</c>); none
-    /// for look 0.</summary>
-    public void dialog(string text, double look = 0, double color = 0, string item = "") =>
-        _s.LuaDialog(text, (int)look, (int)color, item);
+    /// for look 0. With <paramref name="plain"/> the item's icon is drawn at colour 0, its base frame (RTK's
+    /// <c>{graphic = item.icon, item.iconC}</c> has no <c>color</c> key: Engrave's picked item).</summary>
+    public void dialog(string text, double look = 0, double color = 0, string item = "", bool plain = false) =>
+        _s.LuaDialog(text, (int)look, (int)color, item, plain);
     /// <summary>The caster's box with the next arrow, then, once the caster answers it, a box with no button to the
     /// player <see cref="pcTargetNamed"/> resolved, their waiting conversation dropped first (RTK read_karma.lua:
     /// <c>player:dialogSeq({t, text}, 1)</c>, <c>target:freeAsync()</c>, <c>target:dialogSeq({t, text2}, 0)</c>). Both
@@ -890,9 +894,10 @@ public sealed class SpellContext
     /// <paramref name="verb"/> for this spell, with this spell's SpellParams.csv row and the picked option as
     /// <see cref="answer"/>, on the caster's own thread and monitor, unless they have died or are leaving by then. A closed
     /// box runs nothing. <paramref name="carry"/> is handed on to that step as <see cref="carried"/> (Forgive's target's
-    /// name, which its pick's step needs). See <c>Session.LuaSpellMenu</c>.</summary>
-    public void menu(string prompt, string options, string verb, string carry = "") =>
-        _s.LuaSpellMenu(_sp, prompt, options, verb, carry);
+    /// name, which its pick's step needs). With an Items.csv <paramref name="item"/> the menu carries that item's icon, as
+    /// <see cref="dialog"/> draws it. See <c>Session.LuaSpellMenu</c>.</summary>
+    public void menu(string prompt, string options, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaSpellMenu(_sp, prompt, options, verb, carry, item, plain);
     /// <summary>Take on the form this spell's Morphs.csv row gives <paramref name="answer"/> (its answers column), for its
     /// time, ending any other form: the morph verb's look, graphic and redraw. False, changing nothing, for an answer the
     /// row does not list.</summary>
@@ -1066,8 +1071,9 @@ public sealed class SpellContext
     public double itemCount(string itemKey) => _s.LuaItemCount(itemKey);
     /// <summary>Take <paramref name="amount"/> of <paramref name="itemKey"/> from the caster's plain stacks, as RTK's
     /// <c>player:removeItem(name, n)</c> takes them (part-full stacks first; its lines). False, taking nothing, when there
-    /// are not that many.</summary>
-    public bool takeItem(string itemKey, double amount) => _s.LuaTakeItem(itemKey, (int)amount);
+    /// are not that many. <paramref name="reason"/> is RTK's third <c>removeItem</c> argument, the delete reason a stack
+    /// that empties is sent with (0 when the script passes none; BekyunArrow's 9).</summary>
+    public bool takeItem(string itemKey, double amount, double reason = 0) => _s.LuaTakeItem(itemKey, (int)amount, (int)reason);
     /// <summary>Give <paramref name="amount"/> of <paramref name="itemKey"/> to the caster at the item's own durability, as
     /// RTK's <c>player:addItem(name, n)</c>: what does not fit in the bag lies at the caster's feet, with the bag's line.
     /// Returns how many went into the bag.</summary>
@@ -1091,4 +1097,69 @@ public sealed class SpellContext
     /// saved registry key <paramref name="regKey"/> 0 and their legend <paramref name="mark"/> gone. Saved with them. False,
     /// changing nothing, with no target or one who is leaving.</summary>
     public bool unmarkTarget(string regKey, string mark) => _s.LuaUnmarkTarget(_sp, regKey, mark);
+
+    // ---- the Merchant spells' primitives (RTK Spells/Subpaths/Merchant/) ---------------------------------------------
+    // Engrave's and Gambling's hand-offs between players (P13): a prompt on another player whose answer runs the next step
+    // on THAT player's session (RTK runs presentOffer in the customer's own coroutine), so in a step's ctx the player who
+    // answered is the caster. Every write to another player lands inside that player's own monitor: a prompt and the drop
+    // of their waiting conversation, a popup, and the two settles, each one section holding both players' monitors. No new
+    // lock. See Session.Spells.cs, "the Merchant spells".
+    /// <summary>The caster's gold (RTK <c>player.money</c>).</summary>
+    public double gold => _s.LuaGold;
+    /// <summary>The Items.csv key of what lies in the caster's bag slot <paramref name="slot"/> (0-based); "" for none.</summary>
+    public string slotItem(double slot) => _s.LuaSlotItem((int)slot);
+    /// <summary>The engraved name of what lies in the caster's bag slot <paramref name="slot"/>; "" for none.</summary>
+    public string slotEngraving(double slot) => _s.LuaSlotEngraving((int)slot);
+    /// <summary>A menu of <paramref name="options"/> on the player <see cref="pcTargetNamed"/> (or <see cref="aimedTarget"/>)
+    /// resolved, their waiting conversation dropped first (RTK <c>target:freeAsync()</c>, then their <c>menuSeq</c> in a
+    /// coroutine of their own); the pick runs <paramref name="verb"/> on THEIR session with the option as
+    /// <see cref="answer"/> and <paramref name="carry"/> as <see cref="carried"/>. An empty <paramref name="verb"/> runs
+    /// nothing on the pick. Portrait as <see cref="dialog"/>'s. False, sending nothing, with no target or one going away.</summary>
+    public bool menuTarget(string prompt, string options, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaPromptTarget(_sp, 'm', prompt, options, verb, carry, item, plain);
+    /// <summary>As <see cref="menuTarget"/>, an input box (RTK <c>inputSeq</c>); a submitted text is the next step's
+    /// <see cref="answer"/>.</summary>
+    public bool askTarget(string prompt, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaPromptTarget(_sp, 'a', prompt, "", verb, carry, item, plain);
+    /// <summary>As <see cref="menuTarget"/>, a box with the next arrow (RTK <c>dialogSeq({t, text}, 1)</c>); its answer runs
+    /// the next step.</summary>
+    public bool boxTarget(string text, string verb, string carry = "", string item = "", bool plain = false) =>
+        _s.LuaPromptTarget(_sp, 'b', text, "", verb, carry, item, plain);
+    /// <summary>A box with the next arrow on the caster (RTK <c>dialogSeq({t, text}, 1)</c>), whose answer runs
+    /// <paramref name="verb"/> here, or nothing for "".</summary>
+    public void dialogNext(string text, string verb = "", string carry = "", string item = "", bool plain = false) =>
+        _s.LuaDialogNext(_sp, text, verb, carry, item, plain);
+    /// <summary>RTK's <c>player:popUp(text)</c> on the caster: a box with no button and no portrait.</summary>
+    public void popUp(string text) => _s.LuaPopUp(text);
+    /// <summary>RTK's <c>popUp</c> on the online player named <paramref name="name"/>, found again by name, inside their own
+    /// monitor. False when nobody online has that name, or they are going away.</summary>
+    public bool popUpNamed(string name, string text) => _s.LuaPopUpNamed(_sp, name, text);
+    /// <summary>Engrave's item list (RTK <c>buy</c>, as the script means it): the caster's bag items of types
+    /// <paramref name="minType"/> to <paramref name="maxType"/> in RTK's item-list window, each under its engraved name and
+    /// with its count, the Items.csv <paramref name="item"/>'s icon as the portrait; the pick runs <paramref name="verb"/>
+    /// with the picked item's bag slot as <see cref="answer"/>. A closed window runs nothing.</summary>
+    public void pickItem(string prompt, double minType, double maxType, string verb, string carry = "", string item = "") =>
+        _s.LuaPickItem(_sp, prompt, (int)minType, (int)maxType, verb, carry, item);
+    /// <summary>Engrave's settle, by the engraver: the customer <paramref name="customer"/> found again by name, then inside
+    /// both monitors "gone", "short", "leaving", or the fee moved, the name <paramref name="name"/> on whatever lies in their
+    /// bag slot <paramref name="slot"/>, the engraver's saved <paramref name="timerKey"/> set to now plus
+    /// <paramref name="timerSecs"/> seconds and <paramref name="line"/> to both: "done". See
+    /// <c>Session.LuaEngraveItem</c>.</summary>
+    public string engraveItem(string customer, double slot, string name, double cost, string timerKey, double timerSecs,
+                              string line) =>
+        _s.LuaEngraveItem(_sp, customer, (int)slot, name, cost >= long.MaxValue ? long.MaxValue : (long)cost, timerKey,
+                          (int)timerSecs, line);
+    /// <summary>Gambling's settle, by the merchant: the two gamblers found again by name, then inside both monitors "gone",
+    /// "short1", "short2", "tie", or the higher roll's player wins <paramref name="amount"/> from the other, "win1" or
+    /// "win2". See <c>Session.LuaSettleWager</c>.</summary>
+    public string settleWager(string name1, string name2, double amount, double roll1, double roll2, string winLine,
+                              string loseLine, string tieLine) =>
+        _s.LuaSettleWager(_sp, name1, name2, (int)amount, (int)roll1, (int)roll2, winLine, loseLine, tieLine);
+    /// <summary>Pilfer's reach: every item lying on the tiles 1 to <paramref name="spaces"/> ahead, a tile with a player on
+    /// it passed over, each refused one with RTK's <c>canLoot</c> line and <paramref name="refusal"/>; returns how many
+    /// were taken. See <c>Session.LuaPilfer</c>.</summary>
+    public double pilfer(double spaces, string refusal) => _s.LuaPilfer(_sp, (int)spaces, refusal);
+    /// <summary>RTK's <c>player:hasSpace(name, n)</c>: may <paramref name="amount"/> of <paramref name="itemKey"/> go into the
+    /// caster's bag?</summary>
+    public bool hasRoom(string itemKey, double amount) => _s.LuaHasRoom(itemKey, (int)amount);
 }

@@ -46,11 +46,16 @@ public sealed partial class Session
     /// use — head kind, a discriminated look descriptor, then a 4-byte trailing descriptor the client parses
     /// past — so <see cref="WriteHead"/> is reused rather than duplicated.</summary>
     private void WriteGridPrefix(List<byte> d, byte subKind, byte tag, Mob npc, string prompt)
+        => WriteGridPrefix(d, subKind, tag, npc.Id, DialogPortrait.Npc(npc), prompt);
+
+    /// <summary>The prefix with an explicit entity id and portrait: a window with no NPC behind it (Engrave's item list,
+    /// on the player's own id, as <see cref="DlgPush"/> puts a box there), with an item's icon as its head.</summary>
+    private void WriteGridPrefix(List<byte> d, byte subKind, byte tag, uint id, DialogPortrait portrait, string prompt)
     {
         d.Add(subKind);                 // [0] which window
         d.Add(tag);                     // [1] echoed back at reply body[0]
-        d.AddRange(PacketWriter.U32BEBytes(npc.Id));       // [2..5] npc entity id
-        WriteHead(d, DialogPortrait.Npc(npc));   // [6] head kind, [7..] descriptor, then 4 skipped bytes
+        d.AddRange(PacketWriter.U32BEBytes(id));           // [2..5] entity id
+        WriteHead(d, portrait);         // [6] head kind, [7..] descriptor, then 4 skipped bytes
         var p = Encoding.ASCII.GetBytes(prompt);
         d.AddRange(PacketWriter.U16BEBytes((ushort)p.Length));
         d.AddRange(p);
@@ -66,15 +71,20 @@ public sealed partial class Session
     /// the lookup takes the first match.
     /// </remarks>
     private void SendBuyGrid(Mob npc, string prompt, IReadOnlyList<GridRow> rows)
+        => SendBuyGrid(npc.Id, DialogPortrait.Npc(npc), prompt, rows);
+
+    /// <summary>The buy grid on entity <paramref name="id"/> under <paramref name="portrait"/>: an NPC's own, or the
+    /// player's own id with no NPC behind it (Engrave's item list, <see cref="LuaPickItem"/>).</summary>
+    private void SendBuyGrid(uint id, DialogPortrait portrait, string prompt, IReadOnlyList<GridRow> rows)
     {
         var d = new List<byte>();
-        WriteGridPrefix(d, 4, ShopTagBuy, npc, prompt);
+        WriteGridPrefix(d, 4, ShopTagBuy, id, portrait, prompt);
         // An unknown u16BE the client feeds straight into the grid widget ctor (0x454fa0). RTK fills it with
         // strlen(dialog) UNSWAPPED, which cannot be meaningful, so 0 is as good a value as any until it's swept.
         d.AddRange(PacketWriter.U16BEBytes(0));
         d.AddRange(PacketWriter.U16BEBytes((ushort)rows.Count));
         foreach (var r in rows) d.AddRange(BuyGridRowBody(_ver, r.Icon, r.Color, r.Number, r.Name, r.Blurb));
-        SendMap(ServerOp.Shop, _gameInc++, d.ToArray(), $"buy-grid(0x2f) npc={npc.Id} x{rows.Count}");
+        SendMap(ServerOp.Shop, _gameInc++, d.ToArray(), $"buy-grid(0x2f) id={id} x{rows.Count}");
     }
 
     /// <summary>One buy-grid row in the shape THIS client's row loop expects. Pure and static so

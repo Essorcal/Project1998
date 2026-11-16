@@ -158,7 +158,13 @@ public sealed class SubpathTeacherTests
                              "ki_strike 99 500 [1 amber, 70 acorn]; " +
                              "master_weapon 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]; " +
                              "spirit_blade 99 60000 [1 ee_san_spike, 4 dragons_liver, 4 electra]")]
-    [InlineData("Merchant",  "")]
+    // The Merchant spells slice: six of the seven at their scripts' prices (Marketer guise asks Druid's rodent's, as its
+    // script copies it; Gambling's list is 1,000 coins alone); Skill up and Engrave, whose scripts have no requirements(),
+    // at their rows' level, 0, for nothing; BekyunArrow, whose price names merchant_token (in no item table), off sale.
+    [InlineData("Merchant",  "engrave 0 0 []; gambling 99 1000 []; " +
+                             "golden_fist 99 20000 [1 blood, 1 magical_dust, 1 steelthorn]; " +
+                             "marketer_guise 33 0 [20 rabbit_meat, 30 rat_meat]; " +
+                             "pilfer 99 2000 [1 steel_sword, 130 acorn]; skill_up_merchant 0 0 []")]
     // The Ranger spells slice: six of the seven at their scripts' prices, the copied lists as written (Tree bark asks
     // Invincibility's, Scouting trip a Ju jak key's); Skill up, Forest cover and Carve arrow, whose scripts have no
     // requirements(), at their rows' level, 0, for nothing; Call companion, whose price names boiled_meat (in no item
@@ -384,14 +390,18 @@ public sealed class SubpathTeacherTests
         Assert.Equal((1, 1), (Count(c, "gold_acorn"), Count(c, "topaz")));
     }
 
-    /// <summary>A teacher with nothing priced yet says so to its member (Merchant, one of those still unpriced; it was
-    /// Barbarian's until the Barbarian spells slice priced Barbarian's).</summary>
+    /// <summary>Every teacher now has something priced, so no member reads <see cref="SubpathTeacherAbility.NothingYet"/>
+    /// ("I have no secrets to teach you yet.") from shipped data: the Merchant spells slice priced the last of them (this
+    /// fact was "a teacher with nothing priced yet says so", on Merchant, and on Barbarian before the Barbarian spells
+    /// slice). The line stays for a subpath whose price rows a data change takes away. Red without Merchant's rows.</summary>
     [Fact]
-    public void ATeacherWithNothingToSellSaysSo()
+    public void EveryTeacherHasSomethingPriced()
     {
-        var (s, o, _) = Member("Merchant", 99, _ => { });
-        Converse(s, Teacher("Merchant"), "Learn Secret");
-        Assert.Equal(new[] { SubpathTeacherAbility.NothingYet }, Boxes(o));
+        var unpriced = SubpathCircles.All
+            .Where(c => Content.SubpathTeacherSpells(c.Subpath, int.MaxValue, int.MaxValue).Count == 0)
+            .Select(c => Content.PathName(c.Subpath))
+            .ToList();
+        Assert.Empty(unpriced);
     }
 
     /// <summary>The base trainers still teach with the same lines through the shared code: a level-5 Warrior buys

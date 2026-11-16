@@ -737,13 +737,18 @@ public sealed partial class Session
     /// <summary>The input-box twin of <see cref="DlgPush"/> — ask a free-text question on behalf of a speaker
     /// that has no mob in the world (the Fox spirit, which is conjured by a step, never placed). Same entity-id
     /// and portrait reasoning as DlgPush. Returns the typed string, or null for a reply that is not a submit.</summary>
-    internal async Task<string?> DlgInputPush(int look, int color, string prompt)
+    internal Task<string?> DlgInputPush(int look, int color, string prompt) =>
+        DlgInputPush(DialogPortrait.Look(look, color), prompt);
+
+    /// <summary>The input box with an explicit portrait (a spell's input box with an item's icon: Engrave's fee and name
+    /// boxes, Gambling's name boxes).</summary>
+    private async Task<string?> DlgInputPush(DialogPortrait portrait, string prompt)
     {
-        var r = await AwaitReply(() => SendInputBox(_char.Id, DialogPortrait.Look(look, color), prompt));
+        var r = await AwaitReply(() => SendInputBox(_char.Id, portrait, prompt));
         return r.Kind == 0x04 && r.Step == 0x02 ? r.Input : null;
     }
 
-    /// <summary>The menu twin of <see cref="DlgInputPush"/>: a menu with no NPC behind it (an item's own choice,
+    /// <summary>The menu twin of <see cref="DlgInputPush(int, int, string)"/>: a menu with no NPC behind it (an item's own choice,
     /// the Qui hyang's "Where do you wish to go?"), on the player's own entity id, under
     /// <paramref name="portrait"/>. Returns the 1-based pick, or 0 for a reply that is not a menu pick. The 4.95
     /// client sends nothing when a box is closed, so, as with <see cref="DlgMenu"/>, a closed box leaves this await

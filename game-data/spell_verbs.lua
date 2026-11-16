@@ -3327,3 +3327,401 @@ function verbs.scouting_trip_unmark(ctx, row)
                        "You have had your mark removed for Scouting with Rangers by " .. ctx.name .. ".")
   return true
 end
+
+-- =========================================================================================================
+-- MERCHANT (PC subpath; RTK rtklua/Accepted/Spells/Subpaths/Merchant/). The project owner, 2026-10-26 (P5, each spell
+-- as its RTK script; P1 and P3, on sale once it works, at its script's price), and 2026-11-12 for Engrave and Gambling
+-- ("Offers as written": RTK's scripts word the sum with Tools.formatValue, which RTK defines nowhere, so in RTK both
+-- flows stop at their first offer; here the sum is written with RTK's commas, as Assess opponent's figures are. "As the
+-- script means": Engrave's item list cannot run in RTK, at verbs.engrave_offer. "Find again by name": a party who has
+-- logged off since, at each hand-off). The verbs here are Marketer guise, Pilfer, BekyunArrow, Engrave's and Gambling's
+-- steps, and Skill up's lines (RAGE_LINES.skill_up_merchant, on the Spy region's skill_up ladder). Golden fist is a row
+-- on Chongun's lesser_fury (Protectors fury's script with Merchant's numbers). Each is bound by its SpellParams.csv row,
+-- which carries its numbers, and is the shape of its script, in that script's order. RTK is weight 0 for balance; these
+-- numbers are its scripts', as RTK under P5. BekyunArrow is built and not sold: its price names merchant_token, an item
+-- in no table here or in RTK.
+--
+-- Engrave and Gambling pass from player to player. RTK runs each hand-off as an `async` function in the coroutine of
+-- the player it names first, after dropping that player's waiting script (target:freeAsync()); here each is a step
+-- verb run on that player's own session when they answer (ctx:menuTarget, askTarget, boxTarget), so in a step's ctx
+-- the player who answered is the caster, and what the step needs (names, the fee, the wager, the bag slot) is carried
+-- from step to step in ctx.carried, '|' between the fields (a name holds letters only, a proposed engraving letters,
+-- spaces and apostrophes, so no field holds a '|'; the engraving goes last).
+--
+-- Where the port parts from the scripts, on purpose, as the subpath verbs above part:
+--   * Each wait is checked first, with this file's own line (subpath_waiting, or the ladder's gate). RTK waives Skill
+--     up's, Gambling's and BekyunArrow's for a GM; no verb here waives anything for staff, and a GM picks up no
+--     locked pile with Pilfer (RTK's canLoot lets one).
+--   * A ghost and a mounted caster cast nothing (the engine's gates), where Skill up's canCast(0, ...) lets a ghost and
+--     Engrave's script has no canCast at all. The cast pose is the engine's, on a cast that lands.
+--   * The input boxes carry the script's question alone: RTK's words either side of the entry field ("I will be asking
+--     for" ... "gold", "The player known as" ... "will be gambling.", "Type in a new engrave below.") are not sent, as no
+--     input box here sends them (Read karma's departure). A typed name is trimmed and found in any case.
+--   * A party who has logged off is found again by name when their step comes (the project owner's answer): gone, the
+--     flow ends there, with the scripts' own lines where they check (Engrave's "That character is no longer online.",
+--     Gambling's "One of the parties logged."), and no gold or item moves. RTK's objects keep a raw pointer to the
+--     departed session (rtk/src/map/sl.c, typel_pushinst), which Gambling's own nil test can never catch.
+--   * RTK's popUp is the 0x0A message box of type 8, which this server has never shown on the 4.95 client; here it is
+--     the box with no button every spell box here uses, with no portrait (ctx:popUp, popUpNamed).
+--   * Engrave's item list tells two rows of one name apart as the bank's list does, "<name> (2)": the window answers
+--     with a row's name, and the item picked is the one engraved (RTK's loop, had it run, took the first slot holding
+--     the same kind of item).
+--   * BekyunArrow's heal leaves vita and mana within their max (ctx:setHp, setMana); RTK's sets them with no cap, so at
+--     full vita its caster stands 2.5% over until the next stat recalculation. Its player.attacker = player.ID has no
+--     counterpart here.
+-- =========================================================================================================
+
+-- Skill up (RTK Subpaths/Merchant/skill_up.lua, Spy's skill_up.lua under the key skill_up_merchant, diffed: nothing else
+-- differs): Spy's ladder (RAGE_LADDERS.skill_up, tier 6 the script's own though its comment says "TESTING ONLY") and
+-- these lines, each after "[Skill up N] ". Its row's category names the ladder.
+RAGE_LINES.skill_up_merchant = {
+  "Your senses sharpen.",
+  "You hone your skills.",
+  "Agility becomes your strongest suit..",
+  "Acquiring cat-like reflex.",
+  "Incredible skill!",
+  "Sagat would be jealous.",
+}
+
+-- Marketer guise (RTK Subpaths/Merchant/marketer_guise.lua). In any creature's form already, the cast ends that form
+-- and nothing else, silently and for free (the script's checkIfCast(morphs) and removeDuras(morphs), before anything
+-- else). Short of `mana`, "Your will is too weak."; with it nothing is spent, as the script checks its 125 and never
+-- takes it. Then the spell's Morphs.csv look (52) for that row's 60 s in the caster's war-paint colour (RTK
+-- disguiseColor = armorColor), with the spell's graphic (3) and sound (708) (ctx:wearForm); no line, as the script
+-- sends none. At its end, or when a cast ends it, sound `amount` (410, the script's uncast) plays (Session.RevertMorph).
+-- Row: mana 125, amount 410.
+function verbs.guise(ctx, row)
+  if ctx.morphed then ctx:endMorph(); return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  if not ctx:wearForm() then return false end
+  ctx:narrated()
+  return true
+end
+
+-- Pilfer (RTK Subpaths/Merchant/pilfer.lua). Short of `mana`, "Your will is too weak.", for free. Then the mana, the
+-- spell's sound (4), the shout "I'll take that" (RTK talk(2)), and the tiles 1 to PILFER_REACH ahead: a tile any player
+-- stands on is passed over, silently; from any other every item lying there comes to the caster, coins into the purse
+-- and an item into the bag (its durability, engraved name and owner kept; what does not fit lies at the caster's feet
+-- with the bag's line, RTK's addItem), each that RTK's canLoot refuses (another player stacked on the caster's tile, or
+-- a death pile still locked to someone else) saying canLoot's line and then "But that would be stealing." (ctx:pilfer).
+-- No "You cast" line: the script sends none. Row: mana 60.
+local PILFER_REACH   = 2                         -- local spaces = 2
+local PILFER_SHOUT   = "I'll take that"
+local PILFER_REFUSAL = "But that would be stealing."
+
+function verbs.pilfer(ctx, row)
+  local mana = row.mana or 0
+  if ctx.mp < mana then ctx:say("Your will is too weak."); return false end
+  ctx:debitMana(mana)
+  ctx:fxSelf()                                                     -- its playSound(4)
+  ctx:shout(PILFER_SHOUT)
+  ctx:pilfer(PILFER_REACH, PILFER_REFUSAL)
+  ctx:narrated()
+  return true
+end
+
+-- BekyunArrow (RTK Subpaths/Merchant/bekyunarrow.lua). Inside its wait, the wait line. Then, in the script's order:
+-- "You cast BekyunArrow.", the `duration` ms wait, and a heal of 2.5% of the vita and the mana the caster has (each
+-- floored), all before its checks; then without Bekyun's spear (a plain one: RTK's hasItem passes over an engraved
+-- stack) a box with the spear's icon, "You need his spear to craft arrows from."; without room for 5 Bekyun's set
+-- (RTK's hasSpace), "Your inventory is full."; else the spear goes (removeItem's reason 9, "You gave Bekyun's spear.")
+-- and five sets come (ctx:giveItem). No mana. Built and not sold (its price names merchant_token, in no item table).
+-- Row: duration 10000000.
+local BEKYUN_SPEAR, BEKYUN_SET, BEKYUN_SETS = "bekyuns_spear", "bekyuns_set", 5
+local BEKYUN_HEAL  = 0.025
+local BEKYUN_GAVE  = 9                           -- player:removeItem(item.yname, 1, 9)
+
+function verbs.bekyun_arrow(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  ctx:say("You cast " .. ctx.spellName .. ".")
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:setHp(ctx.hp + math.floor(ctx.hp * BEKYUN_HEAL))
+  ctx:setMana(ctx.mp + math.floor(ctx.mp * BEKYUN_HEAL))
+  ctx:narrated()                                                   -- its line came first
+  if ctx:itemCount(BEKYUN_SPEAR) < 1 then
+    ctx:dialog("You need his spear to craft arrows from.", 0, 0, BEKYUN_SPEAR)
+    return true
+  end
+  if not ctx:hasRoom(BEKYUN_SET, BEKYUN_SETS) then ctx:say("Your inventory is full."); return true end
+  ctx:takeItem(BEKYUN_SPEAR, 1, BEKYUN_GAVE)
+  ctx:giveItem(BEKYUN_SET, BEKYUN_SETS)
+  return true
+end
+
+-- Engrave (RTK Subpaths/Merchant/engrave.lua), seven steps across two players, because the script waits seven times.
+-- The cast, at its target as RTK's engine takes a "Which target?" spell (ctx:aimedTarget; nothing at all with none):
+-- inside the engraver's saved engrave_timer (RTK os.time() against the registry), the box "You have engraved too
+-- recently."; else the fee box "How much gold will you be asking for offering your services?". No mana, no line. The
+-- engraver's first boxes, and the customer's offer and list, carry the item icon 71 (RTK convertGraphic(71, "item"),
+-- coins_1000's icon); the boxes after the pick carry the picked item's icon at colour 0 (the script's {graphic = icon,
+-- iconC} has no color key).
+local ENGRAVE_TIMER = "engrave_timer"            -- the engraver's saved registry key (os.time() + 86400)
+local ENGRAVE_WAIT  = 86400                      -- seconds
+local ENGRAVE_ICON  = "coins_1000"               -- convertGraphic(71, "item"): Item.epf frame 71
+local ENGRAVE_TYPES = { 3, 17 }                  -- inventoryItems[i].type >= 3 and <= 17
+local ENGRAVE_MAX   = 18                         -- string.len(proposedName) > 18
+local ENGRAVE_DONE  = "The item has been engraved."
+
+-- The customer's offer (Q-A, "Offers as written": the fee with RTK's commas, as `commas` above writes them).
+local function engrave_offer_text(engraver, cost)
+  return engraver .. " is offering you their engraving services for " .. commas(cost) ..
+         " gold. Are you willing to pay this amount?"
+end
+
+function verbs.engrave(ctx, row)
+  local aimed = ctx:aimedTarget()
+  if aimed == "none" then return false end                         -- RTK runs no script: silent, free
+  if ctx.osTime < ctx:reg(ENGRAVE_TIMER) then
+    ctx:dialog("You have engraved too recently.", 0, 0, ENGRAVE_ICON)
+    return false
+  end
+  -- A creature carries no name: the fee step then stops where RTK's target:freeAsync() raises on one.
+  ctx:ask("How much gold will you be asking for offering your services?", "engrave_fee",
+          aimed == "player" and ctx.targetName or "", ENGRAVE_ICON)
+  ctx:narrated()
+  return true
+end
+
+-- The fee (RTK inputNumberCheck): anything but digits, the box "You can only enter numbers, no letters."; below 1, the
+-- box "You must enter a positive number."; an empty answer ends it silently (RTK's nil < 1 raises). Each ends it, as the
+-- script stops there. Aimed at a creature, nothing more. Then the customer, found again by name (gone: nothing more),
+-- has their waiting conversation dropped and is asked in their own box, "<engraver> is offering you their engraving
+-- services for <fee> gold. Are you willing to pay this amount?", Yes or No. Asked of the engraver themselves, the box
+-- shows and its answer does nothing: RTK's own script drops it (its freeAsync on the caster, then its end).
+function verbs.engrave_fee(ctx, row)
+  local typed = ctx.answer
+  if string.find(typed, "%D") then ctx:dialog("You can only enter numbers, no letters.", 0, 0, ENGRAVE_ICON); return false end
+  local cost = tonumber(typed)
+  if cost == nil then return false end
+  if cost < 1 then ctx:dialog("You must enter a positive number.", 0, 0, ENGRAVE_ICON); return false end
+  if ctx.carried == "" or not ctx:pcTargetNamed(ctx.carried) then return false end
+  local nextStep = ctx.targetIsSelf and "" or "engrave_offer"
+  ctx:menuTarget(engrave_offer_text(ctx.name, cost), "Yes|No", nextStep, ctx.name .. "|" .. string.format("%.0f", cost),
+                 ENGRAVE_ICON)
+  return true
+end
+
+-- The customer's answer, on the customer's session. "No": the engraver reads "<customer> has not accepted your offer.";
+-- "Yes" short of the fee: "<customer> is unable to afford your services." (RTK popUp, to the engraver found again by
+-- name; gone, told nothing). Else RTK's item list, as the script means it (the project owner's answer, "As the script
+-- means"): RTK cannot show it, as its buy() is handed four of the seven tables it reads (rtk/src/map/sl.c, pcl_buy),
+-- which crashes its map server when the customer carries an item it would list, and its answer is an item's name, which
+-- the script compares with a number id, so no item is ever found. Here: the customer's items of types 3 to 17 in RTK's
+-- item-list window, "What item would you like to engrave?", each under its engraved name and with its count; the item
+-- picked is the one engraved.
+function verbs.engrave_offer(ctx, row)
+  local engraver, cost = string.match(ctx.carried, "^([^|]*)|([^|]*)$")
+  cost = tonumber(cost)
+  if engraver == nil or cost == nil then return false end
+  if ctx.answer == "Yes" then
+    if ctx.gold < cost then
+      ctx:popUpNamed(engraver, ctx.name .. " is unable to afford your services.")
+      return false
+    end
+  elseif ctx.answer == "No" then
+    ctx:popUpNamed(engraver, ctx.name .. " has not accepted your offer.")
+    return false
+  else
+    return false
+  end
+  ctx:pickItem("What item would you like to engrave?", ENGRAVE_TYPES[1], ENGRAVE_TYPES[2], "engrave_pick", ctx.carried,
+               ENGRAVE_ICON)
+  return true
+end
+
+-- The pick, on the customer's session: the name box over the picked item's icon, "Please type in some text that you
+-- would like the item to be known as." for an item with no engraving, "Current Engrave: <engraving>" for one that has
+-- one, each with "(You do not need to enter the asterisks (*))" below. A slot emptied since the pick: nothing more.
+function verbs.engrave_pick(ctx, row)
+  local slot = tonumber(ctx.answer)
+  if slot == nil then return false end
+  local item = ctx:slotItem(slot)
+  if item == "" then return false end
+  local current = ctx:slotEngraving(slot)
+  local prompt
+  if current == "" then
+    prompt = "Please type in some text that you would like the item to be known as.\n\n(You do not need to enter the asterisks (*))"
+  else
+    prompt = "Current Engrave: " .. current .. "\n\n(You do not need to enter the asterisks (*))"
+  end
+  ctx:ask(prompt, "engrave_name", ctx.carried .. "|" .. string.format("%d", slot) .. "|" .. item, item, true)
+  return true
+end
+
+-- The proposed name, on the customer's session: anything but letters, spaces and an apostrophe, the box "You can only
+-- enter letters and spaces."; more than 18, the box "The proposed name is too long. Maximum of 18 characters." with the
+-- next arrow, after which nothing; each over the picked item's icon. Else the engraver, found again by name (gone:
+-- nothing more), has their waiting conversation dropped and is asked "<customer> has accepted your offer.\n\nProposed
+-- name: ** <name> **\n\nDoes this name meet the Acceptable naming policy set forth in the Terms of Service?", Yes or No.
+function verbs.engrave_name(ctx, row)
+  local engraver, cost, slot, item = string.match(ctx.carried, "^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+  if engraver == nil then return false end
+  local text = ctx.answer
+  if string.find(text, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces.", 0, 0, item, true); return false end
+  if string.len(text) > ENGRAVE_MAX then
+    ctx:dialogNext("The proposed name is too long. Maximum of 18 characters.", "", "", item, true)
+    return false
+  end
+  if not ctx:pcTargetNamed(engraver) then return false end
+  ctx:menuTarget(ctx.name .. " has accepted your offer.\n\nProposed name: ** " .. text ..
+                 " **\n\nDoes this name meet the Acceptable naming policy set forth in the Terms of Service?",
+                 "Yes|No", "engrave_policy", ctx.name .. "|" .. cost .. "|" .. slot .. "|" .. item .. "|" .. text, item, true)
+  return true
+end
+
+-- The engraver's answer on the naming policy. "No": the customer reads "Your proposed engrave name does not meet the
+-- standards set forth in the Terms of Service." (popUp; gone, told nothing). "Yes": "Are you sure you want to engrave the
+-- item?", Yes or No, over the picked item's icon.
+function verbs.engrave_policy(ctx, row)
+  local customer, item = string.match(ctx.carried, "^([^|]*)|[^|]*|[^|]*|([^|]*)|")
+  if customer == nil then return false end
+  if ctx.answer == "No" then
+    ctx:popUpNamed(customer, "Your proposed engrave name does not meet the standards set forth in the Terms of Service.")
+    return false
+  end
+  if ctx.answer ~= "Yes" then return false end
+  ctx:menu("Are you sure you want to engrave the item?", "Yes|No", "engrave_confirm", ctx.carried, item, true)
+  return true
+end
+
+-- The engraver's confirm. "No": nothing. "Yes": the settle, inside both players' monitors (ctx:engraveItem): the
+-- customer gone, the box "That character is no longer online."; short of the fee, the box "That character no longer
+-- has enough gold to cover your cost."; each over the picked item's icon. Else the fee moves ("<fee> gold removed." to
+-- the customer, "<fee> gold added." to the engraver), the engraver's engrave_timer is set to 24 h from now, the item in
+-- the customer's picked bag slot is named "** <name> **" (whatever lies there now: RTK's item object is bound to the
+-- slot), the customer's bag is drawn again, and both read "The item has been engraved.".
+function verbs.engrave_confirm(ctx, row)
+  if ctx.answer ~= "Yes" then return false end
+  local customer, cost, slot, item, text = string.match(ctx.carried, "^([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)$")
+  if customer == nil then return false end
+  local outcome = ctx:engraveItem(customer, tonumber(slot), "** " .. text .. " **", tonumber(cost), ENGRAVE_TIMER,
+                                  ENGRAVE_WAIT, ENGRAVE_DONE)
+  if outcome == "gone" then
+    ctx:dialog("That character is no longer online.", 0, 0, item, true)
+  elseif outcome == "short" then
+    ctx:dialog("That character no longer has enough gold to cover your cost.", 0, 0, item, true)
+  end
+  return outcome == "done"
+end
+
+-- Gambling (RTK Subpaths/Merchant/gambling.lua), seven steps across three players. The cast: inside its wait, the wait
+-- line; short of `mana`, "Your will is too weak." (the script checks 120 and never takes it); then the `duration` ms
+-- wait and the name box "Who shall be gambling?". No line. Every box carries the coins' icon (RTK Item("coins_1")).
+local GAMBLE_ICON  = "coins_1"
+local GAMBLE_RANGE = 6                           -- distanceSquare(player, target, 6)
+local GAMBLE_WAGERS = "1,000 Gold|10,000 Gold|100,000 Gold"
+local GAMBLE_AMOUNTS = { ["1,000 Gold"] = 1000, ["10,000 Gold"] = 10000, ["100,000 Gold"] = 100000 }
+
+-- The offer each gambler reads (Q-A, "Offers as written": the wager with RTK's commas).
+local function gamble_offer_text(amount)
+  return "A merchant is willing to assist you in your gamble of " .. commas(amount) ..
+         " Gold. You and your opponent will each put in that amount and the winner will receive double back. Do you accept?"
+end
+
+function verbs.gambling(ctx, row)
+  if subpath_waiting(ctx, row) then return false end
+  if ctx.mp < (row.mana or 0) then ctx:say("Your will is too weak."); return false end
+  if (row.duration or 0) > 0 then ctx:setCooldown(ctx.spellKey, row.duration) end
+  ctx:ask("Who shall be gambling?", "gambling_first", "", GAMBLE_ICON)
+  ctx:narrated()
+  return true
+end
+
+-- A typed gambler's refusals, each a box that ends it, in the script's order: anything but letters, spaces and an
+-- apostrophe, "You can only enter letters and spaces." (RTK inputLetterCheck); nobody online by it, "That player is not
+-- online."; on another map or more than GAMBLE_RANGE tiles off on either axis, "That player is not close enough to
+-- you.". True once the name is a player near the merchant.
+local function gambler_found(ctx)
+  if string.find(ctx.answer, "[^%a%s']") then ctx:dialog("You can only enter letters and spaces.", 0, 0, GAMBLE_ICON); return false end
+  if not ctx:pcTargetNamed(ctx.answer) then ctx:dialog("That player is not online.", 0, 0, GAMBLE_ICON); return false end
+  if not ctx:targetWithin(GAMBLE_RANGE) then ctx:dialog("That player is not close enough to you.", 0, 0, GAMBLE_ICON); return false end
+  return true
+end
+
+-- The first gambler named: the merchant's menu "They will wager the amount of" over 1,000, 10,000 and 100,000 Gold.
+function verbs.gambling_first(ctx, row)
+  if not gambler_found(ctx) then return false end
+  ctx:menu("They will wager the amount of", GAMBLE_WAGERS, "gambling_wager", ctx.targetName, GAMBLE_ICON)
+  return true
+end
+
+-- The wager: the first gambler, found again by name (gone: nothing more), has their waiting conversation dropped and
+-- reads the offer in their own box, Yes or No. The merchant named as the gambler: the box shows and its answer does
+-- nothing (RTK's own script drops it).
+function verbs.gambling_wager(ctx, row)
+  local amount = GAMBLE_AMOUNTS[ctx.answer]
+  if amount == nil or not ctx:pcTargetNamed(ctx.carried) then return false end
+  local nextStep = ctx.targetIsSelf and "" or "gambling_accept"
+  ctx:menuTarget(gamble_offer_text(amount), "Yes|No", nextStep, ctx.name .. "|" .. string.format("%d", amount), GAMBLE_ICON)
+  return true
+end
+
+-- The first gambler's answer, on their session. "No": nothing. "Yes" short of the wager: "You do not have enough
+-- gold." (their box). Else the merchant, found again by name (gone: nothing more), has their waiting conversation
+-- dropped and is asked "Who will be trying their luck against this person?".
+function verbs.gambling_accept(ctx, row)
+  if ctx.answer ~= "Yes" then return false end
+  local merchant, amount = string.match(ctx.carried, "^([^|]*)|([^|]*)$")
+  amount = tonumber(amount)
+  if merchant == nil or amount == nil then return false end
+  if ctx.gold < amount then ctx:dialog("You do not have enough gold.", 0, 0, GAMBLE_ICON); return false end
+  if not ctx:pcTargetNamed(merchant) then return false end
+  ctx:askTarget("Who will be trying their luck against this person?", "gambling_second",
+                ctx.name .. "|" .. string.format("%d", amount), GAMBLE_ICON)
+  return true
+end
+
+-- The second gambler named, on the merchant's session: the typed gambler's refusals, and the first gambler again, "The
+-- person cannot gamble against themselves."; then the second gambler has their waiting conversation dropped and reads
+-- the offer in their own box (the merchant named: the box, and nothing on its answer, as above).
+function verbs.gambling_second(ctx, row)
+  local first, amount = string.match(ctx.carried, "^([^|]*)|([^|]*)$")
+  amount = tonumber(amount)
+  if first == nil or amount == nil then return false end
+  if not gambler_found(ctx) then return false end
+  if string.lower(ctx.targetName) == string.lower(first) then
+    ctx:dialog("The person cannot gamble against themselves.", 0, 0, GAMBLE_ICON)
+    return false
+  end
+  local nextStep = ctx.targetIsSelf and "" or "gambling_accept2"
+  ctx:menuTarget(gamble_offer_text(amount), "Yes|No", nextStep,
+                 first .. "|" .. ctx.name .. "|" .. string.format("%d", amount), GAMBLE_ICON)
+  return true
+end
+
+-- The second gambler's answer, on their session. "No": nothing. "Yes" short of the wager: "You do not have enough
+-- gold.". Else the merchant, found again by name (gone: nothing more), has their waiting conversation dropped and reads
+-- "Both parties agreed to this gamble. Proceed to finish." with the next arrow.
+function verbs.gambling_accept2(ctx, row)
+  if ctx.answer ~= "Yes" then return false end
+  local first, merchant, amount = string.match(ctx.carried, "^([^|]*)|([^|]*)|([^|]*)$")
+  amount = tonumber(amount)
+  if first == nil or amount == nil then return false end
+  if ctx.gold < amount then ctx:dialog("You do not have enough gold.", 0, 0, GAMBLE_ICON); return false end
+  if not ctx:pcTargetNamed(merchant) then return false end
+  ctx:boxTarget("Both parties agreed to this gamble. Proceed to finish.", "gambling_run",
+                ctx.name .. "|" .. first .. "|" .. string.format("%d", amount), GAMBLE_ICON)
+  return true
+end
+
+-- The merchant's next arrow: two rolls of 1 to 100, then the settle inside both gamblers' monitors (ctx:settleWager;
+-- the second gambler is the script's target1, checked first): either gone, the box "One of the parties logged."; either
+-- short of the wager, "<name> tried to cheat, they no longer have the money they were offering to gamble."; else the
+-- higher roll wins: graphic 2 over the winner, "You win." and "<wager> gold added." to them, "You lose." and "<wager> gold
+-- removed." to the other; equal rolls, both read "There was a tie, so no gold removed." and the merchant the box "There
+-- was a tie. No gold removed from either party.". The merchant gains nothing.
+function verbs.gambling_run(ctx, row)
+  local second, first, amount = string.match(ctx.carried, "^([^|]*)|([^|]*)|([^|]*)$")
+  amount = tonumber(amount)
+  if second == nil or amount == nil then return false end
+  local roll1, roll2 = ctx:rollRange(1, 100), ctx:rollRange(1, 100)
+  local outcome = ctx:settleWager(second, first, amount, roll1, roll2, "You win.", "You lose.",
+                                  "There was a tie, so no gold removed.")
+  local cheat = " tried to cheat, they no longer have the money they were offering to gamble."
+  if outcome == "gone" then ctx:dialog("One of the parties logged.", 0, 0, GAMBLE_ICON)
+  elseif outcome == "short1" then ctx:dialog(second .. cheat, 0, 0, GAMBLE_ICON)
+  elseif outcome == "short2" then ctx:dialog(first .. cheat, 0, 0, GAMBLE_ICON)
+  elseif outcome == "tie" then ctx:dialog("There was a tie. No gold removed from either party.", 0, 0, GAMBLE_ICON)
+  end
+  return true
+end
