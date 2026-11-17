@@ -64,9 +64,9 @@ public static class Db
     /// <para>What it costs: a statement SQLite fails busy WITHOUT waiting is retried by the provider, every
     /// 150 ms, for 3 s instead of 5. SQLite does that to a read transaction that tries to start writing while
     /// another connection writes (waiting could deadlock the two). Every transaction here begins IMMEDIATE
-    /// (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours does. Startup gives
-    /// up after about five seconds, as before: <see cref="InitializeDatabase"/> sets the busy_timeout as its
-    /// own command before its first statement, so that statement waits inside SQLite like every other.</para>
+    /// (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours does. Startup waits
+    /// inside SQLite like everything else: <see cref="InitializeDatabase"/> sets the busy_timeout as its own
+    /// command before its first statement.</para>
     ///
     /// <para>It must stay at least 1: to the provider, 0 means retry for ever.</para>
     /// </summary>
