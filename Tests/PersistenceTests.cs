@@ -471,6 +471,135 @@ public class PersistenceTests : IDisposable
     }
 
     /// <summary>
+    /// Startup against a database another connection holds gives up after ONE of SQLite's waits, like a save,
+    /// not when the provider's shorter window runs out. <see cref="Db.InitializeDatabase"/>'s batch begins with
+    /// <c>PRAGMA journal_mode=WAL</c>, ahead of the batch's own <c>PRAGMA busy_timeout</c>; without the
+    /// busy_timeout that <c>Db</c> sets first, as its own command, SQLite fails that statement busy at once and
+    /// only the provider's 3 s window bounds it (about 5 s on master, whose window was 5 s).
+    ///
+    /// <para>The file is a first-ever one, still in rollback-journal mode, held with <c>BEGIN EXCLUSIVE</c>,
+    /// which shuts out even a reader: the case of login and game starting together on a new file. The floor is
+    /// the save fact's, 0.8x the busy_timeout. The ceiling is 2x, not the save fact's 1.5x, because on Windows
+    /// this one wait is longer than a save's: about 7.4 s, not 5.5. Each time SQLite's Windows file layer
+    /// fails to take a rollback-journal file's shared lock, it first retries a byte of the lock three times
+    /// with a 1 ms sleep between, and each such sleep can last a whole timer tick (15.6 ms), so the wait's
+    /// sixty attempts add about two seconds. Linux has no such retry: about 5.0 s. Two waits would be about 15 s on Windows and
+    /// over 10 s on Linux, and the provider's 30 s default far more.</para>
+    ///
+    /// <para>Red without that command: "startup against a held file gave up after 3.0s".</para>
+    /// </summary>
+    [Fact]
+    public void InitializeDatabase_GivesUpAfterOneSqliteWait_WhenAFirstEverFileIsHeld()
+    {
+        string path = FirstEverDatabaseFile();
+        using var holder = new SqliteConnection($"Data Source={path};Pooling=False");
+        holder.Open();
+        Assert.Equal("delete", Text(holder, "PRAGMA journal_mode;"));
+        Run(holder, "BEGIN EXCLUSIVE;");   // held until the attempt below has given up
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var error = Record.Exception(() => Db.InitializeDatabase(path));
+        clock.Stop();
+        Run(holder, "ROLLBACK;");
+
+        Measured($"startup against a held file gave up after {clock.Elapsed.TotalMilliseconds:F0} ms " +
+                 $"(busy_timeout {Db.BusyTimeoutMs} ms)");
+
+        var busy = Assert.IsType<SqliteException>(error);
+        Assert.Equal(5, busy.SqliteErrorCode);   // SQLITE_BUSY: it gave up on the lock, nothing else
+        var floor   = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 0.8);
+        var ceiling = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 2);
+        Assert.True(clock.Elapsed >= floor,
+            $"startup against a held file gave up after {clock.Elapsed.TotalSeconds:F1}s, before SQLite's own " +
+            $"busy_timeout of {Db.BusyTimeoutMs}ms had run — its first statement is not waiting inside SQLite");
+        Assert.True(clock.Elapsed <= ceiling,
+            $"startup against a held file took {clock.Elapsed.TotalSeconds:F1}s to give up, against a " +
+            $"busy_timeout of {Db.BusyTimeoutMs}ms: more than one wait, or no window at all");
+
+        // Once the hold is gone the same file initializes.
+        Db.InitializeDatabase(path);
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        Assert.Equal("wal", Text(check, "PRAGMA journal_mode;"));
+    }
+
+    /// <summary>
+    /// The other half: a startup whose file is let go inside SQLite's wait initializes. The lock is held for
+    /// 4 s, after the provider's 3 s window and inside the 5,000 ms busy_timeout, as in
+    /// <see cref="SaveMany_StillSucceeds_WhenTheContentionClearsAfterTheProvidersWindow"/> (whose note says why
+    /// 4 s sits inside that band on Windows and on Linux). Without the busy_timeout set first, the provider
+    /// alone gives up at about 3 s, while the file is still held, and startup fails.
+    ///
+    /// <para>The same first-ever, rollback-journal file held with <c>BEGIN EXCLUSIVE</c> as the fact above.
+    /// Red without that command: "startup ... FAILED after 3.0s".</para>
+    /// </summary>
+    [Fact]
+    public void InitializeDatabase_Succeeds_WhenAFirstEverFileIsLetGoInsideTheWait()
+    {
+        string path = FirstEverDatabaseFile();
+        const int holdMs = 4000;
+        Assert.True(holdMs < Db.BusyTimeoutMs, "the hold has to end inside SQLite's wait for this to test anything");
+
+        using var locked = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = new SqliteConnection($"Data Source={path};Pooling=False");
+            blocker.Open();
+            Run(blocker, "BEGIN EXCLUSIVE;");
+            locked.Set();
+            Thread.Sleep(holdMs);
+            Run(blocker, "ROLLBACK;");
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the lock");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var error = Record.Exception(() => Db.InitializeDatabase(path));
+        clock.Stop();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never let the lock go");
+
+        Measured($"startup against a file held for {holdMs} ms {(error is null ? "initialized" : "FAILED")} after " +
+                 $"{clock.Elapsed.TotalMilliseconds:F0} ms");
+
+        Assert.True(error is null,
+            $"startup against a file held for {holdMs}ms FAILED after {clock.Elapsed.TotalSeconds:F1}s " +
+            $"({error?.Message}): SQLite did not wait the lock out, so only the provider's window bounded it");
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.9),
+            $"startup returned in {clock.Elapsed.TotalMilliseconds:F0}ms, before the lock was let go");
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        Assert.Equal("wal", Text(check, "PRAGMA journal_mode;"));
+        Assert.Equal(Db.CurrentSchemaVersion.ToString(), Text(check, "PRAGMA user_version;"));
+    }
+
+    /// <summary>A database file nobody has initialized yet: one table, so the file exists, still in SQLite's
+    /// default rollback-journal mode. Inside the run's state directory, which the run's end deletes.</summary>
+    private static string FirstEverDatabaseFile()
+    {
+        string dir = Path.Combine(TestProcessState.StateDirectory, $"first-ever-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "project1998.db");
+        using var cn = new SqliteConnection($"Data Source={path};Pooling=False");
+        cn.Open();
+        Run(cn, "CREATE TABLE zz_first_ever(x);");
+        return path;
+    }
+
+    private static void Run(SqliteConnection cn, string sql)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    private static string Text(SqliteConnection cn, string sql)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToString(cmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) ?? "";
+    }
+
+    /// <summary>
     /// The other half of shortening the timeout: a failed UNCONDITIONAL save must be retried, not lost. The
     /// throttled autosave path always put the dirty flag back when a write failed, but
     /// <c>Session.StoreSave</c> — the spellbook, legend and profile writes that persist whether or not the

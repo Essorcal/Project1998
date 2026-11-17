@@ -21,10 +21,7 @@ namespace Shared;
 /// <see cref="Open()"/> therefore sets both from the same constant, the provider's window two whole seconds
 /// shorter (<see cref="BusyTimeoutSeconds"/>, which says how far short a wait would have to end to beat it):
 /// it has run out by the time SQLite's first wait returns, so a contended statement ends after that one
-/// wait. One statement of ours has no SQLite wait at all: startup's <c>PRAGMA journal_mode=WAL</c> in
-/// <see cref="InitializeDatabase"/>, which runs before that connection's <c>PRAGMA busy_timeout</c>, so the
-/// provider's window alone bounds it — about three seconds now, about five before
-/// (<see cref="BusyTimeoutSeconds"/>).
+/// wait.
 ///
 /// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
 /// catch the exception, log it and return false; <c>Session.CaptureAndWrite</c> puts the dirty flag back
@@ -65,28 +62,11 @@ public static class Db
     /// before it can earn a second wait; at 4 s, two.</para>
     ///
     /// <para>What it costs: a statement SQLite fails busy WITHOUT waiting is retried by the provider, every
-    /// 150 ms, for 3 s instead of 5. SQLite does that in two cases. One is a read transaction that tries to
-    /// start writing while another connection writes (waiting could deadlock the two); every transaction here
-    /// begins IMMEDIATE (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours
-    /// does. The other is any statement run before its connection has a busy_timeout, and we have exactly
-    /// one: startup's <c>PRAGMA journal_mode=WAL</c> in <see cref="InitializeDatabase"/>, which comes before
-    /// that connection's <c>PRAGMA busy_timeout</c>. When another connection holds the file exclusively, that
-    /// statement gives up after about 3 s instead of about 5, and <see cref="EnsureInitialized"/> throws. What
-    /// that does depends on the process:</para>
-    /// <list type="bullet">
-    /// <item>The login process fails at startup, loudly, as before.</item>
-    /// <item>The game process does not, at first. Its first two database reads at startup, the saved door
-    /// unlocks (<c>Doors.LoadUnlocks</c>) and the boards import, log the failure and carry on, so the game
-    /// starts without its saved door unlocks: doors players opened with keys are locked again until the next
-    /// restart or <c>@reload</c>. That happens when the database is held for more than about 3 s at the game's start,
-    /// against about 5 s before. The game fails only at a later try, its character store's, under a hold of
-    /// about 9 s or more.</item>
-    /// <item>A brand-new database has no unlocks to miss.</item>
-    /// </list>
-    /// <para>Shown with a first-ever database, still in rollback-journal mode, held with
-    /// <c>BEGIN EXCLUSIVE</c>, which login and game starting together on a new file can meet; a WAL file
-    /// being recovered should take the same path (not shown). Every other statement of ours runs after its
-    /// connection's busy_timeout and waits inside SQLite first.</para>
+    /// 150 ms, for 3 s instead of 5. SQLite does that to a read transaction that tries to start writing while
+    /// another connection writes (waiting could deadlock the two). Every transaction here begins IMMEDIATE
+    /// (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours does. Startup gives
+    /// up after about five seconds, as before: <see cref="InitializeDatabase"/> sets the busy_timeout as its
+    /// own command before its first statement, so that statement waits inside SQLite like every other.</para>
     ///
     /// <para>It must stay at least 1: to the provider, 0 means retry for ever.</para>
     /// </summary>
@@ -265,10 +245,16 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
         // The same window as Open(string): shorter than the busy_timeout below, so one wait (BusyTimeoutSeconds).
-        // Not for the first statement, journal_mode=WAL: it runs before that pragma, so SQLite fails it busy at
-        // once and this window alone bounds it, about 3 s.
         cn.DefaultTimeout = BusyTimeoutSeconds;
         cn.Open();
+        // SQLite's wait is set first, as its own command, so that the batch's first statement (journal_mode=WAL)
+        // waits like every other one; it stays out of the batch because the provider hides errors from the
+        // statements after a batch's first row-returning one, and this pragma returns a row.
+        using (var wait = cn.CreateCommand())
+        {
+            wait.CommandText = $"PRAGMA busy_timeout={BusyTimeoutMs};";
+            wait.ExecuteNonQuery();
+        }
         using var cmd = cn.CreateCommand();
         cmd.CommandText = $@"
 PRAGMA journal_mode=WAL;

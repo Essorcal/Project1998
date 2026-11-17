@@ -27,9 +27,7 @@ namespace Tests;
 /// seconds SHORTER than the busy_timeout, not equal to it: the provider checks it only after SQLite's wait
 /// returns, so an equal window let a wait that ended a little early earn a second whole one (a contended
 /// save of about ten seconds, twice on fork CI), and a shorter one has run out by then (<c>Db</c>'s
-/// <c>BusyTimeoutSeconds</c> says how far short a wait would have to end to beat it). The one statement
-/// with no SQLite wait is startup's <c>PRAGMA journal_mode=WAL</c>, which runs before its connection's
-/// busy_timeout; the provider's window alone bounds it, about 3 s.</para>
+/// <c>BusyTimeoutSeconds</c> says how far short a wait would have to end to beat it).</para>
 ///
 /// <para>So the rule for a new fact here: an ordinary write is fine, and a fact that deliberately holds a
 /// database-wide lock takes an <c>IsolatedDatabase</c>, never <c>Db.Open()</c>. Anything that cannot — a
