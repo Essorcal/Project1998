@@ -75,10 +75,12 @@ public static class Db
     private const int BusyTimeoutSeconds = BusyTimeoutMs / 1000 - 2;
 
     /// <summary>Startup's window, <see cref="InitializeDatabase"/>'s <see cref="SqliteConnection.DefaultTimeout"/>:
-    /// <see cref="BusyTimeoutMs"/> rounded up to whole seconds (5 s), as it always was, because startup's first
-    /// statement, <c>PRAGMA journal_mode=WAL</c>, runs before any busy_timeout and SQLite does not wait for the
-    /// lock it takes to switch a new file to WAL, so this window alone bounds startup and keeping it keeps every
-    /// startup case exactly as it was.</summary>
+    /// <see cref="BusyTimeoutMs"/> rounded up to whole seconds (5 s), as it always was. Startup's first
+    /// statement, <c>PRAGMA journal_mode=WAL</c>, runs before any busy_timeout, and SQLite does not wait for the
+    /// lock it takes to switch a new file to WAL, so this window alone bounds that first statement; keeping it
+    /// keeps every startup case exactly as it was. Startup's later statements, such as
+    /// <see cref="ApplyMigrations"/>' <c>BEGIN IMMEDIATE</c>, run after the batch's own busy_timeout and wait
+    /// inside SQLite, with this window as long as that wait, as they always have.</summary>
     private const int StartupTimeoutSeconds = (BusyTimeoutMs + 999) / 1000;
 
     /// <summary>One schema step: its SQL, and the test for a database that already has it. The test is what
@@ -256,7 +258,8 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
         // Startup's own window, not Open(string)'s: the first statement below runs before any busy_timeout, and
-        // SQLite does not wait for the WAL switch's lock, so this window alone bounds startup (StartupTimeoutSeconds).
+        // SQLite does not wait for the WAL switch's lock, so this window alone bounds that statement
+        // (StartupTimeoutSeconds). The statements after it wait inside SQLite as before.
         cn.DefaultTimeout = StartupTimeoutSeconds;
         cn.Open();
         using var cmd = cn.CreateCommand();
