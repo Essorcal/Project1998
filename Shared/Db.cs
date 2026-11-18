@@ -21,7 +21,9 @@ namespace Shared;
 /// <see cref="Open()"/> therefore sets both from the same constant, the provider's window two whole seconds
 /// shorter (<see cref="BusyTimeoutSeconds"/>, which says how far short a wait would have to end to beat it):
 /// it has run out by the time SQLite's first wait returns, so a contended statement ends after that one
-/// wait.
+/// wait. That is every connection <see cref="Open(string)"/> returns. Startup's own connection, in
+/// <see cref="InitializeDatabase"/>, keeps the 5 s window it always had (<see cref="StartupTimeoutSeconds"/>)
+/// and behaves exactly as before.
 ///
 /// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
 /// catch the exception, log it and return false; <c>Session.CaptureAndWrite</c> puts the dirty flag back
@@ -41,8 +43,9 @@ public static class Db
     internal const int BusyTimeoutMs = 5000;
 
     /// <summary>
-    /// <see cref="SqliteConnection.DefaultTimeout"/>, the provider's retry window, in whole seconds: two
-    /// whole seconds below <see cref="BusyTimeoutMs"/> (3 s against 5,000 ms), never equal to it.
+    /// <see cref="SqliteConnection.DefaultTimeout"/>, the provider's retry window, in whole seconds, for every
+    /// connection <see cref="Open(string)"/> returns: two whole seconds below <see cref="BusyTimeoutMs"/> (3 s
+    /// against 5,000 ms), never equal to it. Startup's connection has its own, <see cref="StartupTimeoutSeconds"/>.
     ///
     /// <para>Below, because the provider cannot cut SQLite's wait short. It times each statement from just
     /// before its first step and looks at that clock only when a step comes back SQLITE_BUSY, which is after
@@ -61,16 +64,22 @@ public static class Db
     /// each early end costs up to a whole second. At 3 s a step needs three of its five sleeps cut short
     /// before it can earn a second wait; at 4 s, two.</para>
     ///
-    /// <para>What it costs: a statement SQLite fails busy WITHOUT waiting is retried by the provider, every
-    /// 150 ms, for 3 s instead of 5. SQLite does that to a read transaction that tries to start writing while
-    /// another connection writes (waiting could deadlock the two). Every transaction here begins IMMEDIATE
-    /// (<c>BeginTransaction</c>'s default), taking the write lock first, so none of ours does. Startup waits
-    /// inside SQLite like everything else: <see cref="InitializeDatabase"/> sets the busy_timeout as its own
-    /// command before its first statement.</para>
+    /// <para>What it costs: a statement that SQLite fails busy WITHOUT waiting, on one of these connections,
+    /// is retried by the provider, every 150 ms, for 3 s instead of 5. SQLite does that to a read transaction
+    /// that tries to start writing while another connection writes (waiting could deadlock the two). Every
+    /// transaction here begins IMMEDIATE (<c>BeginTransaction</c>'s default), taking the write lock first, so
+    /// none of ours does.</para>
     ///
     /// <para>It must stay at least 1: to the provider, 0 means retry for ever.</para>
     /// </summary>
     private const int BusyTimeoutSeconds = BusyTimeoutMs / 1000 - 2;
+
+    /// <summary>Startup's window, <see cref="InitializeDatabase"/>'s <see cref="SqliteConnection.DefaultTimeout"/>:
+    /// <see cref="BusyTimeoutMs"/> rounded up to whole seconds (5 s), as it always was, because startup's first
+    /// statement, <c>PRAGMA journal_mode=WAL</c>, runs before any busy_timeout and SQLite does not wait for the
+    /// lock it takes to switch a new file to WAL, so this window alone bounds startup and keeping it keeps every
+    /// startup case exactly as it was.</summary>
+    private const int StartupTimeoutSeconds = (BusyTimeoutMs + 999) / 1000;
 
     /// <summary>One schema step: its SQL, and the test for a database that already has it. The test is what
     /// lets a step meet a database whose <c>CREATE TABLE</c> already declared the change (a fresh one, or a
@@ -244,17 +253,10 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
     {
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
-        // The same window as Open(string): shorter than the busy_timeout below, so one wait (BusyTimeoutSeconds).
-        cn.DefaultTimeout = BusyTimeoutSeconds;
+        // Startup's own window, not Open(string)'s: the first statement below runs before any busy_timeout, and
+        // SQLite does not wait for the WAL switch's lock, so this window alone bounds startup (StartupTimeoutSeconds).
+        cn.DefaultTimeout = StartupTimeoutSeconds;
         cn.Open();
-        // SQLite's wait is set first, as its own command, so that the batch's first statement (journal_mode=WAL)
-        // waits like every other one; it stays out of the batch because the provider hides errors from the
-        // statements after a batch's first row-returning one, and this pragma returns a row.
-        using (var wait = cn.CreateCommand())
-        {
-            wait.CommandText = $"PRAGMA busy_timeout={BusyTimeoutMs};";
-            wait.ExecuteNonQuery();
-        }
         using var cmd = cn.CreateCommand();
         cmd.CommandText = $@"
 PRAGMA journal_mode=WAL;
