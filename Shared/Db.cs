@@ -245,7 +245,9 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
     /// <para>This connection CAN contend: <see cref="ApplyMigrations"/> takes the write reservation
     /// (<c>BEGIN IMMEDIATE</c>) deliberately, and login and game initialize the same shared file
     /// independently, so one of them can be holding it while the other starts. It therefore gets the same
-    /// paired timeouts as <see cref="Open()"/>. The consequence of losing the race is different here — a
+    /// busy_timeout as <see cref="Open()"/>, but its own, longer provider window, the 5 s it has always had
+    /// (<see cref="StartupTimeoutSeconds"/>), not the 3 s of <see cref="Open()"/>'s connections. The
+    /// consequence of losing the race is different here — a
     /// startup that cannot take the reservation within the window throws out of
     /// <see cref="EnsureInitialized"/> rather than returning false — and that is the intended shape: a
     /// process that cannot confirm the schema should fail loudly at startup, not serve a world.</para></summary>
