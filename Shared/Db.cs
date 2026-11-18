@@ -10,12 +10,20 @@ namespace Shared;
 ///
 /// The bound on a contended write is <see cref="BusyTimeoutMs"/>: after about five seconds of waiting for
 /// another writer's lock, the statement fails with "database is locked" rather than blocking the calling
-/// thread any longer. Two separate timeouts have to agree for that to be true —
-/// <c>PRAGMA busy_timeout</c> is how long SQLite itself retries inside one step, and
+/// thread any longer. Two separate timeouts make that bound, and it holds only while the second is the
+/// SHORTER — <c>PRAGMA busy_timeout</c> is how long SQLite itself retries inside one step, and
 /// <c>SqliteConnection.DefaultTimeout</c> (30 seconds if nothing sets it) is how long
-/// Microsoft.Data.Sqlite keeps re-running a statement that came back SQLITE_BUSY. They compound, so a
-/// connection with only the pragma set waits the full thirty seconds. <see cref="Open()"/> therefore sets
-/// both from the same constant.
+/// Microsoft.Data.Sqlite keeps re-running a statement that came back SQLITE_BUSY. They compound: the
+/// provider reads its own clock only after SQLite's wait returns, and while its window has not run out it
+/// steps the statement again, and SQLite waits a whole busy_timeout again. So a connection with only the
+/// pragma set waits the full thirty seconds, and one whose window is as long as the pragma's waits five
+/// seconds or, when one wait ends a little early by the provider's clock, ten (fork CI saw that twice).
+/// <see cref="Open()"/> therefore sets both from the same constant, the provider's window two whole seconds
+/// shorter (<see cref="BusyTimeoutSeconds"/>, which says how far short a wait would have to end to beat it):
+/// it has run out by the time SQLite's first wait returns, so a contended statement ends after that one
+/// wait. That is every connection <see cref="Open(string)"/> returns. Startup's own connection, in
+/// <see cref="InitializeDatabase"/>, keeps the 5 s window it always had (<see cref="StartupTimeoutSeconds"/>)
+/// and behaves exactly as before.
 ///
 /// A failed save is not a lost one. <c>CharacterStore.SaveJson</c>/<c>SaveManyJson</c>/<c>SaveWith</c>
 /// catch the exception, log it and return false; <c>Session.CaptureAndWrite</c> puts the dirty flag back
@@ -28,15 +36,52 @@ namespace Shared;
 /// </summary>
 public static class Db
 {
-    /// <summary>How long a contended write waits before it gives up, in milliseconds. Feeds BOTH
-    /// <c>PRAGMA busy_timeout</c> and <see cref="SqliteConnection.DefaultTimeout"/> so the two cannot
-    /// disagree — see the class summary for why having only one of them set is not the same bound.</summary>
+    /// <summary>How long a contended write waits before it gives up, in milliseconds: SQLite's own wait,
+    /// <c>PRAGMA busy_timeout</c>. It also sets the provider's window, <see cref="BusyTimeoutSeconds"/>, so the
+    /// two cannot drift apart — see the class summary for why having only one of them set is not the same
+    /// bound, and that note for why the window is shorter, not equal.</summary>
     internal const int BusyTimeoutMs = 5000;
 
-    /// <summary><see cref="SqliteConnection.DefaultTimeout"/> is in whole seconds, so this is
-    /// <see cref="BusyTimeoutMs"/> rounded UP: a sub-second remainder must not round the provider's
-    /// retry window down below SQLite's own, which would make the pragma unreachable.</summary>
-    private const int BusyTimeoutSeconds = (BusyTimeoutMs + 999) / 1000;
+    /// <summary>
+    /// <see cref="SqliteConnection.DefaultTimeout"/>, the provider's retry window, in whole seconds, for every
+    /// connection <see cref="Open(string)"/> returns: two whole seconds below <see cref="BusyTimeoutMs"/> (3 s
+    /// against 5,000 ms), never equal to it. Startup's connection has its own, <see cref="StartupTimeoutSeconds"/>.
+    ///
+    /// <para>Below, because the provider cannot cut SQLite's wait short. It times each statement from just
+    /// before its first step and looks at that clock only when a step comes back SQLITE_BUSY, which is after
+    /// SQLite's whole wait; if its window has not run out by then it resets the statement and steps it again,
+    /// and SQLite waits a whole busy_timeout again. With the window equal to the wait (this used to be
+    /// <see cref="BusyTimeoutMs"/> rounded up), a wait that ended even a millisecond short of it by the
+    /// provider's clock earned a second one: about ten seconds, not five. A window below the wait has run out
+    /// by the time the first wait returns, so the statement fails after that one wait, still about five
+    /// seconds. That does not make the pragma unreachable, as this note used to argue: SQLite's wait happens
+    /// inside the step, before the provider looks.</para>
+    ///
+    /// <para>Two seconds rather than one, because of how short a wait can end. On Windows SQLite sleeps in
+    /// about sixty steps of 1 to 100 ms through <c>Sleep</c>, which nothing interrupts and which in practice
+    /// runs over (5,000 ms measures about 5,500). The Linux build (CI's and the host's) sleeps in whole
+    /// seconds, five of them, through <c>nanosleep</c>, which ends early only if a signal interrupts it, and
+    /// each early end costs up to a whole second. At 3 s a step needs three of its five sleeps cut short
+    /// before it can earn a second wait; at 4 s, two.</para>
+    ///
+    /// <para>What it costs: a statement that SQLite fails busy WITHOUT waiting, on one of these connections,
+    /// is retried by the provider, every 150 ms, for 3 s instead of 5. SQLite does that to a read transaction
+    /// that tries to start writing while another connection writes (waiting could deadlock the two). Every
+    /// transaction here begins IMMEDIATE (<c>BeginTransaction</c>'s default), taking the write lock first, so
+    /// none of ours does.</para>
+    ///
+    /// <para>It must stay at least 1: to the provider, 0 means retry for ever.</para>
+    /// </summary>
+    private const int BusyTimeoutSeconds = BusyTimeoutMs / 1000 - 2;
+
+    /// <summary>Startup's window, <see cref="InitializeDatabase"/>'s <see cref="SqliteConnection.DefaultTimeout"/>:
+    /// <see cref="BusyTimeoutMs"/> rounded up to whole seconds (5 s), as it always was. Startup's first
+    /// statement, <c>PRAGMA journal_mode=WAL</c>, runs before any busy_timeout, and SQLite does not wait for the
+    /// lock it takes to switch a new file to WAL, so this window alone bounds that first statement; keeping it
+    /// keeps every startup case exactly as it was. Startup's later statements, such as
+    /// <see cref="ApplyMigrations"/>' <c>BEGIN IMMEDIATE</c>, run after the batch's own busy_timeout and wait
+    /// inside SQLite, with this window as long as that wait, as they always have.</summary>
+    private const int StartupTimeoutSeconds = (BusyTimeoutMs + 999) / 1000;
 
     /// <summary>One schema step: its SQL, and the test for a database that already has it. The test is what
     /// lets a step meet a database whose <c>CREATE TABLE</c> already declared the change (a fresh one, or a
@@ -140,7 +185,7 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
 
     /// <summary>Open a ready-to-use connection: the schema is guaranteed to exist, and both halves of the
     /// contention bound are set from <see cref="BusyTimeoutMs"/>, so a write blocked by another writer
-    /// fails after about five seconds instead of thirty.</summary>
+    /// fails after one SQLite wait of about five seconds, not thirty seconds and not two waits.</summary>
     public static SqliteConnection Open()
     {
         EnsureInitialized();
@@ -168,7 +213,8 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
     {
         var cn = new SqliteConnection($"Data Source={path}");
         // The provider's retry window, which bounds the whole statement. Without this it is 30s and the
-        // busy_timeout below bounds nothing that a caller can observe.
+        // busy_timeout below bounds nothing that a caller can observe. It is shorter than the busy_timeout,
+        // so it has run out when SQLite's first wait returns: one wait, not two (BusyTimeoutSeconds).
         cn.DefaultTimeout = BusyTimeoutSeconds;
         cn.Open();
         using var pragma = cn.CreateCommand();
@@ -201,7 +247,9 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
     /// <para>This connection CAN contend: <see cref="ApplyMigrations"/> takes the write reservation
     /// (<c>BEGIN IMMEDIATE</c>) deliberately, and login and game initialize the same shared file
     /// independently, so one of them can be holding it while the other starts. It therefore gets the same
-    /// paired timeouts as <see cref="Open()"/>. The consequence of losing the race is different here — a
+    /// busy_timeout as <see cref="Open()"/>, but its own, longer provider window, the 5 s it has always had
+    /// (<see cref="StartupTimeoutSeconds"/>), not the 3 s of <see cref="Open()"/>'s connections. The
+    /// consequence of losing the race is different here — a
     /// startup that cannot take the reservation within the window throws out of
     /// <see cref="EnsureInitialized"/> rather than returning false — and that is the intended shape: a
     /// process that cannot confirm the schema should fail loudly at startup, not serve a world.</para></summary>
@@ -209,7 +257,10 @@ ALTER TABLE handoff_tokens_rekeyed RENAME TO handoff_tokens;";
     {
         System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
         using var cn = new SqliteConnection($"Data Source={path}");
-        cn.DefaultTimeout = BusyTimeoutSeconds;
+        // Startup's own window, not Open(string)'s: the first statement below runs before any busy_timeout, and
+        // SQLite does not wait for the WAL switch's lock, so this window alone bounds that statement
+        // (StartupTimeoutSeconds). The statements after it wait inside SQLite as before.
+        cn.DefaultTimeout = StartupTimeoutSeconds;
         cn.Open();
         using var cmd = cn.CreateCommand();
         cmd.CommandText = $@"

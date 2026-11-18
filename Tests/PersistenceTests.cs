@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Tests.Support;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Tests;
 
@@ -24,8 +25,22 @@ public class PersistenceTests : IDisposable
     private readonly string _b = $"zz_test_b_{Guid.NewGuid():N}"[..24];
     private readonly CharacterStore _store = new(RepoPaths.CharsDir());
     private readonly DbFixture _fixture;
+    private readonly ITestOutputHelper _out;
 
-    public PersistenceTests(DbFixture fixture) => _fixture = fixture;
+    public PersistenceTests(DbFixture fixture, ITestOutputHelper output)
+    {
+        _fixture = fixture;
+        _out = output;
+    }
+
+    /// <summary>A measurement worth keeping from every run: to the test output, and to the console as well,
+    /// because CI's log runs at normal verbosity, which drops a passed test's output, and CI is where these
+    /// waits are measured on Linux.</summary>
+    private void Measured(string line)
+    {
+        _out.WriteLine(line);
+        Console.WriteLine($"[{nameof(PersistenceTests)}] {line}");
+    }
 
     private static Character Make(string name, uint coins, params (int id, int amount)[] items)
     {
@@ -167,16 +182,22 @@ public class PersistenceTests : IDisposable
 
     /// <summary>
     /// The BOUND on a contended write, which is the number the whole design rests on: a save that cannot get
-    /// the write lock gives up after about <see cref="Db.BusyTimeoutMs"/>, not after the provider's 30s
-    /// default. That difference is twenty-five seconds of a session thread — the save paths run on the
-    /// session's own thread and on the autosave sweep.
+    /// the write lock gives up after ONE of SQLite's waits, about <see cref="Db.BusyTimeoutMs"/> — not after
+    /// two, and not after the provider's 30s default. That difference is twenty-five seconds of a session
+    /// thread — the save paths run on the session's own thread and on the autosave sweep.
     ///
-    /// <para>Both ends are asserted on purpose. The upper bound is the regression that matters: it is red at
-    /// ~30s if <c>Db.Open</c>'s <c>DefaultTimeout</c> line goes away, because <c>PRAGMA busy_timeout</c> alone
-    /// does not bound the statement. The lower bound is the opposite failure — a timeout trimmed so far that
-    /// SQLite's own retry never gets to run, which would turn ordinary momentary contention into failed
-    /// saves; see <see cref="SaveMany_StillSucceeds_WhenTheContentionClearsInsideTheWindow"/> for the
-    /// behavioural half of that.</para>
+    /// <para>Both ends are asserted on purpose. The upper bound, 1.5x the busy_timeout, is what one wait
+    /// allows: about 5.0 s on Linux and 5.5 s on Windows, whose sleeps run over. It is red at about 10 s if
+    /// a wait ends a little early while <c>Db.Open</c>'s <c>DefaultTimeout</c> is not below the busy_timeout
+    /// (the provider then steps again for a second whole wait: fork CI's "took 10.0s", twice), and at about
+    /// 30 s if that line goes away, because <c>PRAGMA busy_timeout</c> alone does not bound the statement.
+    /// A full-length wait seldom ends early, so this fact alone rarely sees the second wait;
+    /// <see cref="AContendedStatement_EndsAfterOneSqliteWait_WhenThatWaitEndsEarly"/> makes one end early on
+    /// purpose. The lower bound is the opposite failure — the save giving up before SQLite's own wait has run:
+    /// the busy_timeout trimmed, or the pragma gone, so that only the provider's shorter window bounds the
+    /// save (about 3 s, under the floor). See
+    /// <see cref="SaveMany_StillSucceeds_WhenTheContentionClearsInsideTheWindow"/> for the behavioural half of
+    /// that.</para>
     ///
     /// <para>Bounds are derived from the constant rather than written as literals, so changing the timeout
     /// moves this fact with it instead of breaking it.</para>
@@ -214,21 +235,106 @@ public class PersistenceTests : IDisposable
 
         Assert.False(saved);
 
-        // Generous both ways: a loaded CI runner can stretch a wait, and the provider rounds to whole
-        // seconds. What is being pinned is the ORDER OF MAGNITUDE — five seconds, not thirty.
+        Measured($"a contended save failed after {elapsed.TotalMilliseconds:F0} ms " +
+                 $"(busy_timeout {Db.BusyTimeoutMs} ms)");
+
+        // Room both ways for a loaded runner, which stretches a wait. What is pinned is ONE wait: about five
+        // seconds, not ten and not thirty.
         var floor   = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 0.8);
-        var ceiling = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 2);
+        var ceiling = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 1.5);
         Assert.True(elapsed >= floor,
             $"a contended save gave up after {elapsed.TotalSeconds:F1}s, before SQLite's own busy_timeout of " +
-            $"{Db.BusyTimeoutMs}ms could retry — momentary contention will now lose saves");
+            $"{Db.BusyTimeoutMs}ms had run — the pragma is not being set, or is set short");
         Assert.True(elapsed <= ceiling,
             $"a contended save took {elapsed.TotalSeconds:F1}s to fail, against a busy_timeout of " +
-            $"{Db.BusyTimeoutMs}ms. The connection's DefaultTimeout is not being set from it, so the provider " +
-            "is retrying the statement for its own default of 30s and the pragma bounds nothing.");
+            $"{Db.BusyTimeoutMs}ms. About 10s: the connection's DefaultTimeout is not below the busy_timeout, so " +
+            "the provider stepped again for a second whole wait. About 30s: it is not being set at all, so the " +
+            "provider retried for its own default and the pragma bounds nothing.");
 
         // The failed save changed nothing, and the row is still writable afterwards.
         Assert.Equal(100u, LoadOk(db.Store, _a).Coins);
         Assert.True(db.Store.SaveMany(new[] { a }));
+    }
+
+    /// <summary>
+    /// A contended statement ends after ONE of SQLite's busy waits even when that wait ends early; fork CI's
+    /// "a contended save took 10.0s" (twice) was two. Microsoft.Data.Sqlite re-runs a statement that came back
+    /// SQLITE_BUSY until its own window, the connection's <c>DefaultTimeout</c>, has run out, and it reads that
+    /// clock only after SQLite's wait returns. While the window was as long as the busy_timeout, a wait that
+    /// ended a little early by the provider's clock was reset and stepped again for a second whole wait;
+    /// <c>Db</c> now sets the window shorter than the wait.
+    ///
+    /// <para>The early end is made on purpose, in the shape of the diagnosis probe: SQLite's own wait just
+    /// under the old window. The waiting connection is a real <see cref="Db.Open(string)"/> one, with its
+    /// busy_timeout then lowered by a whole second — on Linux, whose build sleeps in whole seconds, the most
+    /// one early wake can take from a wait; on Windows, a wait that ends a second early. The blocking statement
+    /// is the save path's own, <c>BeginTransaction(deferred: false)</c>, which runs BEGIN IMMEDIATE.</para>
+    ///
+    /// <para>Counted, not timed: SQLite's trace callback fires each time the statement starts to run, and the
+    /// provider resets it and steps it again for every further wait, so the count is the number of waits. A
+    /// busy machine only stretches a wait, which makes a second one less likely, never more. The time is in
+    /// the message and the test output.</para>
+    ///
+    /// <para>Red with the window back at the busy_timeout (<c>DefaultTimeout</c> 5 s): "a contended BEGIN
+    /// IMMEDIATE took 2 SQLite wait(s) in 9016 ms, with busy_timeout 4000 ms and DefaultTimeout 5 s" (Windows;
+    /// on Linux the two waits are four whole seconds each).</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>), like every fact here that holds the
+    /// write lock.</para>
+    /// </summary>
+    [Fact]
+    public void AContendedStatement_EndsAfterOneSqliteWait_WhenThatWaitEndsEarly()
+    {
+        const int earlyMs = 1000;
+        int waitMs = Db.BusyTimeoutMs - earlyMs;
+
+        using var db = new IsolatedDatabase();
+        using var blocker = db.Open();
+        using (var begin = blocker.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";   // held until the attempt below has given up
+            begin.ExecuteNonQuery();
+        }
+
+        using var waiter = db.Open();
+        // 0 means no limit to the provider: the attempt below would then wait for ever instead of failing.
+        Assert.True(waiter.DefaultTimeout >= 1, $"Db.Open set a DefaultTimeout of {waiter.DefaultTimeout}");
+        using (var shorten = waiter.CreateCommand())
+        {
+            shorten.CommandText = $"PRAGMA busy_timeout={waitMs};";
+            shorten.ExecuteNonQuery();
+        }
+
+        int waits = 0;
+        SQLitePCL.raw.sqlite3_trace(waiter.Handle, (SQLitePCL.strdelegate_trace)((_, sql) =>
+        {
+            if (sql is not null && sql.StartsWith("BEGIN", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Increment(ref waits);
+        }), null);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var error = Record.Exception(() =>
+        {
+            using var tx = waiter.BeginTransaction(deferred: false);
+        });
+        clock.Stop();
+        SQLitePCL.raw.sqlite3_trace(waiter.Handle, (SQLitePCL.strdelegate_trace)null!, null);
+
+        using (var rollback = blocker.CreateCommand())
+        {
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }
+
+        string seen = $"{waits} SQLite wait(s) in {clock.Elapsed.TotalMilliseconds:F0} ms, with busy_timeout " +
+                      $"{waitMs} ms and DefaultTimeout {waiter.DefaultTimeout} s";
+        Measured(seen);
+
+        var busy = Assert.IsType<SqliteException>(error);
+        Assert.Equal(5, busy.SqliteErrorCode);   // SQLITE_BUSY: it gave up on the lock, nothing else
+        Assert.True(waits == 1,
+            $"a contended BEGIN IMMEDIATE took {seen}. More than one: the provider's window had not run out " +
+            "when SQLite's wait ended early, so it stepped again and SQLite waited again — DefaultTimeout is " +
+            "not far enough below the busy_timeout.");
     }
 
     /// <summary>
@@ -287,6 +393,232 @@ public class PersistenceTests : IDisposable
         // meaningless.
         Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.5),
             $"the save returned in {clock.Elapsed.TotalMilliseconds:F0}ms, so it never contended at all");
+    }
+
+    /// <summary>
+    /// A contention that clears AFTER the provider's window has run out, but inside SQLite's own wait, still
+    /// ends in a successful save. The window (<c>DefaultTimeout</c>, 3 s) is shorter than the busy_timeout
+    /// (5,000 ms), so this band is new: a lock let go at about four seconds has to be waited out inside
+    /// SQLite, not given up on when the provider's window ends. The fact above holds the lock for a second,
+    /// inside both, and cannot see the band.
+    ///
+    /// <para>In one wait: SQLite's first wait lasts about five seconds, so at four the save is still inside
+    /// it and takes the lock there. The provider could only add a second wait after a first one that ended
+    /// before its window, which the floor of
+    /// <see cref="SaveMany_FailsWithinTheBusyTimeout_WhenTheWriteLockIsHeld"/> rules out.</para>
+    ///
+    /// <para>Why 4 s sits inside the band on both builds. With no SQLite wait, the provider alone tries every
+    /// 150 ms and makes its last try at about 3.1 s, most of a second before the lock goes. SQLite tries the
+    /// lock again after each of its sleeps: on Windows after sleeps of at most 100 ms (a little longer in
+    /// practice), until about 5.5 s; on Linux after each whole second, the last try at 5 s, so a lock let go
+    /// at 4 s is taken at the 4 s try or the 5 s one. Either way about a second inside the wait.</para>
+    ///
+    /// <para>Red with the busy_timeout pragma taken out of <c>Db.Open</c>: the provider alone gives up at
+    /// about 3.1 s while the lock is still held, and the save fails.</para>
+    ///
+    /// <para>On its OWN database file (<see cref="IsolatedDatabase"/>), like every fact here that holds the
+    /// write lock.</para>
+    /// </summary>
+    [Fact]
+    public void SaveMany_StillSucceeds_WhenTheContentionClearsAfterTheProvidersWindow()
+    {
+        using var db = new IsolatedDatabase();
+
+        var a = Make(_a, 100);
+        Assert.True(db.Store.SaveMany(new[] { a }));
+        a.Coins = 777;
+
+        const int holdMs = 4000;
+        int windowMs;
+        using (var probe = db.Open()) windowMs = probe.DefaultTimeout * 1000;
+        Assert.True(windowMs < holdMs && holdMs < Db.BusyTimeoutMs,
+            $"the hold ({holdMs}ms) has to outlast the provider's window ({windowMs}ms) and end inside SQLite's " +
+            $"wait ({Db.BusyTimeoutMs}ms) for this to test anything");
+
+        using var locked = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = db.Open();
+            using var begin = blocker.CreateCommand();
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            begin.ExecuteNonQuery();
+            locked.Set();
+            Thread.Sleep(holdMs);
+            using var rollback = blocker.CreateCommand();
+            rollback.CommandText = "ROLLBACK;";
+            rollback.ExecuteNonQuery();
+        }) { IsBackground = true };
+        holder.Start();
+
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the write lock");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        bool saved = db.Store.SaveMany(new[] { a });
+        clock.Stop();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never released the write lock");
+
+        Measured($"a save contended for {holdMs} ms {(saved ? "saved" : "FAILED")} after " +
+                 $"{clock.Elapsed.TotalMilliseconds:F0} ms (window {windowMs} ms, busy_timeout {Db.BusyTimeoutMs} ms)");
+
+        Assert.True(saved,
+            $"a save contended for {holdMs}ms — past the provider's {windowMs}ms window, inside the " +
+            $"{Db.BusyTimeoutMs}ms busy_timeout — failed after {clock.Elapsed.TotalSeconds:F1}s: SQLite did not " +
+            "wait the lock out, so only the provider's window bounded the save");
+        Assert.Equal(777u, LoadOk(db.Store, _a).Coins);
+        // It waited until about the release, past the window, rather than slipping in early.
+        Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.9),
+            $"the save returned in {clock.Elapsed.TotalMilliseconds:F0}ms, before the lock was let go");
+    }
+
+    /// <summary>
+    /// Startup against a first-ever database another connection holds behaves as it always has: it keeps its
+    /// own 5 s window (<c>Db</c>'s <c>StartupTimeoutSeconds</c>), not the 3 s window every <c>Db.Open</c>
+    /// connection gets. Its first statement, <c>PRAGMA journal_mode=WAL</c>, runs before any busy_timeout, so
+    /// against a held file SQLite fails it busy at once and only the provider's window bounds it; with the 3 s
+    /// window, startup would give up two seconds sooner than it always has.
+    ///
+    /// <para>The file is a first-ever one, still in rollback-journal mode, held throughout with
+    /// <c>BEGIN EXCLUSIVE</c>, which shuts out even a reader. Bounds as the save fact's: at least 0.8x and at
+    /// most 1.5x the busy_timeout. Red with startup's window at 3 s: "startup against a held file gave up after
+    /// 3.0s".</para>
+    /// </summary>
+    [Fact]
+    public void InitializeDatabase_GivesUpAtItsOwnFiveSecondWindow_WhenAFirstEverFileIsHeld()
+    {
+        string path = FirstEverDatabaseFile();
+        using var holder = new SqliteConnection($"Data Source={path};Pooling=False");
+        holder.Open();
+        Assert.Equal("delete", Text(holder, "PRAGMA journal_mode;"));
+        Run(holder, "BEGIN EXCLUSIVE;");   // held until the attempt below has given up
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var error = Record.Exception(() => Db.InitializeDatabase(path));
+        clock.Stop();
+        Run(holder, "ROLLBACK;");
+
+        Measured($"startup against a held file gave up after {clock.Elapsed.TotalMilliseconds:F0} ms " +
+                 $"(busy_timeout {Db.BusyTimeoutMs} ms)");
+
+        var busy = Assert.IsType<SqliteException>(error);
+        Assert.Equal(5, busy.SqliteErrorCode);   // SQLITE_BUSY: it gave up on the lock, nothing else
+        var floor   = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 0.8);
+        var ceiling = TimeSpan.FromMilliseconds(Db.BusyTimeoutMs * 1.5);
+        Assert.True(clock.Elapsed >= floor,
+            $"startup against a held file gave up after {clock.Elapsed.TotalSeconds:F1}s, sooner than the 5 s " +
+            "window startup has always had — it is getting the shorter window of Db.Open's connections");
+        Assert.True(clock.Elapsed <= ceiling,
+            $"startup against a held file took {clock.Elapsed.TotalSeconds:F1}s to give up, against a " +
+            $"busy_timeout of {Db.BusyTimeoutMs}ms: its window is longer than it always was, or not set at all");
+
+        // Once the hold is gone the same file initializes.
+        Db.InitializeDatabase(path);
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        Assert.Equal("wal", Text(check, "PRAGMA journal_mode;"));
+    }
+
+    /// <summary>
+    /// The same first-ever file held with <c>BEGIN EXCLUSIVE</c> and let go at 4 s: startup initializes, as it
+    /// always has. Its 5 s window outlasts the hold, and the provider tries the statement again every 150 ms or
+    /// so, so it is taken within about a fifth of a second of the release. Red with startup's window at 3 s: the provider gives
+    /// up at about 3 s while the file is still held, "startup ... FAILED after 3.0s".
+    /// </summary>
+    [Fact]
+    public void InitializeDatabase_WaitsOutAFourSecondExclusiveHold_OnAFirstEverFile()
+    {
+        var (error, elapsed) = StartupAgainstAHold("BEGIN EXCLUSIVE;", holdMs: 4000);
+        AssertStartupWaitedOut("an exclusive hold", error, elapsed, holdMs: 4000);
+    }
+
+    /// <summary>
+    /// A first-ever file whose write lock another connection holds (<c>BEGIN IMMEDIATE</c>), let go at 4 s:
+    /// startup initializes, as it always has. Switching a rollback-journal file to WAL reads it and then takes
+    /// its write lock inside the one statement, and SQLite never waits for that lock, busy_timeout or not, so
+    /// the provider's 5 s window is what waits this hold out.
+    ///
+    /// <para>Red with startup's window at 3 s, and red at the previous round's code, which set the
+    /// busy_timeout before the batch but kept the 3 s window: the switch was failed busy at about 3.1 s while
+    /// the lock was still held.</para>
+    /// </summary>
+    [Fact]
+    public void InitializeDatabase_WaitsOutAFourSecondWriteLock_OnAFirstEverFile()
+    {
+        var (error, elapsed) = StartupAgainstAHold("BEGIN IMMEDIATE;", holdMs: 4000);
+        AssertStartupWaitedOut("a write lock", error, elapsed, holdMs: 4000);
+    }
+
+    /// <summary>Startup against a first-ever file another connection takes with <paramref name="begin"/>,
+    /// holds for <paramref name="holdMs"/> and then lets go: what startup threw, if anything, and how long it
+    /// took.</summary>
+    private static (Exception? Error, TimeSpan Elapsed) StartupAgainstAHold(string begin, int holdMs)
+    {
+        string path = FirstEverDatabaseFile();
+        Assert.True(holdMs < Db.BusyTimeoutMs, "the hold has to end inside startup's window for this to test anything");
+
+        using var locked = new ManualResetEventSlim(false);
+        var holder = new Thread(() =>
+        {
+            using var blocker = new SqliteConnection($"Data Source={path};Pooling=False");
+            blocker.Open();
+            Run(blocker, begin);
+            locked.Set();
+            Thread.Sleep(holdMs);
+            Run(blocker, "ROLLBACK;");
+        }) { IsBackground = true };
+        holder.Start();
+        Assert.True(locked.Wait(TimeSpan.FromSeconds(30)), "the blocking thread never took the lock");
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var error = Record.Exception(() => Db.InitializeDatabase(path));
+        clock.Stop();
+        Assert.True(holder.Join(TimeSpan.FromSeconds(30)), "the blocking thread never let the lock go");
+
+        if (error is null)
+        {
+            using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+            check.Open();
+            Assert.Equal("wal", Text(check, "PRAGMA journal_mode;"));
+            Assert.Equal(Db.CurrentSchemaVersion.ToString(), Text(check, "PRAGMA user_version;"));
+        }
+        return (error, clock.Elapsed);
+    }
+
+    private void AssertStartupWaitedOut(string hold, Exception? error, TimeSpan elapsed, int holdMs)
+    {
+        Measured($"startup against {hold} of {holdMs} ms {(error is null ? "initialized" : "FAILED")} after " +
+                 $"{elapsed.TotalMilliseconds:F0} ms");
+        Assert.True(error is null,
+            $"startup against {hold} of {holdMs}ms FAILED after {elapsed.TotalSeconds:F1}s ({error?.Message}): " +
+            "its window ran out before the hold did — it is not getting the 5 s window startup has always had");
+        Assert.True(elapsed >= TimeSpan.FromMilliseconds(holdMs * 0.9),
+            $"startup returned in {elapsed.TotalMilliseconds:F0}ms, before the lock was let go");
+    }
+
+    /// <summary>A database file nobody has initialized yet: one table, so the file exists, still in SQLite's
+    /// default rollback-journal mode. Inside the run's state directory, which the run's end deletes.</summary>
+    private static string FirstEverDatabaseFile()
+    {
+        string dir = Path.Combine(TestProcessState.StateDirectory, $"first-ever-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "project1998.db");
+        using var cn = new SqliteConnection($"Data Source={path};Pooling=False");
+        cn.Open();
+        Run(cn, "CREATE TABLE zz_first_ever(x);");
+        return path;
+    }
+
+    private static void Run(SqliteConnection cn, string sql)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    private static string Text(SqliteConnection cn, string sql)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToString(cmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) ?? "";
     }
 
     /// <summary>

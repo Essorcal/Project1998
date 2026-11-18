@@ -18,12 +18,16 @@ namespace Tests;
 /// facts now run against a database file of their own (<c>Tests/Support/IsolatedDatabase.cs</c>), so nothing
 /// outside them can feel the lock and the collection can run beside the others again.</para>
 ///
-/// <para>The bound on a write that IS locked out is about five seconds — <c>Db.BusyTimeoutMs</c>. Both
-/// halves of it come from that one constant: <c>Db.Open</c> sets the connection's <c>DefaultTimeout</c> as
-/// well as <c>PRAGMA busy_timeout</c>, because Microsoft.Data.Sqlite re-runs a statement that came back
-/// SQLITE_BUSY up to the COMMAND timeout and the pragma alone bounds nothing a caller can observe. The
-/// command timeout was still the provider's 30s default on the CI run above, which is why the lock-out
-/// there cost half a minute rather than five seconds.</para>
+/// <para>The bound on a write that IS locked out is one SQLite wait, about five seconds —
+/// <c>Db.BusyTimeoutMs</c>. Both halves of it come from that one constant: <c>Db.Open</c> sets the
+/// connection's <c>DefaultTimeout</c> as well as <c>PRAGMA busy_timeout</c>, because Microsoft.Data.Sqlite
+/// re-runs a statement that came back SQLITE_BUSY up to the COMMAND timeout and the pragma alone bounds
+/// nothing a caller can observe. The command timeout was still the provider's 30s default on the CI run
+/// above, which is why the lock-out there cost half a minute rather than five seconds. It is set two whole
+/// seconds SHORTER than the busy_timeout, not equal to it: the provider checks it only after SQLite's wait
+/// returns, so an equal window let a wait that ended a little early earn a second whole one (a contended
+/// save of about ten seconds, twice on fork CI), and a shorter one has run out by then (<c>Db</c>'s
+/// <c>BusyTimeoutSeconds</c> says how far short a wait would have to end to beat it).</para>
 ///
 /// <para>So the rule for a new fact here: an ordinary write is fine, and a fact that deliberately holds a
 /// database-wide lock takes an <c>IsolatedDatabase</c>, never <c>Db.Open()</c>. Anything that cannot — a
